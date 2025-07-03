@@ -150,6 +150,8 @@ Running this script will generate a plot comparing the ground truth data against
     <img src="figures/prediction_example.png" alt="Forecast Example" align="center" width="600px" />
 </p>
 
+Additionally, we also provide a script that makes predictions without Volume and Amount data, which can be found in [`examples/prediction_wo_vol_example.py`](examples/prediction_wo_vol_example.py).
+
 ## 📖 Citation
 
 If you use Kronos in your research, we would appreciate a citation to our work. The research paper is currently in preparation.
