@@ -31,7 +31,7 @@
 </p>
 
 > Kronos is the **first open-source foundation model** for financial candlesticks (K-lines), 
-> trained on data from over **40 global exchanges**.
+> trained on data from over **45 global exchanges**.
 
 
 ## 📜 Introduction
