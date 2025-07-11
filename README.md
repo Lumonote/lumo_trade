@@ -9,6 +9,7 @@
 <a href="https://huggingface.co/NeoQuasar"> 
 <img src="https://img.shields.io/badge/🤗-Hugging_Face-yellow" alt="Hugging Face"> 
 </a> 
+<a href="https://shiyu-coder.github.io/Kronos-demo/"> <img src="https://img.shields.io/badge/🚀-Live_Demo-brightgreen" alt="Live Demo"> </a>
 <a href="https://github.com/shiyu-coder/Kronos/graphs/commit-activity"> 
 <img src="https://img.shields.io/github/last-commit/shiyu-coder/Kronos?color=blue" alt="Last Commit"> 
 </a> 
@@ -43,6 +44,11 @@
 <p align="center">
     <img src="figures/overview.png" alt="" align="center" width="700px" />
 </p>
+
+## ✨ Live Demo 
+We have set up a live demo to visualize Kronos's forecasting results. The webpage showcases a forecast for the **BTC/USDT** trading pair over the next 24 hours. 
+
+**👉 [Access the Live Demo Here](https://shiyu-coder.github.io/Kronos-demo/)** 
 
 ## 📦 Model Zoo 
 We release a family of pre-trained models with varying capacities to suit different computational and application needs. All models are readily accessible from the Hugging Face Hub.
