@@ -160,9 +160,19 @@ Additionally, we also provide a script that makes predictions without Volume and
 
 ## 📖 Citation
 
-If you use Kronos in your research, we would appreciate a citation to our work. The research paper is currently in preparation.
+If you use Kronos in your research, we would appreciate a citation to our [paper](https://arxiv.org/abs/2508.02739):
 
-**Paper coming soon!**
+```
+@misc{shi2025kronos,
+      title={Kronos: A Foundation Model for the Language of Financial Markets}, 
+      author={Yu Shi and Zongliang Fu and Shuo Chen and Bohan Zhao and Wei Xu and Changshui Zhang and Jian Li},
+      year={2025},
+      eprint={2508.02739},
+      archivePrefix={arXiv},
+      primaryClass={q-fin.ST},
+      url={https://arxiv.org/abs/2508.02739}, 
+}
+```
 
 ## 📜 License 
 This project is licensed under the [MIT License](./LICENSE).
