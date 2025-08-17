@@ -35,6 +35,14 @@
 > trained on data from over **45 global exchanges**.
 
 
+</div>
+
+## 📰 News
+*   🚩 **[2025.08.17]** We have released the scripts for fine-tuning! Check them out to adapt Kronos to your own tasks.
+*   🚩 **[2025.08.02]** Our paper is now available on [arXiv](https://arxiv.org/abs/2508.02739)!
+
+<p align="center">
+
 ## 📜 Introduction
 
 **Kronos** is a family of decoder-only foundation models, pre-trained specifically for the "language" of financial markets—K-line sequences. Unlike general-purpose TSFMs, Kronos is designed to handle the unique, high-noise characteristics of financial data. It leverages a novel two-stage framework: 
@@ -157,6 +165,106 @@ Running this script will generate a plot comparing the ground truth data against
 </p>
 
 Additionally, we also provide a script that makes predictions without Volume and Amount data, which can be found in [`examples/prediction_wo_vol_example.py`](examples/prediction_wo_vol_example.py).
+
+
+好的，收到了你的反馈！这两个建议都非常好，加入示例图能让结果更直观，而泛化“Backtesting Complexity”的描述能让建议更具普适性。
+
+我已经根据你的反馈更新了内容。以下是修改后的版本，你可以直接替换掉之前的内容。
+
+---
+
+## 🔧 Finetuning on Your Own Data (A-Share Market Example)
+
+We provide a complete pipeline for finetuning Kronos on your own datasets. As an example, we demonstrate how to use [Qlib](https://github.com/microsoft/qlib) to prepare data from the Chinese A-share market and conduct a simple backtest.
+
+> **Disclaimer:** This pipeline is intended as a demonstration to illustrate the finetuning process. It is a simplified example and not a production-ready quantitative trading system. A robust quantitative strategy requires more sophisticated techniques, such as portfolio optimization and risk factor neutralization, to achieve stable alpha.
+
+The finetuning process is divided into four main steps:
+
+1.  **Configuration**: Set up paths and hyperparameters.
+2.  **Data Preparation**: Process and split your data using Qlib.
+3.  **Model Finetuning**: Finetune the Tokenizer and the Predictor models.
+4.  **Backtesting**: Evaluate the finetuned model's performance.
+
+### Prerequisites
+
+1.  First, ensure you have all dependencies from `requirements.txt` installed.
+2.  This pipeline relies on `qlib`. Please install it:
+    ```shell
+      pip install pyqlib
+    ```
+3.  You will need to prepare your Qlib data. Follow the [official Qlib guide](https://github.com/microsoft/qlib) to download and set up your data locally. The example scripts assume you are using daily frequency data.
+
+### Step 1: Configure Your Experiment
+
+All settings for data, training, and model paths are centralized in `finetune/config.py`. Before running any scripts, please **modify the following paths** according to your environment:
+
+*   `qlib_data_path`: Path to your local Qlib data directory.
+*   `dataset_path`: Directory where the processed train/validation/test pickle files will be saved.
+*   `save_path`: Base directory for saving model checkpoints.
+*   `backtest_result_path`: Directory for saving backtesting results.
+*   `pretrained_tokenizer_path` and `pretrained_predictor_path`: Paths to the pre-trained models you want to start from (can be local paths or Hugging Face model names).
+
+You can also adjust other parameters like `instrument`, `train_time_range`, `epochs`, and `batch_size` to fit your specific task. If you don't use [Comet.ml](https://www.comet.com/), set `use_comet = False`.
+
+### Step 2: Prepare the Dataset
+
+Run the data preprocessing script. This script will load raw market data from your Qlib directory, process it, split it into training, validation, and test sets, and save them as pickle files.
+
+```shell
+python finetune/qlib_data_preprocess.py
+```
+
+After running, you will find `train_data.pkl`, `val_data.pkl`, and `test_data.pkl` in the directory specified by `dataset_path` in your config.
+
+### Step 3: Run the Finetuning
+
+The finetuning process consists of two stages: finetuning the tokenizer and then the predictor. Both training scripts are designed for multi-GPU training using `torchrun`.
+
+#### 3.1 Finetune the Tokenizer
+
+This step adjusts the tokenizer to the data distribution of your specific domain.
+
+```shell
+# Replace NUM_GPUS with the number of GPUs you want to use (e.g., 2)
+torchrun --standalone --nproc_per_node=NUM_GPUS finetune/train_tokenizer.py
+```
+
+The best tokenizer checkpoint will be saved to the path configured in `config.py` (derived from `save_path` and `tokenizer_save_folder_name`).
+
+#### 3.2 Finetune the Predictor
+
+This step finetunes the main Kronos model for the forecasting task.
+
+```shell
+# Replace NUM_GPUS with the number of GPUs you want to use (e.g., 2)
+torchrun --standalone --nproc_per_node=NUM_GPUS finetune/train_predictor.py
+```
+
+The best predictor checkpoint will be saved to the path configured in `config.py`.
+
+### Step 4: Evaluate with Backtesting
+
+Finally, run the backtesting script to evaluate your finetuned model. This script loads the models, performs inference on the test set, generates prediction signals (e.g., forecasted price change), and runs a simple top-K strategy backtest.
+
+```shell
+# Specify the GPU for inference
+python finetune/qlib_test.py --device cuda:0
+```
+
+The script will output a detailed performance analysis in your console and generate a plot showing the cumulative return curves of your strategy against the benchmark, similar to the one below:
+
+<p align="center">
+    <img src="figures/backtest_result_example.png" alt="Backtest Example" align="center" width="700px" />
+</p>
+
+### 💡 From Demo to Production: Important Considerations
+
+*   **Raw Signals vs. Pure Alpha**: The signals generated by the model in this demo are raw predictions. In a real-world quantitative workflow, these signals would typically be fed into a portfolio optimization model. This model would apply constraints to neutralize exposure to common risk factors (e.g., market beta, style factors like size and value), thereby isolating the **"pure alpha"** and improving the strategy's robustness.
+*   **Data Handling**: The provided `QlibDataset` is an example. For different data sources or formats, you will need to adapt the data loading and preprocessing logic.
+*   **Strategy and Backtesting Complexity**: The simple top-K strategy used here is a basic starting point. Production-level strategies often incorporate more complex logic for portfolio construction, dynamic position sizing, and risk management (e.g., stop-loss/take-profit rules). Furthermore, a high-fidelity backtest should meticulously model transaction costs, slippage, and market impact to provide a more accurate estimate of real-world performance.
+
+> **📝 AI-Generated Comments**: Please note that many of the code comments within the `finetune/` directory were generated by an AI assistant (Gemini 2.5 Pro) for explanatory purposes. While they aim to be helpful, they may contain inaccuracies. We recommend treating the code itself as the definitive source of logic.
 
 ## 📖 Citation
 
