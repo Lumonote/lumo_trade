@@ -167,12 +167,6 @@ Running this script will generate a plot comparing the ground truth data against
 Additionally, we also provide a script that makes predictions without Volume and Amount data, which can be found in [`examples/prediction_wo_vol_example.py`](examples/prediction_wo_vol_example.py).
 
 
-好的，收到了你的反馈！这两个建议都非常好，加入示例图能让结果更直观，而泛化“Backtesting Complexity”的描述能让建议更具普适性。
-
-我已经根据你的反馈更新了内容。以下是修改后的版本，你可以直接替换掉之前的内容。
-
----
-
 ## 🔧 Finetuning on Your Own Data (A-Share Market Example)
 
 We provide a complete pipeline for finetuning Kronos on your own datasets. As an example, we demonstrate how to use [Qlib](https://github.com/microsoft/qlib) to prepare data from the Chinese A-share market and conduct a simple backtest.
