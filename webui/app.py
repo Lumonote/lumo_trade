@@ -126,7 +126,7 @@ def save_prediction_results(file_path, prediction_type, prediction_results, actu
     """保存预测结果到文件"""
     try:
         # 创建预测结果目录
-        results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'prediction_results')
+        results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prediction_results')
         os.makedirs(results_dir, exist_ok=True)
         
         # 生成文件名
