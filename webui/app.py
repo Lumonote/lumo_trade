@@ -156,8 +156,20 @@ def convert_returns_to_price(returns_df, initial_prices, price_cols=['open', 'hi
     for col in price_cols:
         if col in price_df.columns:
             print(f"[DEBUG] convert_returns_to_price: 转换列 {col}")
-            # 从初始价格开始，逐步计算绝对价格
-            price_df[col] = (1 + returns_df[col]) * initial_prices[col]
+            # 正确的转换逻辑：从初始价格开始，逐步累积计算绝对价格
+            # 第一个点：price = initial_price * (1 + return_1)
+            # 第二个点：price = price_1 * (1 + return_2)
+            # 第三个点：price = price_2 * (1 + return_3)
+            # 以此类推...
+            
+            # 使用cumprod来累积计算
+            price_df[col] = initial_prices[col] * (1 + returns_df[col]).cumprod()
+            
+            print(f"[DEBUG] convert_returns_to_price: 列 {col} 转换完成，前3个值:")
+            print(f"  初始价格: {initial_prices[col]}")
+            print(f"  相对变化率: {returns_df[col].head(3).tolist()}")
+            print(f"  累积因子: {(1 + returns_df[col]).cumprod().head(3).tolist()}")
+            print(f"  最终价格: {price_df[col].head(3).tolist()}")
     
     print(f"[DEBUG] convert_returns_to_price: 转换完成，输出绝对价格前3行:")
     print(price_df[price_cols].head(3))
