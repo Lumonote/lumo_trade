@@ -124,26 +124,43 @@ def load_data_file(file_path):
 
 def convert_price_to_returns(df, price_cols=['open', 'high', 'low', 'close']):
     """将绝对价格转换为相对变化率，解决Kronos模型的连续性问题"""
+    print(f"[DEBUG] convert_price_to_returns: 开始转换，输入数据形状: {df.shape}")
+    print(f"[DEBUG] convert_price_to_returns: 输入数据前3行:")
+    print(df[price_cols].head(3))
+    
     returns_df = df.copy()
     
     # 计算相对变化率 (pct_change)
     for col in price_cols:
         if col in returns_df.columns:
+            print(f"[DEBUG] convert_price_to_returns: 转换列 {col}")
             returns_df[col] = returns_df[col].pct_change()
     
     # 第一行会是NaN，用0填充
     returns_df = returns_df.fillna(0)
     
+    print(f"[DEBUG] convert_price_to_returns: 转换完成，输出数据前3行:")
+    print(returns_df[price_cols].head(3))
+    
     return returns_df
 
 def convert_returns_to_price(returns_df, initial_prices, price_cols=['open', 'high', 'low', 'close']):
     """将相对变化率转换回绝对价格"""
+    print(f"[DEBUG] convert_returns_to_price: 开始转换，输入数据形状: {returns_df.shape}")
+    print(f"[DEBUG] convert_returns_to_price: 初始价格: {initial_prices}")
+    print(f"[DEBUG] convert_returns_to_price: 输入相对变化率前3行:")
+    print(returns_df[price_cols].head(3))
+    
     price_df = returns_df.copy()
     
     for col in price_cols:
         if col in price_df.columns:
+            print(f"[DEBUG] convert_returns_to_price: 转换列 {col}")
             # 从初始价格开始，逐步计算绝对价格
             price_df[col] = (1 + returns_df[col]) * initial_prices[col]
+    
+    print(f"[DEBUG] convert_returns_to_price: 转换完成，输出绝对价格前3行:")
+    print(price_df[price_cols].head(3))
     
     return price_df
 
@@ -495,12 +512,16 @@ def predict():
                     y_timestamp = df.iloc[lookback:lookback+pred_len]['timestamps']
                     prediction_type = "Kronos模型预测 (最新数据)"
                 
+                print(f"[DEBUG] 步骤1: 检查并转换时间戳格式...")
                 # 确保时间戳是Series格式，不是DatetimeIndex，避免Kronos模型的.dt属性错误
                 if isinstance(x_timestamp, pd.DatetimeIndex):
+                    print(f"[DEBUG] 将x_timestamp从DatetimeIndex转换为Series")
                     x_timestamp = pd.Series(x_timestamp, name='timestamps')
                 if isinstance(y_timestamp, pd.DatetimeIndex):
+                    print(f"[DEBUG] 将y_timestamp从DatetimeIndex转换为Series")
                     y_timestamp = pd.Series(y_timestamp, name='timestamps')
                 
+                print(f"[DEBUG] 步骤2: 准备价格转换，保存初始价格...")
                 # 解决Kronos模型连续性问题：将绝对价格转换为相对变化率
                 original_x_df = x_df.copy()
                 initial_prices = {
@@ -509,10 +530,15 @@ def predict():
                     'low': x_df['low'].iloc[0],
                     'close': x_df['close'].iloc[0]
                 }
+                print(f"[DEBUG] 初始价格: {initial_prices}")
                 
+                print(f"[DEBUG] 步骤3: 将绝对价格转换为相对变化率...")
                 # 转换为相对变化率
                 x_df_returns = convert_price_to_returns(x_df, ['open', 'high', 'low', 'close'])
+                print(f"[DEBUG] 转换完成，输入数据前5行相对变化率:")
+                print(x_df_returns[['open', 'high', 'low', 'close']].head())
                 
+                print(f"[DEBUG] 步骤4: 使用转换后的数据进行Kronos模型预测...")
                 # 使用转换后的数据进行预测
                 pred_df_returns = predictor.predict(
                     df=x_df_returns,
@@ -523,15 +549,27 @@ def predict():
                     top_p=top_p,
                     sample_count=sample_count
                 )
+                print(f"[DEBUG] 预测完成，预测结果前5行相对变化率:")
+                print(pred_df_returns[['open', 'high', 'low', 'close']].head())
                 
+                print(f"[DEBUG] 步骤5: 将预测结果转换回绝对价格...")
                 # 将预测结果转换回绝对价格
                 pred_df = convert_returns_to_price(pred_df_returns, initial_prices, ['open', 'high', 'low', 'close'])
+                print(f"[DEBUG] 转换完成，预测结果前5行绝对价格:")
+                print(pred_df[['open', 'high', 'low', 'close']].head())
                 
+                print(f"[DEBUG] 步骤6: 处理volume和amount列...")
                 # 保持volume列不变（如果存在）
                 if 'volume' in pred_df.columns:
                     pred_df['volume'] = pred_df_returns['volume']
+                    print(f"[DEBUG] 已复制volume列")
                 if 'amount' in pred_df.columns:
                     pred_df['amount'] = pred_df_returns['amount']
+                    print(f"[DEBUG] 已复制amount列")
+                
+                print(f"[DEBUG] 步骤7: 检查最终预测结果...")
+                print(f"[DEBUG] 最终预测结果形状: {pred_df.shape}")
+                print(f"[DEBUG] 最终预测结果列: {list(pred_df.columns)}")
                 
             except Exception as e:
                 return jsonify({'error': f'Kronos模型预测失败: {str(e)}'}), 500
