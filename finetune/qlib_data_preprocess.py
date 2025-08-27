@@ -40,17 +40,17 @@ class QlibDataPreprocessor:
         start_index = cal.searchsorted(pd.Timestamp(self.config.dataset_begin_time))
         end_index = cal.searchsorted(pd.Timestamp(self.config.dataset_end_time))
 
-        # 检查start_index - lookback_window是否会导致负数索引
+        # Check if start_index lookbackw_window will cause negative index
         adjusted_start_index = max(start_index - self.config.lookback_window, 0)
         real_start_time = cal[adjusted_start_index]
 
-        # 检查end_index是否超出数组范围
+        # Check if end_index exceeds the range of the array
         if end_index >= len(cal):
             end_index = len(cal) - 1
         elif cal[end_index] != pd.Timestamp(self.config.dataset_end_time):
             end_index -= 1
 
-        # 检查end_index + predict_window是否会超出数组范围
+        # Check if end_index+predictw_window will exceed the range of the array
         adjusted_end_index = min(end_index + self.config.predict_window, len(cal) - 1)
         real_end_time = cal[adjusted_end_index]
 
@@ -127,3 +127,4 @@ if __name__ == '__main__':
     preprocessor.initialize_qlib()
     preprocessor.load_qlib_data()
     preprocessor.prepare_dataset()
+
