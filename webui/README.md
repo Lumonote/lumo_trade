@@ -1,135 +1,135 @@
 # Kronos Web UI
 
-Kronos金融预测模型的Web用户界面，提供直观的图形化操作界面。
+Web user interface for Kronos financial prediction model, providing intuitive graphical operation interface.
 
-## ✨ 功能特性
+## ✨ Features
 
-- **多格式数据支持**: 支持CSV、Feather等格式的金融数据
-- **智能时间窗口**: 固定400+120数据点的时间窗口滑条选择
-- **真实模型预测**: 集成真实的Kronos模型，支持多种模型大小
-- **预测质量控制**: 可调节温度、核采样、样本数量等参数
-- **多设备支持**: 支持CPU、CUDA、MPS等计算设备
-- **对比分析**: 预测结果与实际数据的详细对比
-- **K线图显示**: 专业的金融K线图表展示
+- **Multi-format data support**: Supports CSV, Feather and other financial data formats
+- **Smart time window**: Fixed 400+120 data point time window slider selection
+- **Real model prediction**: Integrated real Kronos model, supports multiple model sizes
+- **Prediction quality control**: Adjustable temperature, nucleus sampling, sample count and other parameters
+- **Multi-device support**: Supports CPU, CUDA, MPS and other computing devices
+- **Comparison analysis**: Detailed comparison between prediction results and actual data
+- **K-line chart display**: Professional financial K-line chart display
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 方法1: 使用Python脚本启动
+### Method 1: Start with Python script
 ```bash
 cd webui
 python run.py
 ```
 
-### 方法2: 使用Shell脚本启动
+### Method 2: Start with Shell script
 ```bash
 cd webui
 chmod +x start.sh
 ./start.sh
 ```
 
-### 方法3: 直接启动Flask应用
+### Method 3: Start Flask application directly
 ```bash
 cd webui
 python app.py
 ```
 
-启动成功后，访问 http://localhost:7070
+After successful startup, visit http://localhost:7070
 
-## 📋 使用步骤
+## 📋 Usage Steps
 
-1. **加载数据**: 选择data目录中的金融数据文件
-2. **加载模型**: 选择Kronos模型和计算设备
-3. **设置参数**: 调整预测质量参数
-4. **选择时间窗口**: 使用滑条选择400+120数据点的时间范围
-5. **开始预测**: 点击预测按钮生成结果
-6. **查看结果**: 在图表和表格中查看预测结果
+1. **Load data**: Select financial data file from data directory
+2. **Load model**: Select Kronos model and computing device
+3. **Set parameters**: Adjust prediction quality parameters
+4. **Select time window**: Use slider to select 400+120 data point time range
+5. **Start prediction**: Click prediction button to generate results
+6. **View results**: View prediction results in charts and tables
 
-## 🔧 预测质量参数
+## 🔧 Prediction Quality Parameters
 
-### 温度 (T)
-- **范围**: 0.1 - 2.0
-- **作用**: 控制预测的随机性
-- **建议**: 1.2-1.5 获得更好的预测质量
+### Temperature (T)
+- **Range**: 0.1 - 2.0
+- **Effect**: Controls prediction randomness
+- **Recommendation**: 1.2-1.5 for better prediction quality
 
-### 核采样 (top_p)
-- **范围**: 0.1 - 1.0
-- **作用**: 控制预测的多样性
-- **建议**: 0.95-1.0 考虑更多可能性
+### Nucleus Sampling (top_p)
+- **Range**: 0.1 - 1.0
+- **Effect**: Controls prediction diversity
+- **Recommendation**: 0.95-1.0 to consider more possibilities
 
-### 样本数量
-- **范围**: 1 - 5
-- **作用**: 生成多个预测样本
-- **建议**: 2-3 个样本提高质量
+### Sample Count
+- **Range**: 1 - 5
+- **Effect**: Generate multiple prediction samples
+- **Recommendation**: 2-3 samples to improve quality
 
-## 📊 支持的数据格式
+## 📊 Supported Data Formats
 
-### 必需列
-- `open`: 开盘价
-- `high`: 最高价
-- `low`: 最低价
-- `close`: 收盘价
+### Required Columns
+- `open`: Opening price
+- `high`: Highest price
+- `low`: Lowest price
+- `close`: Closing price
 
-### 可选列
-- `volume`: 成交量
-- `amount`: 成交额（不用于预测）
-- `timestamps`/`timestamp`/`date`: 时间戳
+### Optional Columns
+- `volume`: Trading volume
+- `amount`: Trading amount (not used for prediction)
+- `timestamps`/`timestamp`/`date`: Timestamp
 
-## 🤖 模型支持
+## 🤖 Model Support
 
-- **Kronos-mini**: 4.1M参数，轻量级快速预测
-- **Kronos-small**: 24.7M参数，平衡性能和速度
-- **Kronos-base**: 102.3M参数，高质量预测
+- **Kronos-mini**: 4.1M parameters, lightweight fast prediction
+- **Kronos-small**: 24.7M parameters, balanced performance and speed
+- **Kronos-base**: 102.3M parameters, high quality prediction
 
-## 🖥️ GPU加速支持
+## 🖥️ GPU Acceleration Support
 
-- **CPU**: 通用计算，兼容性最好
-- **CUDA**: NVIDIA GPU加速，性能最佳
-- **MPS**: Apple Silicon GPU加速，Mac用户推荐
+- **CPU**: General computing, best compatibility
+- **CUDA**: NVIDIA GPU acceleration, best performance
+- **MPS**: Apple Silicon GPU acceleration, recommended for Mac users
 
-## ⚠️ 注意事项
+## ⚠️ Notes
 
-- `amount`列不会被用于预测，仅用于显示
-- 时间窗口固定为400+120=520个数据点
-- 确保数据文件包含足够的历史数据
-- 首次加载模型可能需要下载，请耐心等待
+- `amount` column is not used for prediction, only for display
+- Time window is fixed at 400+120=520 data points
+- Ensure data file contains sufficient historical data
+- First model loading may require download, please be patient
 
-## 🔍 对比分析
+## 🔍 Comparison Analysis
 
-系统会自动提供预测结果与实际数据的对比分析，包括：
-- 价格差异统计
-- 误差分析
-- 预测质量评估
+The system automatically provides comparison analysis between prediction results and actual data, including:
+- Price difference statistics
+- Error analysis
+- Prediction quality assessment
 
-## 🛠️ 技术架构
+## 🛠️ Technical Architecture
 
-- **后端**: Flask + Python
-- **前端**: HTML + CSS + JavaScript
-- **图表**: Plotly.js
-- **数据处理**: Pandas + NumPy
-- **模型**: Hugging Face Transformers
+- **Backend**: Flask + Python
+- **Frontend**: HTML + CSS + JavaScript
+- **Charts**: Plotly.js
+- **Data processing**: Pandas + NumPy
+- **Model**: Hugging Face Transformers
 
-## 📝 故障排除
+## 📝 Troubleshooting
 
-### 常见问题
-1. **端口占用**: 修改app.py中的端口号
-2. **依赖缺失**: 运行 `pip install -r requirements.txt`
-3. **模型加载失败**: 检查网络连接和模型ID
-4. **数据格式错误**: 确保数据列名和格式正确
+### Common Issues
+1. **Port occupied**: Modify port number in app.py
+2. **Missing dependencies**: Run `pip install -r requirements.txt`
+3. **Model loading failed**: Check network connection and model ID
+4. **Data format error**: Ensure data column names and format are correct
 
-### 日志查看
-启动时会在控制台显示详细的运行信息，包括模型状态和错误信息。
+### Log Viewing
+Detailed runtime information will be displayed in the console at startup, including model status and error messages.
 
-## 📄 许可证
+## 📄 License
 
-本项目遵循原Kronos项目的许可证条款。
+This project follows the license terms of the original Kronos project.
 
-## 🤝 贡献
+## 🤝 Contributing
 
-欢迎提交Issue和Pull Request来改进这个Web UI！
+Welcome to submit Issues and Pull Requests to improve this Web UI!
 
-## 📞 支持
+## 📞 Support
 
-如有问题，请查看：
-1. 项目文档
+If you have questions, please check:
+1. Project documentation
 2. GitHub Issues
-3. 控制台错误信息
+3. Console error messages

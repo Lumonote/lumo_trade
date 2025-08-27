@@ -1,40 +1,40 @@
 #!/bin/bash
 
-# Kronos Web UI 启动脚本
+# Kronos Web UI startup script
 
-echo "🚀 启动 Kronos Web UI..."
+echo "🚀 Starting Kronos Web UI..."
 echo "================================"
 
-# 检查Python是否安装
+# Check if Python is installed
 if ! command -v python3 &> /dev/null; then
-    echo "❌ Python3 未安装，请先安装Python3"
+    echo "❌ Python3 not installed, please install Python3 first"
     exit 1
 fi
 
-# 检查是否在正确的目录
+# Check if in correct directory
 if [ ! -f "app.py" ]; then
-    echo "❌ 请在webui目录下运行此脚本"
+    echo "❌ Please run this script in the webui directory"
     exit 1
 fi
 
-# 检查依赖
-echo "📦 检查依赖..."
+# Check dependencies
+echo "📦 Checking dependencies..."
 if ! python3 -c "import flask, flask_cors, pandas, numpy, plotly" &> /dev/null; then
-    echo "⚠️  缺少依赖，正在安装..."
+    echo "⚠️  Missing dependencies, installing..."
     pip3 install -r requirements.txt
     if [ $? -ne 0 ]; then
-        echo "❌ 依赖安装失败"
+        echo "❌ Dependencies installation failed"
         exit 1
     fi
-    echo "✅ 依赖安装完成"
+    echo "✅ Dependencies installation completed"
 else
-    echo "✅ 所有依赖已安装"
+    echo "✅ All dependencies installed"
 fi
 
-# 启动应用
-echo "🌐 启动Web服务器..."
-echo "访问地址: http://localhost:7070"
-echo "按 Ctrl+C 停止服务器"
+# Start application
+echo "🌐 Starting Web server..."
+echo "Access URL: http://localhost:7070"
+echo "Press Ctrl+C to stop server"
 echo ""
 
 python3 app.py

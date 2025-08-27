@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Kronos Web UI 启动脚本
+Kronos Web UI startup script
 """
 
 import os
@@ -10,80 +10,80 @@ import webbrowser
 import time
 
 def check_dependencies():
-    """检查依赖是否安装"""
+    """Check if dependencies are installed"""
     try:
         import flask
         import flask_cors
         import pandas
         import numpy
         import plotly
-        print("✅ 所有依赖已安装")
+        print("✅ All dependencies installed")
         return True
     except ImportError as e:
-        print(f"❌ 缺少依赖: {e}")
-        print("请运行: pip install -r requirements.txt")
+        print(f"❌ Missing dependency: {e}")
+        print("Please run: pip install -r requirements.txt")
         return False
 
 def install_dependencies():
-    """安装依赖"""
-    print("正在安装依赖...")
+    """Install dependencies"""
+    print("Installing dependencies...")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-        print("✅ 依赖安装完成")
+        print("✅ Dependencies installation completed")
         return True
     except subprocess.CalledProcessError:
-        print("❌ 依赖安装失败")
+        print("❌ Dependencies installation failed")
         return False
 
 def main():
-    """主函数"""
-    print("🚀 启动 Kronos Web UI...")
+    """Main function"""
+    print("🚀 Starting Kronos Web UI...")
     print("=" * 50)
     
-    # 检查依赖
+    # Check dependencies
     if not check_dependencies():
-        print("\n是否自动安装依赖? (y/n): ", end="")
+        print("\nAuto-install dependencies? (y/n): ", end="")
         if input().lower() == 'y':
             if not install_dependencies():
                 return
         else:
-            print("请手动安装依赖后重试")
+            print("Please manually install dependencies and retry")
             return
     
-    # 检查模型可用性
+    # Check model availability
     try:
         sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from model import Kronos, KronosTokenizer, KronosPredictor
-        print("✅ Kronos模型库可用")
+        print("✅ Kronos model library available")
         model_available = True
     except ImportError:
-        print("⚠️  Kronos模型库不可用，将使用模拟预测")
+        print("⚠️  Kronos model library not available, will use simulated prediction")
         model_available = False
     
-    # 启动Flask应用
-    print("\n🌐 启动Web服务器...")
+    # Start Flask application
+    print("\n🌐 Starting Web server...")
     
-    # 设置环境变量
+    # Set environment variables
     os.environ['FLASK_APP'] = 'app.py'
     os.environ['FLASK_ENV'] = 'development'
     
-    # 启动服务器
+    # Start server
     try:
         from app import app
-        print("✅ Web服务器启动成功!")
-        print(f"🌐 访问地址: http://localhost:7070")
-        print("💡 提示: 按 Ctrl+C 停止服务器")
+        print("✅ Web server started successfully!")
+        print(f"🌐 Access URL: http://localhost:7070")
+        print("💡 Tip: Press Ctrl+C to stop server")
         
-        # 自动打开浏览器
+        # Auto-open browser
         time.sleep(2)
         webbrowser.open('http://localhost:7070')
         
-        # 启动Flask应用
+        # Start Flask application
         app.run(debug=True, host='0.0.0.0', port=7070)
         
     except Exception as e:
-        print(f"❌ 启动失败: {e}")
-        print("请检查端口7070是否被占用")
+        print(f"❌ Startup failed: {e}")
+        print("Please check if port 7070 is occupied")
 
 if __name__ == "__main__":
     main()
