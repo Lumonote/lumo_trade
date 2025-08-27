@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kronos Financial Prediction Web UI</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .control-panel {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            height: fit-content;
+        }
+
+        .control-panel h2 {
+            color: #4a5568;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        .form-group select,
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-group select:focus,
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        /* Prediction quality parameter styles */
+        .form-group input[type="range"] {
+            width: 70%;
+            margin-right: 10px;
+        }
+
+        .form-group input[type="number"] {
+            width: 100%;
+        }
+
+        .form-group span {
+            display: inline-block;
+            min-width: 40px;
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .form-text {
+            font-size: 12px;
+            color: #718096;
+            margin-top: 5px;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #718096 0%, #4a5568 100%);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, #ed8936 0%, #dd6b20 100%);
+        }
+
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+
+        .status.success {
+            background: #c6f6d5;
+            color: #22543d;
+            border: 1px solid #9ae6b4;
+        }
+
+        .status.error {
+            background: #fed7d7;
+            color: #742a2a;
+            border: 1px solid #feb2b2;
+        }
+
+        .status.info {
+            background: #bee3f8;
+            color: #2a4365;
+            border: 1px solid #90cdf4;
+        }
+
+        .status.warning {
+            background: #fef5e7;
+            color: #744210;
+            border: 1px solid #fbd38d;
+        }
+
+        .chart-container {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .chart-container h2 {
+            color: #4a5568;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 10px;
+        }
+
+        #chart {
+            width: 100%;
+            height: 600px;
+        }
+
+        .data-info {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .data-info h3 {
+            color: #4a5568;
+            margin-bottom: 10px;
+            font-size: 1.1rem;
+        }
+
+        .data-info p {
+            margin-bottom: 5px;
+            color: #4a5568;
+        }
+
+        .data-info strong {
+            color: #2d3748;
+        }
+
+        /* Time window selector styles */
+        .time-window-container {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .time-window-container h3 {
+            color: #4a5568;
+            margin-bottom: 15px;
+            font-size: 1.1rem;
+        }
+
+        .time-window-info {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .time-window-slider {
+            position: relative;
+            margin-bottom: 10px;
+        }
+
+        .slider-track {
+            position: relative;
+            height: 6px;
+            background: #e2e8f0;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        .slider-handle {
+            position: absolute;
+            top: -7px;
+            width: 20px;
+            height: 20px;
+            background: #667eea;
+            border-radius: 50%;
+            cursor: grab;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            z-index: 10;
+        }
+
+        .slider-handle:hover {
+            background: #5a67d8;
+            transform: scale(1.1);
+        }
+
+        .slider-handle:active {
+            cursor: grabbing;
+        }
+
+        .slider-selection {
+            position: absolute;
+            height: 6px;
+            background: #48bb78;
+            border-radius: 3px;
+            top: 0;
+        }
+
+        .slider-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        /* Comparison analysis styles */
+        .comparison-section {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .comparison-section h3 {
+            color: #4a5568;
+            margin-bottom: 15px;
+            font-size: 1.1rem;
+        }
+
+        .comparison-info {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        .comparison-table th,
+        .comparison-table td {
+            border: 1px solid #e2e8f0;
+            padding: 8px;
+            text-align: center;
+            font-size: 12px;
+        }
+
+        .comparison-table th {
+            background: #f7fafc;
+            font-weight: 600;
+        }
+
+        .error-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .error-stat {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .error-stat h4 {
+            color: #4a5568;
+            margin-bottom: 5px;
+            font-size: 0.9rem;
+        }
+
+        .error-stat .value {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .error-stat .unit {
+            font-size: 0.8rem;
+            color: #718096;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .model-info {
+            background: #e6fffa;
+            border: 1px solid #81e6d9;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .model-info h3 {
+            color: #234e52;
+            margin-bottom: 10px;
+            font-size: 1.1rem;
+        }
+
+        .model-info p {
+            margin-bottom: 5px;
+            color: #234e52;
+        }
+
+        .model-info strong {
+            color: #0f2027;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            
+            .container {
+                padding: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Kronos Financial Prediction Web UI</h1>
+            <p>AI-based financial K-line data prediction analysis platform</p>
+        </div>
+
+        <div class="main-content">
+            <div class="control-panel">
+                <h2>🎯 Control Panel</h2>
+
+                <!-- Model Selection -->
+                <div class="form-group">
+                    <label for="model-select">Select Model:</label>
+                    <select id="model-select">
+                        <option value="">Please load available models first</option>
+                    </select>
+                    <small class="form-text">Select the Kronos model to use</small>
+                </div>
+
+                <!-- Device Selection -->
+                <div class="form-group">
+                    <label for="device-select">Select Device:</label>
+                    <select id="device-select">
+                        <option value="cpu">CPU</option>
+                        <option value="cuda">CUDA (NVIDIA GPU)</option>
+                        <option value="mps">MPS (Apple Silicon)</option>
+                    </select>
+                    <small class="form-text">Select the device to run the model on</small>
+                </div>
+
+                <!-- Model Status -->
+                <div id="model-status" class="status info" style="display: none;">
+                    Model status information
+                </div>
+
+                <!-- Load Model Button -->
+                <button id="load-model-btn" class="btn btn-secondary">
+                    🔄 Load Model
+                </button>
+
+                <hr style="margin: 20px 0; border: 1px solid #e2e8f0;">
+
+                <!-- Data File Selection -->
+                <div class="form-group">
+                    <label for="data-file-select">Select Data File:</label>
+                    <select id="data-file-select">
+                        <option value="">Please load data file list first</option>
+                    </select>
+                    <small class="form-text">Select K-line data file from data directory</small>
+                </div>
+
+                <button id="load-data-btn" class="btn btn-secondary">
+                    📁 Load Data
+                </button>
+
+                <!-- Data Information Display -->
+                <div id="data-info" class="data-info" style="display: none;">
+                    <h3>📊 Data Information</h3>
+                    <p><strong>Rows:</strong> <span id="data-rows">-</span></p>
+                    <p><strong>Columns:</strong> <span id="data-cols">-</span></p>
+                    <p><strong>Time Range:</strong> <span id="data-time-range">-</span></p>
+                    <p><strong>Price Range:</strong> <span id="data-price-range">-</span></p>
+                    <p><strong>Time Frequency:</strong> <span id="data-timeframe">-</span></p>
+                    <p><strong>Prediction Columns:</strong> <span id="data-prediction-cols">-</span></p>
+                </div>
+
+                <hr style="margin: 20px 0; border: 1px solid #e2e8f0;">
+
+                <!-- Time Window Selector -->
+                <div class="time-window-container">
+                    <h3>⏰ Time Window Selection</h3>
+                    <div class="time-window-info">
+                        <span id="window-start">Start: --</span>
+                        <span id="window-end">End: --</span>
+                        <span id="window-size">Window Size: 400+120=520 data points</span>
+                    </div>
+                    
+                    <div class="time-window-slider">
+                        <div class="slider-track">
+                            <div class="slider-handle start-handle" id="start-handle"></div>
+                            <div class="slider-selection" id="slider-selection"></div>
+                            <div class="slider-handle end-handle" id="end-handle"></div>
+                        </div>
+                        <div class="slider-labels">
+                            <span id="min-label">Earliest</span>
+                            <span id="max-label">Latest</span>
+                        </div>
+                    </div>
+                    
+                    <small class="form-text">Drag slider to select time window position for 520 data points, green area represents fixed 400+120 data point range</small>
+                </div>
+
+                <!-- Prediction Parameters -->
+                <div class="form-group">
+                    <label for="lookback">Lookback Window Size:</label>
+                    <input type="number" id="lookback" value="400" readonly>
+                    <small class="form-text">Fixed at 400 data points</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="pred-len">Prediction Length:</label>
+                    <input type="number" id="pred-len" value="120" readonly>
+                    <small class="form-text">Fixed at 120 data points</small>
+                </div>
+
+                <!-- Prediction Quality Parameters -->
+                <div class="form-group">
+                    <label for="temperature">Prediction Temperature (T):</label>
+                    <input type="range" id="temperature" value="1.0" min="0.1" max="2.0" step="0.1">
+                    <span id="temperature-value">1.0</span>
+                    <small class="form-text">Controls prediction randomness, higher values make predictions more diverse, lower values make predictions more conservative</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="top-p">Nucleus Sampling Parameter (top_p):</label>
+                    <input type="range" id="top-p" value="0.9" min="0.1" max="1.0" step="0.1">
+                    <span id="top-p-value">0.9</span>
+                    <small class="form-text">Controls prediction diversity, higher values consider broader probability distributions</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="sample-count">Sample Count:</label>
+                    <input type="number" id="sample-count" value="1" min="1" max="5" step="1">
+                    <small class="form-text">Generate multiple prediction samples to improve quality (recommended 1-3)</small>
+                </div>
+
+                <button id="predict-btn" class="btn btn-success" disabled>
+                    🔮 Start Prediction
+                </button>
+
+                <!-- Loading Status -->
+                <div id="loading" class="loading">
+                    <div class="spinner"></div>
+                    <p>Processing, please wait...</p>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <h2>📈 Prediction Results Chart</h2>
+                <div id="chart"></div>
+                
+                <!-- Comparison Analysis -->
+                <div id="comparison-section" class="comparison-section" style="display: none;">
+                    <h3>📊 Prediction vs Actual Data Comparison</h3>
+                    <div id="comparison-info" class="comparison-info">
+                        <p><strong>Prediction Type:</strong> <span id="prediction-type">-</span></p>
+                        <p><strong>Comparison Data:</strong> <span id="comparison-data">-</span></p>
+                    </div>
+                    
+                    <div class="error-stats">
+                        <div class="error-stat">
+                            <h4>Mean Absolute Error</h4>
+                            <div class="value" id="mae">-</div>
+                            <div class="unit">Price Units</div>
+                        </div>
+                        <div class="error-stat">
+                            <h4>Root Mean Square Error</h4>
+                            <div class="value" id="rmse">-</div>
+                            <div class="unit">Price Units</div>
+                        </div>
+                        <div class="error-stat">
+                            <h4>Mean Absolute Percentage Error</h4>
+                            <div class="value" id="mape">-</div>
+                            <div class="unit">%</div>
+                        </div>
+                    </div>
+                    
+                    <div class="error-details">
+                        <h4>Detailed Comparison Data:</h4>
+                        <div style="max-height: 300px; overflow-y: auto;">
+                            <table class="comparison-table">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Actual Open</th>
+                                        <th>Predicted Open</th>
+                                        <th>Actual High</th>
+                                        <th>Predicted High</th>
+                                        <th>Actual Low</th>
+                                        <th>Predicted Low</th>
+                                        <th>Actual Close</th>
+                                        <th>Predicted Close</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="comparison-tbody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let currentDataFile = null;
+        let currentDataInfo = null;
+        let availableModels = [];
+        let modelLoaded = false;
+
+        // Initialize after page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeApp();
+        });
+
+        // Initialize application
+        async function initializeApp() {
+            console.log('🚀 Initializing Kronos Web UI...');
+            
+            // Load available models
+            await loadAvailableModels();
+            
+            // Load data file list
+            await loadDataFiles();
+            
+            // Set up event listeners
+            setupEventListeners();
+            
+            // Initialize time slider
+            initializeTimeSlider();
+            
+            console.log('✅ Application initialization completed');
+        }
+
+        // Load available models
+        async function loadAvailableModels() {
+            try {
+                const response = await axios.get('/api/available-models');
+                if (response.data.model_available) {
+                    availableModels = response.data.models;
+                    populateModelSelect();
+                    console.log('✅ Available models loaded successfully:', availableModels);
+                } else {
+                    console.warn('⚠️ Kronos model library not available');
+                    showStatus('warning', 'Kronos model library not available, will use simulated prediction');
+                }
+            } catch (error) {
+                console.error('❌ Failed to load available models:', error);
+                showStatus('error', 'Failed to load available models');
+            }
+        }
+
+        // Populate model selection dropdown
+        function populateModelSelect() {
+            const modelSelect = document.getElementById('model-select');
+            modelSelect.innerHTML = '<option value="">Please select model</option>';
+            
+            Object.entries(availableModels).forEach(([key, model]) => {
+                const option = document.createElement('option');
+                option.value = key;
+                option.textContent = `${model.name} (${model.params}) - ${model.description}`;
+                modelSelect.appendChild(option);
+            });
+        }
+
+        // Load model
+        async function loadModel() {
+            const modelKey = document.getElementById('model-select').value;
+            const device = document.getElementById('device-select').value;
+            
+            if (!modelKey) {
+                showStatus('error', 'Please select a model to load');
+                return;
+            }
+            
+            try {
+                showLoading(true);
+                document.getElementById('load-model-btn').disabled = true;
+                
+                const response = await axios.post('/api/load-model', {
+                    model_key: modelKey,
+                    device: device
+                });
+                
+                if (response.data.success) {
+                    modelLoaded = true;
+                    showStatus('success', response.data.message);
+                    updateModelStatus();
+                    document.getElementById('predict-btn').disabled = false;
+                    console.log('✅ Model loaded successfully:', response.data.model_info);
+                } else {
+                    showStatus('error', response.data.error);
+                }
+            } catch (error) {
+                console.error('❌ Model loading failed:', error);
+                showStatus('error', `Model loading failed: ${error.response?.data?.error || error.message}`);
+            } finally {
+                showLoading(false);
+                document.getElementById('load-model-btn').disabled = false;
+            }
+        }
+
+        // Update model status
+        async function updateModelStatus() {
+            try {
+                const response = await axios.get('/api/model-status');
+                const status = response.data;
+                
+                if (status.loaded) {
+                    showStatus('success', `Model loaded: ${status.current_model.name} on ${status.current_model.device}`);
+                } else if (status.available) {
+                    showStatus('info', 'Model available but not loaded');
+                } else {
+                    showStatus('warning', 'Model library not available');
+                }
+            } catch (error) {
+                console.error('❌ Failed to get model status:', error);
+            }
+        }
+
+        // Load data file list
+        async function loadDataFiles() {
+            try {
+                const response = await axios.get('/api/data-files');
+                const dataFiles = response.data;
+                
+                const dataFileSelect = document.getElementById('data-file-select');
+                dataFileSelect.innerHTML = '<option value="">Please select data file</option>';
+                
+                dataFiles.forEach(file => {
+                    const option = document.createElement('option');
+                    option.value = file.path;
+                    option.textContent = `${file.name} (${file.size})`;
+                    dataFileSelect.appendChild(option);
+                });
+                
+                console.log('✅ Data file list loaded successfully:', dataFiles);
+            } catch (error) {
+                console.error('❌ Failed to load data file list:', error);
+                showStatus('error', 'Failed to load data file list');
+            }
+        }
+
+        // Load data file
+        async function loadData() {
+            const filePath = document.getElementById('data-file-select').value;
+            
+            if (!filePath) {
+                showStatus('error', 'Please select a data file to load');
+                return;
+            }
+            
+            try {
+                showLoading(true);
+                document.getElementById('load-data-btn').disabled = true;
+                
+                const response = await axios.post('/api/load-data', {
+                    file_path: filePath
+                });
+                
+                if (response.data.success) {
+                    currentDataFile = filePath;
+                    currentDataInfo = response.data.data_info;
+                    showDataInfo(response.data.data_info);
+                    showStatus('success', response.data.message);
+                    
+                    // Update prediction button status
+                    if (modelLoaded) {
+                        document.getElementById('predict-btn').disabled = false;
+                    }
+                    
+                    console.log('✅ Data loaded successfully:', response.data.data_info);
+                } else {
+                    showStatus('error', response.data.error);
+                }
+            } catch (error) {
+                console.error('❌ Data loading failed:', error);
+                showStatus('error', `Data loading failed: ${error.response?.data?.error || error.message}`);
+            } finally {
+                showLoading(false);
+                document.getElementById('load-data-btn').disabled = false;
+            }
+        }
+
+        // Display data information
+        function showDataInfo(dataInfo) {
+            document.getElementById('data-info').style.display = 'block';
+            document.getElementById('data-rows').textContent = dataInfo.rows;
+            document.getElementById('data-cols').textContent = dataInfo.columns.length;
+            document.getElementById('data-time-range').textContent = `${dataInfo.start_date} to ${dataInfo.end_date}`;
+            document.getElementById('data-price-range').textContent = `${dataInfo.price_range.min.toFixed(4)} - ${dataInfo.price_range.max.toFixed(4)}`;
+            document.getElementById('data-timeframe').textContent = dataInfo.timeframe;
+            document.getElementById('data-prediction-cols').textContent = dataInfo.prediction_columns.join(', ');
+            
+            // Initialize time window slider
+            initializeTimeWindowSlider(dataInfo);
+        }
+
+                    // Time window slider related variables
+        let sliderData = null;
+        let isDragging = false;
+        let currentHandle = null;
+
+        // Initialize time window slider
+        function initializeTimeSlider() {
+            // Set up slider event listeners
+            setupSliderEventListeners();
+        }
+
+        // Set up slider event listeners
+        function setupSliderEventListeners() {
+            const startHandle = document.getElementById('start-handle');
+            const endHandle = document.getElementById('end-handle');
+            const track = document.querySelector('.slider-track');
+            
+            // Start dragging
+            startHandle.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                currentHandle = 'start';
+                e.preventDefault();
+            });
+            
+            endHandle.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                currentHandle = 'end';
+                e.preventDefault();
+            });
+            
+            // Dragging
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                
+                const rect = track.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const percentage = Math.max(0, Math.min(1, x / rect.width));
+                
+                if (currentHandle === 'start') {
+                    updateStartHandle(percentage);
+                } else if (currentHandle === 'end') {
+                    updateEndHandle(percentage);
+                }
+                
+                updateSliderFromHandles();
+            });
+            
+            // End dragging
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+                currentHandle = null;
+            });
+            
+            // Click track to set position directly
+            track.addEventListener('click', (e) => {
+                const rect = track.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const percentage = Math.max(0, Math.min(1, x / rect.width));
+                
+                // Determine which handle is closer to the click position
+                const startHandle = document.getElementById('start-handle');
+                const endHandle = document.getElementById('end-handle');
+                const startRect = startHandle.getBoundingClientRect();
+                const endRect = endHandle.getBoundingClientRect();
+                
+                if (Math.abs(x - (startRect.left - rect.left)) < Math.abs(x - (endRect.left - rect.left))) {
+                    updateStartHandle(percentage);
+                } else {
+                    updateEndHandle(percentage);
+                }
+                
+                updateSliderFromHandles();
+            });
+        }
+
+        // Update start handle position
+        function updateStartHandle(percentage) {
+            const startHandle = document.getElementById('start-handle');
+            const selection = document.getElementById('slider-selection');
+            
+            // Fixed window size of 520 data points
+            const windowSize = 520;
+            const totalRows = sliderData ? sliderData.totalRows : 1000;
+            const windowPercentage = windowSize / totalRows;
+            
+            // Ensure start handle doesn't cause window to exceed data range
+            if (percentage + windowPercentage > 1) {
+                percentage = 1 - windowPercentage;
+            }
+            
+            startHandle.style.left = (percentage * 100) + '%';
+            selection.style.left = (percentage * 100) + '%';
+            selection.style.width = (windowPercentage * 100) + '%';
+            
+            // Automatically adjust end handle position to maintain fixed window size
+            const endHandle = document.getElementById('end-handle');
+            endHandle.style.left = ((percentage + windowPercentage) * 100) + '%';
+        }
+
+        // Update end handle position
+        function updateEndHandle(percentage) {
+            const endHandle = document.getElementById('end-handle');
+            const selection = document.getElementById('slider-selection');
+            
+            // Fixed window size of 520 data points
+            const windowSize = 520;
+            const totalRows = sliderData ? sliderData.totalRows : 1000;
+            const windowPercentage = windowSize / totalRows;
+            
+            // Ensure end handle doesn't cause window to exceed data range
+            if (percentage - windowPercentage < 0) {
+                percentage = windowPercentage;
+            }
+            
+            endHandle.style.left = (percentage * 100) + '%';
+            selection.style.left = ((percentage - windowPercentage) * 100) + '%';
+            selection.style.width = (windowPercentage * 100) + '%';
+            
+            // Automatically adjust start handle position to maintain fixed window size
+            const startHandle = document.getElementById('start-handle');
+            startHandle.style.left = ((percentage - windowPercentage) * 100) + '%';
+        }
+
+        // Update slider display based on handle positions
+        function updateSliderFromHandles() {
+            const startHandle = document.getElementById('start-handle');
+            const endHandle = document.getElementById('end-handle');
+            
+            const startPercentage = parseFloat(startHandle.style.left) / 100;
+            const endPercentage = parseFloat(endHandle.style.left) / 100;
+            
+            if (!sliderData) return;
+            
+            // Calculate selected time range
+            const totalTime = sliderData.endDate.getTime() - sliderData.startDate.getTime();
+            const startTime = sliderData.startDate.getTime() + (totalTime * startPercentage);
+            const endTime = sliderData.startDate.getTime() + (totalTime * endPercentage);
+            
+            const startDate = new Date(startTime);
+            const endDate = new Date(endTime);
+            
+            // Update display information
+            document.getElementById('window-start').textContent = `Start: ${startDate.toLocaleDateString()}`;
+            document.getElementById('window-end').textContent = `End: ${endDate.toLocaleDateString()}`;
+            
+            // Display fixed window size
+            document.getElementById('window-size').textContent = `Window Size: 400 + 120 = 520 data points (fixed)`;
+            
+            // Input field values remain fixed
+            document.getElementById('lookback').value = 400;
+            document.getElementById('pred-len').value = 120;
+        }
+
+        // Update slider based on input fields
+        function updateSliderFromInputs() {
+            if (!sliderData) return;
+            
+            // Fixed window size: 400 + 120 = 520 data points
+            const lookback = 400;
+            const predLen = 120;
+            const windowSize = lookback + predLen; // Fixed at 520
+            
+            // Calculate slider position
+            const totalRows = sliderData.totalRows;
+            
+            if (windowSize > totalRows) {
+                // If window size exceeds total data amount, show error
+                showStatus('error', `Insufficient data, need at least ${windowSize} data points, currently only ${totalRows} available`);
+                return;
+            }
+            
+            // Calculate slider position (default select first half of data)
+            const startPercentage = 0.1; // Start from 10%
+            const endPercentage = startPercentage + (windowSize / totalRows);
+            
+            // Update handle positions
+            updateStartHandle(startPercentage);
+            updateEndHandle(endPercentage);
+            
+            // Update display information
+            updateSliderFromHandles();
+        }
+
+        // Initialize time window slider
+        function initializeTimeWindowSlider(dataInfo) {
+            sliderData = {
+                startDate: new Date(dataInfo.start_date),
+                endDate: new Date(dataInfo.end_date),
+                totalRows: dataInfo.rows,
+                timeframe: dataInfo.timeframe
+            };
+            
+            // Set slider labels
+            document.getElementById('min-label').textContent = dataInfo.start_date.split('T')[0];
+            document.getElementById('max-label').textContent = dataInfo.end_date.split('T')[0];
+            
+            // Initialize slider position
+            updateSliderFromInputs();
+        }
+
+        // Start prediction
+        async function startPrediction() {
+            if (!currentDataFile) {
+                showStatus('error', 'Please load data file first');
+                return;
+            }
+            
+            if (!modelLoaded) {
+                showStatus('error', 'Please load model first');
+                return;
+            }
+            
+            try {
+                showLoading(true);
+                document.getElementById('predict-btn').disabled = true;
+                
+                const lookback = parseInt(document.getElementById('lookback').value);
+                const predLen = parseInt(document.getElementById('pred-len').value);
+                
+                // Get selected time range from time window slider
+                const startHandle = document.getElementById('start-handle');
+                const startPercentage = parseFloat(startHandle.style.left) / 100;
+                
+                if (!sliderData) {
+                    showStatus('error', 'Time window slider not initialized');
+                    return;
+                }
+                
+                // Calculate selected time range
+                const totalTime = sliderData.endDate.getTime() - sliderData.startDate.getTime();
+                const startTime = sliderData.startDate.getTime() + (totalTime * startPercentage);
+                const startDate = new Date(startTime);
+                
+                // Get prediction quality parameters
+                const temperature = parseFloat(document.getElementById('temperature').value);
+                const topP = parseFloat(document.getElementById('top-p').value);
+                const sampleCount = parseInt(document.getElementById('sample-count').value);
+                
+                let predictionParams = {
+                    file_path: currentDataFile,
+                    lookback: lookback,
+                    pred_len: predLen,
+                    start_date: startDate.toISOString().slice(0, 16), // Format as YYYY-MM-DDTHH:MM
+                    temperature: temperature,
+                    top_p: topP,
+                    sample_count: sampleCount
+                };
+                
+                console.log('🚀 Starting prediction, parameters:', predictionParams);
+                
+                const response = await axios.post('/api/predict', predictionParams);
+                
+                if (response.data.success) {
+                    // Display prediction results
+                    displayPredictionResult(response.data);
+                    showStatus('success', response.data.message);
+                } else {
+                    showStatus('error', response.data.error);
+                }
+            } catch (error) {
+                console.error('❌ Prediction failed:', error);
+                showStatus('error', `Prediction failed: ${error.response?.data?.error || error.message}`);
+            } finally {
+                showLoading(false);
+                document.getElementById('predict-btn').disabled = false;
+            }
+        }
+
+        // Display prediction results
+        function displayPredictionResult(result) {
+            // Display chart
+            const chartData = JSON.parse(result.chart);
+            Plotly.newPlot('chart', chartData.data, chartData.layout);
+            
+            // Display comparison analysis (if actual data exists)
+            if (result.has_comparison) {
+                displayComparisonAnalysis(result);
+            } else {
+                document.getElementById('comparison-section').style.display = 'none';
+            }
+        }
+
+        // Display comparison analysis
+        function displayComparisonAnalysis(result) {
+            document.getElementById('comparison-section').style.display = 'block';
+            
+            // Update comparison information
+            document.getElementById('prediction-type').textContent = result.prediction_type;
+            document.getElementById('comparison-data').textContent = `${result.actual_data.length} actual data points`;
+            
+            // Calculate error statistics
+            const errorStats = getPredictionQuality(result.prediction_results, result.actual_data);
+            
+            // Display error statistics
+            document.getElementById('mae').textContent = errorStats.mae.toFixed(4);
+            document.getElementById('rmse').textContent = errorStats.rmse.toFixed(4);
+            document.getElementById('mape').textContent = errorStats.mape.toFixed(2);
+            
+            // Fill comparison table
+            fillComparisonTable(result.prediction_results, result.actual_data);
+        }
+
+        // Calculate prediction quality metrics
+        function getPredictionQuality(predictions, actuals) {
+            if (!predictions || !actuals || predictions.length === 0 || actuals.length === 0) {
+                return { mae: 0, rmse: 0, mape: 0 };
+            }
+            
+            const minLen = Math.min(predictions.length, actuals.length);
+            let mae = 0, rmse = 0, mape = 0;
+            
+            for (let i = 0; i < minLen; i++) {
+                const pred = predictions[i];
+                const act = actuals[i];
+                
+                // Use closing price to calculate errors
+                const error = Math.abs(pred.close - act.close);
+                const percentError = (error / act.close) * 100;
+                
+                mae += error;
+                rmse += error * error;
+                mape += percentError;
+            }
+            
+            mae /= minLen;
+            rmse = Math.sqrt(rmse / minLen);
+            mape /= minLen;
+            
+            return { mae, rmse, mape };
+        }
+
+                    // Fill comparison table
+        function fillComparisonTable(predictions, actuals) {
+            const tbody = document.getElementById('comparison-tbody');
+            tbody.innerHTML = '';
+            
+            const minLen = Math.min(predictions.length, actuals.length);
+            
+            for (let i = 0; i < minLen; i++) {
+                const pred = predictions[i];
+                const act = actuals[i];
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${new Date(pred.timestamp).toLocaleString()}</td>
+                    <td>${act.open.toFixed(4)}</td>
+                    <td>${pred.open.toFixed(4)}</td>
+                    <td>${act.high.toFixed(4)}</td>
+                    <td>${pred.high.toFixed(4)}</td>
+                    <td>${act.low.toFixed(4)}</td>
+                    <td>${pred.low.toFixed(4)}</td>
+                    <td>${act.close.toFixed(4)}</td>
+                    <td>${pred.close.toFixed(4)}</td>
+                `;
+                tbody.appendChild(row);
+            }
+        }
+
+        // Set up event listeners
+        function setupEventListeners() {
+            // Load model button
+            document.getElementById('load-model-btn').addEventListener('click', loadModel);
+            
+            // Load data button
+            document.getElementById('load-data-btn').addEventListener('click', loadData);
+            
+            // Prediction button
+            document.getElementById('predict-btn').addEventListener('click', startPrediction);
+            
+            // Prediction quality parameter sliders
+            document.getElementById('temperature').addEventListener('input', function() {
+                document.getElementById('temperature-value').textContent = this.value;
+            });
+            
+            document.getElementById('top-p').addEventListener('input', function() {
+                document.getElementById('top-p-value').textContent = this.value;
+            });
+            
+            // Update slider when lookback window size changes
+            document.getElementById('lookback').addEventListener('input', updateSliderFromInputs);
+            document.getElementById('pred-len').addEventListener('input', updateSliderFromInputs);
+        }
+
+        // Display status information
+        function showStatus(type, message) {
+            const statusDiv = document.getElementById('model-status');
+            statusDiv.className = `status ${type}`;
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+            
+            // Auto-hide
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        // Show/hide loading status
+        function showLoading(show) {
+            const loadingDiv = document.getElementById('loading');
+            if (show) {
+                loadingDiv.classList.add('show');
+            } else {
+                loadingDiv.classList.remove('show');
+            }
+        }
+    </script>
+</body>
+</html>
