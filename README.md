@@ -154,6 +154,40 @@ print(pred_df.head())
 
 The `predict` method returns a pandas DataFrame containing the forecasted values for `open`, `high`, `low`, `close`, `volume`, and `amount`, indexed by the `y_timestamp` you provided.
 
+For efficient processing of multiple time series, Kronos provides a `predict_batch` method that enables parallel prediction on multiple datasets simultaneously. This is particularly useful when you need to forecast multiple assets or time periods at once.
+
+```python
+# Prepare multiple datasets for batch prediction
+df_list = [df1, df2, df3]  # List of DataFrames
+x_timestamp_list = [x_ts1, x_ts2, x_ts3]  # List of historical timestamps
+y_timestamp_list = [y_ts1, y_ts2, y_ts3]  # List of future timestamps
+
+# Generate batch predictions
+pred_df_list = predictor.predict_batch(
+    df_list=df_list,
+    x_timestamp_list=x_timestamp_list,
+    y_timestamp_list=y_timestamp_list,
+    pred_len=pred_len,
+    T=1.0,
+    top_p=0.9,
+    sample_count=1,
+    verbose=True
+)
+
+# pred_df_list contains prediction results in the same order as input
+for i, pred_df in enumerate(pred_df_list):
+    print(f"Predictions for series {i}:")
+    print(pred_df.head())
+```
+
+**Important Requirements for Batch Prediction:**
+- All series must have the same historical length (lookback window)
+- All series must have the same prediction length (`pred_len`)
+- Each DataFrame must contain the required columns: `['open', 'high', 'low', 'close']`
+- `volume` and `amount` columns are optional and will be filled with zeros if missing
+
+The `predict_batch` method leverages GPU parallelism for efficient processing and automatically handles normalization and denormalization for each series independently.
+
 #### 5. Example and Visualization
 
 For a complete, runnable script that includes data loading, prediction, and plotting, please see [`examples/prediction_example.py`](examples/prediction_example.py).
