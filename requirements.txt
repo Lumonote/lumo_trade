@@ -7,3 +7,4 @@ huggingface_hub==0.33.1
 matplotlib==3.9.3
 pandas==2.2.2
 tqdm==4.67.1
+safetensors==0.6.2
