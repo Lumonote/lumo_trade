@@ -147,7 +147,8 @@ class QlibBacktest:
         # --- Analysis and Reporting ---
         analysis = {
             "excess_return_without_cost": risk_analysis(report["return"] - report["bench"], freq=analysis_freq),
-            "excess_return_with_cost": risk_analysis(report["return"] - report["bench"] - report["cost"], freq=analysis_freq),
+            "excess_return_with_cost": risk_analysis(report["return"] - report["bench"] - report["cost"],
+                                                     freq=analysis_freq),
         }
         print("\n--- Backtest Analysis ---")
         print("Benchmark Return:", risk_analysis(report["bench"], freq=analysis_freq), sep='\n')

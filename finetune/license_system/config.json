@@ -1,0 +1,23 @@
+{
+  "product_name": "KRONOS",
+  "version": "1.0",
+  "license_format": "KRONOS-{segment1}-{segment2}-{segment3}-{checksum}",
+  "rsa_key_size": 2048,
+  "description": "Kronos金融预测系统授权配置",
+  "license_types": {
+    "PERMANENT": {
+      "name": "永久授权",
+      "description": "一次激活，永久使用",
+      "features": [
+        "prediction",
+        "batch_prediction",
+        "web_interface",
+        "export_results"
+      ]
+    }
+  },
+  "validation_settings": {
+    "device_consistency_threshold": 0.75,
+    "max_hardware_changes": 1
+  }
+}

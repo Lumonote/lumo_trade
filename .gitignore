@@ -8,6 +8,10 @@ build/
 develop-eggs/
 dist/
 downloads/
+results/
+models/
+packaging/builds/
+data/
 eggs/
 .eggs/
 lib/
@@ -20,7 +24,8 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
+AGENTS.md
+CLAUDE.md
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -29,6 +34,8 @@ MANIFEST
 
 # VS Code
 .vscode/
+
+.trae/
 
 # macOS
 .DS_Store

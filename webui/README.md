@@ -15,12 +15,14 @@ Web user interface for Kronos financial prediction model, providing intuitive gr
 ## 🚀 Quick Start
 
 ### Method 1: Start with Python script
+
 ```bash
 cd webui
 python run.py
 ```
 
 ### Method 2: Start with Shell script
+
 ```bash
 cd webui
 chmod +x start.sh
@@ -28,6 +30,7 @@ chmod +x start.sh
 ```
 
 ### Method 3: Start Flask application directly
+
 ```bash
 cd webui
 python app.py
@@ -47,16 +50,19 @@ After successful startup, visit http://localhost:7070
 ## 🔧 Prediction Quality Parameters
 
 ### Temperature (T)
+
 - **Range**: 0.1 - 2.0
 - **Effect**: Controls prediction randomness
 - **Recommendation**: 1.2-1.5 for better prediction quality
 
 ### Nucleus Sampling (top_p)
+
 - **Range**: 0.1 - 1.0
 - **Effect**: Controls prediction diversity
 - **Recommendation**: 0.95-1.0 to consider more possibilities
 
 ### Sample Count
+
 - **Range**: 1 - 5
 - **Effect**: Generate multiple prediction samples
 - **Recommendation**: 2-3 samples to improve quality
@@ -64,12 +70,14 @@ After successful startup, visit http://localhost:7070
 ## 📊 Supported Data Formats
 
 ### Required Columns
+
 - `open`: Opening price
 - `high`: Highest price
 - `low`: Lowest price
 - `close`: Closing price
 
 ### Optional Columns
+
 - `volume`: Trading volume
 - `amount`: Trading amount (not used for prediction)
 - `timestamps`/`timestamp`/`date`: Timestamp
@@ -96,6 +104,7 @@ After successful startup, visit http://localhost:7070
 ## 🔍 Comparison Analysis
 
 The system automatically provides comparison analysis between prediction results and actual data, including:
+
 - Price difference statistics
 - Error analysis
 - Prediction quality assessment
@@ -111,12 +120,14 @@ The system automatically provides comparison analysis between prediction results
 ## 📝 Troubleshooting
 
 ### Common Issues
+
 1. **Port occupied**: Modify port number in app.py
 2. **Missing dependencies**: Run `pip install -r requirements.txt`
 3. **Model loading failed**: Check network connection and model ID
 4. **Data format error**: Ensure data column names and format are correct
 
 ### Log Viewing
+
 Detailed runtime information will be displayed in the console at startup, including model status and error messages.
 
 ## 📄 License
@@ -130,6 +141,7 @@ Welcome to submit Issues and Pull Requests to improve this Web UI!
 ## 📞 Support
 
 If you have questions, please check:
+
 1. Project documentation
 2. GitHub Issues
 3. Console error messages

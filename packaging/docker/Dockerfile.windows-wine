@@ -1,0 +1,95 @@
+# 使用Wine在Linux容器中构建Windows应用的替代方案
+# 当无法使用Windows容器时的备选方案
+
+FROM ubuntu:22.04
+
+# 避免交互式安装
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 设置时区
+ENV TZ=UTC
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# 安装基础依赖
+RUN apt-get update && apt-get install -y \
+    wget \
+    curl \
+    software-properties-common \
+    gpg-agent \
+    ca-certificates \
+    apt-transport-https \
+    && rm -rf /var/lib/apt/lists/*
+
+# 添加Wine仓库 - 使用Ubuntu官方仓库作为备选方案
+RUN dpkg --add-architecture i386 \
+    && apt-get update \
+    && apt-get install -y software-properties-common wget gnupg \
+    && apt-get install -y wine wine32 wine64 || \
+    (echo "尝试从Ubuntu universe仓库安装Wine..." \
+    && add-apt-repository universe -y \
+    && apt-get update \
+    && apt-get install -y wine wine32 wine64)
+
+# 安装Python依赖和其他工具
+RUN apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-dev \
+    python3-venv \
+    build-essential \
+    xvfb \
+    winetricks \
+    && rm -rf /var/lib/apt/lists/*
+
+# 设置Wine环境
+ENV WINEPREFIX=/root/.wine
+ENV WINEARCH=win64
+ENV DISPLAY=:99
+
+# 创建Wine前缀并安装必要组件
+RUN Xvfb :99 -screen 0 1024x768x16 & \
+    sleep 2 && \
+    winecfg && \
+    winetricks -q vcrun2019 && \
+    wineserver -w
+
+# 下载并安装Windows Python
+WORKDIR /tmp
+RUN wget -q https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe \
+    && Xvfb :99 -screen 0 1024x768x16 & \
+    sleep 2 && \
+    wine python-3.11.9-amd64.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 \
+    && wineserver -w \
+    && rm python-3.11.9-amd64.exe
+
+# 设置工作目录
+WORKDIR /kronos
+
+# 复制项目文件
+COPY . /kronos/
+
+# 安装Python依赖（Linux版本，用于构建脚本）
+RUN pip3 install pyinstaller==6.16.0 wheel setuptools
+
+# Wine Python路径
+ENV WINE_PYTHON="wine /root/.wine/drive_c/Program Files/Python311/python.exe"
+
+# 在Wine中安装PyInstaller和依赖
+RUN Xvfb :99 -screen 0 1024x768x16 & \
+    sleep 2 && \
+    $WINE_PYTHON -m pip install --upgrade pip && \
+    $WINE_PYTHON -m pip install pyinstaller==6.16.0 && \
+    $WINE_PYTHON -m pip install -r requirements.txt || true && \
+    wineserver -w
+
+# 构建脚本
+COPY packaging/scripts/build_windows_wine.py /build_windows_wine.py
+
+# 创建启动脚本
+RUN echo '#!/bin/bash\n\
+Xvfb :99 -screen 0 1024x768x16 &\n\
+sleep 3\n\
+python3 /build_windows_wine.py\n\
+wineserver -w' > /start.sh && chmod +x /start.sh
+
+CMD ["/start.sh"]

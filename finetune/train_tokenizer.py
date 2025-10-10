@@ -164,9 +164,11 @@ def train_model(model, device, config, save_dir, logger, rank, world_size):
                 avg_loss = current_batch_total_loss / config['accumulation_steps']
                 logger.log_metric('train_tokenizer_loss_batch', avg_loss, step=batch_idx_global_train)
                 logger.log_metric(f'train_vqvae_vq_loss_each_batch', bsq_loss.item(), step=batch_idx_global_train)
-                logger.log_metric(f'train_recon_loss_pre_each_batch', recon_loss_pre.item(), step=batch_idx_global_train)
+                logger.log_metric(f'train_recon_loss_pre_each_batch', recon_loss_pre.item(),
+                                  step=batch_idx_global_train)
                 logger.log_metric(f'train_recon_loss_each_batch', recon_loss_all.item(), step=batch_idx_global_train)
-                logger.log_metric('tokenizer_learning_rate', optimizer.param_groups[0]["lr"], step=batch_idx_global_train)
+                logger.log_metric('tokenizer_learning_rate', optimizer.param_groups[0]["lr"],
+                                  step=batch_idx_global_train)
 
             batch_idx_global_train += 1
 

@@ -1,0 +1,249 @@
+{
+  "crawler_settings": {
+    "max_retries": 3,
+    "concurrent_limit": 5,
+    "base_delay": 1,
+    "timeout": 60,
+    "retry_delay": 2,
+    "max_retry_delay": 30,
+    "enable_random_delay": true,
+    "enable_user_agent_rotation": true,
+    "enable_mouse_simulation": true,
+    "enable_scroll_simulation": true,
+    "enable_stealth_mode": true,
+    "rate_limit_per_minute": 10,
+    "session_timeout": 1800,
+    "max_concurrent_sessions": 5
+  },
+  "playwright_settings": {
+    "browser_type": "chromium",
+    "headless": true,
+    "viewport": {
+      "width": 1920,
+      "height": 1080
+    },
+    "user_data_dir": null,
+    "args": [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-accelerated-2d-canvas",
+      "--no-first-run",
+      "--no-zygote",
+      "--disable-gpu"
+    ],
+    "ignore_https_errors": true,
+    "java_script_enabled": true,
+    "accept_downloads": false,
+    "bypass_csp": true,
+    "extra_http_headers": {
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+    }
+  },
+  "anti_crawler_settings": {
+    "enabled": true,
+    "min_delay": 1.0,
+    "max_delay": 3.0,
+    "base_retry_delay": 2.0,
+    "max_retry_delay": 30.0,
+    "max_retries": 3,
+    "user_agents": [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
+    ],
+    "proxies": [],
+    "random_delay": {
+      "enabled": true,
+      "min_delay": 1,
+      "max_delay": 3
+    },
+    "user_agent_rotation": {
+      "enabled": true,
+      "pool": [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0"
+      ]
+    },
+    "proxy_rotation": {
+      "enabled": false,
+      "proxies": []
+    },
+    "stealth_mode": {
+      "enabled": true,
+      "hide_webdriver": true,
+      "fake_plugins": true,
+      "fake_languages": true,
+      "fake_chrome": true,
+      "fake_permissions": true
+    },
+    "mouse_simulation": {
+      "enabled": true,
+      "random_movements": true,
+      "click_delay": [
+        100,
+        300
+      ],
+      "movement_probability": 0.2
+    },
+    "scroll_simulation": {
+      "enabled": true,
+      "random_scroll": true,
+      "scroll_delay": [
+        500,
+        1500
+      ],
+      "scroll_probability": 0.3
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "max_requests_per_minute": 10,
+      "time_window": 60
+    },
+    "session_management": {
+      "enabled": true,
+      "session_timeout": 1800,
+      "max_sessions": 5
+    }
+  },
+  "data_sources": {
+    "eastmoney": {
+      "name": "东方财富",
+      "enabled": true,
+      "priority": 1,
+      "base_url": "https://push2.eastmoney.com",
+      "endpoints": {
+        "realtime": "/api/qt/stock/get",
+        "kline": "/api/qt/stock/kline/get",
+        "minute": "/api/qt/stock/trends2/get"
+      },
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://quote.eastmoney.com/",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+      },
+      "params": {
+        "ut": "fa5fd1943c7b386f172d6893dbfba10b",
+        "invt": "2",
+        "fltt": "2",
+        "fields": "f43,f57,f58,f169,f170,f46,f60,f44,f45,f47,f48,f19,f39,f161,f49,f530,f135,f136,f137,f138,f139,f141,f142,f144,f145,f147,f148"
+      },
+      "rate_limit": 0.5,
+      "max_retries": 3
+    },
+    "tonghuashun": {
+      "name": "同花顺",
+      "enabled": true,
+      "priority": 2,
+      "base_url": "https://d.10jqka.com.cn",
+      "endpoints": {
+        "realtime": "/v6/line/hs_{symbol}/01/last.js",
+        "kline": "/v6/line/hs_{symbol}/01/today.js",
+        "minute": "/v6/line/hs_{symbol}/01/today.js"
+      },
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://stockpage.10jqka.com.cn/",
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9"
+      },
+      "rate_limit": 1.0,
+      "max_retries": 3
+    },
+    "xueqiu": {
+      "name": "雪球",
+      "enabled": true,
+      "priority": 3,
+      "base_url": "https://stock.xueqiu.com",
+      "endpoints": {
+        "realtime": "/v5/stock/quote.json",
+        "kline": "/v5/stock/chart/kline.json",
+        "minute": "/v5/stock/chart/minute.json"
+      },
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://xueqiu.com/",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9"
+      },
+      "rate_limit": 1.5,
+      "max_retries": 3,
+      "auth_required": true
+    }
+  },
+  "symbol_mapping": {
+    "eastmoney": {
+      "SZ": "0",
+      "SH": "1"
+    },
+    "tonghuashun": {
+      "format": "{code}"
+    },
+    "xueqiu": {
+      "SZ": "SZ",
+      "SH": "SH",
+      "format": "{exchange}{code}"
+    }
+  },
+  "data_settings": {
+    "output_dir": "./data/crawler/",
+    "backup_dir": "./data/backup/",
+    "file_format": "csv",
+    "encoding": "utf-8",
+    "date_format": "%Y-%m-%d %H:%M:%S",
+    "columns": [
+      "timestamp",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "amount"
+    ]
+  },
+  "validation": {
+    "min_price": 0.01,
+    "max_price": 10000,
+    "min_volume": 0,
+    "max_volume": 1000000000,
+    "price_change_threshold": 0.2,
+    "required_fields": [
+      "timestamp",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume"
+    ]
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/crawler.log",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    "max_size": "10MB",
+    "backup_count": 5
+  },
+  "cache": {
+    "enabled": true,
+    "ttl": 300,
+    "max_size": 1000,
+    "cleanup_interval": 3600
+  },
+  "fallback_strategy": {
+    "enabled": true,
+    "max_source_failures": 3,
+    "cooldown_period": 300,
+    "emergency_sources": [
+      "tushare"
+    ]
+  }
+}

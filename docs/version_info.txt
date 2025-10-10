@@ -1,0 +1,32 @@
+# UTF-8
+#
+# 生成版本信息
+# 
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+    ),
+  kids=[
+    StringFileInfo(
+      [
+      StringTable(
+        u'040904B0',
+        [StringStruct(u'CompanyName', u'Kronos Team'),
+        StringStruct(u'FileDescription', u'Kronos 金融预测系统'),
+        StringStruct(u'FileVersion', u'1.0.0.0'),
+        StringStruct(u'InternalName', u'Kronos'),
+        StringStruct(u'LegalCopyright', u'Copyright © 2024 Kronos Team'),
+        StringStruct(u'OriginalFilename', u'Kronos.exe'),
+        StringStruct(u'ProductName', u'Kronos Financial Prediction System'),
+        StringStruct(u'ProductVersion', u'1.0.0.0')])
+      ]), 
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+  ]
+)

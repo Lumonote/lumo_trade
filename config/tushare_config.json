@@ -1,0 +1,18 @@
+{
+  "tushare": {
+    "token": "请在此处填入您的Tushare Token",
+    "timeout": 30,
+    "retry_count": 3
+  },
+  "data_settings": {
+    "output_dir": "./data/",
+    "file_format": "csv",
+    "date_format": "%Y-%m-%d %H:%M:%S"
+  },
+  "default_params": {
+    "freq": "5min",
+    "adj": "qfq",
+    "start_date": "20240101",
+    "end_date": "20241231"
+  }
+}

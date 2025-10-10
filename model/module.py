@@ -58,7 +58,8 @@ class BinarySphericalQuantizer(nn.Module):
         assert self.embed_dim % group_size == 0, "embed_dim must be divisible by group_size"
         self.num_groups = self.embed_dim // group_size
         self.group_size = group_size
-        assert persample_entropy_compute in ['group', 'analytical'], "persample_entropy_compute must be either 'group' or 'analytical'"
+        assert persample_entropy_compute in ['group',
+                                             'analytical'], "persample_entropy_compute must be either 'group' or 'analytical'"
         assert cb_entropy_compute in ['group', 'nce'], "cb_entropy_compute must be either 'group' or 'nce'"
         self.persample_entropy_compute = persample_entropy_compute
         self.cb_entropy_compute = cb_entropy_compute
@@ -153,7 +154,8 @@ class BinarySphericalQuantizer(nn.Module):
 
     def get_hard_per_sample_entropy(self, zb_by_sample):
         probs_per_dim = zb_by_sample.sum(1) / zb_by_sample.shape[1]
-        persample_entropy = - probs_per_dim * torch.log(probs_per_dim + 1e-8) - (1 - probs_per_dim) * torch.log(1 - probs_per_dim + 1e-8)
+        persample_entropy = - probs_per_dim * torch.log(probs_per_dim + 1e-8) - (1 - probs_per_dim) * torch.log(
+            1 - probs_per_dim + 1e-8)
         persample_entropy = persample_entropy.sum(-1)
         return persample_entropy.mean()
 
@@ -309,7 +311,8 @@ class RotaryPositionalEmbedding(nn.Module):
         return torch.cat((-x2, x1), dim=-1)
 
 
-def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None) -> torch.Tensor:
+def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
+                                 scale=None) -> torch.Tensor:
     L, S = query.size(-2), key.size(-2)
     scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
     attn_bias = torch.zeros(L, S, dtype=query.dtype).to(query.device)
@@ -569,9 +572,3 @@ class TemporalEmbedding(nn.Module):
         month_x = self.month_embed(x[:, :, 4])
 
         return hour_x + weekday_x + day_x + month_x + minute_x
-
-
-
-
-
-

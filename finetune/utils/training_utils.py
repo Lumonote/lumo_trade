@@ -113,6 +113,3 @@ def format_time(seconds: float) -> str:
         str: The formatted time string (e.g., "0:15:32").
     """
     return str(datetime.timedelta(seconds=int(seconds)))
-
-
-

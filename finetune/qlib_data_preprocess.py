@@ -72,7 +72,8 @@ class QlibDataPreprocessor:
 
             # Calculate amount and select final features.
             symbol_df['vol'] = symbol_df['volume']
-            symbol_df['amt'] = (symbol_df['open'] + symbol_df['high'] + symbol_df['low'] + symbol_df['close']) / 4 * symbol_df['vol']
+            symbol_df['amt'] = (symbol_df['open'] + symbol_df['high'] + symbol_df['low'] + symbol_df['close']) / 4 * \
+                               symbol_df['vol']
             symbol_df = symbol_df[self.config.feature_list]
 
             # Filter out symbols with insufficient data.
@@ -127,4 +128,3 @@ if __name__ == '__main__':
     preprocessor.initialize_qlib()
     preprocessor.load_qlib_data()
     preprocessor.prepare_dataset()
-

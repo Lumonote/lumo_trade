@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <!-- 背景渐变 -->
+        <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#1E40AF;stop-opacity:1"/>
+            <stop offset="100%" style="stop-color:#3B82F6;stop-opacity:1"/>
+        </linearGradient>
+
+        <!-- AI芯片渐变 -->
+        <linearGradient id="chipGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#10B981;stop-opacity:1"/>
+            <stop offset="100%" style="stop-color:#059669;stop-opacity:1"/>
+        </linearGradient>
+
+        <!-- 图表渐变 -->
+        <linearGradient id="chartGradient" x1="0%" y1="100%" x2="0%" y2="0%">
+            <stop offset="0%" style="stop-color:#F59E0B;stop-opacity:0.8"/>
+            <stop offset="100%" style="stop-color:#FBBF24;stop-opacity:1"/>
+        </linearGradient>
+    </defs>
+
+    <!-- 背景圆角矩形 -->
+    <rect x="0" y="0" width="512" height="512" rx="102" ry="102" fill="url(#bgGradient)"/>
+
+    <!-- AI芯片图标 (左上) -->
+    <g transform="translate(80, 80)">
+        <!-- 芯片主体 -->
+        <rect x="0" y="0" width="120" height="120" rx="20" ry="20" fill="url(#chipGradient)"/>
+        <!-- 芯片引脚 -->
+        <rect x="-10" y="20" width="10" height="15" fill="#FFFFFF"/>
+        <rect x="-10" y="45" width="10" height="15" fill="#FFFFFF"/>
+        <rect x="-10" y="70" width="10" height="15" fill="#FFFFFF"/>
+        <rect x="120" y="20" width="10" height="15" fill="#FFFFFF"/>
+        <rect x="120" y="45" width="10" height="15" fill="#FFFFFF"/>
+        <rect x="120" y="70" width="10" height="15" fill="#FFFFFF"/>
+        <rect x="20" y="-10" width="15" height="10" fill="#FFFFFF"/>
+        <rect x="45" y="-10" width="15" height="10" fill="#FFFFFF"/>
+        <rect x="70" y="-10" width="15" height="10" fill="#FFFFFF"/>
+        <rect x="20" y="120" width="15" height="10" fill="#FFFFFF"/>
+        <rect x="45" y="120" width="15" height="10" fill="#FFFFFF"/>
+        <rect x="70" y="120" width="15" height="10" fill="#FFFFFF"/>
+
+        <!-- AI标识 -->
+        <text x="60" y="70" text-anchor="middle" font-family="Arial, sans-serif" font-size="36" font-weight="bold"
+              fill="#FFFFFF">AI
+        </text>
+    </g>
+
+    <!-- K线图表 (右侧) -->
+    <g transform="translate(280, 150)">
+        <!-- 图表背景 -->
+        <rect x="0" y="0" width="180" height="200" rx="15" ry="15" fill="rgba(255,255,255,0.1)"
+              stroke="rgba(255,255,255,0.3)" stroke-width="2"/>
+
+        <!-- K线柱 -->
+        <rect x="20" y="120" width="12" height="60" fill="#EF4444"/>
+        <rect x="45" y="80" width="12" height="100" fill="#10B981"/>
+        <rect x="70" y="100" width="12" height="80" fill="#EF4444"/>
+        <rect x="95" y="60" width="12" height="120" fill="#10B981"/>
+        <rect x="120" y="40" width="12" height="140" fill="#10B981"/>
+        <rect x="145" y="70" width="12" height="110" fill="#10B981"/>
+
+        <!-- 趋势线 -->
+        <polyline points="26,150 51,110 76,130 101,90 126,70 151,100"
+                  fill="none" stroke="#FBBF24" stroke-width="3" stroke-linecap="round"/>
+    </g>
+
+    <!-- 向上箭头 (右上) -->
+    <g transform="translate(400, 80)">
+        <polygon points="32,0 64,40 48,40 48,80 16,80 16,40 0,40" fill="#10B981"/>
+        <circle cx="32" cy="40" r="35" fill="none" stroke="#10B981" stroke-width="3" opacity="0.5"/>
+    </g>
+
+    <!-- 货币符号 (底部中央) -->
+    <g transform="translate(200, 380)">
+        <!-- 美元符号 -->
+        <circle cx="56" cy="56" r="50" fill="rgba(16,185,129,0.2)" stroke="#10B981" stroke-width="3"/>
+        <text x="56" y="75" text-anchor="middle" font-family="Arial, sans-serif" font-size="60" font-weight="bold"
+              fill="#10B981">$
+        </text>
+    </g>
+
+    <!-- Kronos文字 (底部) -->
+    <text x="256" y="480" text-anchor="middle" font-family="Arial, sans-serif" font-size="32" font-weight="bold"
+          fill="#FFFFFF">KRONOS
+    </text>
+</svg>

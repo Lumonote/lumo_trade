@@ -1,0 +1,35 @@
+# Kronos Windows 打包 Docker 镜像
+# 基于 Windows Server Core 和 Python 3.11
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+
+# 设置工作目录
+WORKDIR C:\\kronos
+
+# 下载并安装Python 3.11
+ADD https://www.python.org/ftp/python/3.11.13/python-3.11.13-amd64.exe C:\\temp\\python-installer.exe
+
+# 安装Python（静默安装，添加到PATH）
+RUN C:\\temp\\python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0
+
+# 验证Python安装
+RUN python --version
+
+# 升级pip并安装PyInstaller
+RUN python -m pip install --upgrade pip
+RUN pip install pyinstaller==6.16.0
+
+# 安装Windows构建依赖
+RUN pip install wheel setuptools
+
+# 复制项目文件
+COPY . C:\\kronos\\
+
+# 安装项目依赖
+RUN pip install -r requirements.txt
+
+# 设置环境变量
+ENV PYTHONPATH=C:\\kronos
+ENV KRONOS_DOCKER_BUILD=1
+
+# 构建脚本
+CMD ["python", "packaging/scripts/build_windows_docker.py"]

@@ -1,0 +1,31 @@
+# 使用更轻量的Wine构建环境进行快速测试
+FROM ubuntu:22.04
+
+# 避免交互式安装
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 基础设置
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建模拟构建结果
+WORKDIR /kronos
+COPY . /kronos/
+
+# 创建模拟的Windows可执行文件
+RUN mkdir -p /kronos/dist && \
+    echo "#!/bin/bash\necho 'Kronos Wine Build Test'" > /kronos/dist/Kronos.exe && \
+    chmod +x /kronos/dist/Kronos.exe
+
+# 模拟构建脚本
+RUN echo '#!/bin/bash\n\
+echo "🍷 Wine构建测试开始..."\n\
+echo "✅ 模拟构建成功"\n\
+echo "📦 创建测试文件"\n\
+mkdir -p /kronos/dist/Kronos_Windows_Portable\n\
+cp /kronos/dist/Kronos.exe /kronos/dist/Kronos_Windows_Portable/\n\
+echo "🎉 Wine构建测试完成"' > /test_build.sh && chmod +x /test_build.sh
+
+CMD ["/test_build.sh"]
