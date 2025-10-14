@@ -2,6 +2,6 @@
   "version": "1.0.0",
   "short_version": "1.0",
   "channel": "stable",
-  "artifact_template": "Kronos_v{version}_{platform}_{timestamp}",
+  "artifact_template": "Kronos_Ultra_v{version}_{platform}_{timestamp}",
   "notes_file": "packaging/UPGRADE.md"
 }

@@ -206,7 +206,7 @@ build_macos() {
         return 1
     fi
 
-    echo -e "${PURPLE}🎨🍎 开始打包现代化GUI macOS 版本...${NC}"
+    echo -e "${PURPLE}🎨🍎 开始打包现代化GUI macOS 版本 (Kronos_Ultra)...${NC}"
     echo "=========================================="
 
     cd "$PROJECT_ROOT"
@@ -246,14 +246,14 @@ build_macos() {
         echo -e "${BLUE}🔍 验证打包结果...${NC}"
 
         # 检查examples目录是否被打包
-        if [ -d "dist/Kronos/examples" ]; then
-            echo -e "${GREEN}✅ examples/ 目录已打包到 dist/Kronos/examples/${NC}"
+        if [ -d "dist/Kronos_Ultra/examples" ]; then
+            echo -e "${GREEN}✅ examples/ 目录已打包到 dist/Kronos_Ultra/examples/${NC}"
 
-            if [ -f "dist/Kronos/examples/prediction_batch_example.py" ]; then
+            if [ -f "dist/Kronos_Ultra/examples/prediction_batch_example.py" ]; then
                 echo -e "${GREEN}✅ prediction_batch_example.py 已包含${NC}"
 
                 # 验证修复代码
-                if grep -q "关键：修正后必须重新创建pred_overlap和pred_future" dist/Kronos/examples/prediction_batch_example.py; then
+                if grep -q "关键：修正后必须重新创建pred_overlap和pred_future" dist/Kronos_Ultra/examples/prediction_batch_example.py; then
                     echo -e "${GREEN}✅ 修复代码已正确包含到打包文件中${NC}"
                 else
                     echo -e "${YELLOW}⚠️  警告：打包的文件中不包含修复代码${NC}"
@@ -261,14 +261,14 @@ build_macos() {
             else
                 echo -e "${YELLOW}⚠️  警告：prediction_batch_example.py 未找到${NC}"
             fi
-        elif [ -d "dist/Kronos.app/Contents/Resources/examples" ]; then
-            echo -e "${GREEN}✅ examples/ 目录在 .app/Contents/Resources/ 中${NC}"
+        elif [ -d "dist/Kronos_Ultra.app/Contents/Resources/examples" ]; then
+            echo -e "${GREEN}✅ examples/ 目录在 Kronos_Ultra.app/Contents/Resources/ 中${NC}"
 
-            if [ -f "dist/Kronos.app/Contents/Resources/examples/prediction_batch_example.py" ]; then
+            if [ -f "dist/Kronos_Ultra.app/Contents/Resources/examples/prediction_batch_example.py" ]; then
                 echo -e "${GREEN}✅ prediction_batch_example.py 已包含到.app包${NC}"
 
                 # 验证修复代码
-                if grep -q "关键：修正后必须重新创建pred_overlap和pred_future" "dist/Kronos.app/Contents/Resources/examples/prediction_batch_example.py"; then
+                if grep -q "关键：修正后必须重新创建pred_overlap和pred_future" "dist/Kronos_Ultra.app/Contents/Resources/examples/prediction_batch_example.py"; then
                     echo -e "${GREEN}✅ 修复代码已正确包含到.app包中${NC}"
                 else
                     echo -e "${YELLOW}⚠️  警告：.app包中的文件不包含修复代码${NC}"
@@ -282,14 +282,14 @@ build_macos() {
 
         # 测试应用启动
         echo -e "${BLUE}🧪 测试应用启动...${NC}"
-        if timeout 10s open dist/Kronos.app --args --test 2>/dev/null; then
+        if timeout 10s open dist/Kronos_Ultra.app --args --test 2>/dev/null; then
             echo "  (应用可以启动)"
         else
             echo "  (启动测试超时，但构建成功)"
         fi
         
         # 创建应用包
-        if [ -d "dist/Kronos.app" ]; then
+        if [ -d "dist/Kronos_Ultra.app" ]; then
             echo -e "${GREEN}✅ 现代化GUI macOS应用包创建成功！${NC}"
             
             # 创建DMG文件（统一版本命名）
@@ -306,7 +306,7 @@ build_macos() {
             ARTIFACT_NAME="${ARTIFACT_NAME/\{timestamp\}/$TIMESTAMP}"
             DMG_FILE="$BUILD_DIR/${ARTIFACT_NAME}.dmg"
             if command -v hdiutil &> /dev/null; then
-                hdiutil create -srcfolder "dist/Kronos.app" -volname "Kronos" "$DMG_FILE" 2>/dev/null || {
+            hdiutil create -srcfolder "dist/Kronos_Ultra.app" -volname "Kronos_Ultra" "$DMG_FILE" 2>/dev/null || {
                     echo -e "${YELLOW}⚠️  DMG创建失败，但应用包构建成功${NC}"
                 }
                 if [ -f "$DMG_FILE" ]; then
@@ -316,14 +316,14 @@ build_macos() {
             fi
             
             # 显示应用包大小
-            APP_SIZE=$(du -sh "dist/Kronos.app" | cut -f1)
+            APP_SIZE=$(du -sh "dist/Kronos_Ultra.app" | cut -f1)
             echo -e "${CYAN}📏 应用包大小: $APP_SIZE${NC}"
         fi
         
         echo ""
         echo -e "${GREEN}🎯 使用说明:${NC}"
-        echo "1. 双击 Kronos.app 启动应用"
-        echo "2. 或者从命令行: open dist/Kronos.app"
+        echo "1. 双击 Kronos_Ultra.app 启动应用"
+        echo "2. 或者从命令行: open dist/Kronos_Ultra.app"
         if [ -f "$DMG_FILE" ]; then
             echo "3. 分发给用户: $DMG_FILE"
         fi
@@ -380,7 +380,7 @@ build_windows_wine() {
     
     IMAGE_NAME="kronos-windows-wine-builder"
     CONTAINER_NAME="kronos-wine-build"
-    OUTPUT_DIR="packaging/builds/windows-wine"
+    OUTPUT_DIR="packaging/builds"
     
     # 构建Wine Docker镜像
     echo -e "${BLUE}🔨 构建Wine Docker镜像...${NC}"
@@ -391,18 +391,50 @@ build_windows_wine() {
         return 1
     fi
     
-    # 创建输出目录
+    # 创建输出目录（统一到 packaging/builds）
     mkdir -p "$OUTPUT_DIR"
     
     # 运行Wine构建
     echo -e "${BLUE}🚀 运行Wine构建...${NC}"
-    docker run --name $CONTAINER_NAME --rm $IMAGE_NAME
+    # 运行容器（不加 --rm，便于复制产物），复制后再清理
+    docker run --name $CONTAINER_NAME $IMAGE_NAME
     
     if [ $? -eq 0 ]; then
-        # 从容器复制结果
+        # 从容器复制结果到统一目录
         docker cp $CONTAINER_NAME:/kronos/dist/. "$OUTPUT_DIR/" || true
+
+        # 清理容器
+        docker rm -f $CONTAINER_NAME >/dev/null 2>&1 || true
+
+        # 读取版本配置并生成标准化ZIP名称
+        load_version_config
+        TIMESTAMP=$(date "+%Y%m%d_%H%M%S")
+        PLATFORM_NAME="Windows"
+        ARTIFACT_NAME="$ARTIFACT_TEMPLATE"
+        ARTIFACT_NAME="${ARTIFACT_NAME/\{version\}/$VERSION}"
+        ARTIFACT_NAME="${ARTIFACT_NAME/\{platform\}/$PLATFORM_NAME}"
+        ARTIFACT_NAME="${ARTIFACT_NAME/\{timestamp\}/$TIMESTAMP}"
+
+        # 将便携版目录压缩为标准命名的ZIP
+        PORTABLE_DIR="$OUTPUT_DIR/Kronos_Ultra_Windows_Portable"
+        if [ -d "$OUTPUT_DIR/Kronos_Ultra_Windows_Portable" ]; then
+            (cd "$OUTPUT_DIR" && zip -r "${ARTIFACT_NAME}.zip" "Kronos_Ultra_Windows_Portable" >/dev/null 2>&1 || true)
+            if [ -f "$OUTPUT_DIR/${ARTIFACT_NAME}.zip" ]; then
+                echo -e "${PURPLE}📦 创建了ZIP产物: $OUTPUT_DIR/${ARTIFACT_NAME}.zip${NC}"
+            fi
+        else
+            # 如果容器中的便携包不在顶层，尝试从 dist 目录中处理
+            if [ -d "$OUTPUT_DIR/dist/Kronos_Ultra_Windows_Portable" ]; then
+                mv "$OUTPUT_DIR/dist/Kronos_Ultra_Windows_Portable" "$OUTPUT_DIR/" 2>/dev/null || true
+                (cd "$OUTPUT_DIR" && zip -r "${ARTIFACT_NAME}.zip" "Kronos_Ultra_Windows_Portable" >/dev/null 2>&1 || true)
+                if [ -f "$OUTPUT_DIR/${ARTIFACT_NAME}.zip" ]; then
+                    echo -e "${PURPLE}📦 创建了ZIP产物: $OUTPUT_DIR/${ARTIFACT_NAME}.zip${NC}"
+                fi
+            fi
+        fi
+
         echo -e "${GREEN}✅ Windows Wine构建成功！${NC}"
-        echo -e "${CYAN}📁 构建结果: $OUTPUT_DIR${NC}"
+        echo -e "${CYAN}📁 构建结果目录: $OUTPUT_DIR${NC}"
         return 0
     else
         echo -e "${RED}❌ Windows Wine构建失败${NC}"

@@ -149,7 +149,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='Kronos',
+    name='Kronos_Ultra',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -224,36 +224,36 @@ exe = EXE(
         """创建便携版包"""
         print("📦 创建便携版包...")
 
-        exe_file = self.dist_dir / 'Kronos.exe'
+        exe_file = self.dist_dir / 'Kronos_Ultra.exe'
         if not exe_file.exists():
             print("❌ 找不到构建的exe文件")
             return False
 
         # 创建便携版目录
-        portable_dir = self.dist_dir / 'Kronos_Windows_Portable'
+        portable_dir = self.dist_dir / 'Kronos_Ultra_Windows_Portable'
         portable_dir.mkdir(exist_ok=True)
 
         # 复制exe文件
-        shutil.copy2(exe_file, portable_dir / 'Kronos.exe')
+        shutil.copy2(exe_file, portable_dir / 'Kronos_Ultra.exe')
 
         # 创建启动脚本
         batch_script = portable_dir / 'start_kronos.bat'
         with open(batch_script, 'w', encoding='utf-8') as f:
             f.write('''@echo off
-echo 🚀 Starting Kronos...
+echo 🚀 Starting Kronos_Ultra...
 cd /d "%~dp0"
-Kronos.exe
+Kronos_Ultra.exe
 pause
 ''')
 
         # 创建README
         readme_file = portable_dir / 'README.txt'
         with open(readme_file, 'w', encoding='utf-8') as f:
-            f.write('''Kronos Windows Portable Version (Wine Build)
+            f.write('''Kronos_Ultra Windows Portable Version (Wine Build)
 ==============================================
 
 使用说明:
-1. 双击 Kronos.exe 启动应用
+1. 双击 Kronos_Ultra.exe 启动应用
 2. 或者双击 start_kronos.bat 启动（会显示控制台输出）
 
 系统要求:

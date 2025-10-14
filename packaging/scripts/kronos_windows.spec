@@ -89,19 +89,17 @@ a = Analysis(
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 _dist_dir = Path('dist')
-_default_name = 'Kronos_Modern'
+_default_name = 'Kronos_Ultra'
 _default_path = _dist_dir / f'{_default_name}.exe'
 
-# 尝试删除已存在的同名EXE，若失败则改用时间戳名称，避免被占用导致拒绝访问
+# 尝试删除已存在的同名EXE（保持统一命名 Kronos.exe）
 _exe_name = _default_name
 try:
     if _default_path.exists():
         print(f"⚠️ 检测到已存在EXE: {_default_path}，尝试删除以覆盖...")
         _default_path.unlink()
 except Exception as _e:
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    _exe_name = f'{_default_name}_{ts}'
-    print(f"⚠️ 无法删除旧EXE（可能被占用）：{_e}\n👉 将使用新文件名：{_exe_name}.exe")
+    print(f"⚠️ 无法删除旧EXE（可能被占用）：{_e}，请确保未运行 Kronos.exe")
 
 exe = EXE(
     pyz,
@@ -129,10 +127,4 @@ exe = EXE(
 # 打印构建完成信息
 print(f"🎉 Windows EXE构建完成!")
 print(f"📁 输出文件: dist/{_exe_name}.exe")
-try:
-    from datetime import datetime
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    print(f"📊 预期最终位置: dist/Kronos_{ts}_Windows.exe")
-except Exception:
-    # 回退提示
-    print(f"📊 预期最终位置: dist/Kronos_<timestamp>_Windows.exe")
+print(f"📊 预期最终位置: packaging/builds/Kronos_Ultra_v<version>_Windows_<timestamp>.zip")

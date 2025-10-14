@@ -20,6 +20,19 @@ class DockerBuildManager:
         self.project_root = self.script_dir.parent.parent
         self.docker_dir = self.project_root / 'packaging' / 'docker'
         self.builds_dir = self.project_root / 'packaging' / 'builds'
+        self.version_config = self.project_root / 'packaging' / 'version.json'
+        self.version = '1.0.0'
+        self.artifact_template = 'Kronos_v{version}_{platform}_{timestamp}'
+
+    def load_version_info(self):
+        """读取版本配置和artifact模板"""
+        try:
+            if self.version_config.exists():
+                data = json.loads(self.version_config.read_text(encoding='utf-8'))
+                self.version = data.get('version', self.version)
+                self.artifact_template = data.get('artifact_template', self.artifact_template)
+        except Exception:
+            pass
 
     def check_docker(self):
         """检查Docker环境"""
@@ -188,6 +201,8 @@ class DockerBuildManager:
             if result.returncode == 0:
                 print(f"✅ 构建结果已保存到: {output_dir}")
                 self.show_build_results(output_dir)
+                # 生成标准化ZIP产物
+                self.create_standard_zip(output_dir)
                 return True
             else:
                 print("⚠️  从运行容器复制失败，尝试从已停止的容器复制...")
@@ -207,6 +222,8 @@ class DockerBuildManager:
                     if result.returncode == 0:
                         print(f"✅ 构建结果已保存到: {output_dir}")
                         self.show_build_results(output_dir)
+                        # 生成标准化ZIP产物
+                        self.create_standard_zip(output_dir)
                         return True
 
                 print("❌ 无法提取构建结果")
@@ -215,6 +232,38 @@ class DockerBuildManager:
         except Exception as e:
             print(f"❌ 提取构建结果失败: {e}")
             return False
+
+    def create_standard_zip(self, output_dir: Path):
+        """将Windows构建结果压缩为统一命名的ZIP"""
+        try:
+            self.load_version_info()
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            platform_name = 'Windows'
+            name = self.artifact_template
+            name = name.replace('{version}', self.version)
+            name = name.replace('{platform}', platform_name)
+            name = name.replace('{timestamp}', timestamp)
+            zip_path = output_dir / f'{name}.zip'
+
+            # 优先打包便携版目录
+            portable_dir = output_dir / 'Kronos_Ultra_Windows_Portable'
+            dist_dir = output_dir / 'dist'
+            target_dir = None
+            if portable_dir.exists():
+                target_dir = portable_dir
+            elif dist_dir.exists():
+                target_dir = dist_dir
+
+            if target_dir:
+                print(f"🗜️  正在创建ZIP产物: {zip_path.name}")
+                # 使用系统zip命令
+                subprocess.run(['zip', '-r', str(zip_path.name), target_dir.name], cwd=output_dir)
+                if zip_path.exists():
+                    print(f"🎉 标准化ZIP产物已生成: {zip_path}")
+            else:
+                print("⚠️  未找到可打包的目录 (Kronos_Windows_Portable 或 dist)")
+        except Exception as e:
+            print(f"⚠️  创建ZIP产物失败: {e}")
 
     def show_build_results(self, output_dir):
         """显示构建结果"""

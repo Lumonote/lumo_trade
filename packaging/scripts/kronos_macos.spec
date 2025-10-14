@@ -71,7 +71,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='Kronos',
+    name='Kronos_Ultra',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -91,12 +91,12 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='Kronos',
+    name='Kronos_Ultra',
 )
 
 app = BUNDLE(
     coll,
-    name='Kronos.app',
+    name='Kronos_Ultra.app',
     icon=os.path.join(project_root, 'assets/kronos_ai_stock.icns') if os.path.exists(os.path.join(project_root, 'assets/kronos_ai_stock.icns')) else None,
     bundle_identifier='com.kronos.app',
 )
