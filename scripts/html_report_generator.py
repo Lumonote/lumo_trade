@@ -547,7 +547,7 @@ class KronosHTMLReportGenerator:
             pred_summary = self._build_prediction_summary_text(predictions, historical_data)
             html += f"""
             <div class='summary-item'>
-                <span class='label'>AI预测结果分析，主要分析预测的K线走势</span>
+                <span class='label'>AI预测结果分析</span>
                 <span class='value'>{pred_summary}</span>
             </div>
             <div class='summary-item'>

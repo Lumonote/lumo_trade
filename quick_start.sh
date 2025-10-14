@@ -61,10 +61,11 @@ setup_user_directories() {
 # 初始化用户目录
 setup_user_directories
 
-# 自动安装独立Python 3.11.9 (macOS)
+# 自动安装独立Python (macOS)
 ensure_portable_python() {
-    local target_version="3.11.9"
-    local min_version="3.11.9"
+    # 与 python-build-standalone 20240107 发布版本对齐（3.11.7）
+    local target_version="3.11.7"
+    local min_version="3.11.7"
     local portable_root="$PWD/.python"
     local portable_dir="$portable_root/py311-$target_version"
     local python_exe="$portable_dir/bin/python3"
@@ -109,10 +110,31 @@ ensure_portable_python() {
         return 1
     fi
 
-    # 下载源列表（清华镜像优先）
+    # 轻量下载工具（带重试和回退）
+    download_with_retries() {
+        local url="$1"; local out="$2"; local retries="${3:-5}"; local delay="${4:-2}"; local timeout="${5:-240}"; local ua="Mozilla/5.0"
+        for i in $(seq 1 "$retries"); do
+            if command -v curl >/dev/null 2>&1; then
+                if curl -fL --retry 5 --retry-connrefused --retry-delay "$delay" --max-time "$timeout" -A "$ua" -o "$out" "$url"; then
+                    return 0
+                fi
+            fi
+            if command -v wget >/dev/null 2>&1; then
+                if wget --tries=3 --timeout="$timeout" --user-agent="$ua" -O "$out" "$url"; then
+                    return 0
+                fi
+            fi
+            sleep "$delay"
+        done
+        return 1
+    }
+
+    # 下载源列表（清华镜像优先，增加代理与备用源）
     download_urls=(
         "https://mirrors.tuna.tsinghua.edu.cn/github-release/indygreg/python-build-standalone/20240107/$filename"
         "https://github.com/indygreg/python-build-standalone/releases/download/20240107/$filename"
+        "https://ghproxy.com/https://github.com/indygreg/python-build-standalone/releases/download/20240107/$filename"
+        "https://download.fastgit.org/indygreg/python-build-standalone/releases/download/20240107/$filename"
     )
 
     mkdir -p "$portable_root"
@@ -122,41 +144,26 @@ ensure_portable_python() {
     echo -e "${CYAN}SETUP: 下载便携式 Python $target_version ($arch)...${NC}"
     echo -e "${CYAN}这不会影响您系统的Python，会安装到 .python/ 目录${NC}"
 
-    # 尝试从多个源下载
+    # 尝试从多个源下载（带重试）
     local download_success=false
     for download_url in "${download_urls[@]}"; do
         local source_name="官方源"
         if [[ "$download_url" =~ "tsinghua" ]]; then
             source_name="清华镜像"
         fi
-
         echo -e "${CYAN}MIRROR: 尝试从 $source_name 下载...${NC}"
-
-        # 下载
-        if command -v curl >/dev/null 2>&1; then
-            if curl -L -o "$tarball" "$download_url" 2>/dev/null; then
-                download_success=true
-                echo -e "${GREEN}OK: 从 $source_name 下载成功${NC}"
-                break
-            else
-                echo -e "${YELLOW}WARN: $source_name 下载失败，尝试下一个源...${NC}"
-            fi
-        elif command -v wget >/dev/null 2>&1; then
-            if wget -O "$tarball" "$download_url" 2>/dev/null; then
-                download_success=true
-                echo -e "${GREEN}OK: 从 $source_name 下载成功${NC}"
-                break
-            else
-                echo -e "${YELLOW}WARN: $source_name 下载失败，尝试下一个源...${NC}"
-            fi
+        if download_with_retries "$download_url" "$tarball" 5 2 240; then
+            download_success=true
+            echo -e "${GREEN}OK: 从 $source_name 下载成功${NC}"
+            break
         else
-            echo -e "${RED}ERROR: 需要 curl 或 wget 来下载${NC}"
-            return 1
+            echo -e "${YELLOW}WARN: $source_name 下载失败，尝试下一个源...${NC}"
         fi
     done
 
     if [ "$download_success" = false ]; then
         echo -e "${RED}ERROR: 所有下载源均失败${NC}"
+        echo -e "${YELLOW}TIP: 已尝试多个镜像与重试，请检查网络/代理或手动下载到 $tarball${NC}"
         return 1
     fi
 
@@ -279,7 +286,7 @@ detect_python() {
 PYTHON_CMD=$(detect_python)
 
 # 检查Python版本，如果低于3.11.9，自动安装便携式Python
-MIN_PYTHON_VERSION="3.11.9"
+MIN_PYTHON_VERSION="3.11.7"
 if [ -n "$PYTHON_CMD" ]; then
     CURRENT_VERSION=$("$PYTHON_CMD" --version 2>&1 | grep -o "[0-9]\+\.[0-9]\+\.[0-9]\+" | head -1)
     echo -e "${BLUE}当前 Python 版本: $CURRENT_VERSION${NC}"

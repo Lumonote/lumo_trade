@@ -130,6 +130,11 @@ function Ensure-PortablePython {
         return
     }
 
+    # 强制启用 TLS1.2/1.3，避免旧系统默认禁用导致下载失败
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+    } catch {}
+
     $portableRoot = Join-Path $scriptDir '.python'
     $portableDir = Join-Path $portableRoot "py311-$TargetVersion"
     $is64 = [Environment]::Is64BitOperatingSystem
@@ -154,23 +159,37 @@ function Ensure-PortablePython {
             $sourceName = if ($downloadUrl -match 'tsinghua') { '清华镜像' } else { '官方源' }
             Write-Host "MIRROR: 尝试从 $sourceName 下载..." -ForegroundColor Cyan
 
-            try {
-                Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
-                $downloadSuccess = $true
-                Write-Host "OK: 从 $sourceName 下载成功" -ForegroundColor Green
-                break
-            } catch {
-                Write-Host "WARN: $sourceName 下载失败，尝试下一个源..." -ForegroundColor Yellow
+            $maxRetries = 4
+            for ($attempt = 1; $attempt -le $maxRetries -and (-not $downloadSuccess); $attempt++) {
                 try {
-                    $wc = New-Object System.Net.WebClient
-                    $wc.DownloadFile($downloadUrl, $zipPath)
+                    Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing -Headers @{ 'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
                     $downloadSuccess = $true
-                    Write-Host "OK: 从 $sourceName 下载成功 (WebClient方式)" -ForegroundColor Green
+                    Write-Host "OK: 从 $sourceName 下载成功 (IWR)" -ForegroundColor Green
                     break
                 } catch {
-                    Write-Host "WARN: $sourceName (WebClient方式) 也失败" -ForegroundColor Yellow
+                    Write-Host "WARN: IWR 失败 (尝试 $attempt/$maxRetries)，尝试 BITS 传输..." -ForegroundColor Yellow
+                    try {
+                        Start-BitsTransfer -Source $downloadUrl -Destination $zipPath -ErrorAction Stop
+                        $downloadSuccess = $true
+                        Write-Host "OK: 从 $sourceName 下载成功 (BITS)" -ForegroundColor Green
+                        break
+                    } catch {
+                        Write-Host "WARN: BITS 失败，尝试 WebClient..." -ForegroundColor Yellow
+                        try {
+                            $wc = New-Object System.Net.WebClient
+                            $wc.Headers.Add('user-agent','Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+                            $wc.DownloadFile($downloadUrl, $zipPath)
+                            $downloadSuccess = $true
+                            Write-Host "OK: 从 $sourceName 下载成功 (WebClient)" -ForegroundColor Green
+                            break
+                        } catch {
+                            Start-Sleep -Seconds ([Math]::Min(5 * $attempt, 15))
+                        }
+                    }
                 }
             }
+
+            if ($downloadSuccess) { break }
         }
 
         if (-not $downloadSuccess) {
@@ -300,11 +319,51 @@ if ($Choice -eq "1") {
 
     if (Test-Path 'requirements.txt') {
         Write-Host ("STATUS: 步骤 {0}/{1}: 安装 requirements.txt 依赖包..." -f $step, $totalSteps) -ForegroundColor Cyan
-        # Prefer portable Python when multiple versions detected
+        # 当检测到多个 Python 版本时，优先选择系统中满足 >=3.11.9 的版本；仅在未找到合适版本时使用便携式 Python
         if (Has-MultiplePythonVersions) {
-            Write-Host "WARN: 检测到系统存在多个 Python 版本，使用隔离的便携式 Python 3.11.9 以避免冲突" -ForegroundColor Yellow
-            Ensure-PortablePython -TargetVersion '3.11.9'
-            $python = Get-PythonCommand
+            Write-Host "WARN: 检测到系统存在多个 Python 版本，尝试优先使用系统中满足 >=3.11.9 的版本" -ForegroundColor Yellow
+
+            $minVersion = [Version]'3.11.9'
+            $selectedPython = $null
+            $selectedVersion = $null
+
+            try {
+                # 聚合候选 python.exe 路径
+                $candidates = @()
+                try {
+                    $paths = @(cmd /c "where python 2>&1") | Where-Object { $_ -and (-not ($_ -match 'INFO|找不到')) }
+                    foreach ($p in $paths) { if ($p) { $candidates += $p.Trim() } }
+                } catch {}
+
+                # 去重
+                $candidates = $candidates | Select-Object -Unique
+
+                foreach ($path in $candidates) {
+                    try {
+                        $verOut = & $path --version 2>$null
+                        $verStr = ($verOut -replace '[^0-9\.]','').Trim()
+                        if ($verStr) {
+                            $ver = [Version]$verStr
+                            if ($ver -ge $minVersion) {
+                                $selectedPython = $path
+                                $selectedVersion = $ver
+                                break
+                            }
+                        }
+                    } catch {}
+                }
+            } catch {}
+
+            if ($selectedPython) {
+                $env:PYTHON = $selectedPython
+                $env:PYTHON_CMD = $selectedPython
+                $python = $selectedPython
+                Write-Host "OK: 选用系统 Python ($selectedVersion) : $selectedPython" -ForegroundColor Green
+            } else {
+                Write-Host "ACTION: 未找到满足条件的系统 Python，使用隔离的便携式 Python 3.11.9" -ForegroundColor Yellow
+                Ensure-PortablePython -TargetVersion '3.11.9'
+                $python = Get-PythonCommand
+            }
         }
 
         & $python -m pip install -r requirements.txt @mirrorArgs

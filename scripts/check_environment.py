@@ -392,8 +392,14 @@ def main():
             else:
                 missing_dirs.append((dir_name, display_path))
 
+    # 若存在缺失目录，尝试创建并记录仍缺失的目录名称
+    still_missing_names: List[str] = []
+    name_to_path: Dict[str, Path] = {}
     if missing_dirs:
-        create_missing_directories(missing_dirs)
+        # 建立名称到路径的映射，便于后续生成 mkdir 提示
+        for _name, _path in missing_dirs:
+            name_to_path[_name] = _path
+        still_missing_names = create_missing_directories(missing_dirs)
 
     # 配置文件检查
     print_header("配置文件检查")
@@ -425,8 +431,8 @@ def main():
         issues.append("Python版本过低")
     if required_missing:
         issues.append(f"缺少必需包: {', '.join(required_missing)}")
-    if missing_dirs:
-        issues.append(f"缺少目录: {', '.join(missing_dirs)}")
+    if still_missing_names:
+        issues.append(f"缺少目录: {', '.join(still_missing_names)}")
     # Tushare 为非必需，不计入问题列表
 
     if not issues:
@@ -443,8 +449,11 @@ def main():
             print_info("  • 升级Python到3.11或更高版本")
         if required_missing:
             print_info(f"  • 安装缺少的包: pip install {' '.join(required_missing)}")
-        if missing_dirs:
-            print_info(f"  • 手动创建失败目录: mkdir -p {' '.join(missing_dirs)}")
+        if still_missing_names:
+            # 将仍缺失目录的路径字符串化以便给出 mkdir 提示
+            remaining_paths = [str(name_to_path[n]) for n in still_missing_names if n in name_to_path]
+            if remaining_paths:
+                print_info(f"  • 手动创建失败目录: mkdir -p {' '.join(remaining_paths)}")
         # Tushare 为非必需，不给出强制修复建议
 
         return False
