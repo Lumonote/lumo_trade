@@ -23,6 +23,13 @@ class KronosPackager:
         self.project_root = Path(__file__).parent.parent.parent
         self.builds_dir = self.project_root / "packaging" / "builds"
         self.current_os = platform.system()
+        # 版本配置默认值
+        self.version_config = {}
+        self.version = "1.0.0"
+        self.short_version = "1.0"
+        self.channel = "stable"
+        self.artifact_template = "Kronos_v{version}_{platform}_{timestamp}"
+        self.notes_file = None
 
         # 确保构建目录存在
         self.builds_dir.mkdir(parents=True, exist_ok=True)
@@ -32,6 +39,9 @@ class KronosPackager:
         print(f"💻 当前系统: {self.current_os}")
         print(f"📦 构建输出目录: {self.builds_dir}")
         print("=" * 50)
+
+        # 加载版本配置
+        self.load_version_config()
 
     def check_requirements(self):
         """检查打包环境要求"""
@@ -120,6 +130,25 @@ class KronosPackager:
         except subprocess.CalledProcessError:
             print("❌ PyInstaller安装失败")
             return False
+
+    def load_version_config(self):
+        """加载 packaging/version.json 版本配置"""
+        try:
+            cfg_path = self.project_root / "packaging" / "version.json"
+            if not cfg_path.exists():
+                print("⚠️ 未找到版本配置文件 packaging/version.json，使用默认版本设置")
+                return
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+                self.version_config = cfg
+                self.version = cfg.get('version', self.version)
+                self.short_version = cfg.get('short_version', self.short_version)
+                self.channel = cfg.get('channel', self.channel)
+                self.artifact_template = cfg.get('artifact_template', self.artifact_template)
+                self.notes_file = cfg.get('notes_file')
+                print(f"✅ 已加载版本配置: version={self.version}, short_version={self.short_version}, channel={self.channel}")
+        except Exception as e:
+            print(f"⚠️ 加载版本配置失败，使用默认值: {e}")
 
     def create_spec_file(self, platform_type):
         """创建spec文件"""
@@ -213,9 +242,9 @@ a = Analysis(
         'asyncio',
         'concurrent.futures',
     ],
-    hookspath=[],
+    hookspath=[os.path.join(project_root, 'packaging/hooks')],
     hooksconfig={{}},
-    runtime_hooks=[],
+    runtime_hooks=[os.path.join(project_root, 'packaging/hooks/runtime_hook_fix_encoding.py')],
     excludes=[
         'IPython',
         'jupyter',
@@ -386,11 +415,11 @@ exe = EXE(
                 print("   dist目录不存在")
             return False
 
-        # 复制到dist目录并加时间戳
+        # 复制到统一 builds 目录并按版本配置命名（包含时间戳）
         import datetime
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        build_name = f"Kronos_{timestamp}_Windows.exe"
-        final_path = dist_dir / build_name
+        build_name = self.artifact_template.format(version=self.version, platform='Windows', timestamp=timestamp) + ".exe"
+        final_path = self.builds_dir / build_name
         shutil.copy2(exe_file, final_path)
 
         # 显示文件信息
@@ -437,7 +466,7 @@ exe = EXE(
 
     def get_macos_info_plist(self):
         """获取macOS Info.plist内容"""
-        return """<?xml version="1.0" encoding="UTF-8"?>
+        return f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -450,9 +479,9 @@ exe = EXE(
     <key>CFBundleName</key>
     <string>Kronos</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>{self.short_version}</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>{self.version}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>
@@ -479,7 +508,10 @@ exe = EXE(
             print("❌ App包不存在")
             return False
 
-        dmg_name = "Kronos_v1.0_macOS.dmg"
+        # 生成带版本与时间戳的DMG名称
+        import datetime
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        dmg_name = self.artifact_template.format(version=self.version, platform='macOS', timestamp=timestamp) + ".dmg"
         dmg_path = self.builds_dir / dmg_name
 
         # 删除已存在的DMG文件

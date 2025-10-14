@@ -51,7 +51,32 @@ class DynamicCrawler:
                         print(f"   🌐 访问股吧 (尝试 {attempt + 1}/{max_retries}): {url}")
 
                         # 改用load等待策略，更快
-                        page.goto(url, wait_until='load', timeout=30000)
+                        # 尝试多种排序/参数的搜索结果，提高解析成功率
+                        candidate_urls = [
+                            f"https://so.eastmoney.com/news/s?keyword={stock_code}",
+                            f"https://so.eastmoney.com/news/s?keyword={stock_code}&sort=time",
+                            f"https://so.eastmoney.com/news/s?keyword={stock_code}&sort=score",
+                        ]
+
+                        content = ''
+                        for idx, u in enumerate(candidate_urls, start=1):
+                            print(f"   🌐 访问新闻候选URL {idx}/{len(candidate_urls)}: {u}")
+                            page.goto(u, wait_until='load', timeout=30000)
+                            page.wait_for_timeout(4000)
+
+                            # 逐步滚动触发懒加载
+                            try:
+                                for _ in range(2):
+                                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                                    page.wait_for_timeout(800)
+                            except:
+                                pass
+
+                            # 获取HTML
+                            content = page.content()
+                            # 简单判断是否包含新闻结构标记，否则继续尝试下一个URL
+                            if any(k in content for k in ['news', 'result', 'search']):
+                                break
 
                         # 等待页面渲染
                         page.wait_for_timeout(5000)
@@ -211,16 +236,19 @@ class DynamicCrawler:
                         print(f"   🌐 访问新闻 (尝试 {attempt + 1}/{max_retries}): {url}")
 
                         page.goto(url, wait_until='load', timeout=30000)
-                        page.wait_for_timeout(5000)  # 增加等待时间
 
-                        # 滚动触发懒加载
+                        # 等待页面初始渲染
+                        page.wait_for_timeout(3000)
+
+                        # 轻度滚动以触发懒加载
                         try:
-                            for _ in range(3):
+                            for _ in range(2):
                                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                                page.wait_for_timeout(1000)
+                                page.wait_for_timeout(800)
                         except:
                             pass
 
+                        # 获取HTML内容（确保定义content，避免NameError）
                         content = page.content()
 
                         # 调试：保存HTML到临时文件
@@ -235,30 +263,47 @@ class DynamicCrawler:
 
                         news_list = []
 
-                        # 极度通用的选择器 - 查找所有包含链接的容器
+                        # 更针对东方财富搜索页的选择器
                         news_items = []
 
-                        # 策略1: 查找常见新闻容器class
-                        for class_name in ['news-item', 'result-item', 'search-item', 'list-item', 'item', 'article']:
-                            items = soup.find_all('div', class_=class_name) + soup.find_all('li', class_=class_name)
-                            if len(items) > 2:
-                                news_items = items
-                                print(f"   ✅ 找到{len(items)}个新闻候选 (class={class_name})")
+                        # 优先：ul新闻列表结构
+                        ul_candidates = []
+                        for ul in soup.find_all('ul'):
+                            cls = (ul.get('class') or [])
+                            idv = ul.get('id') or ''
+                            text_len = len(ul.get_text(strip=True))
+                            if (
+                                ('news' in ' '.join(cls).lower() or 'list' in ' '.join(cls).lower() or 'news' in idv.lower())
+                                and text_len > 50
+                            ):
+                                ul_candidates.append(ul)
+                        for ul in ul_candidates:
+                            lis = ul.find_all('li')
+                            if len(lis) >= 3:
+                                news_items = lis
+                                print(f"   ✅ 找到{len(lis)}个新闻候选 (ul列表)")
                                 break
 
-                        # 策略2: 如果没找到，查找所有包含<a>标签的li元素
+                        # 次选：常见新闻容器class
+                        if not news_items:
+                            for class_name in ['news-item', 'result-item', 'search-item', 'list-item', 'item', 'article']:
+                                items = soup.find_all('div', class_=class_name) + soup.find_all('li', class_=class_name)
+                                if len(items) > 2:
+                                    news_items = items
+                                    print(f"   ✅ 找到{len(items)}个新闻候选 (class={class_name})")
+                                    break
+
+                        # 兜底：包含<a>标签的li元素
                         if not news_items:
                             all_li = soup.find_all('li')
                             news_items = [li for li in all_li if li.find('a') and len(li.get_text(strip=True)) > 10]
                             if len(news_items) > 2:
                                 print(f"   ✅ 找到{len(news_items)}个新闻候选 (通用li)")
 
-                        # 策略3: 查找所有包含标题的div
+                        # 最后：包含标题的div
                         if not news_items:
                             all_divs = soup.find_all('div')
-                            news_items = [div for div in all_divs if
-                                          div.find('a') and len(div.get_text(strip=True)) > 20 and len(
-                                              div.get_text(strip=True)) < 500]
+                            news_items = [div for div in all_divs if div.find('a') and 20 < len(div.get_text(strip=True)) < 500]
                             if len(news_items) > 2:
                                 news_items = news_items[:50]  # 限制数量避免误匹配
                                 print(f"   ✅ 找到{len(news_items)}个新闻候选 (通用div)")
@@ -271,15 +316,15 @@ class DynamicCrawler:
                             return []
 
                         for item in news_items[:limit * 2]:  # 多获取一些以防部分解析失败
-                            # 提取标题链接
-                            title_elem = item.find('a', href=True)
-                            if not title_elem:
+                            # 在容器内选择文本最长的链接，避免选到“查看详情”一类
+                            a_tags = [a for a in item.find_all('a', href=True) if a.get_text(strip=True)]
+                            if not a_tags:
                                 continue
-
+                            title_elem = max(a_tags, key=lambda x: len(x.get_text(strip=True)))
                             title = title_elem.get_text(strip=True)
 
-                            # 过滤无效标题
-                            if not title or len(title) < 8:
+                            # 过滤无效标题（更宽松）
+                            if not title or len(title) < 6:
                                 continue
 
                             # 过滤导航栏、用户链接等非新闻内容(不区分大小写)
@@ -287,7 +332,7 @@ class DynamicCrawler:
                             skip_keywords = [
                                 '首页', '登录', '注册', '关于', '联系', '帮助',
                                 '股友', 'level', 'choice', 'api', 'app',
-                                '限售股解禁', '深交所', '上交所', '北交所',
+                                '限售股解禁',
                                 '数据中心', '行情中心', '资讯中心'
                             ]
                             if any(skip.lower() in title_lower for skip in skip_keywords):
@@ -302,8 +347,20 @@ class DynamicCrawler:
                             if any(skip_url in link for skip_url in skip_urls):
                                 continue
 
-                            # 提取日期 - 多种模式
-                            date_text = datetime.now().strftime('%Y-%m-%d')
+                            # 优先选择疑似新闻详情页链接
+                            if not (link.endswith('.html') or '/a/' in link or '/news/' in link or 'finance' in link):
+                                # 尝试容器内其他a标签
+                                fallback_a = next((a for a in item.find_all('a', href=True)
+                                                   if a.get('href', '').endswith('.html')), None)
+                                if fallback_a:
+                                    link = fallback_a.get('href')
+
+                            # 规范相对链接
+                            if not link.startswith('http'):
+                                link = f'https://so.eastmoney.com{link}'
+
+                            # 提取日期 - 多种模式（未命中则置空，避免误填今天）
+                            date_text = ''
                             date_patterns = [
                                 ('span', 'date'),
                                 ('span', 'time'),
@@ -322,9 +379,9 @@ class DynamicCrawler:
                                     break
 
                             # 如果没找到日期标签，尝试正则匹配
-                            if date_text == datetime.now().strftime('%Y-%m-%d'):
-                                import re
-                                date_match = re.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', item.get_text())
+                            if not date_text:
+                                # 支持YYYY-MM-DD或MM-DD HH:MM等常见格式
+                                date_match = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2})', item.get_text())
                                 if date_match:
                                     date_text = date_match.group(0)
 
@@ -335,6 +392,8 @@ class DynamicCrawler:
                                 ('span', 'media'),
                                 ('span', 'from'),
                                 ('span', 'author'),
+                                ('p', 'source'),
+                                ('em', 'source'),
                             ]
 
                             for tag, class_name in source_patterns:
@@ -347,7 +406,7 @@ class DynamicCrawler:
 
                             news_list.append({
                                 'title': title,
-                                'url': link if link.startswith('http') else f'https://so.eastmoney.com{link}',
+                                'url': link,
                                 'publish_time': date_text,
                                 'source': source,
                                 'summary': title[:100]
@@ -359,6 +418,44 @@ class DynamicCrawler:
                         if news_list:
                             print(f"   ✅ 成功解析{len(news_list)}条新闻")
                             return news_list
+
+                        # 兜底：全局扫描<a>，选取疑似新闻详情页链接
+                        if not news_list:
+                            fallback_news = []
+                            for a in soup.find_all('a', href=True):
+                                text = a.get_text(strip=True)
+                                href = a.get('href', '')
+                                if not text or not href:
+                                    continue
+                                if len(text) < 6 or len(text) > 120:
+                                    continue
+                                # 过滤文本为URL的情况
+                                if text.startswith('http'):
+                                    continue
+                                # 要求包含中文或字母，避免纯符号
+                                if not re.search(r'[\u4e00-\u9fffA-Za-z]', text):
+                                    continue
+                                # 仅保留东方财富及常见新闻详情结构
+                                if (
+                                    'eastmoney.com' in href and (
+                                        href.endswith('.html') or '/a/' in href or '/news/' in href or 'finance' in href
+                                    )
+                                ):
+                                    if not href.startswith('http'):
+                                        href = f'https://so.eastmoney.com{href}'
+                                    fallback_news.append({
+                                        'title': text,
+                                        'url': href,
+                                        'publish_time': '',
+                                        'source': '东方财富网',
+                                        'summary': text[:100]
+                                    })
+                                    if len(fallback_news) >= limit:
+                                        break
+
+                            if fallback_news:
+                                print(f"   ✅ 兜底解析{len(fallback_news)}条新闻")
+                                return fallback_news
 
                         print(f"   ⚠️  未解析到有效新闻 (尝试 {attempt + 1}/{max_retries})")
                         if attempt < max_retries - 1:
@@ -517,7 +614,8 @@ class DynamicCrawler:
                                 except Exception:
                                     pass
                             if not date_text:
-                                date_text = datetime.now().strftime('%Y-%m-%d')
+                                # 保持为空，后续由上层统一归一化/兜底
+                                date_text = ''
 
                             # 提取类型
                             ann_type = '其他'

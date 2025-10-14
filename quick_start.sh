@@ -61,6 +61,134 @@ setup_user_directories() {
 # 初始化用户目录
 setup_user_directories
 
+# 自动安装独立Python 3.11.9 (macOS)
+ensure_portable_python() {
+    local target_version="3.11.9"
+    local min_version="3.11.9"
+    local portable_root="$PWD/.python"
+    local portable_dir="$portable_root/py311-$target_version"
+    local python_exe="$portable_dir/bin/python3"
+
+    # 检测是否在应用包环境（应用包不需要安装）
+    if [ "$KRONOS_IS_APP_BUNDLE" = "true" ]; then
+        return 0
+    fi
+
+    echo -e "${BLUE}检查 Python 版本要求...${NC}"
+
+    # 检查是否已有便携式Python
+    if [ -f "$python_exe" ]; then
+        local installed_version=$("$python_exe" --version 2>&1 | grep -o "[0-9]\+\.[0-9]\+\.[0-9]\+" | head -1)
+        echo -e "${GREEN}OK: 找到已安装的便携式 Python $installed_version${NC}"
+        export PYTHON="$python_exe"
+        export PYTHON_CMD="$python_exe"
+        return 0
+    fi
+
+    # 检测系统架构
+    local arch=$(uname -m)
+    local os_type=$(uname -s)
+
+    if [ "$os_type" != "Darwin" ]; then
+        echo -e "${YELLOW}INFO: 此功能仅支持 macOS${NC}"
+        return 1
+    fi
+
+    # 确定下载URL列表（清华镜像优先，GitHub官方源备用）
+    local download_urls=()
+    local filename=""
+
+    if [ "$arch" = "arm64" ] || [ "$arch" = "aarch64" ]; then
+        # Apple Silicon (M1/M2/M3)
+        filename="cpython-3.11.7+20240107-aarch64-apple-darwin-install_only.tar.gz"
+    elif [ "$arch" = "x86_64" ]; then
+        # Intel
+        filename="cpython-3.11.7+20240107-x86_64-apple-darwin-install_only.tar.gz"
+    else
+        echo -e "${RED}ERROR: 不支持的架构 $arch${NC}"
+        return 1
+    fi
+
+    # 下载源列表（清华镜像优先）
+    download_urls=(
+        "https://mirrors.tuna.tsinghua.edu.cn/github-release/indygreg/python-build-standalone/20240107/$filename"
+        "https://github.com/indygreg/python-build-standalone/releases/download/20240107/$filename"
+    )
+
+    mkdir -p "$portable_root"
+
+    local tarball="$portable_root/python-$target_version.tar.gz"
+
+    echo -e "${CYAN}SETUP: 下载便携式 Python $target_version ($arch)...${NC}"
+    echo -e "${CYAN}这不会影响您系统的Python，会安装到 .python/ 目录${NC}"
+
+    # 尝试从多个源下载
+    local download_success=false
+    for download_url in "${download_urls[@]}"; do
+        local source_name="官方源"
+        if [[ "$download_url" =~ "tsinghua" ]]; then
+            source_name="清华镜像"
+        fi
+
+        echo -e "${CYAN}MIRROR: 尝试从 $source_name 下载...${NC}"
+
+        # 下载
+        if command -v curl >/dev/null 2>&1; then
+            if curl -L -o "$tarball" "$download_url" 2>/dev/null; then
+                download_success=true
+                echo -e "${GREEN}OK: 从 $source_name 下载成功${NC}"
+                break
+            else
+                echo -e "${YELLOW}WARN: $source_name 下载失败，尝试下一个源...${NC}"
+            fi
+        elif command -v wget >/dev/null 2>&1; then
+            if wget -O "$tarball" "$download_url" 2>/dev/null; then
+                download_success=true
+                echo -e "${GREEN}OK: 从 $source_name 下载成功${NC}"
+                break
+            else
+                echo -e "${YELLOW}WARN: $source_name 下载失败，尝试下一个源...${NC}"
+            fi
+        else
+            echo -e "${RED}ERROR: 需要 curl 或 wget 来下载${NC}"
+            return 1
+        fi
+    done
+
+    if [ "$download_success" = false ]; then
+        echo -e "${RED}ERROR: 所有下载源均失败${NC}"
+        return 1
+    fi
+
+    # 解压
+    echo -e "${CYAN}SETUP: 解压 Python...${NC}"
+    mkdir -p "$portable_dir"
+    tar -xzf "$tarball" -C "$portable_dir" --strip-components=1 || {
+        echo -e "${RED}ERROR: 解压失败${NC}"
+        return 1
+    }
+
+    # 验证安装
+    if [ -f "$python_exe" ]; then
+        local installed_version=$("$python_exe" --version 2>&1 | grep -o "[0-9]\+\.[0-9]\+\.[0-9]\+" | head -1)
+        echo -e "${GREEN}OK: Python $installed_version 安装成功到 $portable_dir${NC}"
+
+        # 设置环境变量
+        export PYTHON="$python_exe"
+        export PYTHON_CMD="$python_exe"
+
+        # 升级pip
+        echo -e "${CYAN}SETUP: 升级 pip...${NC}"
+        "$python_exe" -m ensurepip --upgrade 2>/dev/null || true
+        "$python_exe" -m pip install --upgrade pip 2>/dev/null || true
+
+        return 0
+    else
+        echo -e "${RED}ERROR: Python 安装失败${NC}"
+        return 1
+    fi
+}
+
 # 智能检测Python - 动态检测而非硬编码路径
 detect_python() {
     local best_python=""
@@ -149,9 +277,43 @@ detect_python() {
 
 # 设置Python路径
 PYTHON_CMD=$(detect_python)
+
+# 检查Python版本，如果低于3.11.9，自动安装便携式Python
+MIN_PYTHON_VERSION="3.11.9"
+if [ -n "$PYTHON_CMD" ]; then
+    CURRENT_VERSION=$("$PYTHON_CMD" --version 2>&1 | grep -o "[0-9]\+\.[0-9]\+\.[0-9]\+" | head -1)
+    echo -e "${BLUE}当前 Python 版本: $CURRENT_VERSION${NC}"
+
+    # 版本比较函数
+    version_compare() {
+        printf '%s\n%s\n' "$1" "$2" | sort -V -C
+    }
+
+    if ! version_compare "$MIN_PYTHON_VERSION" "$CURRENT_VERSION"; then
+        echo -e "${YELLOW}警告: Python 版本 $CURRENT_VERSION 低于最低要求 $MIN_PYTHON_VERSION${NC}"
+        echo -e "${CYAN}正在安装独立的 Python 3.11.9（不影响系统Python）...${NC}"
+
+        if ensure_portable_python; then
+            echo -e "${GREEN}✓ 已切换到独立 Python: $PYTHON${NC}"
+            PYTHON_CMD="$PYTHON"
+        else
+            echo -e "${YELLOW}警告: 独立Python安装失败，将继续使用系统Python $CURRENT_VERSION${NC}"
+            echo -e "${YELLOW}可能会遇到兼容性问题${NC}"
+        fi
+    else
+        echo -e "${GREEN}OK: Python 版本满足要求 ($CURRENT_VERSION >= $MIN_PYTHON_VERSION)${NC}"
+    fi
+else
+    echo -e "${YELLOW}未找到系统 Python，尝试安装独立 Python 3.11.9...${NC}"
+    if ensure_portable_python; then
+        echo -e "${GREEN}✓ 已安装独立 Python: $PYTHON${NC}"
+        PYTHON_CMD="$PYTHON"
+    fi
+fi
+
 if [ -z "$PYTHON_CMD" ]; then
-    echo "ERROR: 未找到合适的Python环境"
-    echo "建议安装Python 3.11.13"
+    echo -e "${RED}ERROR: 未找到合适的Python环境${NC}"
+    echo -e "${YELLOW}建议安装Python 3.11.9或更高版本${NC}"
     exit 1
 fi
 
@@ -1344,7 +1506,7 @@ EOF
             # 执行预测脚本
             if safe_execute_python "examples/prediction_batch_example.py" "批量股票预测" --stock-code "$clean_symbol"; then
                 echo -e "${GREEN}OK: 批量预测完成！${NC}"
-                echo -e "${GREEN}REPORT: HTML分析报告已自动生成到$KRONOS_RESULTS_DIR目录${NC}"
+                echo -e "${GREEN}REPORT: HTML分析报告已自动生成到 ${KRONOS_RESULTS_DIR} 目录${NC}"
             else
                 echo -e "${YELLOW}WARN: 预测运行失败，但数据已成功获取${NC}"
             fi

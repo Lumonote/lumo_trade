@@ -68,7 +68,7 @@ a = Analysis(
     ],
     hookspath=[os.path.join(project_root, 'packaging/hooks')],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[os.path.join(project_root, 'packaging/hooks/runtime_hook_fix_encoding.py')],
     excludes=[
         'IPython',
         'jupyter',

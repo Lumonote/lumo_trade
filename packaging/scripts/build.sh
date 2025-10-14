@@ -99,9 +99,11 @@ read -p "是否创建DMG安装包？(y/n): " CREATE_DMG
 
 if [ "$CREATE_DMG" = "y" ]; then
     echo "💿 创建DMG安装包..."
-    mkdir -p dist
+    mkdir -p packaging/builds
     TS=$(date +%Y%m%d_%H%M%S)
-    DMG_PATH="dist/Kronos_${TS}_macOS.dmg"
+    VERSION=$(python3 -c 'import json;print(json.load(open("packaging/version.json"))['"'version'"'])' 2>/dev/null)
+    if [ -z "$VERSION" ]; then VERSION="1.0.0"; fi
+    DMG_PATH="packaging/builds/Kronos_v${VERSION}_macOS_${TS}.dmg"
     rm -f "$DMG_PATH"
 
     hdiutil create -volname "Kronos" -srcfolder "dist/Kronos.app" -ov -format UDZO "$DMG_PATH"

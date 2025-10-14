@@ -2138,8 +2138,8 @@ class QuantitativeModels:
         if not self.use_optimized_calculation:
             return self.analyze_model_17_machine_learning_rf()
 
-        # 矢量化多因子评分
-        conditions = self.conditions
+        # 矢量化多因子评分（来自矢量化生成器的预计算条件缓存）
+        conditions = self.vectorized_generator.conditions
 
         # 矢量化计算各因子得分
         rsi_score = np.where((self.df['rsi'] > 30) & (self.df['rsi'] < 70), 1,
@@ -2404,8 +2404,9 @@ class SignalStrengthSystem:
     def generate_strength_based_signals(self, buy_conditions, sell_conditions, condition_weights=None):
         """基于强度生成信号数组"""
         signals = []
-
-        for i in range(len(buy_conditions)):
+        # 使用第一个条件序列的长度作为迭代长度，避免错误使用条件数量
+        seq_len = len(buy_conditions[0]) if buy_conditions else 0
+        for i in range(seq_len):
             frame_buy_cond = [cond.iloc[i] if hasattr(cond, 'iloc') else cond[i] for cond in buy_conditions]
             frame_sell_cond = [cond.iloc[i] if hasattr(cond, 'iloc') else cond[i] for cond in sell_conditions]
 
@@ -2475,8 +2476,9 @@ class VectorizedSignalGenerator:
             self.df['close'] < self.df['ma20']
         ]
 
-        # 使用强度系统生成信号
-        signals = self.signal_strength.generate_strength_based_signals(buy_conditions, sell_conditions)
+        # 使用强度系统生成信号并标准化为离散交易信号
+        strength = self.signal_strength.generate_strength_based_signals(buy_conditions, sell_conditions)
+        signals = np.where(strength > 0, 1, np.where(strength < 0, -1, 0))
         return signals
 
     def generate_six_dimension_resonance_signals(self):
@@ -2508,8 +2510,7 @@ class VectorizedSignalGenerator:
         moderate_buy = (resonance_counts >= 3) & risk_control
         sell_condition = self.conditions['rsi_overbought'] | (self.df['kdj_k'] > 90)
 
-        # 使用强度信号
-        signals = np.where(strong_buy, 2.0,  # 强买入
-                           np.where(moderate_buy, 1.0,  # 中等买入
-                                    np.where(sell_condition, -1.0, 0)))  # 卖出或持有
+        # 标准离散信号：买入=1，卖出=-1，持有=0
+        buy_signal = strong_buy | moderate_buy
+        signals = np.where(buy_signal, 1, np.where(sell_condition, -1, 0))
         return signals

@@ -7,6 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VERSION_CONFIG="$PROJECT_ROOT/packaging/version.json"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -97,6 +98,24 @@ detect_os() {
 CURRENT_OS=$(detect_os)
 echo -e "${BLUE}🖥️  当前操作系统: $CURRENT_OS${NC}"
 echo ""
+
+# 读取版本配置
+load_version_config() {
+    # 默认值
+    VERSION="1.0.0"
+    SHORT_VERSION="$VERSION"
+    CHANNEL="stable"
+    ARTIFACT_TEMPLATE="Kronos_v{version}_{platform}_{timestamp}"
+
+    # 使用Python解析版本配置（优先）
+    if [ -f "$VERSION_CONFIG" ] && [ -n "$PYTHON_CMD" ]; then
+        local info
+        info=$($PYTHON_CMD -c "import json,sys; p=json.load(open(r'$VERSION_CONFIG')); print(f\"{p.get('version','1.0.0')}|{p.get('short_version',p.get('version','1.0.0'))}|{p.get('channel','stable')}|{p.get('artifact_template','Kronos_v{version}_{platform}_{timestamp}')}\")" 2>/dev/null || true)
+        if [ -n "$info" ]; then
+            IFS='|' read -r VERSION SHORT_VERSION CHANNEL ARTIFACT_TEMPLATE <<< "$info"
+        fi
+    fi
+}
 
 # 清理函数
 clean_build() {
@@ -273,11 +292,19 @@ build_macos() {
         if [ -d "dist/Kronos.app" ]; then
             echo -e "${GREEN}✅ 现代化GUI macOS应用包创建成功！${NC}"
             
-            # 创建DMG文件
-            BUILD_DIR="packaging/builds"
+            # 创建DMG文件（统一版本命名）
+            BUILD_DIR="$PROJECT_ROOT/packaging/builds"
             mkdir -p "$BUILD_DIR"
-            
-            DMG_FILE="$BUILD_DIR/Kronos_v1.0_macOS.dmg"
+
+            # 读取版本配置并生成文件名
+            load_version_config
+            TIMESTAMP=$(date "+%Y%m%d_%H%M%S")
+            PLATFORM_NAME="macOS"
+            ARTIFACT_NAME="$ARTIFACT_TEMPLATE"
+            ARTIFACT_NAME="${ARTIFACT_NAME/\{version\}/$VERSION}"
+            ARTIFACT_NAME="${ARTIFACT_NAME/\{platform\}/$PLATFORM_NAME}"
+            ARTIFACT_NAME="${ARTIFACT_NAME/\{timestamp\}/$TIMESTAMP}"
+            DMG_FILE="$BUILD_DIR/${ARTIFACT_NAME}.dmg"
             if command -v hdiutil &> /dev/null; then
                 hdiutil create -srcfolder "dist/Kronos.app" -volname "Kronos" "$DMG_FILE" 2>/dev/null || {
                     echo -e "${YELLOW}⚠️  DMG创建失败，但应用包构建成功${NC}"

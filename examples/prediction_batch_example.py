@@ -20,6 +20,7 @@ from analysis.data_processor import DataProcessor
 from analysis.fundamental_data_collector import FundamentalDataCollector
 from analysis.news_sentiment_collector import NewsSentimentCollector
 from analysis.investor_sentiment import InvestorSentimentAnalyzer
+from analysis.sampling_tuner import tune_sampling_params
 from analysis.event_analyzer import EventAnalyzer
 from scripts.html_report_generator import generate_comprehensive_report
 
@@ -1516,14 +1517,57 @@ try:
     print("   - Sample Count: 3 (三次采样取平均,平衡速度和稳定性)")
     print("   💡 该配置经过测试,实现最佳MAPE(7.76%)和最低重叠日波动率")
 
+    # 基于情绪+事件动态调整采样参数（前置采集与量化分析）
+    try:
+        print("\n🔎 前置采集与量化分析（用于调参）...")
+        print(f"🔍 正在分析 {stock_code} 的利好利空事件...")
+        news_collector = NewsSentimentCollector(stock_code)
+        news_data = news_collector.get_comprehensive_news(verbose=False)
+        sentiment_analyzer = InvestorSentimentAnalyzer(stock_code)
+        sentiment_data = sentiment_analyzer.get_comprehensive_sentiment(verbose=False)
+        event_analyzer = EventAnalyzer(stock_code, news_data=news_data)
+        event_data = event_analyzer.get_comprehensive_analysis(verbose=False)
+
+        # 输出摘要（贴近用户日志格式）
+        g = sentiment_data.get("guba_sentiment", {})
+        m = sentiment_data.get("overall_market_sentiment", {})
+        s = sentiment_data.get("sector_sentiment", {})
+        print("✅ 情绪分析完成")
+        print(f"    - 综合情绪: {sentiment_data.get('comprehensive_sentiment','未知')} ({sentiment_data.get('comprehensive_score',0)}分)")
+        print(f"    - 股吧评论: {g.get('overall','未知')}")
+        print(f"    - 看多比例: {g.get('bullish_ratio',0)}%")
+        print(f"    - 看空比例: {g.get('bearish_ratio',0)}%")
+        primary_name = (m.get('primary_index') or {}).get('name', '所属大盘')
+        primary_chg = m.get('primary_change_pct','N/A')
+        print(f"    - 大盘情绪: {m.get('overall','未知')} 所属大盘: {primary_name} 涨跌: {primary_chg}%")
+        print(f"    - 板块情绪: {s.get('overall','未知')} ({s.get('sector_name','板块')}) 涨跌: {s.get('change_pct','N/A')}%")
+        summary = event_data.get("summary", {})
+        print("✅ 事件分析完成")
+        print(f"    - 综合评级: {summary.get('rating','未知')} (得分: {summary.get('comprehensive_score',0)})")
+        print(f"    - 利好事件: {summary.get('total_positive_events',0)} 个")
+        print(f"    - 利空事件: {summary.get('total_negative_events',0)} 个")
+        print(f"    - 风险等级: {summary.get('risk_level','未知')}")
+        print(f"    - 机会等级: {summary.get('opportunity_level','未知')}")
+        print("✅ 综合面数据采集完成")
+
+        tuned = tune_sampling_params(sentiment_data, events_summary=event_data.get("summary"))
+        print("\n🧠 动态采样参数调整:")
+        print(f"   - Temperature: {tuned['T']}")
+        print(f"   - Top-p: {tuned['top_p']}")
+        print(f"   - Sample Count: {tuned['sample_count']}")
+        print(f"   - 依据: {tuned['reason']}")
+    except Exception as e:
+        print(f"⚠️ 动态调参失败，回退默认参数: {e}")
+        tuned = {"T": 0.7, "top_p": 0.90, "sample_count": 3}
+
     pred_df_list = predictor.predict_batch(
         df_list=dfs,
         x_timestamp_list=xtsp,
         y_timestamp_list=ytsp,
         pred_len=pred_len,
-        T=0.7,  # 最优温度参数:平衡稳定性和预测质量
-        top_p=0.90,  # 核采样阈值:保留90%概率质量
-        sample_count=3,  # 3次采样平衡速度和稳定性
+        T=tuned["T"],
+        top_p=tuned["top_p"],
+        sample_count=tuned["sample_count"],
         verbose=True,  # 显示进度
         global_norm_stats=(global_mean, global_std),  # 传入全局归一化统计
     )
@@ -1920,25 +1964,25 @@ try:
             # 采集综合面数据
             print("\n📊 采集综合面数据...")
 
-            # 1. 采集基本面数据
+            # 1. 采集基本面数据（保持在此处，避免前置阶段过重）
             print("  💰 采集基本面财务数据...")
             fundamental_collector = FundamentalDataCollector(stock_code)
             fundamental_data = fundamental_collector.get_comprehensive_data()
 
-            # 2. 采集消息面数据
-            print("  📰 采集消息面数据...")
-            news_collector = NewsSentimentCollector(stock_code)
-            news_data = news_collector.get_comprehensive_news()
-
-            # 3. 分析股民情绪
-            print("  😊 分析股民情绪...")
-            sentiment_analyzer = InvestorSentimentAnalyzer(stock_code)
-            sentiment_data = sentiment_analyzer.get_comprehensive_sentiment()
-
-            # 4. 分析利好利空事件(传入news_data避免重复采集)
-            print("  🔍 分析利好利空事件...")
-            event_analyzer = EventAnalyzer(stock_code, news_data=news_data)
-            event_data = event_analyzer.get_comprehensive_analysis()
+            # 2. 使用前置阶段的消息面、情绪与事件分析结果（避免重复采集）
+            try:
+                _ = sentiment_data  # 确认变量存在
+                _ = news_data
+                _ = event_data
+            except NameError:
+                # 若变量未在前置阶段生成，则兜底采集一次
+                print("  ⚠️ 前置分析未生成，兜底采集消息面与情绪...")
+                news_collector = NewsSentimentCollector(stock_code)
+                news_data = news_collector.get_comprehensive_news(verbose=False)
+                sentiment_analyzer = InvestorSentimentAnalyzer(stock_code)
+                sentiment_data = sentiment_analyzer.get_comprehensive_sentiment(verbose=False)
+                event_analyzer = EventAnalyzer(stock_code, news_data=news_data)
+                event_data = event_analyzer.get_comprehensive_analysis(verbose=False)
 
             print("✅ 综合面数据采集完成\n")
 

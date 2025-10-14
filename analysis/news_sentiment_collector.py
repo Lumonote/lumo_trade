@@ -39,6 +39,9 @@ class NewsSentimentCollector:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': 'http://quote.eastmoney.com/'
         }
+        # 用于更强关联检索
+        self.company_name = None
+        self.related_keywords = []
 
     def get_latest_announcements(self, limit=10):
         """
@@ -54,15 +57,26 @@ class NewsSentimentCollector:
         announcements = DynamicCrawler.crawl_announcements(self.stock_code, limit)
 
         if announcements:
-            # 为Playwright爬取的公告重新分类重要性(覆盖默认的'medium')
+            # 统一字段命名与补充，避免后续分析出现空日期/链接
+            normalized = []
             for ann in announcements:
+                # 规范日期字段并归一化
+                raw_date = ann.get('date') or ann.get('publish_time') or ann.get('notice_date') or ''
+                ann['date'] = self._normalize_date_str(raw_date)
+                # 规范链接字段，确保为绝对URL
+                url = ann.get('url') or ''
+                if url and not url.startswith('http'):
+                    url = f"http://data.eastmoney.com{url}"
+                ann['url'] = url
+                # 重要性重新分类（覆盖来源默认值）
                 ann['importance'] = self._classify_importance(ann.get('title', ''))
-                # 确保有摘要字段
-                if 'summary' not in ann:
+                # 摘要兜底
+                if 'summary' not in ann or not ann.get('summary'):
                     ann['summary'] = self._extract_summary(ann.get('title', ''))
+                normalized.append(ann)
 
-            print(f"   ✅ Playwright成功获取{len(announcements)}条公告")
-            return announcements
+            print(f"   ✅ Playwright成功获取{len(normalized)}条公告")
+            return normalized
 
         # Playwright失败，尝试API
         print(f"   ⚠️  Playwright爬取失败,尝试API接口")
@@ -109,7 +123,8 @@ class NewsSentimentCollector:
 
         except Exception as e:
             print(f"⚠️ 获取公告失败: {str(e)},尝试网页爬取")
-            return self._scrape_announcements(limit)
+            ann = self._scrape_announcements(limit)
+            return ann
 
     def _scrape_announcements(self, limit=10):
         """网页爬取公告数据"""
@@ -163,12 +178,13 @@ class NewsSentimentCollector:
                     if m:
                         date_text = m.group(1)
                         break
+                # 若未解析到日期，不再填充今天，交由归一化逻辑处理
                 if not date_text:
-                    date_text = datetime.now().strftime('%Y-%m-%d')
+                    date_text = ''
 
                 announcements.append({
                     'title': title,
-                    'date': date_text,
+                    'date': self._normalize_date_str(date_text),
                     'type': '公告',
                     'url': href if href.startswith('http') else f"http://data.eastmoney.com{href}",
                     'summary': self._extract_summary(title),
@@ -198,10 +214,13 @@ class NewsSentimentCollector:
         news_list = DynamicCrawler.crawl_news_list(self.stock_code, limit)
 
         if news_list:
-            # 为Playwright爬取的新闻添加情感分析
+            # 归一化日期字段，并添加情感分析
             for news in news_list:
+                raw_date = news.get('date') or news.get('publish_time') or ''
+                normalized = self._normalize_date_str(raw_date)
+                news['date'] = normalized
+                news['publish_time'] = normalized
                 if 'sentiment' not in news:
-                    # 使用标题和摘要进行情感分析
                     text = news.get('title', '') + ' ' + news.get('summary', '')
                     news['sentiment'] = self._analyze_sentiment(text)
 
@@ -211,79 +230,148 @@ class NewsSentimentCollector:
         # Playwright失败，尝试API
         print(f"   ⚠️  Playwright爬取失败,尝试API接口")
         try:
-            # 现阶段新闻API不稳定，直接快速回退至网页爬取
-            print(f"   ⚠️  API未返回新闻数据或不稳定,直接网页爬取")
+            # 现阶段新闻API不稳定，先回退至网页爬取
+            print(f"   ⚠️  API未返回新闻数据或不稳定,回退网页爬取")
             news_list = self._scrape_news(limit)
+
+            # 如果网页爬取仍为空，尝试同花顺备用源
+            if not news_list:
+                print(f"   🔁 网页爬取为空,尝试同花顺新闻API备用源")
+                news_list = self._fallback_news_tonghuashun(limit)
+
             return news_list[:limit]
 
         except Exception as e:
-            print(f"⚠️ 获取新闻失败: {str(e)},尝试网页爬取")
-            return self._scrape_news(limit)
+            print(f"⚠️ 获取新闻失败: {str(e)},尝试网页爬取与备用源")
+            news_list = self._scrape_news(limit)
+            if not news_list:
+                news_list = self._fallback_news_tonghuashun(limit)
+            return news_list[:limit]
 
     def _scrape_news(self, limit=20):
-        """网页爬取新闻数据"""
+        """网页爬取新闻数据：按股票代码、公司名与关联关键词多次检索并合并"""
         try:
-            # 东方财富搜索新闻页（按关键词=股票代码）
-            url = f"https://so.eastmoney.com/news/s?keyword={self.stock_code}"
+            # 预加载公司名与关联词
+            if not self.company_name:
+                self._load_company_name()
+            if not self.related_keywords:
+                self._load_related_keywords()
 
-            response = requests.get(url, headers=self.headers, timeout=10)
-            response.encoding = 'utf-8'
+            def fetch_by_keyword(keyword: str, max_items: int = 10):
+                url = f"https://so.eastmoney.com/news/s?keyword={keyword}"
+                response = requests.get(url, headers=self.headers, timeout=10)
+                response.encoding = 'utf-8'
+                soup = BeautifulSoup(response.text, 'html.parser')
 
-            soup = BeautifulSoup(response.text, 'html.parser')
+                items = []
+                candidates = []
+                for class_name in ['news-item', 'result-item', 'search-item', 'list-item', 'item', 'article']:
+                    candidates += soup.find_all('div', class_=class_name)
+                    candidates += soup.find_all('li', class_=class_name)
+
+                if not candidates:
+                    # 退回通用li策略
+                    candidates = [li for li in soup.find_all('li') if li.find('a') and len(li.get_text(strip=True)) > 10]
+
+                for it in candidates[:max_items * 2]:
+                    # 优先选择内容最长的标题链接
+                    a_tags = [a for a in it.find_all('a', href=True) if a.get_text(strip=True)]
+                    if not a_tags:
+                        continue
+                    a = max(a_tags, key=lambda x: len(x.get_text(strip=True)))
+                    title = a.get_text(strip=True)
+                    if not title or len(title) < 6:
+                        continue
+                    href = a.get('href', '')
+                    if not href:
+                        continue
+
+                    # 过滤明显广告或推广链接（尽量保守，避免过度过滤）
+                    bad_hosts = ['acttg.eastmoney.com', 'tg.eastmoney.com']
+                    if any(b in href for b in bad_hosts):
+                        continue
+
+                    # 日期提取，支持更多常见结构
+                    date_text = ''
+                    date_elem = (
+                        it.find('span', class_='date') or it.find('span', class_='time') or it.find('time') or
+                        it.find('em', class_='time') or it.find('p', class_='time')
+                    )
+                    if date_elem:
+                        date_text = date_elem.get_text(strip=True)
+                    else:
+                        m = re.search(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})', it.get_text(" ", strip=True))
+                        if m:
+                            date_text = m.group(1)
+
+                    # 来源提取，兼容更多标签
+                    source = '东方财富网'
+                    source_elem = (
+                        it.find('span', class_='source') or it.find('p', class_='source') or
+                        it.find('span', class_='media') or it.find('p', class_='from')
+                    )
+                    if source_elem:
+                        st = source_elem.get_text(strip=True)
+                        if st and 2 <= len(st) <= 40:
+                            source = st
+
+                    items.append({
+                        'title': title,
+                        'date': self._normalize_date_str(date_text),
+                        'source': source,
+                        'url': href if href.startswith('http') else f"https://so.eastmoney.com{href}",
+                        'summary': self._extract_summary(title),
+                        'sentiment': self._analyze_sentiment(title)
+                    })
+
+                # 候选解析后若仍过少，回退为全局a标签解析，尽量保证有数据
+                if len(items) < max_items // 2:
+                    for a in soup.find_all('a', href=True):
+                        text = a.get_text(strip=True)
+                        href = a.get('href', '')
+                        if not text or not href:
+                            continue
+                        if len(text) < 8:
+                            continue
+                        if any(b in href for b in ['acttg.eastmoney.com', 'tg.eastmoney.com']):
+                            continue
+                        # 仅采集疑似新闻详情页
+                        if not (href.endswith('.html') or 'news' in href or 'finance' in href):
+                            continue
+                        items.append({
+                            'title': text,
+                            'date': '',
+                            'source': '东方财富网',
+                            'url': href if href.startswith('http') else f"https://so.eastmoney.com{href}",
+                            'summary': self._extract_summary(text),
+                            'sentiment': self._analyze_sentiment(text)
+                        })
+
+                # 截断到最大条数
+                items = items[:max_items]
+                return items
+
+            # 构造检索队列：股票代码、公司名、关联关键词
+            queries = [str(self.stock_code)]
+            if self.company_name:
+                queries.append(self.company_name)
+            queries.extend(self.related_keywords)
 
             news_list = []
-            # 选择器较为通用：查找包含标题链接的li/div项
-            candidates = []
-            for class_name in ['news-item', 'result-item', 'search-item', 'list-item', 'item', 'article']:
-                candidates += soup.find_all('div', class_=class_name)
-                candidates += soup.find_all('li', class_=class_name)
-
-            if not candidates:
-                # 退回通用li策略
-                candidates = [li for li in soup.find_all('li') if li.find('a') and len(li.get_text(strip=True)) > 10]
-
-            for item in candidates[:limit * 2]:
-                a = item.find('a', href=True)
-                if not a:
+            seen_titles = set()
+            for q in queries:
+                if not q:
                     continue
-                title = a.get_text(strip=True)
-                if not title or len(title) < 8:
-                    continue
-                href = a.get('href', '')
-                if not href:
-                    continue
-
-                # 过滤广告或活动页
-                bad_hosts = ['acttg.eastmoney.com', 'tg.eastmoney.com', 'emapp', 'dfcfwl2']
-                if any(b in href for b in bad_hosts) or 'Level-2' in title or '开户' in title or '理财' in title:
-                    continue
-
-                # 日期提取
-                date_text = ''
-                date_elem = item.find('span', class_='date') or item.find('span', class_='time') or item.find('time')
-                if date_elem:
-                    date_text = date_elem.get_text(strip=True)
-                else:
-                    m = re.search(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})', item.get_text(" ", strip=True))
-                    if m:
-                        date_text = m.group(1)
-
-                # 来源提取
-                source = '东方财富网'
-                source_elem = item.find('span', class_='source')
-                if source_elem:
-                    st = source_elem.get_text(strip=True)
-                    if st and len(st) < 30:
-                        source = st
-
-                news_list.append({
-                    'title': title,
-                    'date': date_text,
-                    'source': source,
-                    'url': href if href.startswith('http') else f"https://so.eastmoney.com{href}",
-                    'summary': self._extract_summary(title),
-                    'sentiment': self._analyze_sentiment(title)
-                })
+                items = fetch_by_keyword(q, max_items=max(5, limit // 2))
+                for it in items:
+                    t = it.get('title', '')
+                    if t and t not in seen_titles:
+                        news_list.append(it)
+                        seen_titles.add(t)
+                    if len(news_list) >= limit:
+                        break
+                if len(news_list) >= limit:
+                    break
 
             if not news_list:
                 print(f"   ⚠️  网页爬取也未获取到新闻")
@@ -292,6 +380,81 @@ class NewsSentimentCollector:
 
         except Exception as e:
             print(f"⚠️ 网页爬取新闻失败: {str(e)}")
+            return []
+
+    def _load_company_name(self):
+        """通过东财push2接口加载公司名"""
+        try:
+            exchange_flag = '1' if str(self.stock_code).startswith(('600', '601', '603', '605', '688')) else '0'
+            url = "http://push2.eastmoney.com/api/qt/stock/get"
+            params = {'secid': f"{exchange_flag}.{self.stock_code}", 'fields': 'f58'}
+            resp = requests.get(url, params=params, headers=self.headers, timeout=8)
+            data = resp.json() if resp.content else {}
+            name = (data or {}).get('data', {}).get('f58')
+            if isinstance(name, str) and name.strip():
+                self.company_name = name.strip()
+        except Exception:
+            pass
+
+    def _load_related_keywords(self):
+        """加载配置中的关联实体关键词"""
+        try:
+            cfg_path = project_root / 'config' / 'related_entities.json'
+            if cfg_path.exists():
+                with open(cfg_path, 'r', encoding='utf-8') as f:
+                    rel = json.load(f)
+                code = str(self.stock_code)
+                keys = [code, f"SZ{code}", f"SH{code}", f"{code}.SZ", f"{code}.SH"]
+                kws = []
+                for k in keys:
+                    v = rel.get(k)
+                    if isinstance(v, list):
+                        kws.extend([s for s in v if isinstance(s, str)])
+                self.related_keywords = list(dict.fromkeys(kws))
+        except Exception:
+            pass
+
+    def _fallback_news_tonghuashun(self, limit=20):
+        """同花顺新闻API备用源"""
+        try:
+            url = 'https://news.10jqka.com.cn/tapp/news/push/stock'
+
+            # 推断交易所编码
+            exchange = 'sh' if str(self.stock_code).startswith(('600', '601', '603', '605', '688')) else 'sz'
+            params = {
+                'stock_code': f"{exchange}{self.stock_code}",
+                'page': '1',
+                'page_size': str(limit),
+                '_': int(time.time() * 1000)
+            }
+
+            resp = requests.get(url, params=params, headers=self.headers, timeout=10)
+            data = resp.json() if resp.content else {}
+            items = (data or {}).get('data', {}).get('list', []) if (data or {}).get('status_code') == 0 else []
+
+            news_list = []
+            for it in items[:limit]:
+                title = it.get('title') or it.get('news_title') or ''
+                date = it.get('ctime') or it.get('pub_time') or it.get('date') or ''
+                url_item = it.get('url') or it.get('news_url') or ''
+                source = it.get('source') or it.get('site_name') or '同花顺'
+                if not title:
+                    continue
+                news_list.append({
+                    'title': title,
+                    'date': self._normalize_date_str(str(date)),
+                    'source': source,
+                    'url': url_item,
+                    'summary': self._extract_summary(title),
+                    'sentiment': self._analyze_sentiment(title)
+                })
+
+            if not news_list:
+                print("   ⚠️ 同花顺新闻API未返回有效数据")
+
+            return news_list
+        except Exception as e:
+            print(f"⚠️ 同花顺备用源获取失败: {str(e)}")
             return []
 
     def get_research_reports(self, limit=10):
@@ -307,33 +470,96 @@ class NewsSentimentCollector:
         try:
             # 东方财富研报API
             url = "http://reportapi.eastmoney.com/report/list"
-            params = {
-                'qType': '0',
-                'pageSize': str(limit),
-                'code': self.stock_code
-            }
-
-            response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            data = response.json()
-
             reports = []
-            if data.get('data'):
-                for item in data['data']:
-                    report = {
-                        'title': item.get('title', ''),
-                        'date': item.get('publishDate', ''),
-                        'institution': item.get('orgSName', ''),
-                        'researcher': item.get('researcher', ''),
-                        'rating': item.get('investRating', ''),
-                        'target_price': item.get('predictNextTwoYearEps', ''),
-                        'summary': item.get('title', '')[:100],
-                    }
-                    reports.append(report)
+
+            variants = self._format_stock_code_variants(self.stock_code)
+            for idx, code_variant in enumerate(variants, start=1):
+                params = {
+                    'qType': '0',
+                    'pageSize': str(limit),
+                    'code': code_variant
+                }
+                print(f"   🔁 尝试研报API代码格式({idx}/{len(variants)}): code={code_variant}")
+                response = requests.get(url, params=params, headers=self.headers, timeout=10)
+                data = response.json()
+                if data.get('data'):
+                    for item in data['data']:
+                        report = {
+                            'title': item.get('title', ''),
+                            'date': item.get('publishDate', ''),
+                            'institution': item.get('orgSName', ''),
+                            'researcher': item.get('researcher', ''),
+                            'rating': item.get('investRating', ''),
+                            'target_price': item.get('predictNextTwoYearEps', ''),
+                            'summary': item.get('title', '')[:100],
+                        }
+                        reports.append(report)
+                    break
+
+            # 如果API为空，尝试网页搜索研报作为兜底
+            if not reports:
+                print("   ⚠️  研报API未返回数据,尝试网页检索兜底")
+                reports = self._scrape_research_reports(limit)
 
             return reports[:limit]
 
         except Exception as e:
             print(f"⚠️ 获取研报失败: {str(e)}")
+            return self._scrape_research_reports(limit)
+
+    def _scrape_research_reports(self, limit=10):
+        """网页检索研报兜底"""
+        try:
+            url = f"https://so.eastmoney.com/news/s?keyword={self.stock_code}%20研报"
+            response = requests.get(url, headers=self.headers, timeout=10)
+            response.encoding = 'utf-8'
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            candidates = []
+            for class_name in ['news-item', 'result-item', 'search-item', 'list-item', 'item', 'article']:
+                candidates += soup.find_all('div', class_=class_name)
+                candidates += soup.find_all('li', class_=class_name)
+            if not candidates:
+                candidates = [li for li in soup.find_all('li') if li.find('a') and len(li.get_text(strip=True)) > 10]
+
+            reports = []
+            for item in candidates[:limit * 2]:
+                a = item.find('a', href=True)
+                if not a:
+                    continue
+                title = a.get_text(strip=True)
+                if not title or len(title) < 8:
+                    continue
+                href = a.get('href', '')
+                # 粗略筛选疑似研报内容
+                if not any(k in title for k in ['研报', '评级', '上调', '下调', '目标价', '买入', '增持', '中性', '减持']):
+                    continue
+
+                date_text = ''
+                date_elem = item.find('span', class_='date') or item.find('span', class_='time') or item.find('time')
+                if date_elem:
+                    date_text = date_elem.get_text(strip=True)
+                else:
+                    m = re.search(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})', item.get_text(" ", strip=True))
+                    if m:
+                        date_text = m.group(1)
+
+                reports.append({
+                    'title': title,
+                    'date': date_text,
+                    'institution': '研报来源',
+                    'researcher': '',
+                    'rating': '',
+                    'target_price': '',
+                    'summary': self._extract_summary(title),
+                })
+
+            if not reports:
+                print("   ⚠️  网页检索也未获取到研报")
+
+            return reports
+        except Exception as e:
+            print(f"⚠️ 网页检索研报失败: {str(e)}")
             return []
 
     def get_hot_topics(self):
@@ -414,78 +640,6 @@ class NewsSentimentCollector:
         else:
             return '中性'
 
-    def _get_mock_announcements(self, limit=10):
-        """生成示例公告数据"""
-        from datetime import datetime, timedelta
-
-        mock_announcements = [
-            {'title': '2024年第三季度业绩预告', 'importance': '高', 'days_ago': 2},
-            {'title': '关于股东增持股份计划的公告', 'importance': '高', 'days_ago': 5},
-            {'title': '董事会决议公告', 'importance': '中', 'days_ago': 7},
-            {'title': '关于获得政府补助的公告', 'importance': '中', 'days_ago': 10},
-            {'title': '关于签订重大合同的公告', 'importance': '高', 'days_ago': 12},
-            {'title': '投资者关系活动记录表', 'importance': '低', 'days_ago': 15},
-            {'title': '监事会决议公告', 'importance': '低', 'days_ago': 18},
-            {'title': '关于回购股份的进展公告', 'importance': '中', 'days_ago': 20},
-            {'title': '独立董事关于相关事项的独立意见', 'importance': '低', 'days_ago': 22},
-            {'title': '关于使用闲置募集资金进行现金管理的公告', 'importance': '中', 'days_ago': 25},
-        ]
-
-        announcements = []
-        for i, item in enumerate(mock_announcements[:limit]):
-            date = (datetime.now() - timedelta(days=item['days_ago'])).strftime('%Y-%m-%d')
-            announcements.append({
-                'title': item['title'],
-                'date': date,
-                'type': '公告',
-                'url': f"http://data.eastmoney.com/notices/detail/{self.stock_code}/AN{date.replace('-', '')}{i:03d}.html",
-                'summary': item['title'][:50],
-                'importance': item['importance']
-            })
-
-        return announcements
-
-    def _get_mock_news(self, limit=20):
-        """生成示例新闻数据"""
-        from datetime import datetime, timedelta
-
-        mock_news = [
-            {'title': '公司三季度业绩超预期,净利润同比增长35%', 'sentiment': '正面', 'days_ago': 1},
-            {'title': '机构调研频繁,多家券商上调目标价', 'sentiment': '正面', 'days_ago': 2},
-            {'title': '行业景气度持续提升,公司订单饱满', 'sentiment': '正面', 'days_ago': 3},
-            {'title': '技术突破获得重大进展,核心竞争力增强', 'sentiment': '正面', 'days_ago': 4},
-            {'title': '市场份额稳步提升,龙头地位巩固', 'sentiment': '正面', 'days_ago': 5},
-            {'title': '北向资金连续5日净流入,外资看好公司前景', 'sentiment': '正面', 'days_ago': 6},
-            {'title': '公司发布股权激励计划,彰显发展信心', 'sentiment': '正面', 'days_ago': 7},
-            {'title': '原材料价格波动,短期成本压力加大', 'sentiment': '负面', 'days_ago': 8},
-            {'title': '行业竞争加剧,市场格局面临调整', 'sentiment': '中性', 'days_ago': 9},
-            {'title': '公司积极拓展海外市场,国际化战略稳步推进', 'sentiment': '正面', 'days_ago': 10},
-            {'title': '研发投入持续加大,创新能力显著提升', 'sentiment': '正面', 'days_ago': 11},
-            {'title': '分析师预测全年业绩将保持高增长', 'sentiment': '正面', 'days_ago': 12},
-            {'title': '监管政策调整,行业发展迎来新机遇', 'sentiment': '正面', 'days_ago': 13},
-            {'title': '供应链管理优化,成本控制能力增强', 'sentiment': '正面', 'days_ago': 14},
-            {'title': '市场整体调整,公司股价出现回调', 'sentiment': '负面', 'days_ago': 15},
-            {'title': '产能扩张项目顺利推进,未来增长可期', 'sentiment': '正面', 'days_ago': 16},
-            {'title': '高管增持彰显信心,长期价值获认可', 'sentiment': '正面', 'days_ago': 17},
-            {'title': '行业政策利好频出,发展环境持续改善', 'sentiment': '正面', 'days_ago': 18},
-            {'title': '公司治理水平提升,获评最佳上市公司', 'sentiment': '正面', 'days_ago': 19},
-            {'title': 'ESG评级上调,可持续发展能力受认可', 'sentiment': '正面', 'days_ago': 20},
-        ]
-
-        news_list = []
-        for item in mock_news[:limit]:
-            date = (datetime.now() - timedelta(days=item['days_ago'])).strftime('%Y-%m-%d')
-            news_list.append({
-                'title': item['title'],
-                'date': date,
-                'source': '财经资讯' if item['days_ago'] % 3 == 0 else '证券时报' if item[
-                                                                                         'days_ago'] % 2 == 0 else '东方财富网',
-                'url': f"http://finance.eastmoney.com/news/{date.replace('-', '')}/AN{item['days_ago']:03d}.html",
-                'summary': item['title'][:50],
-                'sentiment': item['sentiment']
-            })
-
-        return news_list
 
     def _format_stock_code_variants(self, code: str):
         """生成适配东财公告API的股票代码多种格式"""
@@ -509,14 +663,15 @@ class NewsSentimentCollector:
                 seen.add(v)
         return uniq
 
-    def get_comprehensive_news(self):
+    def get_comprehensive_news(self, verbose: bool = True):
         """
         获取综合消息面数据
 
         Returns:
             dict: 综合消息面数据
         """
-        print(f"📰 正在采集 {self.stock_code} 的消息面数据...")
+        if verbose:
+            print(f"📰 正在采集 {self.stock_code} 的消息面数据...")
 
         data = {
             'stock_code': self.stock_code,
@@ -545,14 +700,54 @@ class NewsSentimentCollector:
             'total': len(announcement_importance)
         }
 
-        print(f"✅ 消息面数据采集完成")
-        print(f"   - 公告: {len(data['announcements'])} 条")
-        print(f"   - 新闻: {len(data['news'])} 条")
-        print(f"   - 研报: {len(data['research_reports'])} 条")
-        print(
-            f"   - 情感统计: 正面{data['sentiment_summary']['positive']} 负面{data['sentiment_summary']['negative']} 中性{data['sentiment_summary']['neutral']}")
+        if verbose:
+            print(f"✅ 消息面数据采集完成")
+            print(f"   - 公告: {len(data['announcements'])} 条")
+            print(f"   - 新闻: {len(data['news'])} 条")
+            print(f"   - 研报: {len(data['research_reports'])} 条")
+            print(
+                f"   - 情感统计: 正面{data['sentiment_summary']['positive']} 负面{data['sentiment_summary']['negative']} 中性{data['sentiment_summary']['neutral']}")
 
         return data
+
+    def _normalize_date_str(self, s: str) -> str:
+        """将各种日期文本归一化为YYYY-MM-DD，支持相对时间关键词与不同分隔符"""
+        try:
+            text = (s or '').strip()
+            if text == '':
+                return ''
+            # 统一中文相对时间
+            now = datetime.now()
+            if any(k in text for k in ['刚刚', '秒前', '分钟前', '小时', '今天']):
+                return now.strftime('%Y-%m-%d')
+            if '昨天' in text:
+                return (now - timedelta(days=1)).strftime('%Y-%m-%d')
+            # 提取完整日期
+            m = re.search(r'(\d{4})[\-/\.年](\d{1,2})[\-/\.月](\d{1,2})[日]?', text)
+            if m:
+                y, mo, d = m.groups()
+                return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+            # 提取 MM-DD 或 M/D
+            m2 = re.search(r'(\d{1,2})[\-/\.](\d{1,2})', text)
+            if m2:
+                year = now.year
+                mo, d = m2.groups()
+                return f"{year:04d}-{int(mo):02d}-{int(d):02d}"
+            # 时间戳（10位或13位）
+            if text.isdigit() and len(text) in (10, 13):
+                ts = int(text[:10])
+                return datetime.fromtimestamp(ts).strftime('%Y-%m-%d')
+            # ISO日期或可解析格式
+            for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d', '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M']:
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    return dt.strftime('%Y-%m-%d')
+                except Exception:
+                    pass
+            # 不可识别则返回空
+            return ''
+        except Exception:
+            return ''
 
 
 if __name__ == "__main__":

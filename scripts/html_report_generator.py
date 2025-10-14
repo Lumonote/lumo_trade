@@ -123,7 +123,9 @@ class KronosHTMLReportGenerator:
             fundamental_data=fundamental_data,
             news_data=news_data,
             sentiment_data=sentiment_data,
-            event_data=event_data
+            event_data=event_data,
+            predictions=predictions,
+            historical_data=historical_data
         )
 
         # 写入文件
@@ -183,7 +185,9 @@ class KronosHTMLReportGenerator:
                                        fundamental_data: Dict = None,
                                        news_data: Dict = None,
                                        sentiment_data: Dict = None,
-                                       event_data: Dict = None) -> str:
+                                       event_data: Dict = None,
+                                       predictions: Optional[pd.DataFrame] = None,
+                                       historical_data: Optional[pd.DataFrame] = None) -> str:
         """生成单页面HTML模板"""
 
         # 提取数据
@@ -212,7 +216,13 @@ class KronosHTMLReportGenerator:
         # 生成新添加的分析板块
         fundamental_html = self._generate_fundamental_section(
             fundamental_data) if fundamental_data else "<p>📊 暂无基本面数据</p>"
-        news_sentiment_combined_html = self._generate_news_sentiment_combined_section(news_data, sentiment_data)
+        news_sentiment_combined_html = self._generate_news_sentiment_combined_section(
+            news_data, sentiment_data, fundamental_data or {}, event_data or {}
+        )
+        analysis_summary_html = self._generate_comprehensive_summary_section(
+            fundamental_data or {}, sentiment_data or {}, analysis_data or {},
+            predictions=predictions, historical_data=historical_data
+        )
 
         # 嵌入PNG图片
         chart_html = ""
@@ -234,18 +244,10 @@ class KronosHTMLReportGenerator:
 </head>
 <body>
     <div class="container">
-        <!-- 头部 -->
-        <header class="header">
-            <h1>🚀 Kronos 股票分析报告</h1>
-            <div class="stock-info">
-                <span class="stock-code">{stock_code}</span>
-                <span class="timestamp">生成时间: {timestamp}</span>
-            </div>
-        </header>
-        
+    
         <!-- K线图表区域 -->
         <section class="chart-section">
-            <h2>📈 股票K线预测图表</h2>
+            
             <div class="chart-container">
                 {chart_html}
             </div>
@@ -297,6 +299,12 @@ class KronosHTMLReportGenerator:
                 <div class="analysis-card">
                     <h3>💬 股民情绪</h3>
                     {news_sentiment_combined_html}
+                </div>
+
+                <!-- 分析总结 -->
+                <div class="analysis-card analysis-summary-card">
+                    <h3>🧾 分析总结</h3>
+                    {analysis_summary_html}
                 </div>
             </div>
         </section>
@@ -353,6 +361,206 @@ class KronosHTMLReportGenerator:
             """
         html += "</div>"
         return html
+
+    def _generate_comprehensive_summary_section(self, fundamental_data: Dict, sentiment_data: Dict, analysis_data: Dict,
+                                                predictions: Optional[pd.DataFrame] = None,
+                                                historical_data: Optional[pd.DataFrame] = None) -> str:
+        """生成分析总结卡片
+
+        综合汇总模型预测、情绪、量化与技术指标、风险评估，给出简洁结论。
+        """
+        try:
+            # 模型信号统计
+            signals = analysis_data.get('current_signals', {}) or {}
+            total_models = len(signals)
+            buy_count = sum(1 for s in signals.values() if s == '买入')
+            sell_count = sum(1 for s in signals.values() if s == '卖出')
+            hold_count = sum(1 for s in signals.values() if s == '持有')
+
+            # 情绪
+            comprehensive_score = sentiment_data.get('comprehensive_score', None)
+            comprehensive_sentiment = sentiment_data.get('comprehensive_sentiment', None)
+
+            overall_market = sentiment_data.get('overall_market_sentiment') or {}
+            primary_index = (overall_market.get('primary_index') or {})
+            primary_name = primary_index.get('name', '所属大盘')
+            primary_chg = overall_market.get('primary_change_pct', None)
+
+            sector = sentiment_data.get('sector_sentiment') or {}
+            sector_name = sector.get('sector_name', None)
+            sector_chg = sector.get('change_pct', None)
+
+            # 风险评估与技术相关指标
+            risk = analysis_data.get('risk_assessment', {}) or {}
+            risk_level = risk.get('风险等级', None)
+            rsi_risk = risk.get('RSI风险', None)
+            bb_state = risk.get('布林状态', None)
+            atr_pct = risk.get('ATR(14)%', None)
+
+            # 量化模型总览
+            model_summary = analysis_data.get('model_summary', {}) or {}
+            win_rate_avg = model_summary.get('平均胜率', None)
+
+            # 若未提供平均胜率，则基于量化模型的“胜率”字段动态计算
+            if win_rate_avg in (None, 'N/A', ''):
+                qm = analysis_data.get('quantitative_models', {}) or {}
+                win_rates = []
+                for info in qm.values():
+                    wr = info.get('胜率')
+                    if isinstance(wr, str) and wr.strip().endswith('%'):
+                        try:
+                            win_rates.append(float(wr.strip().replace('%', '')))
+                        except Exception:
+                            pass
+                    elif isinstance(wr, (int, float)):
+                        win_rates.append(float(wr))
+                if win_rates:
+                    win_rate_avg = round(sum(win_rates) / len(win_rates), 1)
+                else:
+                    win_rate_avg = None
+
+            # 生成综合建议（优化算法）
+            # 引入更稳健的综合评分：信号偏向、情绪分、胜率、市场/板块趋势、风险与波动
+            recommendation = '🟡 观望'
+
+            try:
+                # 基本比率
+                denom = max(total_models, 1)
+                buy_ratio = buy_count / denom
+                sell_ratio = sell_count / denom
+                signal_bias = (buy_ratio - sell_ratio) * 100.0  # -100 ~ 100
+
+                # 综合情绪分（默认50）
+                score = comprehensive_score if isinstance(comprehensive_score, (int, float)) else 50
+
+                # 风险惩罚
+                rl = (risk_level or '')
+                risk_penalty = 0
+                if '高' in rl:
+                    risk_penalty = -20
+                elif '中' in rl:
+                    risk_penalty = -10
+
+                # 胜率加成
+                win_bonus = 0
+                if isinstance(win_rate_avg, (int, float)):
+                    if win_rate_avg >= 65:
+                        win_bonus = 10
+                    elif win_rate_avg >= 55:
+                        win_bonus = 5
+                    elif win_rate_avg <= 45:
+                        win_bonus = -5
+
+                # 市场与板块趋势加成/扣分
+                trend_bonus = 0
+                if isinstance(primary_chg, (int, float)):
+                    trend_bonus += 5 if primary_chg >= 0 else -5
+                if isinstance(sector_chg, (int, float)):
+                    trend_bonus += 5 if sector_chg >= 0 else -5
+
+                # 波动惩罚（ATR百分比越大惩罚越重）
+                atr_penalty = 0
+                if isinstance(atr_pct, (int, float)):
+                    if atr_pct >= 10:
+                        atr_penalty = -10
+                    elif atr_pct >= 5:
+                        atr_penalty = -5
+
+                # 综合评分（权重调和，保持稳健）
+                composite = (
+                    signal_bias * 0.4 +          # 模型一致性更重要
+                    (score - 50) * 0.5 +          # 情绪相对影响居中
+                    win_bonus +                    # 胜率作为辅助强弱参考
+                    trend_bonus +                  # 市场与板块方向
+                    risk_penalty +                 # 风险优先抑制
+                    atr_penalty                    # 波动抑制
+                )
+
+                # 判定：阈值对称，避免过度频繁切换
+                if composite >= 15 and buy_ratio >= 0.4 and '高' not in rl:
+                    recommendation = '🟢 适度加仓'
+                elif composite <= -15 and (sell_ratio >= 0.4 or '高' in rl):
+                    recommendation = '🔴 谨慎减仓'
+                else:
+                    recommendation = '🟡 观望'
+            except Exception:
+                # 若新算法异常，回退至原始简单规则
+                if total_models > 0:
+                    if buy_count > sell_count * 1.5 and (comprehensive_score or 50) >= 60 and (risk_level or '').find('高') == -1:
+                        recommendation = '🟢 适度加仓'
+                    elif sell_count > buy_count * 1.5 or (comprehensive_score or 50) < 45 or (risk_level or '').find('高') != -1:
+                        recommendation = '🔴 谨慎减仓'
+
+            # 辅助格式化
+            def fmt(val, suffix=''):
+                if val is None or val == 'N/A':
+                    return '—'
+                try:
+                    if suffix == '%':
+                        # 避免出现 0.00%% 的重复百分号
+                        if isinstance(val, str) and val.strip().endswith('%'):
+                            return val.strip()
+                        return f"{val}%"
+                    return f"{val}{suffix}" if suffix else f"{val}"
+                except Exception:
+                    return str(val)
+
+            html = "<div class='analysis-summary-grid'>"
+
+            # 模型信号与建议
+            html += f"""
+            <div class='summary-item'>
+                <span class='label'>模型信号统计</span>
+                <span class='value'>买 {buy_count} · 持 {hold_count} · 卖 {sell_count} / 共 {total_models}</span>
+            </div>
+            <div class='summary-item'>
+                <span class='label'>综合建议</span>
+                <span class='value'>{recommendation}</span>
+            </div>
+            """
+
+            # 情绪概览
+            html += f"""
+            <div class='summary-item'>
+                <span class='label'>股民综合情绪</span>
+                <span class='value'>{fmt(comprehensive_score)} 分 · {comprehensive_sentiment or '中性'}</span>
+            </div>
+            <div class='summary-item'>
+                <span class='label'>大盘与板块</span>
+                <span class='value'>{primary_name} {fmt(primary_chg, '%')} · {sector_name or '所属板块'} {fmt(sector_chg, '%')}</span>
+            </div>
+            """
+
+            # 风险与技术状态
+            html += f"""
+            <div class='summary-item'>
+                <span class='label'>风险等级</span>
+                <span class='value'>{risk_level or '未知'}</span>
+            </div>
+            <div class='summary-item'>
+                <span class='label'>技术状态</span>
+                <span class='value'>{self._build_tech_status_summary(analysis_data)}</span>
+            </div>
+            """
+
+            # 模型总体能力
+            pred_summary = self._build_prediction_summary_text(predictions, historical_data)
+            html += f"""
+            <div class='summary-item'>
+                <span class='label'>AI预测结果分析，主要分析预测的K线走势</span>
+                <span class='value'>{pred_summary}</span>
+            </div>
+            <div class='summary-item'>
+                <span class='label'>基本面</span>
+                <span class='value'>{self._build_fundamental_tip(fundamental_data)}</span>
+            </div>
+            """
+
+            html += "</div>"
+            return html
+
+        except Exception as e:
+            return f"<p>❌ 汇总卡片生成失败: {e}</p>"
 
     def _generate_signals_summary_section(self, signals: Dict, summary: Dict) -> str:
         """生成交易信号汇总部分"""
@@ -667,6 +875,224 @@ class KronosHTMLReportGenerator:
 
         return html
 
+    def _build_tech_status_summary(self, analysis_data: Dict) -> str:
+        """根据技术指标与风险评估构建更丰富的技术状态摘要。"""
+        try:
+            risk = (analysis_data or {}).get('risk_assessment', {}) or {}
+            tech = (analysis_data or {}).get('technical_indicators', {}) or {}
+
+            rsi_val = tech.get('RSI')
+            rsi_risk = risk.get('RSI风险')
+
+            macd = tech.get('MACD')
+            bb_pos = tech.get('布林带') or risk.get('布林状态')
+            kdj = tech.get('KDJ')
+
+            atr_pct = risk.get('ATR(14)%') or tech.get('ATR')
+
+            def to_float(x):
+                if x is None:
+                    return None
+                if isinstance(x, (int, float)):
+                    return float(x)
+                if isinstance(x, str):
+                    s = x.replace('%', '').replace(',', '').strip()
+                    try:
+                        return float(s)
+                    except:
+                        return None
+                return None
+
+            ma5 = to_float(tech.get('MA5'))
+            ma10 = to_float(tech.get('MA10'))
+            ma20 = to_float(tech.get('MA20'))
+
+            parts = []
+            if rsi_val or rsi_risk:
+                if rsi_val and isinstance(rsi_val, str):
+                    parts.append(f"RSI {rsi_val}（{rsi_risk or '—'}）")
+                elif rsi_risk:
+                    parts.append(f"RSI {rsi_risk}")
+
+            if macd:
+                parts.append(f"MACD {macd}")
+
+            if bb_pos:
+                parts.append(f"布林 {bb_pos}")
+
+            if kdj:
+                parts.append(f"KDJ {kdj}")
+
+            if atr_pct is not None:
+                # 统一百分号显示，避免双%号
+                if isinstance(atr_pct, str) and atr_pct.strip().endswith('%'):
+                    parts.append(f"ATR {atr_pct.strip()}")
+                else:
+                    parts.append(f"ATR {atr_pct}%")
+
+            # MA排列与趋势
+            if ma5 is not None and ma10 is not None and ma20 is not None:
+                if ma5 > ma10 > ma20:
+                    parts.append("MA排列 多头 (MA5>MA10>MA20)")
+                elif ma5 < ma10 < ma20:
+                    parts.append("MA排列 空头 (MA5<MA10<MA20)")
+                else:
+                    parts.append("MA排列 混合")
+
+            return " · ".join(parts) if parts else "数据不足"
+        except Exception:
+            return "数据不足"
+
+    def _build_fundamental_tip(self, fundamental_data: Dict) -> str:
+        """根据基本面真实数据生成“基本面”动态摘要。"""
+        try:
+            indicators = (fundamental_data or {}).get('financial_indicators', {}) or {}
+            reports = (fundamental_data or {}).get('financial_reports', {}) or {}
+
+            pe = indicators.get('pe_ratio')
+            pb = indicators.get('pb_ratio')
+            revenue_yoy = reports.get('revenue_yoy')
+            net_profit_yoy = reports.get('net_profit_yoy')
+            # 计算版同比与TTM
+            revenue_yoy_calc = reports.get('revenue_yoy_calc')
+            net_profit_yoy_calc = reports.get('net_profit_yoy_calc')
+            cash_flow = reports.get('cash_flow')
+
+            def _to_float(val):
+                if val is None:
+                    return None
+                if isinstance(val, (int, float)):
+                    return float(val)
+                if isinstance(val, str):
+                    s = val.replace('%', '').replace(',', '').strip()
+                    if s == '' or s == '—':
+                        return None
+                    try:
+                        return float(s)
+                    except Exception:
+                        return None
+                return None
+
+            pe_v = _to_float(pe)
+            pb_v = _to_float(pb)
+            rev_yoy_v = _to_float(revenue_yoy)
+            profit_yoy_v = _to_float(net_profit_yoy)
+            rev_yoy_calc_v = _to_float(revenue_yoy_calc)
+            profit_yoy_calc_v = _to_float(net_profit_yoy_calc)
+
+            cash_dir = None
+            if isinstance(cash_flow, (int, float)):
+                cash_dir = '正' if float(cash_flow) >= 0 else '负'
+            elif isinstance(cash_flow, str):
+                s = cash_flow.replace(',', '').strip()
+                try:
+                    cf = float(s)
+                    cash_dir = '正' if cf >= 0 else '负'
+                except Exception:
+                    if '正' in s:
+                        cash_dir = '正'
+                    elif '负' in s:
+                        cash_dir = '负'
+
+            valuation_parts = []
+            if pe_v is not None:
+                if pe_v < 20:
+                    tag = '低估'
+                elif pe_v <= 40:
+                    tag = '适中'
+                else:
+                    tag = '偏高'
+                valuation_parts.append(f"PE {pe}（{tag}）")
+            if pb_v is not None:
+                if pb_v < 1.5:
+                    tag = '低估'
+                elif pb_v <= 3:
+                    tag = '适中'
+                else:
+                    tag = '偏高'
+                valuation_parts.append(f"PB {pb}（{tag}）")
+            valuation_text = '、'.join(valuation_parts) if valuation_parts else '估值信息缺失'
+
+            growth_parts = []
+            # 接口同比
+            if rev_yoy_v is not None:
+                arrow = '↑' if rev_yoy_v > 0 else ('↓' if rev_yoy_v < 0 else '')
+                growth_parts.append(f"营收同比 {rev_yoy_v:.2f}%{arrow}")
+            if profit_yoy_v is not None:
+                arrow = '↑' if profit_yoy_v > 0 else ('↓' if profit_yoy_v < 0 else '')
+                growth_parts.append(f"净利润同比 {profit_yoy_v:.2f}%{arrow}")
+            # 计算版TTM同比（作为替代视角）
+            calc_parts = []
+            if rev_yoy_calc_v is not None:
+                arrow = '↑' if rev_yoy_calc_v > 0 else ('↓' if rev_yoy_calc_v < 0 else '')
+                calc_parts.append(f"营收TTM同比 {rev_yoy_calc_v:.2f}%{arrow}")
+            if profit_yoy_calc_v is not None:
+                arrow = '↑' if profit_yoy_calc_v > 0 else ('↓' if profit_yoy_calc_v < 0 else '')
+                calc_parts.append(f"净利润TTM同比 {profit_yoy_calc_v:.2f}%{arrow}")
+            if calc_parts:
+                growth_parts.append('（替代: ' + '、'.join(calc_parts) + '）')
+            growth_text = '、'.join(growth_parts) if growth_parts else '营收/净利润同比暂无'
+
+            cash_text = f"现金流为{cash_dir}向" if cash_dir else '现金流数据缺失'
+
+            return f"估值（{valuation_text}），{growth_text}，{cash_text}"
+        except Exception:
+            return "估值、营收、净利润、现金流"
+
+    def _build_prediction_summary_text(self, predictions: Optional[pd.DataFrame], historical_data: Optional[pd.DataFrame]) -> str:
+        """基于AI K线预测结果生成简洁中文总结文本"""
+        try:
+            if predictions is None or not isinstance(predictions, pd.DataFrame) or predictions.empty:
+                return "暂无AI预测数据"
+
+            candidate_cols = ['close', 'Close', '收盘', '收盘价']
+            close_col = next((c for c in candidate_cols if c in predictions.columns), None)
+            if close_col is None:
+                num_cols = [c for c in predictions.columns if pd.api.types.is_numeric_dtype(predictions[c])]
+                if not num_cols:
+                    return "预测数据格式不含数值列"
+                close_col = num_cols[0]
+
+            close_series = pd.to_numeric(predictions[close_col], errors='coerce').dropna()
+            if close_series.empty:
+                return "预测数据缺少有效价格序列"
+
+            start_price = float(close_series.iloc[0])
+            end_price = float(close_series.iloc[-1])
+            total_pct = (end_price - start_price) / start_price * 100.0
+            direction = "上行" if total_pct > 1e-6 else ("下行" if total_pct < -1e-6 else "横盘")
+
+            returns = close_series.pct_change().dropna()
+            vol_std_pct = float(returns.std() * 100.0) if not returns.empty else 0.0
+            if vol_std_pct < 1.5:
+                vol_cat = "低"
+            elif vol_std_pct < 3.0:
+                vol_cat = "中"
+            else:
+                vol_cat = "高"
+
+            delta_vs_last = None
+            if isinstance(historical_data, pd.DataFrame) and not historical_data.empty:
+                hist_candidate_cols = ['close', 'Close', '收盘', '收盘价']
+                hist_close_col = next((c for c in hist_candidate_cols if c in historical_data.columns), None)
+                if hist_close_col:
+                    hist_series = pd.to_numeric(historical_data[hist_close_col], errors='coerce').dropna()
+                    if not hist_series.empty:
+                        last_hist_close = float(hist_series.iloc[-1])
+                        if last_hist_close > 0:
+                            delta_vs_last = (float(close_series.iloc[0]) - last_hist_close) / last_hist_close * 100.0
+
+            parts = [
+                f"{len(close_series)}点预测显示：走势{direction}，累计变动约{total_pct:.1f}%",
+                f"短期波动{vol_cat}（σ≈{vol_std_pct:.1f}%）",
+            ]
+            if delta_vs_last is not None:
+                parts.append(f"相对最新收盘价预计{delta_vs_last:.1f}%")
+
+            return "；".join(parts)
+        except Exception as e:
+            return f"预测总结生成异常: {e}"
+
     def _generate_fundamental_section(self, fundamental_data: Dict) -> str:
         """生成基本面财务数据部分 - 显示市场估值和核心财务指标"""
         if not fundamental_data:
@@ -713,6 +1139,38 @@ class KronosHTMLReportGenerator:
         if is_valid(reports.get('cash_flow')):
             core_items.append(
                 f"<div class='core-metric-item'><span class='metric-label'>现金流:</span><span class='metric-value'>{reports.get('cash_flow')} 亿</span></div>")
+
+        # 替代视角：TTM与计算版同比
+        rev_yoy = reports.get('revenue_yoy')
+        np_yoy = reports.get('net_profit_yoy')
+        rev_yoy_calc = reports.get('revenue_yoy_calc')
+        np_yoy_calc = reports.get('net_profit_yoy_calc')
+        rev_ttm = reports.get('revenue_ttm')
+        np_ttm = reports.get('net_profit_ttm')
+
+        # 接口同比
+        if is_valid(rev_yoy):
+            core_items.append(
+                f"<div class='core-metric-item'><span class='metric-label'>营收同比(接口):</span><span class='metric-value'>{rev_yoy}%</span></div>")
+        if is_valid(np_yoy):
+            core_items.append(
+                f"<div class='core-metric-item'><span class='metric-label'>净利润同比(接口):</span><span class='metric-value'>{np_yoy}%</span></div>")
+
+        # 计算版TTM同比
+        if is_valid(rev_yoy_calc):
+            core_items.append(
+                f"<div class='core-metric-item'><span class='metric-label'>营收TTM同比(计算):</span><span class='metric-value'>{rev_yoy_calc}%</span></div>")
+        if is_valid(np_yoy_calc):
+            core_items.append(
+                f"<div class='core-metric-item'><span class='metric-label'>净利润TTM同比(计算):</span><span class='metric-value'>{np_yoy_calc}%</span></div>")
+
+        # TTM绝对值
+        if is_valid(rev_ttm):
+            core_items.append(
+                f"<div class='core-metric-item'><span class='metric-label'>营收TTM:</span><span class='metric-value'>{rev_ttm} 亿</span></div>")
+        if is_valid(np_ttm):
+            core_items.append(
+                f"<div class='core-metric-item'><span class='metric-label'>净利润TTM:</span><span class='metric-value'>{np_ttm} 亿</span></div>")
 
         if core_items:
             html += ''.join(core_items)
@@ -801,7 +1259,7 @@ class KronosHTMLReportGenerator:
         html += "</div>"
         return html
 
-    def _generate_news_sentiment_combined_section(self, news_data: Dict, sentiment_data: Dict) -> str:
+    def _generate_news_sentiment_combined_section(self, news_data: Dict, sentiment_data: Dict, fundamental_data: Dict, event_data: Dict) -> str:
         """生成股民情绪部分"""
         html = "<div class='news-sentiment-combined'>"
 
@@ -843,8 +1301,254 @@ class KronosHTMLReportGenerator:
             <div class='guba-overall-compact'>总体: {guba_sentiment.get('overall', '中性')} | 帖数: {guba_sentiment.get('total_posts', 0)}</div>
             """
             html += "</div>"
+
+            # 📊 大盘整体情绪
+            overall_market = sentiment_data.get('overall_market_sentiment') or {}
+            if overall_market:
+                score = overall_market.get('sentiment_score', 50)
+                overall = overall_market.get('overall', '数据不足')
+                primary_index = overall_market.get('primary_index', {})
+                primary_name = primary_index.get('name', '所属大盘')
+                primary_change = overall_market.get('primary_change_pct', 'N/A')
+
+                score_class = 'score-high' if isinstance(score, (int, float)) and score >= 70 else (
+                    'score-medium' if isinstance(score, (int, float)) and score >= 50 else 'score-low')
+
+                html += "<div class='combined-section'>"
+                html += "<h4>📊 大盘整体情绪</h4>"
+                html += f"""
+                <div class='sentiment-score-compact {score_class}'>
+                    <div class='score-value'>{score}</div>
+                    <div class='score-label'>{overall} 所属大盘 {primary_name} 涨跌 {primary_change}%</div>
+                </div>
+                """
+
+                indices = overall_market.get('indices', {})
+                if indices:
+                    html += "<div class='guba-stats-compact'>"
+                    for _, idx in indices.items():
+                        name = idx.get('name', '')
+                        chg = idx.get('change_pct', 'N/A')
+                        html += f"""
+                        <div class='guba-stat-compact'>
+                            <span class='guba-label'>{name}:</span>
+                            <span class='guba-value'>{chg}%</span>
+                        </div>
+                        """
+                    html += "</div>"
+                html += "</div>"
+
+            # 🏭 所属板块情绪
+            sector = sentiment_data.get('sector_sentiment') or {}
+            if sector:
+                sname = sector.get('sector_name', 'N/A')
+                sscore = sector.get('sentiment_score', 50)
+                soverall = sector.get('overall', '数据不足')
+                schg = sector.get('change_pct', 'N/A')
+                tr = sector.get('turnover_rate', 'N/A')
+                leader_info = sector.get('leader_stock')
+
+                # 计算辨识度（基于股吧活跃度与决断度）
+                guba = sentiment_data.get('guba_sentiment') or {}
+                total_posts = guba.get('total_posts', 0) or 0
+                confidence = guba.get('confidence', 0.0) or 0.0
+                try:
+                    conf = float(confidence)
+                except Exception:
+                    conf = 0.0
+                try:
+                    posts = int(total_posts)
+                except Exception:
+                    posts = 0
+                recognition = None
+                if posts > 0 or conf > 0:
+                    if conf >= 60 or posts >= 80:
+                        recognition = '高'
+                    elif conf >= 35 or posts >= 30:
+                        recognition = '中'
+                    else:
+                        recognition = '低'
+
+                # 规模分类（基于总市值，单位：亿）
+                indicators = (fundamental_data or {}).get('financial_indicators', {}) or {}
+                total_mc = indicators.get('total_market_cap', None)
+                size_tag = None
+                try:
+                    mc_val = float(total_mc)
+                    if mc_val >= 1000:
+                        size_tag = '大盘'
+                    elif mc_val >= 300:
+                        size_tag = '中盘'
+                    elif mc_val > 0:
+                        size_tag = '小盘'
+                except Exception:
+                    pass
+
+                # 中军判定（仅在规模明确时展示）
+                mid_core = None
+                if size_tag in ['中盘', '大盘', '小盘']:
+                    mid_core = '是' if size_tag == '中盘' else '否'
+
+                score_class = 'score-high' if isinstance(sscore, (int, float)) and sscore >= 70 else (
+                    'score-medium' if isinstance(sscore, (int, float)) and sscore >= 50 else 'score-low')
+
+                html += "<div class='combined-section'>"
+                html += "<h4>🏭 所属板块情绪</h4>"
+                html += f"""
+                <div class='sentiment-score-compact {score_class}'>
+                    <div class='score-value'>{sscore}</div>
+                    <div class='score-label'>{soverall} · {sname}</div>
+                </div>
+                """
+
+                # 统计格子：仅在有真实数据时逐项加入
+                stats_html = "<div class='guba-stats-compact'>"
+                # 涨跌幅与换手率（总是有）
+                stats_html += f"""
+                    <div class='guba-stat-compact'>
+                        <span class='guba-label'>涨跌幅:</span>
+                        <span class='guba-value'>{schg}%</span>
+                    </div>
+                    <div class='guba-stat-compact'>
+                        <span class='guba-label'>换手率:</span>
+                        <span class='guba-value'>{tr}%</span>
+                    </div>
+                """
+
+                if recognition is not None:
+                    stats_html += f"""
+                    <div class='guba-stat-compact'>
+                        <span class='guba-label'>辨识度:</span>
+                        <span class='guba-value'>{recognition}</span>
+                    </div>
+                    """
+
+                if size_tag is not None:
+                    stats_html += f"""
+                    <div class='guba-stat-compact'>
+                        <span class='guba-label'>规模:</span>
+                        <span class='guba-value'>{size_tag}</span>
+                    </div>
+                    """
+
+                if leader_info:
+                    leader_name = leader_info.get('name', '—')
+                    leader_chg = leader_info.get('change_pct', 'N/A')
+                    stats_html += f"""
+                    <div class='guba-stat-compact'>
+                        <span class='guba-label'>龙头:</span>
+                        <span class='guba-value'>{leader_name} ({leader_chg}%)</span>
+                    </div>
+                    """
+
+                if mid_core is not None:
+                    stats_html += f"""
+                    <div class='guba-stat-compact'>
+                        <span class='guba-label'>中军:</span>
+                        <span class='guba-value'>{mid_core}</span>
+                    </div>
+                    """
+
+                stats_html += "</div>"
+                html += stats_html
+                html += "</div>"
         else:
             html += "<p>😊 暂无情绪数据</p>"
+
+        # 🧭 事件分析（紧凑展示）
+        if event_data:
+            summary = event_data.get('summary', {}) or {}
+            policy_events = event_data.get('policy_events', {}) or {}
+            corporate_events = event_data.get('corporate_events', {}) or {}
+            industry_events = event_data.get('industry_events', {}) or {}
+            market_events = event_data.get('market_events', {}) or {}
+
+            html += "<div class='combined-section'>"
+            html += "<h4>🧭 事件分析</h4>"
+
+            rating = summary.get('rating', '中性')
+            rating_class = 'rating-positive' if '利好' in rating else (
+                'rating-negative' if '利空' in rating else 'rating-neutral')
+
+            html += f"""
+            <div class='event-summary-compact'>
+                <span class='event-rating-compact {rating_class}'>{rating}</span>
+                <span class='event-score-compact'>得分: {summary.get('comprehensive_score', 0)}</span>
+                <span class='event-count-compact positive'>利好: {summary.get('total_positive_events', 0)}</span>
+                <span class='event-count-compact negative'>利空: {summary.get('total_negative_events', 0)}</span>
+            </div>
+            """
+
+            # 合并事件并展示TOP3（正负各最多3条）
+            all_positive_events = []
+            all_positive_events.extend(policy_events.get('positive', []))
+            all_positive_events.extend(corporate_events.get('positive', []))
+            all_positive_events.extend(industry_events.get('positive', []))
+            all_positive_events.extend(market_events.get('positive', []))
+
+            all_negative_events = []
+            all_negative_events.extend(policy_events.get('negative', []))
+            all_negative_events.extend(corporate_events.get('negative', []))
+            all_negative_events.extend(industry_events.get('negative', []))
+            all_negative_events.extend(market_events.get('negative', []))
+
+            if all_positive_events or all_negative_events:
+                html += "<div class='event-list-compact'>"
+                if all_positive_events:
+                    html += "<div class='event-section'>"
+                    html += "<h4>🟢 利好事件 (TOP3)</h4>"
+                    for event in all_positive_events[:3]:
+                        title = event.get('event', '无标题')
+                        url = event.get('url', '')
+                        source = event.get('source', '')
+                        html += f"""
+                        <div class='event-item positive'>
+                            <span class='event-title'>
+                                {f'<a href="{url}" target="_blank">{title}</a>' if url else title}
+                            </span>
+                            <span class='event-impact'>影响: {event.get('impact_score', 0)}</span>
+                            <span class='event-date'>{event.get('date', '')}</span>
+                            {f"<span class='event-source'>{source}</span>" if source else ''}
+                        </div>
+                        """
+                    html += "</div>"
+                if all_negative_events:
+                    html += "<div class='event-section'>"
+                    html += "<h4>🔴 利空事件 (TOP3)</h4>"
+                    for event in all_negative_events[:3]:
+                        title = event.get('event', '无标题')
+                        url = event.get('url', '')
+                        source = event.get('source', '')
+                        html += f"""
+                        <div class='event-item negative'>
+                            <span class='event-title'>
+                                {f'<a href="{url}" target="_blank">{title}</a>' if url else title}
+                            </span>
+                            <span class='event-impact'>影响: {event.get('impact_score', 0)}</span>
+                            <span class='event-date'>{event.get('date', '')}</span>
+                            {f"<span class='event-source'>{source}</span>" if source else ''}
+                        </div>
+                        """
+                    html += "</div>"
+                html += "</div>"
+            else:
+                html += "<p style='text-align: center; color: #888; padding: 12px;'>🔍 暂无关联事件数据</p>"
+
+            # 风险与机会等级（紧凑）
+            html += f"""
+            <div class='event-level-section'>
+                <div class='level-item'>
+                    <span class='level-label'>风险等级:</span>
+                    <span class='level-value'>{summary.get('risk_level', '未知')}</span>
+                </div>
+                <div class='level-item'>
+                    <span class='level-label'>机会等级:</span>
+                    <span class='level-value'>{summary.get('opportunity_level', '未知')}</span>
+                </div>
+            </div>
+            """
+
+            html += "</div>"
 
         html += "</div>"
         return html
@@ -1157,7 +1861,7 @@ class KronosHTMLReportGenerator:
             background: var(--gradient-dark);
             border: 1px solid var(--border-primary);
             border-radius: 20px;
-            padding: 40px;
+            padding: 28px;
             margin-bottom: 40px;
             
             position: relative;
@@ -1182,7 +1886,7 @@ class KronosHTMLReportGenerator:
         
         .chart-section h2 {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             color: #ffffff;
             text-align: center;
             font-size: 1.8em;
@@ -1201,7 +1905,17 @@ class KronosHTMLReportGenerator:
         
         .chart-container img {
             border-radius: 15px;
+            width: 100%;
+            height: auto;
+            max-height: 1024px;
+            object-fit: contain;
             
+        }
+
+        @media (max-width: 768px) {
+            .chart-container img {
+                max-height: 380px;
+            }
         }
         
         /* 分析网格 - 科技感 */
@@ -2003,6 +2717,12 @@ class KronosHTMLReportGenerator:
             grid-template-columns: repeat(2, 1fr);
             gap: 20px;
             margin-top: 20px;
+            align-items: stretch;
+        }
+
+        /* 让右侧“股民情绪”卡片跨两行，以达到左侧“基本面财务+分析总结”的总高度 */
+        .comprehensive-grid-two-col .analysis-card:nth-child(2) {
+            grid-row: span 2;
         }
 
         /* 合并的消息面和情绪样式 */
@@ -2014,7 +2734,7 @@ class KronosHTMLReportGenerator:
 
         .combined-section {
             background: rgba(255, 255, 255, 0.03);
-            padding: 15px;
+            padding: 10px;
             border-radius: 10px;
             border-left: 3px solid var(--accent-blue);
         }
@@ -2028,19 +2748,19 @@ class KronosHTMLReportGenerator:
         /* 紧凑型情绪得分 */
         .sentiment-score-compact {
             text-align: center;
-            padding: 15px;
+            padding: 10px;
             border-radius: 10px;
-            margin-bottom: 15px;
+            margin-bottom: 10px;
         }
 
         .sentiment-score-compact .score-value {
-            font-size: 2em;
+            font-size: 1.6em;
             font-weight: bold;
             margin-bottom: 5px;
         }
 
         .sentiment-score-compact .score-label {
-            font-size: 1em;
+            font-size: 0.95em;
             color: var(--text-secondary);
         }
 
@@ -2060,13 +2780,13 @@ class KronosHTMLReportGenerator:
         .guba-stats-compact {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-            margin-bottom: 10px;
+            gap: 8px;
+            margin-bottom: 8px;
         }
 
         .guba-stat-compact {
             text-align: center;
-            padding: 8px;
+            padding: 6px;
             background: rgba(255, 255, 255, 0.03);
             border-radius: 5px;
         }
@@ -2099,12 +2819,45 @@ class KronosHTMLReportGenerator:
 
         .guba-overall-compact {
             text-align: center;
-            padding: 8px;
+            padding: 6px;
             background: rgba(255, 255, 255, 0.05);
             border-radius: 5px;
             color: var(--accent-blue);
             font-weight: 600;
-            font-size: 0.9em;
+            font-size: 0.85em;
+        }
+
+        /* 分析总结卡片 */
+        .analysis-summary-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 12px;
+            border-radius: 10px;
+        }
+
+        .analysis-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+
+        .summary-item {
+            background: rgba(255, 255, 255, 0.04);
+            padding: 6px;
+            border-radius: 8px;
+        }
+
+        .summary-item .label {
+            display: block;
+            color: var(--text-secondary);
+            font-size: 0.85em;
+            margin-bottom: 4px;
+        }
+
+        .summary-item .value {
+            display: block;
+            color: var(--text-primary);
+            font-weight: 600;
+            font-size: 0.95em;
         }
 
         /* 基本面样式 */
@@ -2573,6 +3326,11 @@ class KronosHTMLReportGenerator:
                 grid-template-columns: 1fr;
             }
 
+            /* 移动端不跨行，按顺序纵向排列 */
+            .comprehensive-grid-two-col .analysis-card:nth-child(2) {
+                grid-row: auto;
+            }
+
             .event-level-section {
                 grid-template-columns: 1fr;
             }
@@ -2593,7 +3351,11 @@ def generate_comprehensive_report(stock_code: str, analysis_data: Dict,
                                   historical_data: Optional[pd.DataFrame] = None,
                                   predictions: Optional[pd.DataFrame] = None,
                                   png_chart_path: Optional[str] = None,
-                                  auto_open: bool = True) -> str:
+                                  auto_open: bool = True,
+                                  fundamental_data: Optional[Dict] = None,
+                                  news_data: Optional[Dict] = None,
+                                  sentiment_data: Optional[Dict] = None,
+                                  event_data: Optional[Dict] = None) -> str:
     """
     便捷函数: 生成综合分析报告
     
@@ -2604,6 +3366,10 @@ def generate_comprehensive_report(stock_code: str, analysis_data: Dict,
         predictions: 预测数据
         png_chart_path: PNG图表文件路径
         auto_open: 是否自动打开浏览器
+        fundamental_data: 基本面数据（可选）
+        news_data: 消息面数据（可选）
+        sentiment_data: 情绪数据（可选）
+        event_data: 利好利空事件数据（可选）
         
     Returns:
         生成的HTML报告文件路径
@@ -2627,5 +3393,9 @@ def generate_comprehensive_report(stock_code: str, analysis_data: Dict,
         historical_data=historical_data,
         predictions=predictions,
         png_chart_path=png_chart_path,
+        fundamental_data=fundamental_data,
+        news_data=news_data,
+        sentiment_data=sentiment_data,
+        event_data=event_data,
         auto_open=auto_open
     )

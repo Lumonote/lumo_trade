@@ -30,6 +30,19 @@ class Colors:
 # 检测是否为Windows系统
 IS_WINDOWS = platform.system() == "Windows"
 
+# 打包应用环境检测与用户数据路径
+def _is_app_bundle() -> bool:
+    return os.environ.get('KRONOS_IS_APP_BUNDLE', '').lower() in ('1', 'true', 'yes') or \
+           ('.app/Contents' in os.getcwd())
+
+def _get_user_root() -> Path:
+    # 优先使用环境变量，其次使用用户文档目录，最后回退到当前工作目录
+    env_user_dir = os.environ.get('KRONOS_USER_DIR')
+    if env_user_dir:
+        return Path(env_user_dir)
+    home_docs = Path.home() / 'Documents' / 'Kronos'
+    return home_docs if home_docs.exists() else Path.cwd()
+
 
 def print_colored(text: str, color: str = Colors.WHITE) -> None:
     """打印带颜色的文本"""
@@ -144,8 +157,7 @@ def check_required_packages() -> Dict[str, Tuple[bool, str]]:
         'tqdm': 'tqdm',
         'safetensors': 'safetensors',
         'einops': 'einops',
-        'huggingface_hub': 'huggingface_hub',
-        'tushare': 'tushare'
+        'huggingface_hub': 'huggingface_hub'
     }
 
     results = {}
@@ -160,7 +172,8 @@ def check_optional_packages() -> Dict[str, Tuple[bool, str]]:
     optional_packages = {
         'seaborn': 'seaborn',
         'plotly': 'plotly',
-        'jupyter': 'jupyter'
+        'jupyter': 'jupyter',
+        'tushare': 'tushare'
     }
 
     results = {}
@@ -170,40 +183,70 @@ def check_optional_packages() -> Dict[str, Tuple[bool, str]]:
     return results
 
 
-def check_directories() -> Dict[str, bool]:
-    """检查必需的目录结构"""
-    required_dirs = ['data', 'logs', 'config', 'scripts', 'results']
-    results = {}
+def check_directories() -> Dict[str, Tuple[Path, bool]]:
+    """检查必需的目录结构（打包环境优先使用用户目录）"""
+    # 计算目标路径
+    if _is_app_bundle():
+        user_root = _get_user_root()
+        targets = {
+            'data': user_root / 'data',
+            'logs': user_root / 'logs',
+            'results': user_root / 'results',
+            'config': Path(os.environ.get('KRONOS_CONFIG_DIR', str(user_root / 'config'))),
+            # scripts 保持指向资源目录，通常为只读，仅检查存在性
+            'scripts': Path('scripts')
+        }
+    else:
+        # 开发环境：检查项目根目录下的相对路径
+        root = Path.cwd()
+        targets = {
+            'data': root / 'data',
+            'logs': root / 'logs',
+            'results': root / 'results',
+            'config': root / 'config',
+            'scripts': root / 'scripts'
+        }
 
-    for dir_name in required_dirs:
-        dir_path = Path(dir_name)
-        results[dir_name] = dir_path.exists() and dir_path.is_dir()
-
+    results: Dict[str, Tuple[Path, bool]] = {}
+    for name, p in targets.items():
+        results[name] = (p, p.exists() and p.is_dir())
     return results
 
 
-def create_missing_directories(missing_dirs: List[str]) -> List[str]:
-    """尝试创建缺失的目录，返回仍未创建成功的目录列表"""
-    still_missing = []
-    for dir_name in missing_dirs:
+def create_missing_directories(missing_dirs: List[Tuple[str, Path]]) -> List[str]:
+    """尝试创建缺失的目录，返回仍未创建成功的目录名称列表"""
+    still_missing: List[str] = []
+    for name, dir_path in missing_dirs:
         try:
-            dir_path = Path(dir_name)
+            # 避免在只读资源目录创建
+            if not os.access(dir_path.parent, os.W_OK) and _is_app_bundle():
+                print_warning(f"跳过在只读资源目录创建 {name}/，已使用用户目录")
+                still_missing.append(name)
+                continue
+
             dir_path.mkdir(parents=True, exist_ok=True)
             if dir_path.exists() and dir_path.is_dir():
-                print_success(f"已创建目录 {dir_name}/")
+                print_success(f"已创建目录 {name}/")
             else:
-                print_error(f"目录 {dir_name}/ 创建失败")
-                still_missing.append(dir_name)
+                print_error(f"目录 {name}/ 创建失败")
+                still_missing.append(name)
         except Exception as e:
-            print_error(f"目录 {dir_name}/ 创建失败: {str(e)}")
-            still_missing.append(dir_name)
+            print_warning(f"目录 {name}/ 创建失败: {str(e)}")
+            still_missing.append(name)
     return still_missing
 
 
 def check_config_files() -> Dict[str, Tuple[bool, str]]:
     """检查配置文件"""
+    # 支持打包环境下从用户目录读取配置
+    user_config_dir = os.environ.get('KRONOS_CONFIG_DIR')
+    if user_config_dir:
+        cfg_tushare = Path(user_config_dir) / 'tushare_config.json'
+    else:
+        cfg_tushare = Path('config/tushare_config.json')
+
     config_files = {
-        'Tushare配置': 'config/tushare_config.json',
+        'Tushare配置': str(cfg_tushare),
         '需求文件': 'requirements.txt'
     }
 
@@ -228,7 +271,8 @@ def check_config_files() -> Dict[str, Tuple[bool, str]]:
 
 def check_tushare_config() -> Tuple[bool, str]:
     """检查Tushare配置"""
-    config_path = Path('config/tushare_config.json')
+    user_config_dir = os.environ.get('KRONOS_CONFIG_DIR')
+    config_path = Path(user_config_dir) / 'tushare_config.json' if user_config_dir else Path('config/tushare_config.json')
 
     if not config_path.exists():
         return False, "配置文件不存在"
@@ -268,13 +312,19 @@ def check_gpu_availability() -> Tuple[bool, str]:
 
 def get_system_info() -> Dict[str, str]:
     """获取系统信息"""
-    return {
+    info = {
         '操作系统': platform.system(),
         '系统版本': platform.release(),
         '架构': platform.machine(),
         'Python路径': get_actual_python_path(),
         '工作目录': os.getcwd()
     }
+    if _is_app_bundle():
+        info['应用包模式'] = '是'
+        info['用户数据目录'] = str(_get_user_root())
+    else:
+        info['应用包模式'] = '否'
+    return info
 
 
 def main():
@@ -329,26 +379,21 @@ def main():
     # 目录结构检查
     print_header("目录结构检查")
     dir_results = check_directories()
-    missing_dirs = []
+    missing_dirs: List[Tuple[str, Path]] = []
 
-    for dir_name, exists in dir_results.items():
+    for dir_name, (dir_path, exists) in dir_results.items():
+        display_path = dir_path if dir_path.is_absolute() else Path.cwd() / dir_path
         if exists:
             print_success(f"目录 {dir_name}/")
         else:
-            print_error(f"目录 {dir_name}/ 不存在")
-            missing_dirs.append(dir_name)
+            # 在应用包模式下，优先在用户目录创建
+            if _is_app_bundle():
+                missing_dirs.append((dir_name, dir_path))
+            else:
+                missing_dirs.append((dir_name, display_path))
 
-    # 自动修复：创建缺失目录
     if missing_dirs:
-        print_info("\n尝试自动创建缺失目录...")
-        remaining = create_missing_directories(missing_dirs)
-        # 重新检查目录状态
-        dir_results = check_directories()
-        missing_dirs = [d for d, ok in dir_results.items() if not ok]
-        if not remaining:
-            print_success("所有缺失目录已成功创建")
-        else:
-            print_warning(f"部分目录创建失败: {', '.join(remaining)}")
+        create_missing_directories(missing_dirs)
 
     # 配置文件检查
     print_header("配置文件检查")
@@ -358,14 +403,19 @@ def main():
         if exists:
             print_success(f"{name}: {status}")
         else:
-            print_error(f"{name}: {status}")
+            # Tushare 配置改为非必需：缺失仅提示，不当作错误
+            if name == 'Tushare配置':
+                print_warning(f"{name}: {status}")
+            else:
+                print_error(f"{name}: {status}")
 
     # Tushare配置检查
     tushare_ok, tushare_status = check_tushare_config()
     if tushare_ok:
         print_success(f"Tushare Token: {tushare_status}")
     else:
-        print_error(f"Tushare Token: {tushare_status}")
+        # 非必需：仅显示提醒图标
+        print_warning(f"Tushare Token: {tushare_status}")
 
     # 总结
     print_header("检查总结")
@@ -377,8 +427,7 @@ def main():
         issues.append(f"缺少必需包: {', '.join(required_missing)}")
     if missing_dirs:
         issues.append(f"缺少目录: {', '.join(missing_dirs)}")
-    if not tushare_ok:
-        issues.append("Tushare配置问题")
+    # Tushare 为非必需，不计入问题列表
 
     if not issues:
         print_success("🎉 环境检查通过！所有组件都已正确安装和配置。")
@@ -396,8 +445,7 @@ def main():
             print_info(f"  • 安装缺少的包: pip install {' '.join(required_missing)}")
         if missing_dirs:
             print_info(f"  • 手动创建失败目录: mkdir -p {' '.join(missing_dirs)}")
-        if not tushare_ok:
-            print_info("  • 配置Tushare Token: 编辑 config/tushare_config.json")
+        # Tushare 为非必需，不给出强制修复建议
 
         return False
 

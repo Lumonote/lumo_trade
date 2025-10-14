@@ -141,7 +141,7 @@ class FundamentalDataCollector:
                 'columns': 'ALL',
                 'filter': f'(SECURITY_CODE="{self.stock_code}")',
                 'pageNumber': '1',
-                'pageSize': '3',
+                'pageSize': '12',  # 获取最近12期用于TTM计算
                 'sortColumns': 'UPDATE_DATE',
                 'sortTypes': '-1'
             }
@@ -167,7 +167,12 @@ class FundamentalDataCollector:
             if data.get('success') and data.get('result'):
                 records = data['result'].get('data', [])
                 if records:
-                    latest = records[0]
+                    # 按报告期排序（降序）
+                    try:
+                        records_sorted = sorted(records, key=lambda r: str(r.get('REPORTDATE', '')), reverse=True)
+                    except Exception:
+                        records_sorted = records
+                    latest = records_sorted[0]
 
                     # 提取报告期
                     report_date = latest.get('REPORTDATE', 'N/A')
@@ -189,7 +194,7 @@ class FundamentalDataCollector:
                     if cash_flow != 'N/A':
                         reports['cash_flow'] = cash_flow
 
-                    # 同比增长率
+                    # 同比增长率（接口提供）
                     revenue_yoy = latest.get('YSTZ')  # 营收同比增长
                     if revenue_yoy is not None:
                         reports['revenue_yoy'] = round(float(revenue_yoy), 2)
@@ -197,6 +202,57 @@ class FundamentalDataCollector:
                     net_profit_yoy = latest.get('SJLTZ')  # 净利润同比增长
                     if net_profit_yoy is not None:
                         reports['net_profit_yoy'] = round(float(net_profit_yoy), 2)
+
+                    # 备选视角：基于TTM（近4季）计算同比
+                    try:
+                        # 提取最近8期的单季营收与净利润（单位：元）
+                        quarterly_rev = []
+                        quarterly_np = []
+                        for rec in records_sorted:
+                            rev = rec.get('TOTAL_OPERATE_INCOME')
+                            np = rec.get('PARENT_NETPROFIT')
+                            if rev is not None and np is not None:
+                                quarterly_rev.append(float(rev))
+                                quarterly_np.append(float(np))
+                            # 足够数据即可
+                            if len(quarterly_rev) >= 8 and len(quarterly_np) >= 8:
+                                break
+
+                        if len(quarterly_rev) >= 8 and len(quarterly_np) >= 8:
+                            # 近4季TTM与上一年4季TTM
+                            current_rev_ttm = sum(quarterly_rev[:4])
+                            prev_rev_ttm = sum(quarterly_rev[4:8])
+                            current_np_ttm = sum(quarterly_np[:4])
+                            prev_np_ttm = sum(quarterly_np[4:8])
+
+                            # 转换为亿元
+                            reports['revenue_ttm'] = round(current_rev_ttm / 100000000, 2)
+                            reports['net_profit_ttm'] = round(current_np_ttm / 100000000, 2)
+
+                            # 计算TTM同比（百分比）
+                            if prev_rev_ttm != 0:
+                                reports['revenue_yoy_calc'] = round((current_rev_ttm - prev_rev_ttm) / abs(prev_rev_ttm) * 100, 2)
+                            else:
+                                reports['revenue_yoy_calc'] = 'N/A'
+
+                            if prev_np_ttm != 0:
+                                reports['net_profit_yoy_calc'] = round((current_np_ttm - prev_np_ttm) / abs(prev_np_ttm) * 100, 2)
+                            else:
+                                reports['net_profit_yoy_calc'] = 'N/A'
+
+                            reports['yoy_calc_note'] = 'TTM计算(近4季对比上年4季)'
+                        else:
+                            reports['revenue_ttm'] = 'N/A'
+                            reports['net_profit_ttm'] = 'N/A'
+                            reports['revenue_yoy_calc'] = 'N/A'
+                            reports['net_profit_yoy_calc'] = 'N/A'
+                            reports['yoy_calc_note'] = '数据不足，TTM同比不可用'
+                    except Exception:
+                        reports['revenue_ttm'] = 'N/A'
+                        reports['net_profit_ttm'] = 'N/A'
+                        reports['revenue_yoy_calc'] = 'N/A'
+                        reports['net_profit_yoy_calc'] = 'N/A'
+                        reports['yoy_calc_note'] = '计算异常'
 
                     # ROE (加权平均)
                     roe = latest.get('WEIGHTAVG_ROE')

@@ -112,6 +112,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from model import Kronos, KronosTokenizer, KronosPredictor
     from modelscope import snapshot_download
+    from analysis.news_sentiment_collector import NewsSentimentCollector
+    from analysis.investor_sentiment import InvestorSentimentAnalyzer
+    from analysis.event_analyzer import EventAnalyzer
+    from analysis.sampling_tuner import tune_sampling_params
 
     KRONOS_AVAILABLE = True
 except ImportError as e:
@@ -324,6 +328,55 @@ class KronosStockPredictor:
             total_pred_points = pred_len * points_per_day
             print(f"   - 预测目标: {pred_len} 天 × {points_per_day} 点/天 = {total_pred_points} 点")
 
+            # 前置：采集与量化分析（用于调参）
+            try:
+                print("\n🔎 前置采集与量化分析（用于调参）...")
+                # 注意：此脚本没有股票代码上下文，尽量从数据文件名推断或用户传入；此处使用环境变量或默认代码
+                stock_code = os.environ.get('KRONOS_STOCK_CODE', '未知代码')
+                news_collector = NewsSentimentCollector(stock_code)
+                news_data = news_collector.get_comprehensive_news(verbose=False)
+                sentiment_analyzer = InvestorSentimentAnalyzer(stock_code)
+                sentiment_data = sentiment_analyzer.get_comprehensive_sentiment(verbose=False)
+                event_analyzer = EventAnalyzer(stock_code, news_data=news_data)
+                event_data = event_analyzer.get_comprehensive_analysis(verbose=False)
+
+                # 打印摘要
+                g = sentiment_data.get("guba_sentiment", {})
+                m = sentiment_data.get("overall_market_sentiment", {})
+                s = sentiment_data.get("sector_sentiment", {})
+                print("✅ 情绪分析完成")
+                print(f"    - 综合情绪: {sentiment_data.get('comprehensive_sentiment','未知')} ({sentiment_data.get('comprehensive_score',0)}分)")
+                print(f"    - 股吧评论: {g.get('overall','未知')}")
+                print(f"    - 看多比例: {g.get('bullish_ratio',0)}%")
+                print(f"    - 看空比例: {g.get('bearish_ratio',0)}%")
+                primary_name = (m.get('primary_index') or {}).get('name', '所属大盘')
+                primary_chg = m.get('primary_change_pct','N/A')
+                print(f"    - 大盘情绪: {m.get('overall','未知')} 所属大盘: {primary_name} 涨跌: {primary_chg}%")
+                print(f"    - 板块情绪: {s.get('overall','未知')} ({s.get('sector_name','板块')}) 涨跌: {s.get('change_pct','N/A')}%")
+                summary = event_data.get("summary", {})
+                print("✅ 事件分析完成")
+                print(f"    - 综合评级: {summary.get('rating','未知')} (得分: {summary.get('comprehensive_score',0)})")
+                print(f"    - 利好事件: {summary.get('total_positive_events',0)} 个")
+                print(f"    - 利空事件: {summary.get('total_negative_events',0)} 个")
+                print(f"    - 风险等级: {summary.get('risk_level','未知')}")
+                print(f"    - 机会等级: {summary.get('opportunity_level','未知')}")
+                print("✅ 综合面数据采集完成")
+
+                tuned = tune_sampling_params(sentiment_data, events_summary=event_data.get("summary"))
+                T_val = tuned.get('T', 0.7)
+                top_p_val = tuned.get('top_p', 0.90)
+                sample_count_val = tuned.get('sample_count', sample_count)
+                print("\n🧠 动态采样参数调整:")
+                print(f"   - Temperature: {T_val}")
+                print(f"   - Top-p: {top_p_val}")
+                print(f"   - Sample Count: {sample_count_val}")
+                print(f"   - 依据: {tuned.get('reason','未提供')}")
+            except Exception as e:
+                print(f"⚠️ 前置分析或动态调参失败，使用默认参数: {e}")
+                T_val = 1.0
+                top_p_val = 0.9
+                sample_count_val = sample_count
+
             pred_timestamps = _generate_a_share_pred_timestamps(start_time, total_pred_points)
 
             print(
@@ -367,9 +420,9 @@ class KronosStockPredictor:
                     x_timestamp=current_timestamp,
                     y_timestamp=batch_y_timestamp,
                     pred_len=current_batch_size,
-                    T=1.0,
-                    top_p=0.9,
-                    sample_count=sample_count,
+                    T=T_val,
+                    top_p=top_p_val,
+                    sample_count=sample_count_val,
                     verbose=True
                 )
 
