@@ -212,7 +212,10 @@ function Ensure-PortablePython {
         }
 
         # Enable site packages by ensuring 'import site' in _pth
-        $pthFile = Get-ChildItem $portableDir -Filter 'python*.pth' | Select-Object -First 1
+        # NOTE: Embedded Python uses files like 'python311._pth' (underscore),
+        # so we must match '*._pth' rather than '*.pth'. Otherwise 'import site'
+        # won't be enabled and 'python -m pip' will fail with "No module named pip".
+        $pthFile = Get-ChildItem $portableDir -Filter 'python*._pth' | Select-Object -First 1
         if ($pthFile) {
             $lines = Get-Content $pthFile.FullName
             if (-not ($lines | Where-Object { $_ -match '^\s*import\s+site\s*$' })) {
