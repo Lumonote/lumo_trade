@@ -78,7 +78,7 @@ class TongHuaShunCrawler:
         """检查数据源可用性"""
         try:
             # 简单的连通性测试
-            test_url = "http://d.10jqka.com.cn/v6/line/hs_000001/01/last.js"
+            test_url = "https://d.10jqka.com.cn/v6/line/hs_000001/01/last.js"
 
             if not self.browser_manager:
                 await self._init_browser()

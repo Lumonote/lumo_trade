@@ -32,6 +32,7 @@ a = Analysis(
         (os.path.join(project_root, 'webui/'), 'webui/'),
         (os.path.join(project_root, 'model/'), 'model/'),
         (os.path.join(project_root, 'analysis/'), 'analysis/'),
+        (os.path.join(project_root, 'resources/'), 'resources/'),
         (os.path.join(project_root, 'requirements.txt'), '.'),
         (os.path.join(project_root, 'quick_start.sh'), '.'),
         (os.path.join(project_root, 'quick_start.ps1'), '.'),

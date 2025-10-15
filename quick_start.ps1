@@ -141,9 +141,10 @@ function Ensure-PortablePython {
     $arch = if ($is64) { 'amd64' } else { 'win32' }
     $zipName = "python-$TargetVersion-embed-$arch.zip"
 
-    # 下载源列表（清华镜像优先，官方源作为备用）
+    # 下载源列表（华为云优先，官方源作为备用）
     $downloadUrls = @(
-        "https://mirrors.tuna.tsinghua.edu.cn/python/$TargetVersion/$zipName",
+        "https://mirrors.huaweicloud.com/python/$TargetVersion/$zipName",
+        "https://mirrors.ustc.edu.cn/python/$TargetVersion/$zipName",
         "https://www.python.org/ftp/python/$TargetVersion/$zipName"
     )
     $zipPath = Join-Path $portableRoot $zipName
@@ -156,7 +157,7 @@ function Ensure-PortablePython {
 
         $downloadSuccess = $false
         foreach ($downloadUrl in $downloadUrls) {
-            $sourceName = if ($downloadUrl -match 'tsinghua') { '清华镜像' } else { '官方源' }
+            $sourceName = if ($downloadUrl -match 'tsinghua') { '清华镜像' } elseif ($downloadUrl -match 'huaweicloud') { '华为云' } elseif ($downloadUrl -match 'ustc') { '中科院' }  else { '官方源' }
             Write-Host "MIRROR: 尝试从 $sourceName 下载..." -ForegroundColor Cyan
 
             $maxRetries = 4
@@ -226,20 +227,32 @@ function Ensure-PortablePython {
 
         # Bootstrap pip using get-pip.py
         $getPip = Join-Path $portableDir 'get-pip.py'
-        try {
-            Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $getPip -UseBasicParsing
-        } catch {
+        $localGetPip = Join-Path $scriptDir 'resources\get-pip.py'
+
+        # 优先使用本地的get-pip.py
+        if (Test-Path $localGetPip) {
+            Write-Host "SETUP: Using local get-pip.py from resources/" -ForegroundColor Cyan
+            Copy-Item $localGetPip $getPip -Force
+        } else {
+            Write-Host "SETUP: Downloading get-pip.py from internet..." -ForegroundColor Cyan
             try {
-                $wc = New-Object System.Net.WebClient
-                $wc.DownloadFile('https://bootstrap.pypa.io/get-pip.py', $getPip)
+                Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile $getPip -UseBasicParsing
             } catch {
-                Write-Host "WARN: Failed to download get-pip.py. You may need to install pip manually." -ForegroundColor Yellow
+                try {
+                    $wc = New-Object System.Net.WebClient
+                    $wc.DownloadFile('https://bootstrap.pypa.io/get-pip.py', $getPip)
+                } catch {
+                    Write-Host "ERROR: Failed to download get-pip.py. Please check network connection." -ForegroundColor Red
+                    Write-Host "TIP: You can manually download https://bootstrap.pypa.io/get-pip.py to resources/ folder" -ForegroundColor Yellow
+                }
             }
         }
 
         if (Test-Path $getPip) {
             Write-Host "SETUP: Bootstrapping pip in portable Python" -ForegroundColor Cyan
             & (Join-Path $portableDir 'python.exe') $getPip
+        } else {
+            Write-Host "ERROR: get-pip.py not found, cannot install pip" -ForegroundColor Red
         }
     }
 
@@ -492,6 +505,19 @@ elseif ($Choice -eq "6") {
     Invoke-Python -Script 'examples/prediction_batch_example.py' -Args @('--stock-code', $cleanSymbol)
 }
 elseif ($Choice -eq "7") {
+    Write-Host "🔥 投资机会挖掘 - 分析TOP100热门股票" -ForegroundColor Cyan
+    Write-Host "本功能将自动完成以下流程：" -ForegroundColor Yellow
+    Write-Host "  1. 获取市场热度TOP100股票"
+    Write-Host "  2. 多维度打分分析（量化模型、技术、情绪、板块、基本面、事件）"
+    Write-Host "  3. 5阶段漏斗筛选"
+    Write-Host "  4. 生成HTML投资机会挖掘报告"
+    Write-Host ""
+    Write-Host "注意：此过程可能需要15-30分钟，请耐心等待..." -ForegroundColor Yellow
+    Write-Host ""
+
+    Invoke-Python -Script 'scripts/run_opportunity_discovery.py' -Args @('--limit', '100', '--workers', '10')
+}
+elseif ($Choice -eq "8") {
     Write-Host "Checking license status..." -ForegroundColor Yellow
     if (Test-Path 'finetune/license_system/license_validator.py') {
         Invoke-Python -Script 'finetune/license_system/license_validator.py'
@@ -499,7 +525,7 @@ elseif ($Choice -eq "7") {
         Write-Host "License system files not found" -ForegroundColor Red
     }
 }
-elseif ($Choice -eq "10") {
+elseif ($Choice -eq "11") {
     Write-Host "Starting Web UI..." -ForegroundColor Yellow
     if (-not $IsPackaged) {
         if (Test-Path 'webui/requirements.txt') {
@@ -521,13 +547,13 @@ elseif ($Choice -eq "10") {
         Write-Host "webui/app.py not found" -ForegroundColor Red
     }
 }
-elseif ($Choice -eq "11") {
+elseif ($Choice -eq "12") {
     Write-Host "Showing help (check complete help in GUI)" -ForegroundColor Yellow
 }
-elseif ($Choice -eq "12") {
+elseif ($Choice -eq "13") {
     Write-Host "System status..." -ForegroundColor Yellow
     Invoke-Python -Script 'scripts/check_environment.py'
 }
 else {
-    Write-Host "Unsupported option. Available options: 1/2/3/6/7/10/11/12" -ForegroundColor Yellow
+    Write-Host "Unsupported option. Available options: 1/2/3/6/7/8/11/12/13" -ForegroundColor Yellow
 }

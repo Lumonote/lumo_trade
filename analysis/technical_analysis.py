@@ -2189,6 +2189,7 @@ class QuantitativeModels:
 
         # 运行其余未优化的模型
         remaining_models = [
+            # 原未优化模型（补齐到20）
             self.analyze_model_03_support_resistance,
             self.analyze_model_04_trend_pullback,
             self.analyze_model_05_ma_resonance,
@@ -2202,6 +2203,17 @@ class QuantitativeModels:
             self.analyze_model_18_multi_factor_alpha,
             self.analyze_model_19_pairs_trading_arbitrage,
             self.analyze_model_20_hft_microstructure,
+            # 经典高胜率模型（补齐21-30）
+            self.analyze_model_21_ichimoku_cloud,
+            self.analyze_model_22_bollinger_squeeze,
+            self.analyze_model_23_rsi_divergence,
+            self.analyze_model_24_stochastic_momentum,
+            self.analyze_model_25_volume_price_trend,
+            self.analyze_model_26_parabolic_sar,
+            self.analyze_model_27_chaikin_money_flow,
+            self.analyze_model_28_elder_ray,
+            self.analyze_model_29_vwap_deviation,
+            self.analyze_model_30_fractal_adaptive_ma,
         ]
 
         for model_func in remaining_models:

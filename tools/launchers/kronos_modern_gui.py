@@ -1292,6 +1292,7 @@ class KronosMacOSGUI:
         # 功能数据
         functions = [
             {"title": "批量分析", "desc": "多股票分析", "icon": "📈", "color": "#EA580C", "command": self.batch_predict},
+            {"title": "投资机会挖掘", "desc": "TOP100热门股票分析买入机会", "icon": "🔥", "color": "#DC2626", "command": self.opportunity_discovery},
             {"title": "环境检查", "desc": "检查系统环境", "icon": "🔍", "color": "#4F46E5",
              "command": self.check_environment},
             {"title": "安装依赖", "desc": "一键安装所有依赖", "icon": "📦", "color": "#059669",
@@ -1674,6 +1675,36 @@ class KronosMacOSGUI:
     def batch_predict(self):
         """批量获取数据及预测K线"""
         self.get_batch_input_and_run()
+
+    def opportunity_discovery(self):
+        """投资机会挖掘 - TOP100热门股票"""
+        # 显示确认对话框
+        result = messagebox.askyesno(
+            "投资机会挖掘",
+            "🔥 投资机会挖掘功能\n\n"
+            "本功能将自动完成以下流程：\n"
+            "  1. 获取市场热度TOP100股票\n"
+            "  2. 多维度打分分析（量化模型、技术、情绪、板块、基本面、事件）\n"
+            "  3. 5阶段漏斗筛选\n"
+            "  4. 生成HTML投资机会挖掘报告\n\n"
+            "注意：此过程可能需要15-30分钟，请耐心等待...\n\n"
+            "是否开始投资机会挖掘？"
+        )
+
+        if result:
+            # 通过quick_start脚本调用，确保使用相同的Python环境
+            if platform.system() == "Windows":
+                self.run_shell_command_with_analysis(
+                    "powershell quick_start.ps1 7",
+                    "正在进行投资机会挖掘分析...",
+                    "TOP100"
+                )
+            else:
+                self.run_shell_command_with_analysis(
+                    "bash quick_start.sh 7",
+                    "正在进行投资机会挖掘分析...",
+                    "TOP100"
+                )
 
     def check_license(self):
         """检查授权状态"""
@@ -2266,40 +2297,8 @@ class KronosMacOSGUI:
             try:
                 self.status_label.config(text=f"🔄 {status_text}")
 
-                # 获取正确的工作目录
-                if getattr(sys, 'frozen', False):
-                    # 打包应用中，使用正确的工作目录
-                    if hasattr(sys, '_MEIPASS'):
-                        work_dir = Path(sys._MEIPASS)
-                    else:
-                        # 更强大的.app包检测
-                        executable_path = Path(sys.executable)
-                        # 检查是否在.app包内的多种情况
-                        if ".app" in str(executable_path):
-                            # 在.app包内，查找正确的Resources目录
-                            app_path = None
-                            current = executable_path
-                            while current.parent != current:
-                                if current.name.endswith('.app'):
-                                    app_path = current
-                                    break
-                                current = current.parent
-
-                            if app_path:
-                                work_dir = app_path / "Contents" / "Resources"
-                            else:
-                                # 备选方案：从当前路径推断
-                                executable_str = str(executable_path)
-                                if "/Contents/" in executable_str:
-                                    contents_index = executable_str.find("/Contents/")
-                                    app_root = executable_str[:contents_index + len("/Contents")]
-                                    work_dir = Path(app_root) / "Resources"
-                                else:
-                                    work_dir = executable_path.parent.parent / "Resources"
-                        else:
-                            work_dir = executable_path.parent
-                else:
-                    work_dir = project_root
+                # 获取正确的工作目录 - 直接使用已计算的project_root
+                work_dir = project_root
 
                 # 检测是否在应用包内，设置用户目录环境变量
                 if str(work_dir).find('.app/Contents') != -1:
@@ -2753,40 +2752,8 @@ class KronosMacOSGUI:
             try:
                 self.status_label.config(text=f"🔄 {status_text}")
 
-                # 获取正确的工作目录
-                if getattr(sys, 'frozen', False):
-                    # 打包应用中，使用正确的工作目录
-                    if hasattr(sys, '_MEIPASS'):
-                        work_dir = Path(sys._MEIPASS)
-                    else:
-                        # 更强大的.app包检测
-                        executable_path = Path(sys.executable)
-                        # 检查是否在.app包内的多种情况
-                        if ".app" in str(executable_path):
-                            # 在.app包内，查找正确的Resources目录
-                            app_path = None
-                            current = executable_path
-                            while current.parent != current:
-                                if current.name.endswith('.app'):
-                                    app_path = current
-                                    break
-                                current = current.parent
-
-                            if app_path:
-                                work_dir = app_path / "Contents" / "Resources"
-                            else:
-                                # 备选方案：从当前路径推断
-                                executable_str = str(executable_path)
-                                if "/Contents/" in executable_str:
-                                    contents_index = executable_str.find("/Contents/")
-                                    app_root = executable_str[:contents_index + len("/Contents")]
-                                    work_dir = Path(app_root) / "Resources"
-                                else:
-                                    work_dir = executable_path.parent.parent / "Resources"
-                        else:
-                            work_dir = executable_path.parent
-                else:
-                    work_dir = project_root
+                # 获取正确的工作目录 - 直接使用已计算的project_root
+                work_dir = project_root
 
                 # 检测是否在应用包内，设置用户目录环境变量
                 if str(work_dir).find('.app/Contents') != -1:

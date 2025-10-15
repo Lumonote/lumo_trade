@@ -87,6 +87,120 @@ class InvestorSentimentAnalyzer:
 
         return self._get_default_capital_flow()
 
+    def get_dragon_tiger_list(self, limit: int = 10):
+        """
+        获取个股近期龙虎榜记录（东方财富数据中心）
+
+        Returns:
+            dict: 简要的龙虎榜数据摘要
+        """
+        try:
+            url = "http://datacenter-web.eastmoney.com/api/data/v1/get"
+            # 优先尝试通用的日度龙虎榜数据集
+            params_primary = {
+                'reportName': 'RPT_DAILYBILLBOARD',
+                'columns': 'ALL',
+                'filter': f'(SECURITY_CODE="{self.stock_code}")',
+                'pageNumber': '1',
+                'pageSize': str(limit),
+                'sortColumns': 'TRADE_DATE',
+                'sortTypes': '-1'
+            }
+
+            headers = getattr(self, 'headers', {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+
+            def _normalize_record(rec: dict) -> dict:
+                # 尽量兼容不同字段名
+                date = rec.get('TRADE_DATE') or rec.get('TRADEDATE') or rec.get('TRADE_DATE_S', '')
+                reason = rec.get('BILLBOARD_REASON') or rec.get('EXPLANATION') or rec.get('REASON') or ''
+                net_buy = rec.get('NET_BUY_AMT_VALUE') or rec.get('NETBUYAMT') or rec.get('NET_BUY_AMT')
+                amt = rec.get('DEAL_AMT_VALUE') or rec.get('DEALAMT') or rec.get('DEAL_AMT')
+                buy_seats = rec.get('BUY_SEAT_NUM') or rec.get('BUY_NUM')
+                sell_seats = rec.get('SELL_SEAT_NUM') or rec.get('SELL_NUM')
+                chg1d = rec.get('CHG_PCT_1D') or rec.get('CHGPCT1')
+
+                # 类型信息（涨停、异动、机构）
+                btype = rec.get('BILLBOARD_TYPE') or rec.get('BTYPE') or ''
+
+                # 数值安全转换
+                try:
+                    net_buy = float(net_buy) if net_buy is not None else None
+                except Exception:
+                    net_buy = None
+                try:
+                    amt = float(amt) if amt is not None else None
+                except Exception:
+                    amt = None
+
+                # 强度：净买入占成交额比例
+                ratio = None
+                if amt and amt != 0 and net_buy is not None:
+                    try:
+                        ratio = (net_buy / amt) * 100.0
+                    except Exception:
+                        ratio = None
+
+                # 信号判断
+                signal = '中性'
+                if isinstance(net_buy, (int, float)):
+                    signal = '正面' if net_buy > 0 else ('负面' if net_buy < 0 else '中性')
+
+                return {
+                    'date': str(date)[:10] if date else 'N/A',
+                    'reason': reason or 'N/A',
+                    'type': btype or 'N/A',
+                    'net_buy_amount': net_buy,
+                    'deal_amount': amt,
+                    'buy_seats': buy_seats,
+                    'sell_seats': sell_seats,
+                    'change_pct_1d': chg1d,
+                    'signal': signal,
+                    'strength_ratio': ratio
+                }
+
+            # 请求主数据集
+            resp = requests.get(url, params=params_primary, headers=headers, timeout=10)
+            data = resp.json()
+
+            records = []
+            if data.get('success') and data.get('result'):
+                raw = data['result'].get('data', []) or []
+                records = [_normalize_record(r) for r in raw]
+
+            # 若主数据集无返回，尝试备选数据集（不同环境字段名可能变化）
+            if not records:
+                params_backup = dict(params_primary)
+                params_backup['reportName'] = 'RPT_DAILYSZ_BILLBOARD'
+                try:
+                    resp2 = requests.get(url, params=params_backup, headers=headers, timeout=10)
+                    data2 = resp2.json()
+                    if data2.get('success') and data2.get('result'):
+                        raw2 = data2['result'].get('data', []) or []
+                        records = [_normalize_record(r) for r in raw2]
+                except Exception:
+                    pass
+
+            if records:
+                latest = records[0]
+                summary = {
+                    'has_records': True,
+                    'last_date': latest.get('date', 'N/A'),
+                    'last_reason': latest.get('reason', 'N/A'),
+                    'last_signal': latest.get('signal', '中性'),
+                    'last_strength_ratio': latest.get('strength_ratio'),
+                    'recent_positive': sum(1 for r in records[:limit] if r.get('signal') == '正面'),
+                    'recent_negative': sum(1 for r in records[:limit] if r.get('signal') == '负面'),
+                    'records': records
+                }
+                return summary
+
+        except Exception as e:
+            print(f"⚠️ 获取龙虎榜数据失败: {str(e)}")
+
+        return self._get_default_dragon_tiger()
+
     def get_market_sentiment(self):
         """
         获取市场情绪指标 (个股)
@@ -855,7 +969,79 @@ class InvestorSentimentAnalyzer:
 
         # 综合情绪评分基于股吧评论情绪
         sentiment_score = guba_sentiment['sentiment_score']
-        data['comprehensive_score'] = max(0, min(100, round(sentiment_score, 1)))
+
+        # 资金流与龙虎榜加分（轻权重）
+        bonus_points = 0.0
+        bonus_reasons = []
+
+        # 主力资金流向
+        try:
+            capital_flow = self.get_capital_flow()
+        except Exception as e:
+            if verbose:
+                print(f"   ⚠️  获取资金流向失败，使用默认值: {str(e)}")
+            capital_flow = self._get_default_capital_flow()
+
+        data['capital_flow'] = capital_flow
+
+        try:
+            inflow = capital_flow.get('main_inflow', 0) or 0
+            inflow_rate = capital_flow.get('main_inflow_rate', 0) or 0
+            trend = capital_flow.get('trend', '未知')
+            strength = capital_flow.get('strength', '未知')
+
+            # 加分策略：流入为正，按强度微调（上限+4）
+            if inflow > 0:
+                if strength == '强':
+                    bonus_points += 4
+                    bonus_reasons.append('主力资金强力净流入 +4')
+                elif strength == '中':
+                    bonus_points += 2.5
+                    bonus_reasons.append('主力资金净流入(中) +2.5')
+                elif strength == '弱':
+                    bonus_points += 1
+                    bonus_reasons.append('主力资金净流入(弱) +1')
+            elif inflow < 0:
+                # 负流出轻微扣分（下限-3）
+                if strength == '强':
+                    bonus_points -= 3
+                    bonus_reasons.append('主力资金强力净流出 -3')
+                elif strength == '中':
+                    bonus_points -= 2
+                    bonus_reasons.append('主力资金净流出(中) -2')
+                elif strength == '弱':
+                    bonus_points -= 1
+                    bonus_reasons.append('主力资金净流出(弱) -1')
+        except Exception:
+            pass
+
+        # 龙虎榜信号
+        try:
+            dragon_tiger = self.get_dragon_tiger_list(limit=10)
+        except Exception as e:
+            if verbose:
+                print(f"   ⚠️  获取龙虎榜失败，使用默认值: {str(e)}")
+            dragon_tiger = self._get_default_dragon_tiger()
+
+        data['dragon_tiger'] = dragon_tiger
+
+        try:
+            if dragon_tiger.get('has_records'):
+                last_signal = dragon_tiger.get('last_signal', '中性')
+                if last_signal == '正面':
+                    bonus_points += 3
+                    bonus_reasons.append('近期龙虎榜净买入 +3')
+                elif last_signal == '负面':
+                    bonus_points -= 3
+                    bonus_reasons.append('近期龙虎榜净卖出 -3')
+        except Exception:
+            pass
+
+        # 汇总加分（控制范围）
+        sentiment_score_adj = max(0, min(100, round(sentiment_score + bonus_points, 1)))
+        data['comprehensive_score'] = sentiment_score_adj
+        if bonus_reasons:
+            data['bonus_reasons'] = bonus_reasons
 
         # 综合情绪判断
         if data['comprehensive_score'] >= 70:
@@ -887,8 +1073,30 @@ class InvestorSentimentAnalyzer:
                 print(f"   - 板块情绪: {data['sector_sentiment'].get('overall', 'N/A')} ({data['sector_sentiment'].get('sector_name', 'N/A')}) 涨跌: {data['sector_sentiment'].get('change_pct', 'N/A')}%")
             except Exception:
                 pass
+            try:
+                cf = data.get('capital_flow', {})
+                dt = data.get('dragon_tiger', {})
+                if cf:
+                    print(f"   - 资金流向: {cf.get('trend','未知')}({cf.get('strength','未知')}) 主力净流入率: {cf.get('main_inflow_rate', 0)}%")
+                if dt and dt.get('has_records'):
+                    print(f"   - 龙虎榜: {dt.get('last_signal','中性')}({dt.get('last_date','N/A')}) 原因: {dt.get('last_reason','N/A')}")
+            except Exception:
+                pass
 
         return data
+
+    def _get_default_dragon_tiger(self):
+        """返回默认龙虎榜数据"""
+        return {
+            'has_records': False,
+            'last_date': 'N/A',
+            'last_reason': 'N/A',
+            'last_signal': '中性',
+            'last_strength_ratio': None,
+            'recent_positive': 0,
+            'recent_negative': 0,
+            'records': []
+        }
 
     def _get_default_capital_flow(self):
         """返回默认资金流向数据"""

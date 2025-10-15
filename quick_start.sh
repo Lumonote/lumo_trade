@@ -339,7 +339,10 @@ cleanup_on_error() {
     echo -e "  3. 磁盘空间是否充足"
     echo -e "  4. 权限是否足够"
     echo
-    read -p "按任意键退出..." -n1 -s
+    # 非交互环境下避免阻塞/报错
+    if [ -t 0 ]; then
+        read -p "按任意键退出..." -n1 -s
+    fi
     exit 1
 }
 
@@ -364,16 +367,25 @@ safe_execute_python() {
         if [[ "$script_dir" =~ \.app/Contents/ ]]; then
             # 从 .app/Contents/Resources 或类似路径中找到项目根目录
             local app_root=$(echo "$script_dir" | sed 's|\.app/Contents.*|.app/Contents/Resources|')
-            if [ -d "$app_root" ] && [ -f "$app_root/$python_script" ]; then
+            # 优先使用 Resources 目录，只要目录存在即可
+            if [ -d "$app_root" ]; then
                 local project_root="$app_root"
+                # 若指定脚本不存在，尝试回退到上级 Resources/app 或项目根的常见布局
+                if [ ! -f "$project_root/$python_script" ]; then
+                    if [ -d "$project_root/app" ] && [ -f "$project_root/app/$python_script" ]; then
+                        project_root="$project_root/app"
+                    elif [ -d "$project_root/.." ] && [ -f "$project_root/../$python_script" ]; then
+                        project_root="$project_root/.."
+                    fi
+                fi
             else
-                # 尝试其他可能的路径
+                # Resources 不存在时，回退到当前脚本目录
                 local project_root="$script_dir"
             fi
         else
             local project_root="$script_dir"
         fi
-        
+
         echo -e "${BLUE}DIR: 应用包环境：切换到项目根目录 $project_root${NC}"
         cd "$project_root"
     fi
@@ -670,22 +682,23 @@ show_welcome() {
     echo "4. 获取股票数据 (Tushare)"
     echo "5. 获取股票数据 (爬虫)"
     echo "6. 批量获取数据及预测K线"
+    echo "7. 🔥 投资机会挖掘 (TOP100热门股票)"
     echo
     echo -e "${YELLOW}LICENSE: 授权管理${NC}"
-    echo "7. 检查授权状态"
-    echo "8. 激活授权码"
+    echo "8. 检查授权状态"
+    echo "9. 激活授权码"
     echo
     echo -e "${YELLOW}PREDICT: 预测功能${NC}"
-    echo "9. 运行预测示例"
+    echo "10. 运行预测示例"
     echo
     echo -e "${YELLOW}CRAWLER: 爬虫设置${NC}"
-    echo "10. 测试爬虫功能"
+    echo "11. 测试爬虫功能"
     echo
     echo -e "${YELLOW}INFO:  帮助与信息${NC}"
-    echo "11. 显示使用帮助"
-    echo "12. 查看系统状态"
+    echo "12. 显示使用帮助"
+    echo "13. 查看系统状态"
     echo
-    echo "13. 退出"
+    echo "14. 退出"
     echo
     echo -e "${BLUE}TIP: 提示: 首次使用请先选择选项1进行一键安装${NC}"
     echo
@@ -1028,11 +1041,11 @@ elif [ "$KRONOS_IS_APP_BUNDLE" = "true" ] || [ ! -t 0 ]; then
 else
     # 在终端环境中，显示菜单供用户选择
     while true; do
-        read -p "请选择操作 (1-13): " choice
-        if validate_choice "$choice" 13; then
+        read -p "请选择操作 (1-14): " choice
+        if validate_choice "$choice" 14; then
             break
         else
-            echo -e "${RED}ERROR: 无效输入，请输入 1-13 之间的数字${NC}"
+            echo -e "${RED}ERROR: 无效输入，请输入 1-14 之间的数字${NC}"
         fi
     done
 fi
@@ -1523,6 +1536,60 @@ EOF
         fi
         ;;
     7)
+        echo -e "${BLUE}🔥 投资机会挖掘 - 分析热门股票（可自定义数量）${NC}"
+        echo -e "${YELLOW}本功能将自动完成以下流程：${NC}"
+        echo -e "  1. 获取市场热度TOPN股票（默认100，最小10，最大300）"
+        echo -e "  2. 多维度打分分析（量化模型、技术、情绪、板块、基本面、事件）"
+        echo -e "  3. 5阶段漏斗筛选"
+        echo -e "  4. 生成HTML投资机会挖掘报告"
+        echo ""
+        echo -e "${YELLOW}注意：此过程可能需要15-30分钟，请耐心等待...${NC}"
+        echo ""
+        # 自动模式：在应用包/非交互终端/提供AUTO_CHOICE时，跳过交互输入
+        if [ -n "$AUTO_CHOICE" ] || [ "$KRONOS_IS_APP_BUNDLE" = "true" ] || [ ! -t 0 ]; then
+            limit=${KRONOS_LIMIT:-100}
+            # 约束范围
+            if ! [[ $limit =~ ^[0-9]+$ ]]; then
+                limit=100
+            fi
+            if [ "$limit" -lt 10 ]; then
+                limit=10
+            fi
+            if [ "$limit" -gt 300 ]; then
+                limit=300
+            fi
+            echo -e "${BLUE}AUTO: 检测到自动模式，使用采集数量: $limit${NC}"
+            echo -e "${GREEN}正在启动投资机会挖掘系统...${NC}"
+            safe_execute_python "scripts/run_opportunity_discovery.py" "投资机会挖掘" --limit "$limit" --workers 10
+        else
+        # 输入采集数量，带范围校验
+        read -p "请输入采集数量(默认100，最小10，最大300): " limit
+        limit=${limit:-100}
+        if ! [[ $limit =~ ^[0-9]+$ ]]; then
+            echo -e "${YELLOW}WARN: 输入非数字，已使用默认100${NC}"
+            limit=100
+        fi
+        if [ "$limit" -lt 10 ]; then
+            echo -e "${YELLOW}WARN: 输入过小，已调整为最小值10${NC}"
+            limit=10
+        fi
+        if [ "$limit" -gt 300 ]; then
+            echo -e "${YELLOW}WARN: 输入过大，已调整为最大值300${NC}"
+            limit=300
+        fi
+
+        read -p "是否开始投资机会挖掘？(Y/n): " confirm
+        confirm=${confirm:-Y}
+
+        if [[ $confirm =~ ^[Yy]$ ]]; then
+            echo -e "${GREEN}正在启动投资机会挖掘系统...${NC}"
+            safe_execute_python "scripts/run_opportunity_discovery.py" "投资机会挖掘" --limit "$limit" --workers 10
+        else
+            echo -e "${BLUE}已取消投资机会挖掘${NC}"
+        fi
+        fi
+        ;;
+    8)
         echo -e "${BLUE}CHECK: 检查授权状态${NC}"
         if [ ! -f "finetune/license_system/license_validator.py" ]; then
             echo -e "${RED}ERROR: 授权系统文件不存在${NC}"
@@ -1564,7 +1631,7 @@ else:
 "
         fi
         ;;
-    8)
+    9)
         echo -e "${BLUE}KEY: 激活授权码${NC}"
         if [ ! -f "finetune/license_system/activate.py" ]; then
             echo -e "${RED}ERROR: 授权激活工具不存在${NC}"
@@ -1574,25 +1641,25 @@ else:
             safe_execute_python "finetune/license_system/activate.py" "授权激活工具"
         fi
         ;;
-    9)
+    10)
         echo -e "${BLUE}PREDICT: 运行预测示例${NC}"
         safe_execute_python "examples/prediction_example.py" "预测示例"
         ;;
-    10)
+    11)
         echo -e "${BLUE}TEST: 测试爬虫功能...${NC}"
         $PYTHON_CMD -c "import asyncio; from scripts.crawler import CrawlerManager; asyncio.run(CrawlerManager().test_connection())"
         ;;
-    11)
+    12)
         show_help
         ;;
-    12)
+    13)
         show_system_status
         ;;
-    13)
+    14)
         echo -e "${GREEN}BYE: 感谢使用 Kronos！再见！${NC}"
         exit 0
         ;;
     *)
-        echo -e "${RED}ERROR: 无效选择，请输入 1-13${NC}"
+        echo -e "${RED}ERROR: 无效选择，请输入 1-14${NC}"
         ;;
 esac

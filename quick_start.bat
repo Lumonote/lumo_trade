@@ -28,36 +28,37 @@ echo DATA: 数据获取
 echo 4. 获取股票数据 (Tushare)
 echo 5. 获取股票数据 (爬虫)
 echo 6. 批量获取数据及预测K线
+echo 7. 🔥 投资机会挖掘 (TOP100热门股票)
 echo.
 echo PREDICT: 预测功能
-echo 7. 运行预测示例
+echo 8. 运行预测示例
 echo.
 echo CRAWLER: 爬虫设置
-echo 8. 安装 Playwright 浏览器
-echo 9. 测试爬虫功能
+echo 9. 安装 Playwright 浏览器
+echo 10. 测试爬虫功能
 echo.
 echo WEB: Web界面
-echo 10. 启动Web界面
+echo 11. 启动Web界面
 echo.
 echo INFO:  帮助与信息
-echo 11. 显示使用帮助
-echo 12. 查看系统状态
+echo 12. 显示使用帮助
+echo 13. 查看系统状态
 echo.
-echo 13. 退出
+echo 14. 退出
 echo.
 echo TIP: 提示: 首次使用请先选择选项1进行一键安装
 echo.
 
 REM 输入验证循环
 :input_validation
-set /p choice=请选择操作 (1-13): 
+set /p choice=请选择操作 (1-14):
 if "%choice%"=="" goto invalid_input
 echo %choice%| findstr /r "^[0-9][0-9]*$" >nul
 if errorlevel 1 goto invalid_input
-if %choice% geq 1 if %choice% leq 13 goto valid_input
+if %choice% geq 1 if %choice% leq 14 goto valid_input
 
 :invalid_input
-echo ERROR: 无效输入，请输入 1-13 之间的数字
+echo ERROR: 无效输入，请输入 1-14 之间的数字
 goto input_validation
 
 :valid_input
@@ -67,13 +68,14 @@ if "%choice%"=="3" goto check_env
 if "%choice%"=="4" goto fetch_tushare
 if "%choice%"=="5" goto fetch_crawler
 if "%choice%"=="6" goto batch_fetch
-if "%choice%"=="7" goto run_prediction
-if "%choice%"=="8" goto install_playwright
-if "%choice%"=="9" goto test_crawler
-if "%choice%"=="10" goto start_webui
-if "%choice%"=="11" goto show_help
-if "%choice%"=="12" goto show_system_status
-if "%choice%"=="13" goto exit_script
+if "%choice%"=="7" goto opportunity_discovery
+if "%choice%"=="8" goto run_prediction
+if "%choice%"=="9" goto install_playwright
+if "%choice%"=="10" goto test_crawler
+if "%choice%"=="11" goto start_webui
+if "%choice%"=="12" goto show_help
+if "%choice%"=="13" goto show_system_status
+if "%choice%"=="14" goto exit_script
 
 :install_all_deps
 echo PACKAGE: 开始一键安装所有依赖和模型...
@@ -341,6 +343,31 @@ if errorlevel 1 (
     echo REPORT: HTML分析报告已自动生成到results目录
 )
 
+pause
+goto main_menu
+
+:opportunity_discovery
+echo 🔥 投资机会挖掘 - 分析TOP100热门股票
+echo.
+echo 本功能将自动完成以下流程：
+echo   1. 获取市场热度TOP100股票
+echo   2. 多维度打分分析（量化模型、技术、情绪、板块、基本面、事件）
+echo   3. 5阶段漏斗筛选
+echo   4. 生成HTML投资机会挖掘报告
+echo.
+echo 注意：此过程可能需要15-30分钟，请耐心等待...
+echo.
+
+set /p confirm=是否开始投资机会挖掘？(Y/n):
+if /i "%confirm%"=="n" goto main_menu
+
+echo 正在启动投资机会挖掘系统...
+python scripts/run_opportunity_discovery.py --limit 100 --workers 10
+if errorlevel 1 (
+    echo ERROR: 投资机会挖掘执行失败
+) else (
+    echo OK: 投资机会挖掘完成！报表已生成到results目录
+)
 pause
 goto main_menu
 
