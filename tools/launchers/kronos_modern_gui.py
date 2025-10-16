@@ -5,19 +5,19 @@ Kronos macOS现代化GUI - Big Sur/Monterey风格
 使用具有完整tkinter支持的系统Python环境
 """
 
-import sys
-import os
-import json
-import hashlib
-import platform
-import subprocess
-import threading
 import asyncio
+import hashlib
+import json
+import os
+import platform
 import re
 import shutil
+import subprocess
+import sys
+import threading
+import webbrowser
 from datetime import datetime
 from pathlib import Path
-import webbrowser
 
 # 首先尝试导入tkinter
 HAS_TKINTER = False

@@ -21,6 +21,9 @@ from scripts.hot_stocks_fetcher import HotStocksFetcher
 from analysis.opportunity_scorer import OpportunityScorer
 from analysis.opportunity_filter import OpportunityFilter
 from scripts.opportunity_report_generator import OpportunityReportGenerator
+from analysis.global_hot_news_collector import GlobalHotNewsCollector
+from analysis.sector_hot_news_collector import SectorNewsCollector
+from analysis.trending_topics_collector import TrendingTopicsCollector
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +49,11 @@ class OpportunityDiscovery:
         # 尊重打包环境的结果目录设置
         output_dir = os.environ.get('KRONOS_RESULTS_DIR', 'results')
         self.report_generator = OpportunityReportGenerator(output_dir=output_dir)
+        self.hot_news_collector = GlobalHotNewsCollector()
+        self.sector_news_collector = SectorNewsCollector()
+        self.topics_collector = TrendingTopicsCollector()
+        self.global_hot_news = []
+        self.sector_hot_news = []
         self.max_workers = max_workers
 
     def run(self, limit: int = 100) -> str:
@@ -64,7 +72,7 @@ class OpportunityDiscovery:
 
         start_time = datetime.now()
 
-        # 步骤1: 获取热门股票 TOP 100
+        # 步骤1: 获取热门股票 TOP 100 与全市场热门新闻TOP10
         logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
         # 强制直接采集，避免使用缓存或本地回退
         hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
@@ -74,6 +82,15 @@ class OpportunityDiscovery:
             return ""
 
         logger.info(f"✓ 成功获取 {len(hot_stocks)} 只热门股票")
+
+        # 同步采集：全市场热门新闻TOP10
+        try:
+            logger.info("正在采集全市场热门新闻 TOP10（东方财富/同花顺/雪球）...")
+            self.global_hot_news = self.hot_news_collector.get_top_news(limit=10)
+            logger.info(f"✓ 成功采集 {len(self.global_hot_news)} 条热门新闻")
+        except Exception as e:
+            logger.warning(f"热门新闻采集失败: {e}")
+            self.global_hot_news = []
 
         # 步骤2: 多维度打分分析（并发处理）
         logger.info(f"\n步骤2: 正在进行多维度打分分析...")
@@ -122,12 +139,94 @@ class OpportunityDiscovery:
         passed_count = sum(1 for r in filter_results if r.get('passed', False))
         logger.info(f"✓ 筛选完成: {passed_count}/{len(filter_results)} 只股票通过")
 
+        # 额外步骤：采集板块相关新闻（按通过股票的板块频次选取Top板块）
+        try:
+            logger.info("\n附加: 正在采集板块相关新闻（基于通过股票的板块Top）...")
+            sector_freq = {}
+            # 优先使用通过筛选的股票，若为空则使用全部结果
+            base_list = [r for r in filter_results if r.get('passed', False)] or filter_results
+            for r in base_list:
+                sd = (r.get('scoring_result') or {}).get('details', {})
+                secd = sd.get('sector') or {}
+                name = (secd.get('sector_name') or '').strip()
+                if not name:
+                    continue
+                sector_freq[name] = sector_freq.get(name, 0) + 1
+
+            # 选择Top板块名称（最多8个）
+            top_sector_names = [k for k, _ in sorted(sector_freq.items(), key=lambda x: x[1], reverse=True)[:8]]
+
+            if top_sector_names:
+                self.sector_hot_news = self.sector_news_collector.get_top_news_by_sectors(
+                    top_sector_names,
+                    per_sector_limit=4,
+                    total_limit=10
+                )
+                logger.info(f"✓ 成功采集 {len(self.sector_hot_news)} 条板块相关新闻，覆盖 {len(top_sector_names)} 个板块")
+            else:
+                logger.info("未能识别到板块名称，跳过板块新闻采集")
+                self.sector_hot_news = []
+        except Exception as e:
+            logger.warning(f"板块新闻采集失败: {e}")
+            self.sector_hot_news = []
+
+        # 在生成报表前：改为首页“东方财富股吧话题”9条，不再展示新闻
+        try:
+            logger.info("\n附加: 正在采集东方财富股吧话题（最热），用于首页9条展示...")
+            hot_news_title = "🔥 股吧话题精选（东方财富）"
+
+            topics = self.topics_collector.get_guba_topics(limit=9)
+            if topics and len(topics) >= 5:
+                self.global_hot_news = topics
+                logger.info(f"✓ 首页热门内容已切换为股吧话题，共 {len(self.global_hot_news)} 条")
+            else:
+                logger.warning(f"⚠️ 股吧话题采集数量不足（{len(topics) if topics else 0} 条），将尝试通用热榜话题或热门板块兜底")
+                # 尝试通用热榜话题（微博/知乎）
+                try:
+                    alt_topics = self.topics_collector.get_top_topics(limit=9)
+                except Exception:
+                    alt_topics = []
+
+                if alt_topics and len(alt_topics) >= 5:
+                    self.global_hot_news = alt_topics
+                    hot_news_title = "🔥 热榜话题精选"
+                else:
+                    base_topics = list(self.sector_hot_news or [])
+                    # 若为空，尝试用默认板块列表采集
+                    if not base_topics:
+                        try:
+                            default_sectors = ['半导体', '新能源', '算力', 'AI应用', '智能汽车', '光伏', '储能', '芯片']
+                            base_topics = self.sector_news_collector.get_top_news_by_sectors(default_sectors, per_sector_limit=3, total_limit=12)
+                        except Exception as e:
+                            logger.warning(f"热门话题默认采集失败: {e}")
+                            base_topics = []
+
+                    fallback_topics = []
+                    for i, it in enumerate(base_topics[:9], start=1):
+                        fallback_topics.append({
+                            'title': it.get('title'),
+                            'url': it.get('url'),
+                            'source': it.get('source') or '热门话题',
+                            'publish_time': it.get('publish_time') or '',
+                            'heat': it.get('heat') or max(20, 100 - i * 5),
+                            'rank': i,
+                        })
+                    self.global_hot_news = fallback_topics
+                    hot_news_title = "🔥 热门话题精选（按热门板块）"
+
+        except Exception as e:
+            logger.warning(f"热榜话题采集异常: {e}")
+            hot_news_title = "🔥 热门话题精选（按热门板块）"
+
         # 步骤4: 生成报表
         logger.info(f"\n步骤4: 正在生成投资机会挖掘报表...")
 
         report_path = self.report_generator.generate_report(
             analysis_results=filter_results,
-            report_title="投资机会挖掘报告"
+            report_title="投资机会挖掘报告",
+            global_hot_news=self.global_hot_news,
+            sector_hot_news=self.sector_hot_news,
+            hot_news_title=hot_news_title
         )
 
         # 完成
@@ -165,8 +264,11 @@ class OpportunityDiscovery:
         stock_name = hot_stock.get('name', '未知')
 
         try:
-            # 多维度打分
-            scoring_result = self.scorer.calculate_comprehensive_score(stock_code)
+            # 多维度打分（注入全市场热门新闻以进行事件面加分）
+            scoring_result = self.scorer.calculate_comprehensive_score(
+                stock_code,
+                global_hot_news=self.global_hot_news
+            )
 
             return {
                 'stock_code': stock_code,

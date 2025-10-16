@@ -34,7 +34,10 @@ class OpportunityReportGenerator:
         os.makedirs(output_dir, exist_ok=True)
 
     def generate_report(self, analysis_results: List[Dict],
-                       report_title: str = "投资机会挖掘报告") -> str:
+                       report_title: str = "投资机会挖掘报告",
+                       global_hot_news: List[Dict] = None,
+                       sector_hot_news: List[Dict] = None,
+                       hot_news_title: str = None) -> str:
         """
         生成投资机会挖掘HTML报表
 
@@ -72,7 +75,10 @@ class OpportunityReportGenerator:
             stage_stats=stage_stats,
             funnel_data=funnel_data,
             top_10=top_10,
-            grouped_stocks=grouped_stocks
+            grouped_stocks=grouped_stocks,
+            global_hot_news=global_hot_news or [],
+            sector_hot_news=sector_hot_news or [],
+            hot_news_title=hot_news_title
         )
 
         # 保存文件
@@ -201,8 +207,265 @@ class OpportunityReportGenerator:
 
     def _generate_html(self, report_title: str, total_count: int, passed_count: int,
                       stage_stats: Dict, funnel_data: List[Dict], top_10: List[Dict],
-                      grouped_stocks: Dict) -> str:
+                      grouped_stocks: Dict, global_hot_news: List[Dict], sector_hot_news: List[Dict], hot_news_title: str = None) -> str:
         """生成HTML内容"""
+
+        # 构建热门新闻关联股票映射
+        related_map = {}
+        def _mk_key(item):
+            url = (item.get('url') or '').strip()
+            if url:
+                return url
+            return f"{(item.get('source') or '').strip()}|{(item.get('title') or '').strip()}"
+
+        # 收集所有股票并去重
+        all_stocks = []
+        try:
+            for k in ['passed', 'stage1', 'stage2', 'stage3', 'stage4', 'stage5']:
+                all_stocks.extend(grouped_stocks.get(k, []))
+            seen = set()
+            deduped = []
+            for s in all_stocks:
+                code = s.get('stock_code') or s.get('code') or ''
+                if code and code not in seen:
+                    seen.add(code)
+                    deduped.append(s)
+            all_stocks = deduped
+        except Exception:
+            pass
+
+        # 预建键（与展示数量一致，改为9条）
+        for item in (global_hot_news or [])[:9]:
+            related_map[_mk_key(item)] = []
+
+        # 遍历股票提取关联热门新闻
+        try:
+            for s in all_stocks:
+                scoring_result = s.get('scoring_result') or {}
+                events = (scoring_result.get('details') or {}).get('events') or {}
+                matches = events.get('hot_news_matches') or []
+                for m in matches:
+                    key = _mk_key(m)
+                    if key in related_map:
+                        related_map[key].append({
+                            'name': s.get('name') or s.get('stock_name') or '未知',
+                            'stock_code': s.get('stock_code') or s.get('code') or '',
+                            'rating': s.get('rating') or scoring_result.get('rating') or 'C',
+                            'final_score': s.get('final_score') or scoring_result.get('final_score') or 0
+                        })
+        except Exception:
+            pass
+
+        # 生成热门新闻HTML
+        hot_news_html = ''
+        # 热门话题/新闻展示数量改为9条
+        for item in (global_hot_news or [])[:9]:
+            key = _mk_key(item)
+            stocks = related_map.get(key, [])[:8]
+            title = (item.get('title') or '').replace('"', '&quot;')
+            url = (item.get('url') or '').strip()
+            source = item.get('source') or ''
+            publish_time = item.get('publish_time') or ''
+            heat = item.get('heat') or ''
+            rank = item.get('rank') or ''
+            # 优先使用采集器解析到的关联股票（related_stocks）
+            try:
+                rel = item.get('related_stocks') or []
+                if rel:
+                    # 通过代码或名称映射到已评分股票，补充评级与分数用于标签渲染
+                    idx = {}
+                    name_idx = {}
+                    for s in all_stocks:
+                        code = s.get('stock_code') or s.get('code') or ''
+                        if code:
+                            idx[code] = s
+                        nm0 = s.get('name') or s.get('stock_name') or ''
+                        nm_key = (nm0 or '').replace(' ', '').lower()
+                        if nm_key:
+                            name_idx[nm_key] = s
+                    rich = []
+                    for r in rel:
+                        code = r.get('stock_code') or ''
+                        name = r.get('name') or ''
+                        s = idx.get(code)
+                        if (not s) and name:
+                            s = name_idx.get((name or '').replace(' ', '').lower())
+                        if s:
+                            rich.append({
+                                'name': s.get('name') or s.get('stock_name') or name or '未知',
+                                'stock_code': s.get('stock_code') or s.get('code') or code,
+                                'rating': s.get('rating') or (s.get('scoring_result') or {}).get('rating') or 'C',
+                                'final_score': s.get('final_score') or (s.get('scoring_result') or {}).get('final_score') or 0
+                            })
+                        else:
+                            # 若评分集中未出现该股，仍保留标签但不给分
+                            rich.append({
+                                'name': name or '未知',
+                                'stock_code': code,
+                                'rating': 'C',
+                                'final_score': 0
+                            })
+                    rich = sorted(rich, key=lambda x: x.get('final_score', 0), reverse=True)
+                    stocks = rich[:8]
+            except Exception:
+                pass
+            if not stocks and title:
+                # 回退：标题包含股票名称则展示相应股票标签
+                try:
+                    candidates = []
+                    t = title
+                    for s in all_stocks:
+                        nm = s.get('name') or s.get('stock_name') or ''
+                        if nm and (nm in t):
+                            candidates.append({
+                                'name': s.get('name') or s.get('stock_name') or '未知',
+                                'stock_code': s.get('stock_code') or s.get('code') or '',
+                                'rating': s.get('rating') or (s.get('scoring_result') or {}).get('rating') or 'C',
+                                'final_score': s.get('final_score') or (s.get('scoring_result') or {}).get('final_score') or 0
+                            })
+                    if candidates:
+                        candidates = sorted(candidates, key=lambda x: x.get('final_score', 0), reverse=True)
+                        stocks = candidates[:5]
+                except Exception:
+                    pass
+            tags_html = ''
+            for st in stocks:
+                rating_class = f"rating-{str(st.get('rating', 'C')).replace('+', '-plus')}"
+                code_txt = st.get('stock_code', '')
+                name_txt = st.get('name', '未知')
+                display_txt = f"{name_txt}{f'({code_txt})' if code_txt else ''}"
+                tags_html += f"<span class=\"stock-tag\"><span class=\"rating-badge {rating_class}\">{st.get('rating', 'C')}</span> {display_txt}</span>"
+            meta_parts = []
+            if source and ('股吧话题' not in source):
+                meta_parts.append(f"<span class=\"source-badge\">{source}</span>")
+            if publish_time:
+                meta_parts.append(f"<span>时间: {publish_time}</span>")
+            meta_parts.append(f"<span class=\"heat-badge\">热度 {heat}</span>")
+            meta_parts.append(f"<span class=\"rank-badge small\">{rank if rank else '-'}</span>")
+            meta_html = f"<div class=\"news-meta\">{''.join(meta_parts)}</div>"
+            stock_tags_section = f"<div class=\"stock-tags\">{tags_html}</div>" if tags_html else ""
+            hot_news_html += (
+                f"<div class=\"hot-news-item\">"
+                f"<a href=\"{url}\" target=\"_blank\" class=\"news-title\">{title}</a>"
+                f"{meta_html}"
+                f"{stock_tags_section}"
+                f"</div>"
+            )
+
+        # 构建板块 -> 相关股票映射（用于板块新闻标签）
+        sector_to_stocks = {}
+        try:
+            for s in all_stocks:
+                scoring_result = s.get('scoring_result') or {}
+                secd = (scoring_result.get('details') or {}).get('sector') or {}
+                sec_name = (secd.get('sector_name') or '').strip()
+                if not sec_name:
+                    continue
+                info = {
+                    'name': s.get('name') or s.get('stock_name') or '未知',
+                    'stock_code': s.get('stock_code') or s.get('code') or '',
+                    'rating': s.get('rating') or scoring_result.get('rating') or 'C',
+                    'final_score': s.get('final_score') or scoring_result.get('final_score') or 0
+                }
+                sector_to_stocks.setdefault(sec_name, []).append(info)
+
+            # 各板块按分数排序
+            for k in list(sector_to_stocks.keys()):
+                sector_to_stocks[k] = sorted(sector_to_stocks[k], key=lambda x: x.get('final_score', 0), reverse=True)
+        except Exception:
+            pass
+
+        # 生成板块新闻HTML（仅展示与板块内股票强相关的新闻）
+        def _get_stocks_for_sector(name: str):
+            n = (name or '').strip()
+            if not n:
+                return []
+            # 1) 精确匹配
+            exact = sector_to_stocks.get(n)
+            if exact:
+                return exact
+            # 2) 子串模糊匹配（如“半导体及元件”匹配“半导体”）
+            collected = []
+            for k, v in sector_to_stocks.items():
+                if n in k or k in n:
+                    collected.extend(v)
+            if collected:
+                seen = set()
+                dedup = []
+                for s in collected:
+                    code = s.get('stock_code', '')
+                    if code and code not in seen:
+                        seen.add(code)
+                        dedup.append(s)
+                return sorted(dedup, key=lambda x: x.get('final_score', 0), reverse=True)
+            # 3) 同义词近似匹配
+            syn = {
+                '半导体': ['芯片', '集成电路', 'IC', '晶圆'],
+                '光伏': ['太阳能', '硅料', '硅片', '电池片', '组件'],
+                '锂电': ['动力电池', '电池', '电池产业链', '正极', '负极', '隔膜', '电解液'],
+                '新能源': ['风电', '储能', '氢能'],
+                '算力': ['数据中心', 'AI算力', 'GPU', '服务器'],
+                '人工智能': ['AI', '大模型', 'AIGC'],
+                '汽车': ['整车', '新能源车', '车企', '乘用车'],
+                '券商': ['证券', '经纪'],
+                '银行': ['商业银行'],
+                '保险': ['寿险', '财险'],
+                '地产': ['房地产', '房企']
+            }
+            candidates = []
+            for k, vs in syn.items():
+                if k in n or any(v in n for v in vs):
+                    for sk, sv in sector_to_stocks.items():
+                        if k in sk or any(v in sk for v in vs):
+                            candidates.extend(sv)
+            seen = set()
+            dedup = []
+            for s in candidates:
+                code = s.get('stock_code', '')
+                if code and code not in seen:
+                    seen.add(code)
+                    dedup.append(s)
+            return sorted(dedup, key=lambda x: x.get('final_score', 0), reverse=True)
+
+        sector_news_html = ''
+        for item in (sector_hot_news or [])[:6]:
+            sector_name = (item.get('sector_name') or '').strip()
+            stocks = _get_stocks_for_sector(sector_name)[:8]
+            if not stocks:
+                # 若没有板块内高相关股票，跳过该新闻以避免空版块
+                continue
+            tags_html = ''
+            for st in stocks:
+                rating_class = f"rating-{str(st.get('rating', 'C')).replace('+', '-plus')}"
+                tags_html += f"<span class=\"stock-tag\"><span class=\"rating-badge {rating_class}\">{st.get('rating', 'C')}</span> {st.get('name', '未知')}({st.get('stock_code', '')})</span>"
+
+            title = (item.get('title') or '').replace('"', '&quot;')
+            url = (item.get('url') or '').strip()
+            source = item.get('source') or ''
+            publish_time = item.get('publish_time') or ''
+            heat = item.get('heat') or ''
+            rank = item.get('rank') or ''
+
+            # 板块徽章
+            sector_badge = f"<span class=\"sector-badge\">{sector_name or '板块'}</span>"
+
+            sector_news_html += (
+                f"<div class=\"hot-news-item\">"
+                f"<a href=\"{url}\" target=\"_blank\" class=\"news-title\">{title}</a>"
+                f"<div class=\"news-meta\">{sector_badge}<span class=\"source-badge\">{source}</span><span>时间: {publish_time}</span><span class=\"heat-badge\">热度 {heat}</span><span class=\"rank-badge small\">{rank if rank else '-'}</span></div>"
+                f"<div class=\"stock-tags\">{tags_html}</div>"
+                f"</div>"
+            )
+
+        # 若无板块新闻，则不渲染该版块
+        sector_section_html = ''
+        if sector_news_html.strip():
+            sector_section_html = (
+                '<div class="section">'
+                '<div class="section-title">📈 热门板块相关新闻</div>'
+                f'<div class="hot-news-list">{sector_news_html}</div>'
+                '</div>'
+            )
 
         html = f'''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -371,8 +634,8 @@ class OpportunityReportGenerator:
         .section {{
             background: white;
             border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 30px;
+            padding: 20px;
+            margin-bottom: 20px;
             box-shadow: 0 5px 20px rgba(0,0,0,0.08);
         }}
 
@@ -383,6 +646,84 @@ class OpportunityReportGenerator:
             padding-bottom: 15px;
             border-bottom: 3px solid var(--accent-blue);
             font-weight: 600;
+        }}
+
+        /* 热门新闻版块样式 */
+        .hot-news-list {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+            gap: 10px;
+        }}
+        .hot-news-item {{
+            background: var(--card-bg);
+            border: 1px solid #eee;
+            border-radius: 10px;
+            padding: 10px;
+        }}
+        .news-title {{
+            font-size: 16px;
+            color: var(--card-text-primary);
+            text-decoration: none;
+            font-weight: 600;
+        }}
+        .news-title:hover {{ text-decoration: underline; }}
+        .news-meta {{
+            margin-top: 6px;
+            font-size: 12px;
+            color: var(--card-text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }}
+        .sector-badge {{
+            background: #e8f5e9;
+            color: #1b5e20;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            border: 1px solid #c8e6c9;
+        }}
+        .source-badge {{
+            background: #f1f5f9;
+            color: #374151;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            border: 1px solid #e5e7eb;
+        }}
+        .heat-badge {{
+            background: #fff7ed;
+            color: #c2410c;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            border: 1px solid #fed7aa;
+        }}
+        .rank-badge.small {{
+            width: 20px; height: 20px; line-height: 20px; font-size: 12px;
+        }}
+        .stock-tags {{
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+        .stock-tag {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #f8fafc;
+            border: 1px solid #e5e7eb;
+            color: #374151;
+            border-radius: 16px;
+            padding: 4px 8px;
+            font-size: 12px;
+        }}
+        .stock-tag.muted {{
+            background: #f9fafb;
+            color: #6b7280;
+            border-style: dashed;
         }}
 
         /* 漏斗图样式（对齐股票分析报告的现代风格） */
@@ -459,6 +800,9 @@ class OpportunityReportGenerator:
             font-weight: 600;
             font-size: 13px;
             border-bottom: 1px solid var(--border-primary);
+            position: sticky;
+            top: 0;
+            z-index: 5;
         }}
 
         .top10-table td {{
@@ -662,39 +1006,18 @@ class OpportunityReportGenerator:
 </head>
 <body>
     <div class="container">
-        <!-- 头部 -->
-        <div class="header">
-            <h1>🎯 {report_title}</h1>
-            <div class="subtitle">
-                生成时间: {datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")}
-            </div>
-        </div>
-
-        <!-- 摘要卡片 -->
-        <div class="summary-cards">
-            <div class="summary-card">
-                <h3>初始候选</h3>
-                <div class="value">{total_count}</div>
-                <div class="label">热门股票</div>
-            </div>
-            <div class="summary-card">
-                <h3>通过筛选</h3>
-                <div class="value" style="color: #4ecdc4;">{passed_count}</div>
-                <div class="label">投资机会</div>
-            </div>
-            <div class="summary-card">
-                <h3>通过率</h3>
-                <div class="value" style="color: #764ba2;">{(passed_count/total_count*100):.1f}%</div>
-                <div class="label">筛选效率</div>
-            </div>
-            <div class="summary-card">
-                <h3>TOP推荐</h3>
-                <div class="value" style="color: #ff6b6b;">{min(10, len(top_10))}</div>
-                <div class="label">默认显示数量</div>
-            </div>
-        </div>
-
+  
         <!-- 已移除筛选漏斗以节省空间并聚焦核心内容 -->
+
+        <!-- 热门新闻/话题精选（动态标题） -->
+        <div class="section">
+            <div class="section-title">{hot_news_title or '🔥 全市场最热新闻精选'}</div>
+            <div class="hot-news-list">
+                {hot_news_html}
+            </div>
+        </div>
+
+        {sector_section_html}
 
         <!-- TOP 推荐（默认展示10个，支持滚动到末尾） -->
         <div class="section">
@@ -707,7 +1030,7 @@ class OpportunityReportGenerator:
                         <th>股票</th>
                         <th>评级</th>
                         <th>综合得分</th>
-                        <th>量化简述</th>
+                        <th>描述</th>
                         <th>建议</th>
                     </tr>
                 </thead>
@@ -720,52 +1043,8 @@ class OpportunityReportGenerator:
             rating_class = f"rating-{rating.replace('+', '-plus')}"
             score = stock.get('final_score', 0)
 
-            # 量化模型中文映射（仅用于展示）
-            MODEL_DISPLAY_MAP = {
-                'balance_dual_moving': '均衡双均线',
-                'multi_breakthrough': '多重突破',
-                'support_resistance': '支撑阻力',
-                'trend_pullback': '趋势回踩',
-                'ma_resonance': '均线共振',
-                'super_reversal': '超级反转',
-                'capital_trend': '资金趋势',
-                'volume_breakthrough': '量能突破',
-                'three_sisters': '三姐妹形态',
-                'macd_axis_golden_cross': '轴心MACD金叉',
-                'six_dimension_resonance': '六维共振',
-                'statistical_quantitative': '统计量化',
-                'super_profit_limit_up': '超额涨停',
-                'turtle_trading_system': '海龟交易',
-                'atr_momentum': 'ATR动量',
-                'cta_trend_strategy': 'CTA趋势',
-                'machine_learning_rf': '机器学习RF',
-                'multi_factor_alpha': '多因子Alpha',
-                'pairs_trading_arbitrage': '配对交易套利',
-                'hft_microstructure': '高频微结构',
-                'ichimoku_cloud': '一目均衡云',
-                'bollinger_squeeze': '布林收敛',
-                'rsi_divergence': 'RSI背离',
-                'stochastic_momentum': '随机动量',
-                'volume_price_trend': '量价趋势',
-                'parabolic_sar': '抛物转向SAR',
-                'chaikin_money_flow': '切金资金流',
-                'elder_ray': 'Elder射线',
-                'vwap_deviation': 'VWAP偏离',
-                'fractal_adaptive_ma': '分形自适应均线'
-            }
-
-            # 提取阶段1量化模型的买入信号模型并转中文
-            quant_brief = '—'
-            try:
-                for st in stock.get('filter_history', []):
-                    if str(st.get('stage_name', '')).startswith('阶段1'):
-                        details = st.get('details', {})
-                        models = details.get('top_buy_models') or details.get('top_models') or []
-                        if models:
-                            quant_brief = '、'.join([MODEL_DISPLAY_MAP.get(m, m) for m in models[:3]])
-                        break
-            except Exception:
-                quant_brief = '—'
+            # 为TOP表格生成简短分析
+            analysis_brief = self._build_short_analysis(stock)
 
             html += f'''
                     <tr>
@@ -782,7 +1061,7 @@ class OpportunityReportGenerator:
                                 <div class="score-fill" style="width: {score}%;"></div>
                             </div>
                         </td>
-                        <td>{quant_brief}</td>
+                        <td>{analysis_brief}</td>
                         <td>{self._get_recommendation_text(rating)}</td>
                     </tr>
 '''
@@ -818,7 +1097,7 @@ class OpportunityReportGenerator:
 
         <!-- 页脚 -->
         <div class="footer">
-            <p>📈 Kronos - 基于深度学习的金融预测系统</p>
+            <p>📈 基于深度学习的金融预测系统</p>
             <p>本报告仅供参考，不构成投资建议。投资有风险，入市需谨慎。</p>
         </div>
     </div>
@@ -1025,6 +1304,112 @@ class OpportunityReportGenerator:
 '''
 
         return html
+
+    def _build_short_analysis(self, stock: Dict) -> str:
+        """根据评分与细节生成简短分析文本（≤45字）。
+        优先展示量化买入模型，其次技术面要点与板块/事件倾向。
+        """
+        try:
+            scoring = stock.get('scoring_result') or {}
+            scores = scoring.get('scores') or {}
+            details = scoring.get('details') or {}
+
+            phrases = []
+
+            # 量化模型简述（阶段1）
+            MODEL_DISPLAY_MAP = {
+                'balance_dual_moving': '均衡双均线',
+                'multi_breakthrough': '多重突破',
+                'support_resistance': '支撑阻力',
+                'trend_pullback': '趋势回踩',
+                'ma_resonance': '均线共振',
+                'super_reversal': '超级反转',
+                'capital_trend': '资金趋势',
+                'volume_breakthrough': '量能突破',
+                'three_sisters': '三姐妹形态',
+                'macd_axis_golden_cross': '轴心MACD金叉',
+                'six_dimension_resonance': '六维共振',
+                'statistical_quantitative': '统计量化',
+                'super_profit_limit_up': '超额涨停',
+                'turtle_trading_system': '海龟交易',
+                'atr_momentum': 'ATR动量',
+                'cta_trend_strategy': 'CTA趋势',
+                'machine_learning_rf': '机器学习RF',
+                'multi_factor_alpha': '多因子Alpha',
+                'pairs_trading_arbitrage': '配对交易套利',
+                'hft_microstructure': '高频微结构',
+                'ichimoku_cloud': '一目均衡云',
+                'bollinger_squeeze': '布林收敛',
+                'rsi_divergence': 'RSI背离',
+                'stochastic_momentum': '随机动量',
+                'volume_price_trend': '量价趋势',
+                'parabolic_sar': '抛物转向SAR',
+                'chaikin_money_flow': '切金资金流',
+                'elder_ray': 'Elder射线',
+                'vwap_deviation': 'VWAP偏离',
+                'fractal_adaptive_ma': '分形自适应均线'
+            }
+
+            try:
+                for st in stock.get('filter_history', []) or []:
+                    if str(st.get('stage_name', '')).startswith('阶段1'):
+                        models = (st.get('details', {}) or {}).get('top_buy_models') or (st.get('details', {}) or {}).get('top_models') or []
+                        if models:
+                            phrases.append('量化: ' + '、'.join([MODEL_DISPLAY_MAP.get(m, m) for m in models[:2]]))
+                        break
+            except Exception:
+                pass
+
+            # 技术面要点
+            tech = details.get('technical') or {}
+            macd = tech.get('MACD')
+            boll = tech.get('Bollinger')
+            rsi = tech.get('RSI')
+            tech_parts = []
+            if isinstance(macd, str) and macd in {'金叉', '死叉'}:
+                tech_parts.append(f'MACD{macd}')
+            if isinstance(boll, str) and boll in {'下轨附近', '上轨附近', '中轨附近'}:
+                tech_parts.append(f'布林{boll}')
+            if isinstance(rsi, (int, float)):
+                if rsi < 30:
+                    tech_parts.append('RSI超卖')
+                elif rsi > 70:
+                    tech_parts.append('RSI超买')
+                elif 40 <= rsi <= 60:
+                    tech_parts.append('RSI中性偏多')
+            if tech_parts:
+                phrases.append('技术: ' + ' · '.join(tech_parts[:2]))
+
+            # 板块与事件倾向
+            sector_score = scores.get('sector')
+            if isinstance(sector_score, (int, float)):
+                if sector_score >= 70:
+                    phrases.append('板块景气')
+                elif sector_score <= 40:
+                    phrases.append('板块偏弱')
+
+            events = details.get('events') or {}
+            ev_rating = str(events.get('rating', '')).strip()
+            if ev_rating:
+                if '利好' in ev_rating:
+                    phrases.append('事件利好')
+                elif '利空' in ev_rating:
+                    phrases.append('事件利空')
+                else:
+                    phrases.append('事件中性')
+
+            # 兜底：至少给出综合分与评级
+            if not phrases:
+                total = scoring.get('total_score', 0)
+                rating = scoring.get('rating', 'C')
+                phrases = [f'综合{float(total):.1f}分 · {rating}级']
+
+            text = ' · '.join(phrases)
+            return (text[:44] + '…') if len(text) > 45 else text
+        except Exception:
+            total = (stock.get('scoring_result') or {}).get('total_score', 0)
+            rating = (stock.get('scoring_result') or {}).get('rating', 'C')
+            return f'综合{float(total):.1f}分 · {rating}级'
 
     def _get_recommendation_text(self, rating: str) -> str:
         """获取评级对应的建议文本"""

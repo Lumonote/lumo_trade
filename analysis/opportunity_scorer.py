@@ -83,7 +83,8 @@ class OpportunityScorer:
         pass
 
     def calculate_comprehensive_score(self, stock_code: str,
-                                     historical_data: Optional[pd.DataFrame] = None) -> Dict:
+                                     historical_data: Optional[pd.DataFrame] = None,
+                                     global_hot_news: Optional[list] = None) -> Dict:
         """
         计算综合评分
 
@@ -157,8 +158,8 @@ class OpportunityScorer:
             result['scores']['fundamental'] = fundamental_score
             result['details']['fundamental'] = fundamental_details
 
-            # 6. 事件面评分 (10%)
-            events_score, events_details = self._score_events(stock_code)
+            # 6. 事件面评分 (10%) + 全市场热门新闻加分
+            events_score, events_details = self._score_events(stock_code, global_hot_news=global_hot_news)
             result['scores']['events'] = events_score
             result['details']['events'] = events_details
 
@@ -524,7 +525,7 @@ class OpportunityScorer:
             logger.error(f"基本面评分失败: {e}")
             return 50.0, {'error': str(e)}
 
-    def _score_events(self, stock_code: str) -> Tuple[float, Dict]:
+    def _score_events(self, stock_code: str, global_hot_news: Optional[list] = None) -> Tuple[float, Dict]:
         """
         事件面评分 (0-100分)
 
@@ -558,6 +559,52 @@ class OpportunityScorer:
                 'risk_level': summary.get('risk_level', '未知'),
                 'opportunity_level': summary.get('opportunity_level', '未知')
             }
+
+            # 🔥 接入全市场热门新闻TOPN并为强关联股票加分
+            try:
+                if global_hot_news:
+                    analyzer_for_relation = EventAnalyzer(stock_code, news_data=news_data)
+                    related = []
+                    bonus = 0.0
+                    # 规则：每条强关联热门新闻 +2 分；若热度>=80额外+1 分；总加分封顶15分
+                    for item in global_hot_news:
+                        title = (item.get('title') or '').strip()
+                        url = (item.get('url') or '').strip()
+                        source = item.get('source') or ''
+                        summary_text = item.get('summary') or ''
+                        try:
+                            # 复用事件分析器的强关联判断
+                            is_related = analyzer_for_relation._is_strongly_related_news(
+                                title=title, url=url, source=source, summary=summary_text
+                            )
+                        except Exception:
+                            is_related = False
+
+                        if is_related:
+                            related.append({
+                                'title': title,
+                                'url': url,
+                                'source': source,
+                                'rank': item.get('rank'),
+                                'heat': item.get('heat'),
+                                'publish_time': item.get('publish_time')
+                            })
+                            inc = 2.0
+                            heat = item.get('heat') or 0
+                            if isinstance(heat, (int, float)) and heat >= 80:
+                                inc += 1.0
+                            bonus += inc
+
+                    bonus = min(15.0, bonus)
+                    if bonus > 0:
+                        score = max(0, min(100, score + bonus))
+                        # 详情中记录加分来源
+                        details['hot_news_bonus'] = round(bonus, 2)
+                        details['hot_news_related_count'] = len(related)
+                        # 只展示前3个以避免过长
+                        details['hot_news_matches'] = related[:3]
+            except Exception as e:
+                logger.warning(f"热门新闻加分流程失败: {e}")
 
             return round(score, 2), details
         except Exception as e:

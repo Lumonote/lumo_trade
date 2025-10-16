@@ -56,14 +56,30 @@ $env:PYTHONUTF8 = '1'
 $Choice = $args[0]
 
 function Get-PythonCommand {
+    # 优先使用 Windows 的 py 启动器定位到具体 python.exe
+    try {
+        $out = & py -3.11 --version 2>$null
+        if ($out) {
+            $exe = & py -3.11 -c "import sys; print(sys.executable)" 2>$null
+            if ($exe -and (Test-Path $exe)) { return $exe }
+        }
+    } catch {}
+    try {
+        $out = & py -3 --version 2>$null
+        if ($out) {
+            $exe = & py -3 -c "import sys; print(sys.executable)" 2>$null
+            if ($exe -and (Test-Path $exe)) { return $exe }
+        }
+    } catch {}
+
+    # 其次使用环境变量指定的 Python
     $python = $env:PYTHON
-    if (-not $python -or -not (Get-Command $python -ErrorAction SilentlyContinue)) {
-        $python = $env:PYTHON_CMD
-    }
-    if (-not $python -or -not (Get-Command $python -ErrorAction SilentlyContinue)) {
-        $python = 'python'
-    }
-    return $python
+    if ($python -and (Get-Command $python -ErrorAction SilentlyContinue)) { return $python }
+    $python = $env:PYTHON_CMD
+    if ($python -and (Get-Command $python -ErrorAction SilentlyContinue)) { return $python }
+
+    # 回退到 PATH 中的 python
+    return 'python'
 }
 
 function Invoke-Python {
@@ -111,6 +127,90 @@ try {
     if ($scriptDir -match '_MEI') { $IsPackaged = $true }
     if ($env:KRONOS_IS_APP_BUNDLE -eq 'true') { $IsPackaged = $true }
 } catch { $IsPackaged = $false }
+
+# If running from a packaged bundle, proactively ensure embedded Python works across machines
+if ($IsPackaged) {
+    try {
+        $embeddedRoot = Join-Path $scriptDir '.python'
+        $pyDir = $null
+        if (Test-Path $embeddedRoot) {
+            $cand = Get-ChildItem $embeddedRoot -Directory -Filter 'py311-*' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($cand) { $pyDir = $cand.FullName }
+        }
+
+        if ($pyDir) {
+            $ok = Ensure-PackagedEmbeddedPythonReady -RootDir $pyDir
+            if (-not $ok) {
+                Write-Host "FATAL: 打包环境内置 Python 初始化失败，请联系发行者或检查解压权限/杀软拦截" -ForegroundColor Red
+                exit 1
+            } else {
+                Write-Host "OK: 打包环境已就绪（嵌入式 Python encodings 自检通过）" -ForegroundColor Green
+            }
+        } else {
+            # 没有随包提供嵌入式 Python，则退回系统 Python 的发现逻辑
+            foreach ($v in 'PYTHONHOME','PYTHONPATH') { if (Test-Path Env:$v) { Remove-Item Env:$v -ErrorAction SilentlyContinue } }
+        }
+    } catch {
+        Write-Host "WARN: 无法验证打包内嵌式 Python，将继续尝试使用系统 Python" -ForegroundColor Yellow
+        foreach ($v in 'PYTHONHOME','PYTHONPATH') { if (Test-Path Env:$v) { Remove-Item Env:$v -ErrorAction SilentlyContinue } }
+    }
+}
+
+# In packaged (_MEI) scenario, we must ensure embedded Python is healthy (encodings/site)
+function Fix-EmbeddedPythonPth {
+    param([Parameter(Mandatory=$true)][string]$BaseDir)
+
+    try {
+        $pthFile = Get-ChildItem $BaseDir -Filter 'python*._pth' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $pthFile) { return }
+
+        $lines = Get-Content $pthFile.FullName -ErrorAction SilentlyContinue
+        if (-not $lines) { return }
+
+        $bom = [char]0xFEFF
+        $lines = $lines | ForEach-Object { $_.Replace($bom, '') }
+
+        if (-not ($lines | Where-Object { $_ -match '^\s*import\s+site\s*$' })) {
+            $lines = $lines | ForEach-Object { $_ -replace '^#\s*import\s+site\s*$', 'import site' }
+            if (-not ($lines | Where-Object { $_ -match '^\s*import\s+site\s*$' })) { $lines += 'import site' }
+        }
+
+        Set-Content -Path $pthFile.FullName -Value $lines -Encoding ascii
+    } catch {}
+}
+
+function Ensure-PackagedEmbeddedPythonReady {
+    param([Parameter(Mandatory=$true)][string]$RootDir)
+
+    # 1) Fix _pth to enable site-packages and remove BOM side effects
+    Fix-EmbeddedPythonPth -BaseDir $RootDir
+
+    # 2) Prefer embedded python.exe if present
+    $pyExe = Join-Path $RootDir 'python.exe'
+    if (Test-Path $pyExe) {
+        $env:PYTHON = $pyExe
+        $env:PYTHON_CMD = $pyExe
+    }
+
+    # 3) Clear variables that could break stdlib discovery
+    foreach ($v in 'PYTHONHOME','PYTHONPATH') {
+        if (Test-Path Env:$v) { Remove-Item Env:$v -ErrorAction SilentlyContinue }
+    }
+
+    # 4) Self-check for encodings import and fs encoding
+    try {
+        & $pyExe -c "import sys,encodings;print(sys.getfilesystemencoding() or 'unknown')" 1>$null 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: 嵌入式 Python 缺少 encodings 或初始化失败" -ForegroundColor Red
+            return $false
+        }
+    } catch {
+        Write-Host "ERROR: 无法运行嵌入式 Python 进行自检" -ForegroundColor Red
+        return $false
+    }
+
+    return $true
+}
 
 # Allow force-install in packaged mode via environment variable
 $ForceInstallInApp = $false
@@ -218,13 +318,18 @@ function Ensure-PortablePython {
         $pthFile = Get-ChildItem $portableDir -Filter 'python*._pth' | Select-Object -First 1
         if ($pthFile) {
             $lines = Get-Content $pthFile.FullName
+            # Remove any BOM characters accidentally included in the first entry
+            # which would turn 'python311.zip' into '\ufeffpython311.zip' and break stdlib loading
+            $bom = [char]0xFEFF
+            $lines = $lines | ForEach-Object { $_.Replace($bom, '') }
             if (-not ($lines | Where-Object { $_ -match '^\s*import\s+site\s*$' })) {
                 # Uncomment if commented, otherwise append
                 $lines = $lines | ForEach-Object { $_ -replace '^#\s*import\s+site\s*$', 'import site' }
                 if (-not ($lines | Where-Object { $_ -match '^\s*import\s+site\s*$' })) {
                     $lines += 'import site'
                 }
-                Set-Content -Path $pthFile.FullName -Value $lines -Encoding utf8
+                # Use ASCII to avoid writing BOM and keep embedded Python path entries clean
+                Set-Content -Path $pthFile.FullName -Value $lines -Encoding ascii
             }
         }
 
@@ -265,6 +370,68 @@ function Ensure-PortablePython {
     Write-Host "OK: Using isolated portable Python at $($env:PYTHON)" -ForegroundColor Green
 }
 
+# Ensure system Python 3.11 on Windows (per-user install) when system Python is missing or too old
+function Ensure-SystemPython {
+    param([Parameter(Mandatory=$false)][string]$TargetVersion = '3.11.9')
+    if (-not $IsWindows) { return }
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch {}
+    $minVersion = [Version]$TargetVersion
+    $hasOK = $false
+    try {
+        $verOut = & py -3.11 --version 2>$null
+        if ($verOut) {
+            $verStr = ($verOut -replace '[^0-9\.]','').Trim()
+            if ($verStr) { $ver = [Version]$verStr; if ($ver -ge $minVersion) { $hasOK = $true } }
+        }
+    } catch {}
+    if (-not $hasOK) {
+        try {
+            $verOut = & python --version 2>$null
+            $verStr = ($verOut -replace '[^0-9\.]','').Trim()
+            if ($verStr) { $ver = [Version]$verStr; if ($ver -ge $minVersion) { $hasOK = $true } }
+        } catch {}
+    }
+    if ($hasOK) { return }
+    Write-Host "SETUP: 正在安装系统 Python $TargetVersion（用户目录）" -ForegroundColor Cyan
+    $is64 = [Environment]::Is64BitOperatingSystem
+    $installerName = if ($is64) { "python-$TargetVersion-amd64.exe" } else { "python-$TargetVersion.exe" }
+    $downloadUrls = @(
+        "https://mirrors.huaweicloud.com/python/$TargetVersion/$installerName",
+        "https://mirrors.ustc.edu.cn/python/$TargetVersion/$installerName",
+        "https://www.python.org/ftp/python/$TargetVersion/$installerName"
+    )
+    $installerPath = Join-Path $env:TEMP $installerName
+    $targetDir = Join-Path $env:LocalAppData "Programs\Python\Python311"
+    New-Item -ItemType Directory -Path (Split-Path $targetDir -Parent) -Force | Out-Null
+    $downloadSuccess = $false
+    foreach ($url in $downloadUrls) {
+        Write-Host "MIRROR: 尝试下载 $installerName ..." -ForegroundColor Cyan
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $installerPath -UseBasicParsing -Headers @{ 'User-Agent'='Mozilla/5.0' }
+            $downloadSuccess = $true
+            Write-Host "OK: 下载成功" -ForegroundColor Green
+            break
+        } catch {
+            try {
+                $wc = New-Object System.Net.WebClient
+                $wc.Headers.Add('user-agent','Mozilla/5.0')
+                $wc.DownloadFile($url, $installerPath)
+                $downloadSuccess = $true
+                Write-Host "OK: 下载成功 (WebClient)" -ForegroundColor Green
+                break
+            } catch { Start-Sleep -Seconds 2 }
+        }
+    }
+    if (-not $downloadSuccess) { Write-Host "ERROR: 无法下载 Python 安装包" -ForegroundColor Red; return }
+    $args = "/quiet InstallAllUsers=0 PrependPath=1 Include_pip=1 Include_launcher=1 TargetDir=`"$targetDir`""
+    $proc = Start-Process -FilePath $installerPath -ArgumentList $args -PassThru -Wait
+    if ($proc.ExitCode -ne 0) { Write-Host "ERROR: Python 安装失败 (退出代码 $($proc.ExitCode))" -ForegroundColor Red; return }
+    $env:PATH = "$targetDir;$targetDir\Scripts;$env:PATH"
+    $pyExe = Join-Path $targetDir 'python.exe'
+    try { & $pyExe -m ensurepip 2>$null; & $pyExe -m pip install -U pip 2>$null } catch {}
+    Write-Host "OK: 系统 Python 已安装到 $targetDir" -ForegroundColor Green
+}
+
 # Detect if multiple Python versions are present to avoid pip/runtime conflicts
 function Has-MultiplePythonVersions {
     try {
@@ -302,9 +469,8 @@ if (-not $IsPackaged) {
     } catch { }
 
     if (-not $currentVersion -or $currentVersion -lt $minVersion) {
-        Write-Host "INFO: Python not found or version too low ($($currentVersion)) — preparing isolated portable Python 3.11.9" -ForegroundColor Yellow
-        Write-Host "TIP: 这不会影响您系统的Python，会下载独立版本到 .python/ 目录" -ForegroundColor Cyan
-        Ensure-PortablePython -TargetVersion '3.11.9'
+        Write-Host "INFO: 系统未检测到合适的 Python ($($currentVersion)) — 准备安装到用户目录" -ForegroundColor Yellow
+        Ensure-SystemPython -TargetVersion '3.11.9'
     } else {
         Write-Host "OK: Python 版本检查通过 ($currentVersion >= $minVersion)" -ForegroundColor Green
     }
@@ -325,8 +491,7 @@ if ($Choice -eq "1") {
         Write-Host "APP: 检测到应用包环境，已启用系统 Python 强制安装依赖" -ForegroundColor Yellow
     }
 
-    # Ensure we use the isolated portable Python if we created one
-    if ($env:PYTHON) { Write-Host "INFO: 使用隔离的便携式 Python: $($env:PYTHON)" -ForegroundColor Cyan }
+    # 使用系统 Python 或用户目录安装的 Python
 
     $python = Get-PythonCommand
     $mirrorArgs = @('-i', 'https://pypi.tuna.tsinghua.edu.cn/simple/', '--trusted-host', 'pypi.tuna.tsinghua.edu.cn')
@@ -376,8 +541,8 @@ if ($Choice -eq "1") {
                 $python = $selectedPython
                 Write-Host "OK: 选用系统 Python ($selectedVersion) : $selectedPython" -ForegroundColor Green
             } else {
-                Write-Host "ACTION: 未找到满足条件的系统 Python，使用隔离的便携式 Python 3.11.9" -ForegroundColor Yellow
-                Ensure-PortablePython -TargetVersion '3.11.9'
+                Write-Host "ACTION: 未找到满足条件的系统 Python，尝试安装系统 Python 3.11.9" -ForegroundColor Yellow
+                Ensure-SystemPython -TargetVersion '3.11.9'
                 $python = Get-PythonCommand
             }
         }
@@ -388,15 +553,15 @@ if ($Choice -eq "1") {
             Write-Host "OK: Python 依赖处理完成（如出现 'Requirement already satisfied' 表示该依赖已存在）" -ForegroundColor Green
         } else {
             Write-Host "ERROR: requirements.txt 依赖安装失败 (退出代码 $exitCode)" -ForegroundColor Red
-            Write-Host "ACTION: 切换到隔离的便携式 Python 3.11.9 并重试依赖安装" -ForegroundColor Yellow
-            Ensure-PortablePython -TargetVersion '3.11.9'
+            Write-Host "ACTION: 安装系统 Python 3.11.9 并重试依赖安装" -ForegroundColor Yellow
+            Ensure-SystemPython -TargetVersion '3.11.9'
             $python = Get-PythonCommand
             & $python -m pip install -r requirements.txt @mirrorArgs
             $exitCode = $LASTEXITCODE
             if ($exitCode -eq 0) {
                 Write-Host "OK: 重试依赖安装成功" -ForegroundColor Green
             } else {
-                Write-Host "ERROR: 便携式 Python 下依赖安装仍失败 (退出代码 $exitCode)" -ForegroundColor Red
+                Write-Host "ERROR: 系统 Python 下依赖安装仍失败 (退出代码 $exitCode)" -ForegroundColor Red
                 Write-Host "TIP: 已配置清华镜像源，如仍失败请检查网络连接" -ForegroundColor Yellow
                 exit $exitCode
             }
@@ -506,19 +671,6 @@ elseif ($Choice -eq "6") {
     $cleanSymbol = $firstSymbol -replace '\..*$', ''
     Write-Host "PREDICT: Starting prediction ($cleanSymbol)" -ForegroundColor Green
     Invoke-Python -Script 'examples/prediction_batch_example.py' -Args @('--stock-code', $cleanSymbol)
-}
-elseif ($Choice -eq "7") {
-    Write-Host "🔥 投资机会挖掘 - 分析TOP100热门股票" -ForegroundColor Cyan
-    Write-Host "本功能将自动完成以下流程：" -ForegroundColor Yellow
-    Write-Host "  1. 获取市场热度TOP100股票"
-    Write-Host "  2. 多维度打分分析（量化模型、技术、情绪、板块、基本面、事件）"
-    Write-Host "  3. 5阶段漏斗筛选"
-    Write-Host "  4. 生成HTML投资机会挖掘报告"
-    Write-Host ""
-    Write-Host "注意：此过程可能需要15-30分钟，请耐心等待..." -ForegroundColor Yellow
-    Write-Host ""
-
-    Invoke-Python -Script 'scripts/run_opportunity_discovery.py' -Args @('--limit', '100', '--workers', '10')
 }
 elseif ($Choice -eq "8") {
     Write-Host "Checking license status..." -ForegroundColor Yellow
