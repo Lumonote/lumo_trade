@@ -338,9 +338,9 @@ def main():
             x_timestamp=x_timestamp,
             y_timestamp=y_timestamp,
             pred_len=pred_len,
-            T=1.0,
+            T=0.6,
             top_p=0.9,
-            sample_count=1,
+            sample_count=10,
             verbose=True
         )
 

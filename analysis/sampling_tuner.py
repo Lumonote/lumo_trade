@@ -13,10 +13,11 @@ def tune_sampling_params(sentiment: Dict[str, Any], events_summary: Optional[Dic
     返回示例：{"T": 0.68, "top_p": 0.88, "sample_count": 4, "reason": "...", "weights": {...}}
     """
 
-    # 基线参数：兼顾稳定与质量
-    T = 0.70
+
+    # 基线参数：标准默认值（用户指定）
+    T = 0.6
     top_p = 0.90
-    sample_count = 3
+    sample_count = 10
 
     # 读取各维度情绪
     guba = sentiment.get("guba_sentiment", {})
@@ -33,18 +34,18 @@ def tune_sampling_params(sentiment: Dict[str, Any], events_summary: Optional[Dic
     market_change = _to_num(market.get("primary_change_pct"), default=None)
     if market_change is None:
         market_change = _to_num(market.get("avg_change_pct"), default=0)
-    market_emotion = market.get("emotion", "neutral")
+    market_emotion = market.get("emotion") or "neutral"
 
     sector_score = _to_num(sector.get("sentiment_score"), default=50)
     sector_change = _to_num(sector.get("change_pct"), default=0)
     sector_turnover = _to_num(sector.get("turnover_rate"), default=0)
-    sector_emotion = sector.get("emotion", "neutral")
+    sector_emotion = sector.get("emotion") or "neutral"
 
     # 权重设置：股民评论(0.35) + 大盘(0.30) + 板块(0.25) + 事件(0.15)
     weights = {"guba": 0.35, "market": 0.30, "sector": 0.25, "events": 0.15}
 
     # 风险/不确定性评估
-    # - 看空占比高、市场/板块偏弱、涨跌幅绝对值大、板块换手率高 -> 增加样本数、降低温度和top_p
+    # - 看空占比高、市场/板块偏弱、涨跌幅绝对值大、板块换手率高 -> 增加样本数、轻微提高温度与top_p
     risk_score = 0.0
 
     # 看空强度
@@ -123,26 +124,26 @@ def tune_sampling_params(sentiment: Dict[str, Any], events_summary: Optional[Dic
         else:
             bearish_bias += weights["events"] * abs(scaled)
 
-    # 参数调整逻辑
-    # 温度：偏空/高风险 -> 降低；偏多/低风险 -> 略提高但限制范围
-    T_adj = -0.15 * min(bearish_bias, 0.25) + 0.12 * max(bullish_bias, 0.0)
-    T += T_adj  # 偏空(负值)降低温度，偏多(正值)提高温度
-    T = _clip(T, 0.50, 0.85)
+    # 参数调整逻辑 - 基于标准值轻微上下浮动
+    # 温度：偏空/高风险 -> 适度降低；偏多/低风险 -> 适度提高
+    T_adj = -0.06 * min(bearish_bias, 0.30) + 0.08 * max(bullish_bias, 0.0)
+    T += T_adj
+    T = _clip(T, 0.95, 1.10)  # 标准范围，轻微上下浮动
 
-    # top_p：高风险/偏空 -> 降低；偏多/低风险 -> 小幅提高
-    top_p_adj = -0.10 * min(risk_score + bearish_bias, 0.40) + 0.05 * max(bullish_bias, 0.0)
+    # top_p：高风险/偏空 -> 适度降低；偏多/低风险 -> 适度提高
+    top_p_adj = -0.04 * min(risk_score + bearish_bias, 0.40) + 0.05 * max(bullish_bias, 0.0)
     top_p += top_p_adj
-    top_p = _clip(top_p, 0.80, 0.95)
+    top_p = _clip(top_p, 0.85, 0.95)  # 标准范围，轻微上下浮动
 
-    # sample_count：风险越高越增大；若强一致偏多且风险低可保持或减至2以提升速度
+    # sample_count：风险越高越倾向多样化（上限3），稳定时保持1
     if risk_score >= 0.35:
-        sample_count = 5
-    elif risk_score >= 0.20:
-        sample_count = 4
-    else:
         sample_count = 3
+    elif risk_score >= 0.20:
+        sample_count = 2
+    else:
+        sample_count = 1
     if bullish_bias > 0.25 and risk_score < 0.15:
-        sample_count = max(2, sample_count - 1)
+        sample_count = 1
 
     reason = _build_reason(
         guba_score, guba_bull, guba_bear,
@@ -161,19 +162,17 @@ def tune_sampling_params(sentiment: Dict[str, Any], events_summary: Optional[Dic
     }
 
 
-def _to_num(x, default=0.0):
+def _to_num(x, default=0):
     try:
-        if isinstance(x, (int, float)):
-            return float(x)
-        if isinstance(x, str):
-            return float(x)
+        return float(x)
     except Exception:
-        pass
-    return float(default)
+        return default
+
 
 
 def _clip(x, lo, hi):
     return max(lo, min(hi, x))
+
 
 
 def _build_reason(gs, gb, ge, ms, mc, me, ss, sc, st, se, rsk, bb, beb,

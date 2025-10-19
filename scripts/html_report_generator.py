@@ -635,7 +635,7 @@ class KronosHTMLReportGenerator:
         # 模拟一些重要的控制台数据
         console_items = [
             ("预测完成时间", "2025-09-08 23:44:18"),
-            ("使用模型", "Kronos-small"),
+            ("使用模型", "Kronos-base"),
             ("设备类型", "CPU"),
             ("数据量", f"{self.console_data.get('data_count', '1,488')} 条"),
             ("预测时长", f"{self.console_data.get('prediction_time', '42')} 秒"),

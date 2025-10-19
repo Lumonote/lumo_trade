@@ -14,6 +14,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Tuple
 import matplotlib.pyplot as plt
+import re
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -126,7 +127,7 @@ except ImportError as e:
 class KronosStockPredictor:
     """Kronos股票预测器封装"""
 
-    def __init__(self, model_name: str = "kronos-small", device: str = "cpu"):
+    def __init__(self, model_name: str = "kronos-base", device: str = "cpu"):
         """初始化预测器"""
         self.model_name = model_name
         self.device = device
@@ -298,7 +299,7 @@ class KronosStockPredictor:
             print(f"❌ 数据加载失败: {e}")
             return None
 
-    def predict(self, x_df: pd.DataFrame, x_timestamp: pd.Series, pred_len: int = 5, sample_count: int = 1) -> Optional[
+    def predict(self, x_df: pd.DataFrame, x_timestamp: pd.Series, pred_len: int = 5, sample_count: int = 10) -> Optional[
         pd.DataFrame]:
         """执行预测"""
         try:
@@ -363,7 +364,7 @@ class KronosStockPredictor:
                 print("✅ 综合面数据采集完成")
 
                 tuned = tune_sampling_params(sentiment_data, events_summary=event_data.get("summary"))
-                T_val = tuned.get('T', 0.7)
+                T_val = tuned.get('T', 0.6)
                 top_p_val = tuned.get('top_p', 0.90)
                 sample_count_val = tuned.get('sample_count', sample_count)
                 print("\n🧠 动态采样参数调整:")
@@ -371,9 +372,39 @@ class KronosStockPredictor:
                 print(f"   - Top-p: {top_p_val}")
                 print(f"   - Sample Count: {sample_count_val}")
                 print(f"   - 依据: {tuned.get('reason','未提供')}")
+
+                # 🔒 限幅裁剪，避免调参偏离默认设定值过多
+                import os
+                base_T = float(os.environ.get('KRONOS_BASE_T', 0.6))
+                base_top_p = float(os.environ.get('KRONOS_BASE_TOP_P', 0.90))
+                base_samples = sample_count
+
+                T_lo = max(0.10, base_T * 0.75)
+                T_hi = min(2.00, base_T * 1.25)
+                top_p_lo = max(0.10, base_top_p - 0.08)
+                top_p_hi = min(1.00, base_top_p + 0.08)
+                samples_lo = max(1, int(round(base_samples * 0.5)))
+                samples_hi = max(samples_lo, int(round(base_samples * 1.5)))
+
+                capped_T = min(max(T_val, T_lo), T_hi)
+                capped_top_p = min(max(top_p_val, top_p_lo), top_p_hi)
+                capped_samples = int(min(max(int(sample_count_val), samples_lo), samples_hi))
+
+                if (capped_T != T_val) or (capped_top_p != top_p_val) or (capped_samples != sample_count_val):
+                    print("\n🔒 已应用采样参数限幅，保证与默认/CLI设定接近")
+                    print(f"   - 基准 Temperature: {base_T} | 允许范围: [{T_lo:.2f}, {T_hi:.2f}]")
+                    print(f"   - 基准 Top-p: {base_top_p} | 允许范围: [{top_p_lo:.2f}, {top_p_hi:.2f}]")
+                    print(f"   - 基准 Sample Count: {base_samples} | 允许范围: [{samples_lo}, {samples_hi}]")
+                    print(f"   - 限幅后 Temperature: {capped_T} (原: {T_val})")
+                    print(f"   - 限幅后 Top-p: {capped_top_p} (原: {top_p_val})")
+                    print(f"   - 限幅后 Sample Count: {capped_samples} (原: {sample_count_val})")
+
+                T_val = capped_T
+                top_p_val = capped_top_p
+                sample_count_val = capped_samples
             except Exception as e:
                 print(f"⚠️ 前置分析或动态调参失败，使用默认参数: {e}")
-                T_val = 1.0
+                T_val = 0.6
                 top_p_val = 0.9
                 sample_count_val = sample_count
 
@@ -463,6 +494,73 @@ class KronosStockPredictor:
 
             print(f"✅ 预测完成: 生成 {len(pred_df)} 个预测点")
 
+            # === 应用A股涨跌停板约束（逐日钳制） ===
+            try:
+                # 推断股票代码
+                stock_code = os.environ.get('KRONOS_STOCK_CODE')
+                if not stock_code:
+                    data_path_env = os.environ.get('KRONOS_DATA_PATH', '')
+                    base_name = os.path.basename(data_path_env) if data_path_env else ''
+                    m = re.search(r'(\d{6})', base_name)
+                    stock_code = m.group(1) if m else '未知代码'
+
+                # 解析环境指定的限制比例（支持 "0.2"、"20"、"20%"）
+                def _parse_limit(val: str):
+                    if val is None:
+                        return None
+                    try:
+                        v = float(val)
+                        return v if v < 1 else v / 100.0
+                    except Exception:
+                        if isinstance(val, str) and val.strip().endswith('%'):
+                            try:
+                                return float(val.strip('%')) / 100.0
+                            except Exception:
+                                return None
+                        return None
+
+                daily_limit = _parse_limit(os.environ.get('KRONOS_DAILY_LIMIT'))
+                if daily_limit is None:
+                    if stock_code and re.match(r'^(688|300)\d{3}$', stock_code):
+                        daily_limit = 0.20  # 科创板/创业板
+                    else:
+                        daily_limit = 0.10  # 主板默认
+
+                print(f"⚖️ 应用涨跌停约束: 代码={stock_code}, 日涨跌幅限制={daily_limit*100:.0f}%")
+
+                # 逐日钳制到允许范围
+                points_per_day = 50
+                prev_close = x_df['close'].iloc[-1]
+                for day in range(pred_len):
+                    start_idx = day * points_per_day
+                    end_idx = min((day + 1) * points_per_day, len(pred_df))
+                    if start_idx >= len(pred_df):
+                        break
+
+                    day_slice = pred_df.iloc[start_idx:end_idx].copy()
+                    upper = prev_close * (1 + daily_limit)
+                    lower = prev_close * (1 - daily_limit)
+
+                    # 钳制OHLC
+                    for col in ['open', 'high', 'low', 'close']:
+                        if col in day_slice.columns:
+                            day_slice[col] = day_slice[col].clip(lower, upper)
+
+                    # 保持高低价与开收价一致性
+                    max_base = day_slice[['open', 'close']].max(axis=1)
+                    min_base = day_slice[['open', 'close']].min(axis=1)
+                    day_slice['high'] = np.maximum(day_slice['high'], max_base)
+                    day_slice['low'] = np.minimum(day_slice['low'], min_base)
+
+                    # 写回
+                    pred_df.loc[day_slice.index, ['open', 'high', 'low', 'close']] = \
+                        day_slice[['open', 'high', 'low', 'close']]
+
+                    # 下一天以当日收盘为基准
+                    prev_close = day_slice['close'].iloc[-1]
+            except Exception as e:
+                print(f"⚠️ 涨跌停约束应用失败: {e}")
+
             # 计算并输出量化指标
             self.calculate_and_display_metrics(x_df, pred_df, pred_len)
 
@@ -478,6 +576,14 @@ class KronosStockPredictor:
             print("\n" + "=" * 60)
             print("📊 量化指标分析")
             print("=" * 60)
+
+            # 涨跌停约束信息
+            limit_env = os.environ.get('KRONOS_DAILY_LIMIT')
+            try:
+                v = float(limit_env); v = v if v < 1 else v/100.0
+                print(f"⚖️ 涨跌停约束: ±{v*100:.0f}% (已在预测阶段应用)")
+            except Exception:
+                print("⚖️ 涨跌停约束: 默认(主板10%/科创创业20%)")
 
             # 基础价格信息
             current_price = x_df['close'].iloc[-1]
@@ -769,10 +875,14 @@ class KronosStockPredictor:
                         connect_price = last_hist_price
                         connect_time = last_hist_timestamp
 
-                    # 绘制连接线
-                    ax1.plot([connect_time, future_timestamps.iloc[0]],
-                             [connect_price, future_pred['close'].iloc[0]],
-                             color='#E71D36', linewidth=2, alpha=0.7, linestyle='--')
+                    # 绘制连接线（仅当时间差≤30分钟，避免跨日误连）
+                    gap_minutes = (future_timestamps.iloc[0] - connect_time).total_seconds() / 60
+                    if gap_minutes <= 30:
+                        ax1.plot([connect_time, future_timestamps.iloc[0]],
+                                 [connect_price, future_pred['close'].iloc[0]],
+                                 color='#E71D36', linewidth=2, alpha=0.7, linestyle='--')
+                    else:
+                        print(f"⛔️ 跨日间隔 {gap_minutes:.0f} 分钟，跳过连接线")
 
                     # 绘制未来预测数据
                     ax1.plot(future_timestamps, future_pred['close'],
@@ -781,10 +891,13 @@ class KronosStockPredictor:
                 # 没有重叠，直接连接历史数据和预测数据
                 print("📈 直接连接历史数据和预测数据")
 
-                # 绘制连接线
-                ax1.plot([last_hist_timestamp, pred_timestamp.iloc[0]],
-                         [last_hist_price, pred_df['close'].iloc[0]],
-                         color='#E71D36', linewidth=2, alpha=0.7, linestyle='--')
+                # 绘制连接线（仅当时间差≤30分钟，避免跨日误连）
+                if time_gap <= 30:
+                    ax1.plot([last_hist_timestamp, pred_timestamp.iloc[0]],
+                             [last_hist_price, pred_df['close'].iloc[0]],
+                             color='#E71D36', linewidth=2, alpha=0.7, linestyle='--')
+                else:
+                    print(f"⛔️ 跨日间隔 {time_gap:.0f} 分钟，跳过连接线")
 
                 # 绘制预测数据
                 ax1.plot(pred_timestamp, pred_df['close'],
@@ -911,14 +1024,14 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='Kronos预测工具')
     parser.add_argument('--data', '-d', help='数据文件路径')
-    parser.add_argument('--model', '-m', default='kronos-small',
-                        help='模型名称 (默认: kronos-small, 可选: kronos-base)')
+    parser.add_argument('--model', '-m', default='kronos-base',
+                        help='模型名称 (默认: kronos-base, 可选: kronos-small)')
     parser.add_argument('--lookback', '-l', type=int, default=400,
                         help='历史数据长度 (默认: 400)')
     parser.add_argument('--pred-len', '-p', type=int, default=5,
                         help='预测长度 (默认: 5天)')
-    parser.add_argument('--samples', '-s', type=int, default=1,
-                        help='预测样本数 (默认: 1)')
+    parser.add_argument('--samples', '-s', type=int, default=10,
+                        help='预测样本数 (默认: 10)')
     parser.add_argument('--output', '-o', help='输出目录 (默认: results/)')
     parser.add_argument('--no-plot', action='store_true', help='不显示图表')
     parser.add_argument('--list-data', action='store_true', help='列出可用数据文件')
@@ -984,6 +1097,29 @@ def main():
     print(f"📈 预测参数: lookback={args.lookback}, pred_len={args.pred_len}, samples={args.samples}")
     print(f"📁 输出目录: {output_dir}")
     print("=" * 50)
+
+    # 设置环境上下文：数据路径与股票代码，便于后续模块推断涨跌停比例
+    try:
+        os.environ['KRONOS_DATA_PATH'] = args.data
+        base_name = Path(args.data).name
+        m = re.search(r'(\d{6})', base_name)
+        code_guess = m.group(1) if m else None
+        if code_guess and not os.environ.get('KRONOS_STOCK_CODE'):
+            os.environ['KRONOS_STOCK_CODE'] = code_guess
+        # 若未显式指定KRONOS_DAILY_LIMIT，按板块预设默认值
+        if not os.environ.get('KRONOS_DAILY_LIMIT'):
+            if code_guess and re.match(r'^(688|300)\d{3}$', code_guess):
+                os.environ['KRONOS_DAILY_LIMIT'] = '0.20'
+            else:
+                os.environ['KRONOS_DAILY_LIMIT'] = '0.10'
+        lim = os.environ.get('KRONOS_DAILY_LIMIT')
+        try:
+            v = float(lim); v = v if v < 1 else v/100.0
+            print(f"🧩 环境上下文: 代码={os.environ.get('KRONOS_STOCK_CODE')}, 涨跌停={v*100:.0f}%")
+        except Exception:
+            print(f"🧩 环境上下文: 代码={os.environ.get('KRONOS_STOCK_CODE')}, 涨跌停={lim}")
+    except Exception as e:
+        print(f"⚠️ 设置环境上下文失败: {e}")
 
     # 初始化预测器
     predictor = KronosStockPredictor(args.model)

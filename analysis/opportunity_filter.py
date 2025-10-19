@@ -174,14 +174,16 @@ class OpportunityFilter:
             logger.info(f"✗ {result['stock_code']} 在阶段4被淘汰: {stage4_result['reason']}")
             return result
 
-        # 阶段5: 事件面筛选
-        stage5_result = self.stage5_events_filter(scoring_result)
-        result['filter_history'].append(stage5_result)
-
-        if not stage5_result['passed']:
-            result['eliminated_at_stage'] = 5
-            logger.info(f"✗ {result['stock_code']} 在阶段5被淘汰: {stage5_result['reason']}")
-            return result
+        # 阶段5: 事件面筛选（已关闭）
+        # stage5_result = {
+        #     'stage': 5,
+        #     'stage_name': '事件面筛选（已关闭）',
+        #     'passed': True,
+        #     'reason': '事件面筛选已禁用，全部通过',
+        #     'details': {'disabled': True}
+        # }
+        # result['filter_history'].append(stage5_result)
+        # 不进行淘汰判断
 
         # 全部通过
         result['passed'] = True

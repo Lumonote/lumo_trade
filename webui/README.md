@@ -63,7 +63,7 @@ After successful startup, visit http://localhost:7070
 
 ### Sample Count
 
-- **Range**: 1 - 5
+- **Range**: 1 - 10
 - **Effect**: Generate multiple prediction samples
 - **Recommendation**: 2-3 samples to improve quality
 

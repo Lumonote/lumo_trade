@@ -100,7 +100,7 @@ class Config:
         # TODO: Update these paths to your pretrained model locations.
         # These can be local paths or Hugging Face Hub model identifiers.
         self.pretrained_tokenizer_path = "path/to/your/Kronos-Tokenizer-base"
-        self.pretrained_predictor_path = "path/to/your/Kronos-small"
+        self.pretrained_predictor_path = "path/to/your/Kronos-base"
 
         # Paths to the fine-tuned models, derived from the save_path.
         # These will be generated automatically during training.
@@ -116,7 +116,7 @@ class Config:
         self.inference_T = 0.6
         self.inference_top_p = 0.9
         self.inference_top_k = 0
-        self.inference_sample_count = 5
+        self.inference_sample_count = 10
         self.backtest_batch_size = 1000
         self.backtest_benchmark = self._set_benchmark(self.instrument)
 

@@ -423,9 +423,9 @@ def predict():
         pred_len = int(data.get('pred_len', 120))
 
         # Get prediction quality parameters
-        temperature = float(data.get('temperature', 1.0))
+        temperature = float(data.get('temperature', 0.6))
         top_p = float(data.get('top_p', 0.9))
-        sample_count = int(data.get('sample_count', 1))
+        sample_count = int(data.get('sample_count', 10))
 
         if not file_path:
             return jsonify({'error': 'File path cannot be empty'}), 400

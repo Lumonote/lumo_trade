@@ -74,7 +74,7 @@ model_dir.mkdir(exist_ok=True)
 
 # 一级目录结构，直接在models下
 tokenizer_dir = model_dir / "Kronos-Tokenizer-base"
-model_dir_path = model_dir / "Kronos-small"
+model_dir_path = model_dir / "Kronos-base"
 
 try:
     # 优先使用本地模型（一级目录结构）
@@ -100,7 +100,7 @@ try:
     else:
         # 下载并保存到一级目录
         print("Downloading model...")
-        downloaded_path = snapshot_download('northwind9898/Kronos-small', cache_dir=str(model_dir))
+        downloaded_path = snapshot_download('northwind9898/Kronos-base', cache_dir=str(model_dir))
         # 如果下载路径有嵌套结构，将其移动到一级目录
         import shutil
 
@@ -213,9 +213,9 @@ pred_df = predictor.predict(
     x_timestamp=x_timestamp,
     y_timestamp=y_timestamp,
     pred_len=pred_len,
-    T=1.0,
+    T=0.6,
     top_p=0.9,
-    sample_count=1,
+    sample_count=10,
     verbose=True
 )
 

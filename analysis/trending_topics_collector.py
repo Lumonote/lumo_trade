@@ -112,12 +112,198 @@ class TrendingTopicsCollector:
         """
         url = 'https://gubatopic.eastmoney.com/'
         results: List[Dict] = []
+        STOCK_CODE_RE = re.compile(r'^(?:60|00|30)\d{4}$')
+
+        def _clean_title(t: str) -> str:
+            if not t:
+                return ''
+            s = t.strip()
+            s = re.sub(r'^#\s*', '', s)
+            s = re.sub(r'\s*#$', '', s)
+            return s.strip()
+
+        def _valid_stock_entry(name: str, code: str) -> bool:
+            if not code or not STOCK_CODE_RE.match(code):
+                return False
+            nm = (name or '').strip()
+            if not nm or len(nm) < 2:
+                return False
+            bad_kw = ['指数', '板块', '概念', '主题', '涨', '跌', '%']
+            if any(k in nm for k in bad_kw):
+                return False
+            if re.fullmatch(r'[+\-]?\d+(?:\.\d+)?%?', nm):
+                return False
+            return True
+
+        def _extract_stocks_from_title(title_text: str) -> List[Dict]:
+            rel: List[Dict] = []
+            if not title_text:
+                return rel
+            pairs = re.findall(r'([^\(（]{2,})[\(（]\s*(\d{6})\s*[\)）]', title_text)
+            for name, code in pairs:
+                name = name.strip()
+                if _valid_stock_entry(name, code):
+                    rel.append({'name': name, 'stock_code': code})
+            seen = set(); uniq = []
+            for it in rel:
+                c = it.get('stock_code')
+                if c and c not in seen:
+                    seen.add(c); uniq.append(it)
+            return uniq[:3]
+
+        def _extract_stocks_from_search(keyword: str) -> List[Dict]:
+            try:
+                q = urllib.parse.quote(keyword)
+                search_url = f'https://so.eastmoney.com/news/s?keyword={q}'
+                r = requests.get(search_url, headers={**self.headers, 'Referer': 'https://so.eastmoney.com/'}, timeout=8)
+                r.encoding = 'utf-8'
+                sp = BeautifulSoup(r.text, 'html.parser')
+                anchors = sp.find_all('a')
+                rel = []
+                for a in anchors:
+                    href = a.get('href', '') or ''
+                    txt = (a.get_text(strip=True) or '')
+                    m = re.search(r'quote\.eastmoney\.com/.*?(?:sh|sz)?(\d{6})', href)
+                    code = m.group(1) if m else ''
+                    if code:
+                        name = re.sub(r'[（(]?\d{6}[)）]?', '', txt).strip()
+                        if _valid_stock_entry(name, code):
+                            rel.append({'name': name, 'stock_code': code})
+                seen = set(); uniq = []
+                for it in rel:
+                    c = it.get('stock_code')
+                    if c and c not in seen:
+                        seen.add(c); uniq.append(it)
+                return uniq[:5]
+            except Exception:
+                return []
+
+        def _extract_sectors_from_text(text: str) -> List[str]:
+            if not text:
+                return []
+            # 仅作为兜底的弱规则：从标题中提取可能的板块关键词
+            # 提取 2-6 字的中文词片段，过滤含数字/百分号
+            words = re.findall(r'[\u4e00-\u9fa5]{2,6}', text)
+            bad = set(['讨论','浏览','话题','更多','哪些','如何','受到','影响','部门','推进','计划'])
+            res = []
+            for w in words:
+                if w in bad:
+                    continue
+                if any(ch.isdigit() for ch in w):
+                    continue
+                # 只收集包含板块/概念/行业/主题等后缀的词
+                if any(suf in w for suf in ['板块','概念','行业','主题']):
+                    res.append(w)
+            # 去重保序
+            seen=set(); out=[]
+            for x in res:
+                if x not in seen:
+                    seen.add(x); out.append(x)
+            return out[:5]
+
+        def _extract_sectors_from_dom(scope) -> List[str]:
+            names: List[str] = []
+            try:
+                # 查找所有可能的板块标签
+                anchors = scope.find_all('a') if hasattr(scope, 'find_all') else []
+                for a in anchors:
+                    txt = (a.get_text(strip=True) or '')
+                    href = a.get('href','') or ''
+                    
+                    # 跳过含6位代码的条目（这些是个股）
+                    if re.search(r'\b(60|00|30)\d{4}\b', txt) or re.search(r'(?:sh|sz)?\d{6}', href):
+                        continue
+                    
+                    # 检查是否为板块/概念/行业标签
+                    is_sector = False
+                    
+                    # 1. 链接包含板块相关路径
+                    if any(k in href.lower() for k in ['bk', 'concept', 'sector', 'industry']):
+                        is_sector = True
+                    
+                    # 2. 文本包含板块相关关键词
+                    if any(k in txt for k in ['板块','概念','行业','主题','概念股']):
+                        is_sector = True
+                    
+                    # 3. 检查CSS类名或属性是否暗示板块标签
+                    class_name = a.get('class', [])
+                    if isinstance(class_name, list):
+                        class_name = ' '.join(class_name)
+                    if any(k in class_name.lower() for k in ['sector', 'concept', 'industry', 'bk']):
+                        is_sector = True
+                    
+                    if is_sector:
+                        # 清理文本，移除多余符号
+                        nm = re.sub(r'[\s·•\-\_]+','', txt)
+                        # 过滤掉太短或包含数字的词
+                        if 2 <= len(nm) <= 10 and not any(ch.isdigit() for ch in nm):
+                            names.append(nm)
+                            
+            except Exception:
+                pass
+                
+            # 去重保序并限量
+            seen = set()
+            out = []
+            for n in names:
+                if n not in seen:
+                    seen.add(n)
+                    out.append(n)
+            return out[:5]
+
+        soup = None
+        # 优先：使用 Playwright 渲染后获取页面HTML
+        try:
+            try:
+                from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+            except Exception:
+                sync_playwright = None
+
+            if sync_playwright is not None:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
+                    context = browser.new_context(user_agent=self.headers.get('User-Agent', ''))
+                    page = context.new_page()
+                    page.set_extra_http_headers({'Referer': 'https://guba.eastmoney.com/'})
+                    page.goto(url, wait_until='load', timeout=30000)
+
+                    # 等待常见的话题容器出现，容错多选择器
+                    selectors = ['.topic-card', '.topic-item', '.item', '.card']
+                    waited = False
+                    for sel in selectors:
+                        try:
+                            page.wait_for_selector(sel, timeout=4000)
+                            waited = True
+                            break
+                        except Exception:
+                            continue
+
+                    # 轻度滚动触发懒加载
+                    try:
+                        for _ in range(2):
+                            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            page.wait_for_timeout(800)
+                    except Exception:
+                        pass
+
+                    html = page.content()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    context.close()
+                    browser.close()
+
+        except Exception:
+            soup = None
+
+        # 兜底：静态请求
+        if soup is None:
+            try:
+                r = requests.get(url, headers={**self.headers, 'Referer': 'https://guba.eastmoney.com/'}, timeout=10)
+                r.encoding = 'utf-8'
+                soup = BeautifulSoup(r.text, 'html.parser')
+            except Exception:
+                soup = None
 
         try:
-            r = requests.get(url, headers={**self.headers, 'Referer': 'https://guba.eastmoney.com/'}, timeout=10)
-            r.encoding = 'utf-8'
-            soup = BeautifulSoup(r.text, 'html.parser')
-
             # 优先查找可能的卡片容器
             candidates = []
             candidates += soup.select('.topic-card, .topic-item, .item, .card')
@@ -153,7 +339,8 @@ class TrendingTopicsCollector:
                     if span and span.get_text(strip=True):
                         title = span.get_text(strip=True)
 
-                # 过滤无效或菜单项
+                # 过滤无效或菜单项，并清洗标题中的#
+                title = _clean_title(title)
                 if not title or len(title) < 4:
                     continue
                 if title in {'最新', '最热', '可能感兴趣', '点击加载更多'}:
@@ -179,8 +366,9 @@ class TrendingTopicsCollector:
                         # 映射到0-100
                         heat = max(30, min(100, int(40 + (val / (val + 1000)) * 60)))
 
-                # 解析“关联股/相关股”标签（若页面包含），用于在首页展示股票标签
+                # 解析“关联股/相关股/板块/概念”标签（若页面包含），用于在首页展示标签
                 related_stocks = []
+                related_sectors: List[str] = []
                 try:
                     # 优先寻找包含“关联股/相关股”字样的区域
                     rel_mark = elem.find(string=re.compile('关联股|相关股|相关个股|相关股票'))
@@ -216,9 +404,9 @@ class TrendingTopicsCollector:
                             m = re.search(r'(?:\(|（)\s*(\d{6})\s*(?:\)|）)', txt)
                             if m:
                                 code = m.group(1)
-                        if code and re.match(r'^(?:60|00|30)\d{4}$', code):
+                        if code and STOCK_CODE_RE.match(code):
                             name = re.sub(r'\s*(?:\(|（)\s*\d{6}\s*(?:\)|）)\s*', '', txt)
-                            if name and len(name) >= 2 and not any(k in name for k in ['讨论', '浏览', '话题', '更多']):
+                            if _valid_stock_entry(name, code):
                                 candidates.append({'name': name, 'stock_code': code})
                     # 当未能从链接提取时，尝试从纯文本“相关股：xxx、yyy(123456)”抽取
                     if not candidates:
@@ -234,24 +422,97 @@ class TrendingTopicsCollector:
                                 mcode = re.search(r'(\d{6})', p)
                                 code = mcode.group(1) if mcode else ''
                                 name = re.sub(r'[（\(]?\d{6}[）\)]?', '', p).strip()
-                                if code and re.match(r'^(?:60|00|30)\d{4}$', code):
-                                    candidates.append({'name': name or p, 'stock_code': code})
-                                else:
-                                    candidates.append({'name': name or p})
+                                if code and STOCK_CODE_RE.match(code):
+                                    if _valid_stock_entry(name or p, code):
+                                        candidates.append({'name': name or p, 'stock_code': code})
                     # 去重并限量
                     seen = set()
                     for st in candidates:
-                        c = st.get('stock_code') or st.get('name')
+                        c = st.get('stock_code')
                         if c and c not in seen:
                             seen.add(c)
                             related_stocks.append(st)
                     related_stocks = related_stocks[:8]
+                    # 同域块尝试抽取板块/概念名
+                    related_sectors = _extract_sectors_from_dom(anchor_scope)
                 except Exception:
                     related_stocks = []
+                    related_sectors = []
+
+                if not related_stocks:
+                    related_stocks = _extract_stocks_from_title(title)
+                if not related_stocks and title:
+                    related_stocks = _extract_stocks_from_search(title)
+
+                if not related_sectors:
+                    related_sectors = _extract_sectors_from_text(title)
 
                 rank += 1
                 if heat is None:
                     heat = max(40, int((limit + 5 - rank) / (limit + 5) * 100))
+
+                # 如仍未解析到关联股，尝试进入话题详情页补充解析（仅限东财域名）
+                if (not related_stocks) and href and any(x in href for x in ['gubatopic.eastmoney.com', 'guba.eastmoney.com']):
+                    try:
+                        detail_html = None
+                        try:
+                            from playwright.sync_api import sync_playwright
+                        except Exception:
+                            sync_playwright = None
+                        if sync_playwright is not None:
+                            with sync_playwright() as p2:
+                                b2 = p2.chromium.launch(headless=True)
+                                c2 = b2.new_context(user_agent=self.headers.get('User-Agent', ''))
+                                pg = c2.new_page()
+                                pg.goto(href, wait_until='load', timeout=20000)
+                                pg.wait_for_timeout(1200)
+                                try:
+                                    pg.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                                    pg.wait_for_timeout(600)
+                                except Exception:
+                                    pass
+                                detail_html = pg.content()
+                                c2.close(); b2.close()
+                        if detail_html is None:
+                            rr = requests.get(href, headers={**self.headers, 'Referer': url}, timeout=8)
+                            rr.encoding = 'utf-8'
+                            detail_html = rr.text
+                        if detail_html:
+                            soup_d = BeautifulSoup(detail_html, 'html.parser')
+                            anchors = soup_d.find_all('a')
+                            candidates = []
+                            for aa in anchors:
+                                txt = (aa.get_text(strip=True) or '')
+                                href_a = aa.get('href', '') or ''
+                                code = None
+                                m = re.search(r'list,(\d{6})(?:,|\.html)?', href_a)
+                                if not code and m:
+                                    code = m.group(1)
+                                m = re.search(r'quote\.eastmoney\.com/.*?(?:sh|sz)?(\d{6})', href_a)
+                                if not code and m:
+                                    code = m.group(1)
+                                if not code:
+                                    m = re.search(r'(?:\(|（)\s*(\d{6})\s*(?:\)|）)', txt)
+                                    if m:
+                                        code = m.group(1)
+                                if code and STOCK_CODE_RE.match(code):
+                                    name = re.sub(r'\s*(?:\(|（)\s*\d{6}\s*(?:\)|）)\s*', '', txt)
+                                    if _valid_stock_entry(name, code):
+                                        candidates.append({'name': name, 'stock_code': code})
+                            # 去重限量
+                            seen = set()
+                            enriched = []
+                            for st in candidates:
+                                c = st.get('stock_code')
+                                if c and c not in seen:
+                                    seen.add(c)
+                                    enriched.append(st)
+                            related_stocks = enriched[:8] or related_stocks
+                            # 详情页再尝试提取板块
+                            if not related_sectors:
+                                related_sectors = _extract_sectors_from_dom(soup_d)
+                    except Exception:
+                        pass
 
                 results.append({
                     'title': title,
@@ -261,6 +522,7 @@ class TrendingTopicsCollector:
                     'heat': heat,
                     'rank': rank,
                     'related_stocks': related_stocks,
+                    'related_sectors': related_sectors,
                 })
                 if len(results) >= limit:
                     break

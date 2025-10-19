@@ -1,4 +1,4 @@
-﻿# Kronos Quick Start Script (PowerShell Version)
+# Kronos Quick Start Script (PowerShell Version)
 # Purpose: Run stably with UTF-8 on Windows, avoid encoding issues
 # Encoding: UTF-8 with BOM
 
@@ -56,7 +56,14 @@ $env:PYTHONUTF8 = '1'
 $Choice = $args[0]
 
 function Get-PythonCommand {
-    # 优先使用 Windows 的 py 启动器定位到具体 python.exe
+    # 优先使用本工具管理的用户级虚拟环境 Python（确保在打包模式/跨机器可用）
+    try {
+        $venvDir = Join-Path $env:LocalAppData 'Kronos\venv'
+        $venvPy = Join-Path $venvDir 'Scripts\python.exe'
+        if (Test-Path $venvPy) { return $venvPy }
+    } catch {}
+
+    # 然后使用 Windows 的 py 启动器定位到具体 python.exe
     try {
         $out = & py -3.11 --version 2>$null
         if ($out) {
@@ -211,6 +218,66 @@ function Ensure-PackagedEmbeddedPythonReady {
 
     return $true
 }
+# Ensure a user-level managed virtual environment and install dependencies
+function Ensure-ManagedVenvAndDeps {
+    param(
+        [Parameter(Mandatory=$false)][string]$TargetPythonVersion = '3.11.9'
+    )
+
+    # 1) Ensure a suitable system Python available to create venv
+    Ensure-SystemPython -TargetVersion $TargetPythonVersion
+
+    # 2) Create venv under %LocalAppData%\Kronos\venv (user-writable, stable across _MEI temps)
+    $venvDir = Join-Path $env:LocalAppData 'Kronos\venv'
+    $venvPy = Join-Path $venvDir 'Scripts\python.exe'
+
+    if (-not (Test-Path $venvPy)) {
+        try {
+            $creator = Get-PythonCommand
+            Write-Host "SETUP: 创建用户级虚拟环境 -> $venvDir" -ForegroundColor Cyan
+            & $creator -m venv $venvDir
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPy)) { Write-Host "ERROR: 虚拟环境创建失败" -ForegroundColor Red; exit 1 }
+        } catch {
+            Write-Host "ERROR: 无法创建虚拟环境 ($venvDir)" -ForegroundColor Red
+            exit 1
+        }
+    } else {
+        Write-Host "OK: 发现已存在的虚拟环境 -> $venvDir" -ForegroundColor Green
+    }
+
+    # 3) Use mirror for faster installation
+    $mirrorArgs = @('-i', 'https://pypi.tuna.tsinghua.edu.cn/simple/', '--trusted-host', 'pypi.tuna.tsinghua.edu.cn')
+
+    # 4) Upgrade pip and install requirements
+    try { & $venvPy -m pip install -U pip @mirrorArgs } catch {}
+
+    if (Test-Path 'requirements.txt') {
+        Write-Host "INSTALL: 安装项目依赖 requirements.txt 到用户虚拟环境" -ForegroundColor Cyan
+        & $venvPy -m pip install -r requirements.txt @mirrorArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: 依赖安装失败（虚拟环境），请检查网络或镜像源" -ForegroundColor Red
+            exit 1
+        }
+    } else {
+        Write-Host "ERROR: 未找到 requirements.txt 文件" -ForegroundColor Red
+        exit 1
+    }
+
+    # 5) Ensure playwright and browsers (optional, best-effort)
+    $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:LocalAppData 'Kronos\pw-browsers'
+    if (-not (Test-Path $env:PLAYWRIGHT_BROWSERS_PATH)) { New-Item -ItemType Directory -Path $env:PLAYWRIGHT_BROWSERS_PATH -Force | Out-Null }
+
+    $info = & $venvPy -m pip show playwright 2>$null
+    if (-not $info) {
+        Write-Host "INSTALL: 安装 Playwright 包" -ForegroundColor Cyan
+        & $venvPy -m pip install playwright @mirrorArgs
+        if ($LASTEXITCODE -ne 0) { Write-Host "WARN: Playwright 安装失败（可稍后重试）" -ForegroundColor Yellow }
+    }
+    try { & $venvPy -m playwright install chromium } catch { Write-Host "WARN: Chromium 资源安装失败（可稍后手动执行）" -ForegroundColor Yellow }
+
+    Write-Host "DONE: 用户虚拟环境与依赖已就绪 -> $venvDir" -ForegroundColor Green
+}
+
 
 # Allow force-install in packaged mode via environment variable
 $ForceInstallInApp = $false
@@ -483,9 +550,8 @@ if ($Choice -eq "1") {
     Write-Host "START: 开始自动安装系统依赖..." -ForegroundColor Green
 
     if ($IsPackaged -and -not $ForceInstallInApp) {
-        Write-Host "SKIP: 检测到应用包运行环境 (_MEI)，应用模式下禁用依赖安装" -ForegroundColor Yellow
-        Write-Host "TIP: 请选择源码模式运行 'quick_start.ps1 1'，或使用已打包的依赖" -ForegroundColor Yellow
-        Write-Host "TIP: 设置 'KRONOS_FORCE_INSTALL_IN_APP=true' 可强制使用系统 Python 安装依赖" -ForegroundColor Yellow
+        Write-Host "INFO: 检测到应用包运行环境，将在用户目录创建独立虚拟环境并安装依赖" -ForegroundColor Cyan
+        Ensure-ManagedVenvAndDeps -TargetPythonVersion '3.11.9'
         exit 0
     } elseif ($IsPackaged -and $ForceInstallInApp) {
         Write-Host "APP: 检测到应用包环境，已启用系统 Python 强制安装依赖" -ForegroundColor Yellow
@@ -547,7 +613,10 @@ if ($Choice -eq "1") {
             }
         }
 
-        & $python -m pip install -r requirements.txt @mirrorArgs
+        # 源码模式也改为先确保用户级虚拟环境，避免全局污染
+        Ensure-ManagedVenvAndDeps -TargetPythonVersion '3.11.9'
+        # 之后的检查交给虚拟环境，不再使用系统 python 继续装
+        $python = Get-PythonCommand
         $exitCode = $LASTEXITCODE
         if ($exitCode -eq 0) {
             Write-Host "OK: Python 依赖处理完成（如出现 'Requirement already satisfied' 表示该依赖已存在）" -ForegroundColor Green
@@ -670,7 +739,7 @@ elseif ($Choice -eq "6") {
     $firstSymbol = ($symbolsEnv -split ',')[0]
     $cleanSymbol = $firstSymbol -replace '\..*$', ''
     Write-Host "PREDICT: Starting prediction ($cleanSymbol)" -ForegroundColor Green
-    Invoke-Python -Script 'examples/prediction_batch_example.py' -Args @('--stock-code', $cleanSymbol)
+    Invoke-Python -Script 'examples/prediction_batch_example.py' -Args @('--stock-code', $cleanSymbol, '-T', '0.6', '-p', '0.90', '-n', '10')
 }
 elseif ($Choice -eq "8") {
     Write-Host "Checking license status..." -ForegroundColor Yellow

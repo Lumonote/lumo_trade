@@ -35,6 +35,12 @@ def parse_args():
                         help='选择预测模式：overlap(重叠验证) 或 realtime(实时预测)')
     parser.add_argument('--timestamps-only', action='store_true',
                         help='仅生成并打印预测时间戳，不执行模型预测与图表生成')
+    parser.add_argument('--temperature', '-T', type=float, default=0.6,
+                        help='采样温度（默认0.6）')
+    parser.add_argument('--top-p', '-p', dest='top_p', type=float, default=0.90,
+                        help='核采样Top-p（默认0.90）')
+    parser.add_argument('--sample-count', '-n', type=int, default=10,
+                        help='样本数量（默认10）')
     return parser.parse_args()
 
 
@@ -1067,7 +1073,7 @@ if not getattr(args, 'timestamps_only', False):
 
     # 一级目录结构，直接在models下
     tokenizer_dir = model_dir / "Kronos-Tokenizer-base"
-    model_dir_path = model_dir / "Kronos-small"
+    model_dir_path = model_dir / "Kronos-base"
 
     try:
         # 优先使用本地模型（一级目录结构）
@@ -1109,7 +1115,7 @@ if not getattr(args, 'timestamps_only', False):
 
             # 下载并保存到一级目录
             print("Downloading model...")
-            downloaded_path = snapshot_download('northwind9898/Kronos-small', cache_dir=str(model_dir))
+            downloaded_path = snapshot_download('northwind9898/Kronos-base', cache_dir=str(model_dir))
             # 如果下载路径有嵌套结构，将其移动到一级目录
             import shutil
 
@@ -1317,7 +1323,7 @@ print(
     f"  - 推荐数据量: 半年({half_year_trading_days}天 ≈ {half_year_points}点) 到 一年({one_year_trading_days}天 ≈ {one_year_points}点)")
 
 # 优先级：使用所有可用数据，但不超过模型上下文限制
-model_max_context = 512  # Kronos-small的最大上下文长度
+model_max_context = 512  # Kronos-base的最大上下文长度
 
 if available_points <= model_max_context:
     # 数据量在模型上下文范围内，使用全部数据
@@ -1511,11 +1517,10 @@ print(f"  💡 说明: 使用全局统计可确保预测结果与历史数据在
 # 进行批量预测
 try:
     print("🔮 开始进行批量预测...")
-    print("📊 预测参数优化 (最优配置):")
-    print("   - Temperature: 0.7 (平衡稳定性和预测质量)")
-    print("   - Top-p: 0.90 (核采样阈值)")
-    print("   - Sample Count: 3 (三次采样取平均,平衡速度和稳定性)")
-    print("   💡 该配置经过测试,实现最佳MAPE(7.76%)和最低重叠日波动率")
+    print("📊 预测参数优化 (基础/可覆盖):")
+    print(f"   - Temperature: {getattr(args, 'temperature', 0.6)} ")
+    print(f"   - Top-p: {getattr(args, 'top_p', 0.90)} ")
+    print(f"   - Sample Count: {getattr(args, 'sample_count', 10)} ")
 
     # 基于情绪+事件动态调整采样参数（前置采集与量化分析）
     try:
@@ -1556,9 +1561,38 @@ try:
         print(f"   - Top-p: {tuned['top_p']}")
         print(f"   - Sample Count: {tuned['sample_count']}")
         print(f"   - 依据: {tuned['reason']}")
+
+        # 🔒 限幅裁剪，避免调参偏离CLI设定值过多
+        base_T = getattr(args, 'temperature', 0.6)
+        base_top_p = getattr(args, 'top_p', 0.90)
+        base_samples = getattr(args, 'sample_count', 10)
+
+        T_lo = max(0.10, base_T * 0.75)
+        T_hi = min(2.00, base_T * 1.25)
+        top_p_lo = max(0.10, base_top_p - 0.08)
+        top_p_hi = min(1.00, base_top_p + 0.08)
+        samples_lo = max(1, int(round(base_samples * 0.5)))
+        samples_hi = max(samples_lo, int(round(base_samples * 1.5)))
+
+        capped_T = min(max(tuned['T'], T_lo), T_hi)
+        capped_top_p = min(max(tuned['top_p'], top_p_lo), top_p_hi)
+        capped_samples = int(min(max(int(tuned['sample_count']), samples_lo), samples_hi))
+
+        if (capped_T != tuned['T']) or (capped_top_p != tuned['top_p']) or (capped_samples != tuned['sample_count']):
+            print("\n🔒 已应用采样参数限幅，保证与CLI设定接近")
+            print(f"   - 基准 Temperature: {base_T} | 允许范围: [{T_lo:.2f}, {T_hi:.2f}]")
+            print(f"   - 基准 Top-p: {base_top_p} | 允许范围: [{top_p_lo:.2f}, {top_p_hi:.2f}]")
+            print(f"   - 基准 Sample Count: {base_samples} | 允许范围: [{samples_lo}, {samples_hi}]")
+            print(f"   - 限幅后 Temperature: {capped_T} (原: {tuned['T']})")
+            print(f"   - 限幅后 Top-p: {capped_top_p} (原: {tuned['top_p']})")
+            print(f"   - 限幅后 Sample Count: {capped_samples} (原: {tuned['sample_count']})")
+
+        tuned['T'] = capped_T
+        tuned['top_p'] = capped_top_p
+        tuned['sample_count'] = capped_samples
     except Exception as e:
         print(f"⚠️ 动态调参失败，回退默认参数: {e}")
-        tuned = {"T": 0.7, "top_p": 0.90, "sample_count": 3}
+        tuned = {"T": getattr(args, 'temperature', 0.6), "top_p": getattr(args, 'top_p', 0.90), "sample_count": getattr(args, 'sample_count', 10)}
 
     pred_df_list = predictor.predict_batch(
         df_list=dfs,

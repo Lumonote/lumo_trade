@@ -228,7 +228,7 @@ if defined MODELSCOPE_VERSION (
 
     if "%model_choice%"=="1" (
         call :download_model_with_retry "northwind9898/Kronos-Tokenizer-base" "./models/Kronos-Tokenizer-base" "Kronos Tokenizer"
-        call :download_model_with_retry "northwind9898/Kronos-small" "./models/Kronos-small" "Kronos 模型"
+        call :download_model_with_retry "northwind9898/Kronos-base" "./models/Kronos-base" "Kronos 模型"
     ) else if "%model_choice%"=="2" (
         echo 正在下载 Chronos-T5-Small 模型...
         modelscope download --model AI-ModelScope/chronos-t5-small --local_dir ./models/chronos-t5-small
@@ -241,7 +241,7 @@ if defined MODELSCOPE_VERSION (
         )
     ) else if "%model_choice%"=="3" (
         call :download_model_with_retry "northwind9898/Kronos-Tokenizer-base" "./models/Kronos-Tokenizer-base" "Kronos Tokenizer"
-        call :download_model_with_retry "northwind9898/Kronos-small" "./models/Kronos-small" "Kronos 模型"
+        call :download_model_with_retry "northwind9898/Kronos-base" "./models/Kronos-base" "Kronos 模型"
         echo 正在下载 Chronos-T5-Small 模型...
         modelscope download --model AI-ModelScope/chronos-t5-small --local_dir ./models/chronos-t5-small
         if errorlevel 1 (
@@ -335,7 +335,7 @@ echo.
 echo PREDICT: 开始运行预测...
 echo 使用股票 %clean_symbol% 进行预测演示
 echo 预测完成后将自动生成HTML综合分析报告并打开浏览器
-python examples/prediction_batch_example.py --stock-code %clean_symbol%
+python examples/prediction_batch_example.py --stock-code %clean_symbol% -T 0.6 -p 0.90 -n 10
 if errorlevel 1 (
     echo WARN: 预测运行失败，但数据已成功获取
 ) else (

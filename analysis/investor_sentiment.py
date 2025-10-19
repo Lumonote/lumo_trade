@@ -41,6 +41,110 @@ class InvestorSentimentAnalyzer:
             'Referer': 'http://guba.eastmoney.com/'
         }
 
+        # 轻量缓存目录（用于网络不稳定时的短期回退）
+        try:
+            self.cache_dir = project_root / 'cache'
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            # 缓存目录创建失败不影响主流程
+            self.cache_dir = project_root
+
+    # === 缓存与备用源工具方法 ===
+    def _cache_path(self, key: str) -> Path:
+        try:
+            return (self.cache_dir / f"{key}.json")
+        except Exception:
+            return (project_root / f"{key}.json")
+
+    def _read_cache(self, key: str, max_age_sec: int = 600):
+        try:
+            p = self._cache_path(key)
+            if not p.exists():
+                return None
+            mtime = p.stat().st_mtime
+            if (time.time() - mtime) > max_age_sec:
+                return None
+            with p.open('r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _write_cache(self, key: str, data):
+        try:
+            p = self._cache_path(key)
+            with p.open('w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            # 写缓存失败不影响主流程
+            pass
+
+    def _to_float(self, v):
+        try:
+            if v is None:
+                return None
+            if isinstance(v, (int, float)):
+                return float(v)
+            s = str(v).strip()
+            if s in ('', 'N/A', 'None'):
+                return None
+            return float(s)
+        except Exception:
+            return None
+
+    def _normalize_sector_name(self, name: str) -> str:
+        """
+        规范化中文板块名称，移除常见后缀与标点，便于模糊匹配。
+        """
+        try:
+            if not name:
+                return ''
+            s = unicodedata.normalize('NFKC', str(name)).strip()
+            # 去除常见词与符号：行业/板块/指数/概念/产业/Ⅱ/Ⅰ/及/与 以及空白与标点
+            s = re.sub(r'(行业|板块|指数|概念|产业|Ⅱ|Ⅰ|及|与)', '', s)
+            s = re.sub(r'[\s·•、，,;；:：\-—_\/]', '', s)
+            return s
+        except Exception:
+            return str(name or '')
+
+    def _get_index_from_sina(self, code: str):
+        """
+        从新浪行情接口获取指数当前价与涨跌幅（作为备用数据源）。
+        Args:
+            code: 指数代码，如 'sh000001', 'sz399001', 'sz399006', 'sh000688'
+        Returns:
+            dict 或 None: { 'current': float, 'change_pct': float }
+        """
+        try:
+            # 新浪接口支持同样格式代码，直接使用
+            url = f"http://hq.sinajs.cn/list={code}"
+            headers = {
+                'User-Agent': self.headers.get('User-Agent', 'Mozilla/5.0'),
+                'Referer': 'http://finance.sina.com.cn/'
+            }
+            resp = requests.get(url, headers=headers, timeout=6)
+            # 新浪返回通常为 GBK 编码
+            try:
+                resp.encoding = resp.encoding or 'gbk'
+            except Exception:
+                pass
+            text = resp.text or ''
+            m = re.search(r'="([^"]+)"', text)
+            if not m:
+                return None
+            parts = m.group(1).split(',')
+            # 对于指数：parts[2] 昨收，parts[3] 当前价（多数情况）
+            prev_close = self._to_float(parts[2] if len(parts) > 2 else None)
+            current = self._to_float(parts[3] if len(parts) > 3 else None)
+            if prev_close and current:
+                change_pct = round((current - prev_close) / prev_close * 100, 2)
+                return {
+                    'current': round(current, 2),
+                    'change_pct': change_pct
+                }
+            return None
+        except Exception:
+            return None
+
     def get_capital_flow(self):
         """
         获取资金流向数据
@@ -291,7 +395,8 @@ class InvestorSentimentAnalyzer:
                     url = "http://push2.eastmoney.com/api/qt/stock/get"
                     params = {
                         'secid': info['secid'],
-                        'fields': 'f43,f44,f45,f46,f47,f48,f49,f50,f51,f52,f169,f170'  # 价格、涨跌幅、量比等
+                        # 价格、涨跌幅、量比等；增加 f3 以获取涨跌幅
+                        'fields': 'f43,f44,f45,f46,f47,f48,f49,f50,f51,f52,f169,f170,f3'
                     }
 
                     response = requests.get(url, params=params, headers=self.headers, timeout=10)
@@ -305,15 +410,33 @@ class InvestorSentimentAnalyzer:
                         if current:
                             current = current / 1000  # 除以1000转换为正常值
 
-                        # 涨跌幅
-                        change_pct = stock_data.get('f170', 0)
+                        # 涨跌幅：优先使用 f3（东财通常为百分比数值），
+                        # 若异常则尝试兼容缩放（>50 视为可能需要 /100）
+                        change_pct = stock_data.get('f3')
                         if isinstance(change_pct, (int, float)):
-                            change_pct = round(change_pct / 100, 2)
+                            try:
+                                change_pct = float(change_pct)
+                            except Exception:
+                                pass
+                            if abs(change_pct) > 50:
+                                change_pct = round(change_pct / 100, 2)
+                            else:
+                                change_pct = round(change_pct, 2)
+                        else:
+                            # 兜底：尝试从 f170（振幅/或其他字段）推断
+                            cp_alt = stock_data.get('f170')
+                            if isinstance(cp_alt, (int, float)):
+                                cp_alt = float(cp_alt)
+                                change_pct = round(cp_alt / 100, 2)
 
-                        # 量比
+                        # 量比（部分指数可能缺失，保持 N/A）
                         volume_ratio = stock_data.get('f169', 0)
                         if isinstance(volume_ratio, (int, float)):
-                            volume_ratio = round(volume_ratio / 100, 2)
+                            try:
+                                vr = float(volume_ratio)
+                                volume_ratio = round(vr / 100, 2) if abs(vr) > 50 else round(vr, 2)
+                            except Exception:
+                                pass
 
                         market_data[code] = {
                             'name': info['name'],
@@ -329,6 +452,23 @@ class InvestorSentimentAnalyzer:
                         'change_pct': 'N/A',
                         'volume_ratio': 'N/A',
                     }
+
+            # 尝试用新浪备用源补齐缺失的指数涨跌与当前价
+            try:
+                for code in indices.keys():
+                    v = market_data.get(code)
+                    # 如果涨跌幅缺失或非数值，尝试备用源
+                    if (not v) or (not isinstance(v.get('change_pct'), (int, float))):
+                        backup = self._get_index_from_sina(code)
+                        if backup:
+                            market_data[code] = {
+                                'name': (v.get('name') if v and v.get('name') else indices[code]['name']),
+                                'current': backup.get('current', (v.get('current') if v else 'N/A')),
+                                'change_pct': backup.get('change_pct', (v.get('change_pct') if v else 'N/A')),
+                                'volume_ratio': (v.get('volume_ratio') if v else 'N/A'),
+                            }
+            except Exception:
+                pass
 
             # 计算整体市场情绪
             valid_changes = [v['change_pct'] for v in market_data.values()
@@ -371,26 +511,107 @@ class InvestorSentimentAnalyzer:
                     overall = '弱势下跌'
                     emotion = 'bearish'
             else:
-                sentiment_score = 50
-                overall = '数据不足'
-                emotion = 'neutral'
+                # 若所有指数涨跌缺失，尝试以主指数日K线回退一次
+                try:
+                    pk_info = indices.get(primary_key)
+                    if pk_info:
+                        k_url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
+                        k_params = {
+                            'secid': pk_info['secid'],
+                            'klt': '101',  # 日线
+                            'fqt': '1',
+                            'lmt': '1',
+                            'fields1': 'f1,f2,f3,f4,f5,f6',
+                            'fields2': 'f51,f52,f53,f54,f55'
+                        }
+                        k_resp = requests.get(k_url, params=k_params, headers=self.headers, timeout=10)
+                        k_data = k_resp.json()
+                        if k_data.get('data') and k_data['data'].get('klines'):
+                            last = k_data['data']['klines'][-1]
+                            parts = last.split(',')
+                            # 通常格式: 日期,开盘,收盘,涨跌幅,...
+                            if len(parts) >= 4:
+                                try:
+                                    primary_change = float(parts[3])
+                                except Exception:
+                                    primary_change = None
+                                if isinstance(primary_change, (int, float)):
+                                    avg_change = primary_change
+                                    base_change = primary_change
+                                    sentiment_score = round(50 + (base_change / 3.0) * 50, 1)
+                                    sentiment_score = max(0, min(100, sentiment_score))
 
-            return {
+                                    if sentiment_score >= 65:
+                                        overall = '强势上涨'
+                                        emotion = 'bullish'
+                                    elif sentiment_score >= 52:
+                                        overall = '偏强'
+                                        emotion = 'slightly_bullish'
+                                    elif sentiment_score >= 48:
+                                        overall = '震荡'
+                                        emotion = 'neutral'
+                                    elif sentiment_score >= 35:
+                                        overall = '偏弱'
+                                        emotion = 'slightly_bearish'
+                                    else:
+                                        overall = '弱势下跌'
+                                        emotion = 'bearish'
+                                else:
+                                    sentiment_score = 50
+                                    overall = '数据不足'
+                                    emotion = 'neutral'
+                            else:
+                                sentiment_score = 50
+                                overall = '数据不足'
+                                emotion = 'neutral'
+                        else:
+                            sentiment_score = 50
+                            overall = '数据不足'
+                            emotion = 'neutral'
+                    else:
+                        sentiment_score = 50
+                        overall = '数据不足'
+                        emotion = 'neutral'
+                except Exception:
+                    sentiment_score = 50
+                    overall = '数据不足'
+                    emotion = 'neutral'
+
+            result = {
                 'indices': market_data,
                 'sentiment_score': sentiment_score,
                 'overall': overall,
                 'emotion': emotion,
                 'primary_index': {
                     'key': primary_key,
-                    'name': market_data.get(primary_key, {}).get('name', '所属大盘'),
-                    'change_pct': primary_change if isinstance(primary_change, (int, float)) else 'N/A',
+                    'name': indices.get(primary_key, {}).get('name', market_data.get(primary_key, {}).get('name', '所属大盘')),
+                    'change_pct': (
+                        primary_change if isinstance(primary_change, (int, float))
+                        else (avg_change if isinstance(avg_change, (int, float)) else 'N/A')
+                    ),
                 },
-                'primary_change_pct': round(primary_change, 2) if isinstance(primary_change, (int, float)) else 'N/A',
+                'primary_change_pct': (
+                    round(primary_change, 2) if isinstance(primary_change, (int, float))
+                    else (round(avg_change, 2) if isinstance(avg_change, (int, float)) else 'N/A')
+                ),
                 'avg_change_pct': round(avg_change, 2) if isinstance(avg_change, (int, float)) else 'N/A',
             }
 
+            # 成功获取到有效数据时写入缓存
+            try:
+                if isinstance(result.get('primary_change_pct'), (int, float)) or isinstance(result.get('avg_change_pct'), (int, float)):
+                    self._write_cache('overall_market', result)
+            except Exception:
+                pass
+
+            return result
+
         except Exception as e:
             print(f"⚠️ 获取大盘情绪失败: {str(e)}")
+            # 失败时尝试读取短期缓存
+            cached = self._read_cache('overall_market', max_age_sec=600)
+            if cached:
+                return cached
             return self._get_default_overall_market_sentiment()
 
     def get_sector_info_and_sentiment(self):
@@ -415,11 +636,170 @@ class InvestorSentimentAnalyzer:
             sector_code = None
 
             if data.get('data'):
-                # f127: 所属行业名称
+                # f127: 所属行业名称；f128: 行业板块代码
                 sector_name = data['data'].get('f127', 'N/A')
+                sector_code = data['data'].get('f128')
 
-            # 如果无法获取行业名称，返回默认值
+            # 如果无法获取行业名称，尝试基于行业代码回退计算板块情绪
             if sector_name == 'N/A' or not sector_name:
+                if sector_code:
+                    try:
+                        # 通过行业代码获取成分股，基于成分股均值估算板块涨跌与换手
+                        constituents_url = "http://push2.eastmoney.com/api/qt/clist/get"
+                        constituents_params = {
+                            'pn': '1',
+                            'pz': '200',
+                            'po': '1',
+                            'np': '1',
+                            'fltt': '2',
+                            'invt': '2',
+                            'fid': 'f3',
+                            'fs': f"b:{sector_code}",
+                            'fields': 'f12,f14,f3,f8'
+                        }
+
+                        resp = requests.get(constituents_url, params=constituents_params, headers=self.headers, timeout=10)
+                        d = resp.json()
+                        if d.get('data') and d['data'].get('diff'):
+                            stocks = d['data']['diff']
+                            changes = [s.get('f3') for s in stocks if isinstance(s.get('f3'), (int, float))]
+                            turns = [s.get('f8') for s in stocks if isinstance(s.get('f8'), (int, float))]
+
+                            if changes:
+                                avg_change = round(sum(changes) / len(changes), 2)
+                            else:
+                                avg_change = 'N/A'
+
+                            if turns:
+                                avg_turnover = round(sum(turns) / len(turns), 2)
+                            else:
+                                avg_turnover = 'N/A'
+
+                            # 情绪分数（与原逻辑一致）
+                            if isinstance(avg_change, (int, float)):
+                                sentiment_score = round(50 + (avg_change / 5.0) * 50, 1)
+                                sentiment_score = max(0, min(100, sentiment_score))
+                            else:
+                                sentiment_score = 50
+
+                            if sentiment_score >= 65:
+                                overall = '强势领涨'
+                                emotion = 'bullish'
+                            elif sentiment_score >= 52:
+                                overall = '偏强'
+                                emotion = 'slightly_bullish'
+                            elif sentiment_score >= 48:
+                                overall = '震荡'
+                                emotion = 'neutral'
+                            elif sentiment_score >= 35:
+                                overall = '偏弱'
+                                emotion = 'slightly_bearish'
+                            else:
+                                overall = '弱势下跌'
+                                emotion = 'bearish'
+
+                            sector_sentiment = {
+                                'sector_name': sector_name if sector_name and sector_name != 'N/A' else '行业板块',
+                                'sector_code': sector_code,
+                                'change_pct': avg_change,
+                                'turnover_rate': avg_turnover,
+                                'sentiment_score': sentiment_score,
+                                'overall': overall,
+                                'emotion': emotion,
+                            }
+
+                            # 识别龙头（与原逻辑一致）
+                            try:
+                                leader_item = max(stocks, key=lambda x: x.get('f3', -999999)) if stocks else None
+                                if leader_item:
+                                    leader = {
+                                        'code': leader_item.get('f12', ''),
+                                        'name': leader_item.get('f14', ''),
+                                        'change_pct': round(leader_item.get('f3', 0), 2) if isinstance(leader_item.get('f3', 0), (int, float)) else leader_item.get('f3', 'N/A'),
+                                        'turnover_rate': round(leader_item.get('f8', 0), 2) if isinstance(leader_item.get('f8', 0), (int, float)) else leader_item.get('f8', 'N/A'),
+                                        'is_current_stock': True if leader_item.get('f12', '').endswith(self.stock_code) else False
+                                    }
+                                    sector_sentiment['leader_stock'] = leader
+                            except Exception:
+                                pass
+
+                            # 写入板块缓存
+                            try:
+                                ck = f"sector_{sector_sentiment.get('sector_code') or sector_sentiment.get('sector_name') or self.stock_code}"
+                                self._write_cache(ck, sector_sentiment)
+                            except Exception:
+                                pass
+
+                            return sector_sentiment
+                    except Exception as e:
+                        print(f"   ⚠️  行业代码回退失败: {str(e)}")
+
+                # 无行业代码，尝试计算行业板块总体均值作为回退
+                try:
+                    sector_url = "http://push2.eastmoney.com/api/qt/clist/get"
+                    sector_params = {
+                        'pn': '1',
+                        'pz': '200',
+                        'po': '1',
+                        'np': '1',
+                        'fltt': '2',
+                        'invt': '2',
+                        'fid': 'f3',
+                        'fs': 'm:90 t:2',
+                        'fields': 'f12,f14,f3,f8'
+                    }
+                    respx = requests.get(sector_url, params=sector_params, headers=self.headers, timeout=10)
+                    datx = respx.json()
+                    if datx.get('data') and datx['data'].get('diff'):
+                        lst = datx['data']['diff']
+                        changes = [x.get('f3') for x in lst if isinstance(x.get('f3'), (int, float))]
+                        turns = [x.get('f8') for x in lst if isinstance(x.get('f8'), (int, float))]
+                        avg_change = round(sum(changes) / len(changes), 2) if changes else 'N/A'
+                        avg_turnover = round(sum(turns) / len(turns), 2) if turns else 'N/A'
+
+                        sentiment_score = 50
+                        if isinstance(avg_change, (int, float)):
+                            sentiment_score = round(50 + (avg_change / 5.0) * 50, 1)
+                            sentiment_score = max(0, min(100, sentiment_score))
+
+                        if sentiment_score >= 65:
+                            overall = '强势领涨'
+                            emotion = 'bullish'
+                        elif sentiment_score >= 52:
+                            overall = '偏强'
+                            emotion = 'slightly_bullish'
+                        elif sentiment_score >= 48:
+                            overall = '震荡'
+                            emotion = 'neutral'
+                        elif sentiment_score >= 35:
+                            overall = '偏弱'
+                            emotion = 'slightly_bearish'
+                        else:
+                            overall = '弱势下跌'
+                            emotion = 'bearish'
+
+                        sector_sentiment = {
+                            'sector_name': '行业板块',
+                            'sector_code': 'N/A',
+                            'change_pct': avg_change,
+                            'turnover_rate': avg_turnover,
+                            'sentiment_score': sentiment_score,
+                            'overall': overall,
+                            'emotion': emotion,
+                        }
+                        try:
+                            ck = f"sector_{self.stock_code}"
+                            self._write_cache(ck, sector_sentiment)
+                        except Exception:
+                            pass
+                        return sector_sentiment
+                except Exception:
+                    pass
+
+                # 尝试读取缓存作为回退
+                cached = self._read_cache(f"sector_{sector_code or self.stock_code}", max_age_sec=600)
+                if cached:
+                    return cached
                 return self._get_default_sector_sentiment()
 
             # 获取同行业板块行情数据
@@ -533,13 +913,198 @@ class InvestorSentimentAnalyzer:
                                 pass
                             break
 
+                # 若未找到完全匹配的行业名称，尝试基于规范化名称的模糊匹配
+                if not sector_sentiment and sector_name and sector_name != 'N/A':
+                    try:
+                        target = self._normalize_sector_name(sector_name)
+                        for sec in sectors:
+                            sname = sec.get('f14', '')
+                            norm = self._normalize_sector_name(sname)
+                            if not norm:
+                                continue
+                            if norm == target or (target and (norm in target or target in norm)):
+                                change_pct = sec.get('f3', 0)
+                                turnover_rate = sec.get('f8', 0)
+
+                                if isinstance(change_pct, (int, float)):
+                                    change_pct = round(change_pct, 2)
+                                if isinstance(turnover_rate, (int, float)):
+                                    turnover_rate = round(turnover_rate, 2)
+
+                                sentiment_score = round(50 + (float(change_pct or 0) / 5.0) * 50, 1)
+                                sentiment_score = max(0, min(100, sentiment_score))
+
+                                if sentiment_score >= 65:
+                                    overall = '强势领涨'
+                                    emotion = 'bullish'
+                                elif sentiment_score >= 52:
+                                    overall = '偏强'
+                                    emotion = 'slightly_bullish'
+                                elif sentiment_score >= 48:
+                                    overall = '震荡'
+                                    emotion = 'neutral'
+                                elif sentiment_score >= 35:
+                                    overall = '偏弱'
+                                    emotion = 'slightly_bearish'
+                                else:
+                                    overall = '弱势下跌'
+                                    emotion = 'bearish'
+
+                                sector_sentiment = {
+                                    'sector_name': sector_name,
+                                    'sector_code': sec.get('f12', 'N/A'),
+                                    'change_pct': change_pct,
+                                    'turnover_rate': turnover_rate,
+                                    'sentiment_score': sentiment_score,
+                                    'overall': overall,
+                                    'emotion': emotion,
+                                }
+                                break
+                    except Exception:
+                        pass
+
+                # 若模糊匹配仍失败，且有行业代码，则以成分股均值估算
+                if (not sector_sentiment) and sector_code:
+                    try:
+                        constituents_url = "http://push2.eastmoney.com/api/qt/clist/get"
+                        constituents_params = {
+                            'pn': '1',
+                            'pz': '200',
+                            'po': '1',
+                            'np': '1',
+                            'fltt': '2',
+                            'invt': '2',
+                            'fid': 'f3',
+                            'fs': f"b:{sector_code}",
+                            'fields': 'f12,f14,f3,f8'
+                        }
+                        resp2 = requests.get(constituents_url, params=constituents_params, headers=self.headers, timeout=10)
+                        data2 = resp2.json()
+                        if data2.get('data') and data2['data'].get('diff'):
+                            stocks = data2['data']['diff']
+                            changes = [x.get('f3') for x in stocks if isinstance(x.get('f3'), (int, float))]
+                            turns = [x.get('f8') for x in stocks if isinstance(x.get('f8'), (int, float))]
+                            avg_change = round(sum(changes) / len(changes), 2) if changes else 'N/A'
+                            avg_turnover = round(sum(turns) / len(turns), 2) if turns else 'N/A'
+
+                            sentiment_score = 50
+                            if isinstance(avg_change, (int, float)):
+                                sentiment_score = round(50 + (avg_change / 5.0) * 50, 1)
+                                sentiment_score = max(0, min(100, sentiment_score))
+
+                            if sentiment_score >= 65:
+                                overall = '强势领涨'
+                                emotion = 'bullish'
+                            elif sentiment_score >= 52:
+                                overall = '偏强'
+                                emotion = 'slightly_bullish'
+                            elif sentiment_score >= 48:
+                                overall = '震荡'
+                                emotion = 'neutral'
+                            elif sentiment_score >= 35:
+                                overall = '偏弱'
+                                emotion = 'slightly_bearish'
+                            else:
+                                overall = '弱势下跌'
+                                emotion = 'bearish'
+
+                            sector_sentiment = {
+                                'sector_name': sector_name if sector_name and sector_name != 'N/A' else '行业板块',
+                                'sector_code': sector_code,
+                                'change_pct': avg_change,
+                                'turnover_rate': avg_turnover,
+                                'sentiment_score': sentiment_score,
+                                'overall': overall,
+                                'emotion': emotion,
+                            }
+                    except Exception:
+                        pass
+
                 if sector_sentiment:
+                    # 写入板块缓存
+                    try:
+                        ck = f"sector_{sector_sentiment.get('sector_code') or sector_sentiment.get('sector_name') or self.stock_code}"
+                        self._write_cache(ck, sector_sentiment)
+                    except Exception:
+                        pass
                     return sector_sentiment
 
             except Exception as e:
                 print(f"   ⚠️  获取板块行情失败: {str(e)}")
 
-            # 如果无法获取板块行情，返回基本信息
+            # 如果无法获取板块行情，优先尝试多种缓存键，其次用大盘情绪缓存估算，最后返回默认
+            try:
+                cache_keys = []
+                if sector_code:
+                    cache_keys.append(f"sector_{sector_code}")
+                if sector_name:
+                    cache_keys.append(f"sector_{sector_name}")
+                cache_keys.append(f"sector_{self.stock_code}")
+            except Exception:
+                cache_keys = [f"sector_{self.stock_code}"]
+
+            cached = None
+            for ck in cache_keys:
+                try:
+                    cached = self._read_cache(ck, max_age_sec=600)
+                except Exception:
+                    cached = None
+                if cached:
+                    return cached
+
+            # 尝试用大盘整体情绪缓存估算板块情绪，避免返回N/A
+            try:
+                om = self._read_cache('overall_market', max_age_sec=600)
+                if om:
+                    base_change = om.get('primary_change_pct')
+                    if not isinstance(base_change, (int, float)):
+                        base_change = om.get('avg_change_pct')
+
+                    change_pct = (round(base_change, 2) if isinstance(base_change, (int, float)) else 0.0)
+                    turnover_rate = 'N/A'  # 无法可靠估计换手，保留为N/A
+
+                    # 以 sector 的评分标准（±5% 对应 0/100）估算情绪
+                    sentiment_score = 50
+                    if isinstance(base_change, (int, float)):
+                        sentiment_score = round(50 + (base_change / 5.0) * 50, 1)
+                        sentiment_score = max(0, min(100, sentiment_score))
+
+                    if sentiment_score >= 65:
+                        overall = '强势领涨'
+                        emotion = 'bullish'
+                    elif sentiment_score >= 52:
+                        overall = '偏强'
+                        emotion = 'slightly_bullish'
+                    elif sentiment_score >= 48:
+                        overall = '震荡'
+                        emotion = 'neutral'
+                    elif sentiment_score >= 35:
+                        overall = '偏弱'
+                        emotion = 'slightly_bearish'
+                    else:
+                        overall = '弱势下跌'
+                        emotion = 'bearish'
+
+                    pseudo_sector = {
+                        'sector_name': sector_name if sector_name and sector_name != 'N/A' else '行业板块',
+                        'sector_code': sector_code or 'N/A',
+                        'change_pct': change_pct,
+                        'turnover_rate': turnover_rate,
+                        'sentiment_score': sentiment_score,
+                        'overall': overall,
+                        'emotion': emotion,
+                    }
+
+                    try:
+                        ck = f"sector_{sector_code or sector_name or self.stock_code}"
+                        self._write_cache(ck, pseudo_sector)
+                    except Exception:
+                        pass
+
+                    return pseudo_sector
+            except Exception:
+                pass
+
             return {
                 'sector_name': sector_name,
                 'sector_code': 'N/A',
@@ -817,8 +1382,12 @@ class InvestorSentimentAnalyzer:
             bearish_ratio = round(bearish_ratio / total_ratio * 100, 1)
             neutral_ratio = round(neutral_ratio / total_ratio * 100, 1)
 
-        # 情绪得分 (0-100, 基于看涨比例)
-        sentiment_score = round(50 + (bullish_ratio - bearish_ratio) / 2, 1)
+        # 新增：根据有效样本比例计算置信度衰减系数
+        confidence = round(decisive_count / total_posts * 100, 1) if total_posts else 0.0
+        amp = max(0.25, min(1.0, confidence / 100))
+
+        # 情绪得分 (0-100, 基于看涨比例，叠加置信度衰减)
+        sentiment_score = round(50 + ((bullish_ratio - bearish_ratio) / 2) * amp, 1)
 
         # 提取top5热词
         top_keywords = sorted(hot_keywords.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -890,7 +1459,11 @@ class InvestorSentimentAnalyzer:
                 neutral_ratio = round((total_posts - bullish_count - bearish_count) / total_posts * 100,
                                       1) if total_posts > 0 else 0
 
-                sentiment_score = round(50 + (bullish_ratio - bearish_ratio) / 2, 1)
+                # 新增：根据有效样本比例计算置信度衰减系数
+                effective_posts = bullish_count + bearish_count
+                amp = max(0.25, min(1.0, (effective_posts / total_posts) if total_posts > 0 else 0.0))
+
+                sentiment_score = round(50 + ((bullish_ratio - bearish_ratio) / 2) * amp, 1)
 
                 guba_sentiment = {
                     'total_posts': total_posts,
@@ -900,6 +1473,7 @@ class InvestorSentimentAnalyzer:
                     'neutral_ratio': neutral_ratio,
                     'hot_keywords': [],
                     'sentiment_score': sentiment_score,
+                    'confidence': round((effective_posts / total_posts) * 100, 1) if total_posts > 0 else 0.0,
                     'overall': '强烈看多' if bullish_ratio > 60 else (
                         '偏多' if bullish_ratio > 50 else ('偏空' if bearish_ratio > 50 else '中性'))
                 }

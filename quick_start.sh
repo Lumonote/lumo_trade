@@ -1346,7 +1346,7 @@ EOF
                     1|3)
                         # 使用 ModelScope 命令行下载 Kronos 模型
                         download_model_with_fallback "northwind9898/Kronos-Tokenizer-base" "$KRONOS_MODELS_DIR/Kronos-Tokenizer-base" "Kronos Tokenizer"
-                        download_model_with_fallback "northwind9898/Kronos-small" "$KRONOS_MODELS_DIR/Kronos-small" "Kronos 模型"
+                        download_model_with_fallback "northwind9898/Kronos-base" "$KRONOS_MODELS_DIR/Kronos-base" "Kronos 模型"
 
                         # 如果选择下载所有模型，继续下载 Chronos-T5-Small
                         if [ ${model_choice:-1} -eq 3 ]; then
@@ -1524,7 +1524,7 @@ EOF
             echo -e "${YELLOW}预测完成后将自动生成HTML综合分析报告并打开浏览器${NC}"
             
             # 执行预测脚本
-            if safe_execute_python "examples/prediction_batch_example.py" "批量股票预测" --stock-code "$clean_symbol"; then
+            if safe_execute_python "examples/prediction_batch_example.py" "批量股票预测" --stock-code "$clean_symbol" -T 0.6 -p 0.90 -n 10; then
                 echo -e "${GREEN}OK: 批量预测完成！${NC}"
                 echo -e "${GREEN}REPORT: HTML分析报告已自动生成到 ${KRONOS_RESULTS_DIR} 目录${NC}"
             else

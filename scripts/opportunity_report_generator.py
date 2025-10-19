@@ -108,23 +108,24 @@ class OpportunityReportGenerator:
             'stage1': {'passed': 0, 'eliminated': 0},
             'stage2': {'passed': 0, 'eliminated': 0},
             'stage3': {'passed': 0, 'eliminated': 0},
-            'stage4': {'passed': 0, 'eliminated': 0},
-            'stage5': {'passed': 0, 'eliminated': 0}
+            'stage4': {'passed': 0, 'eliminated': 0}
         }
 
         for result in analysis_results:
             eliminated_at = result.get('eliminated_at_stage', 0)
 
-            if eliminated_at == 0:  # 通过所有阶段
-                for stage in range(1, 6):
+            if eliminated_at == 0:  # 通过所有阶段（显示至阶段4）
+                for stage in range(1, 5):
                     stats[f'stage{stage}']['passed'] += 1
             else:
-                # 通过了之前的阶段
-                for stage in range(1, eliminated_at):
+                # 仅统计至阶段4
+                passed_before = min(max(eliminated_at - 1, 0), 4)
+                for stage in range(1, passed_before + 1):
                     stats[f'stage{stage}']['passed'] += 1
 
-                # 在此阶段被淘汰
-                stats[f'stage{eliminated_at}']['eliminated'] += 1
+                # 在阶段1-4被淘汰计入统计；阶段5淘汰忽略（事件面已移除）
+                if 1 <= eliminated_at <= 4:
+                    stats[f'stage{eliminated_at}']['eliminated'] += 1
 
         return stats
 
@@ -144,8 +145,7 @@ class OpportunityReportGenerator:
             1: '量化筛选',
             2: '技术筛选',
             3: '情绪筛选',
-            4: '基本面筛选',
-            5: '事件筛选'
+            4: '基本面筛选'
         }
 
         funnel_data = []
@@ -157,8 +157,8 @@ class OpportunityReportGenerator:
             'percentage': 100
         })
 
-        # 阶段1-5
-        for i in range(1, 6):
+        # 阶段1-4
+        for i in range(1, 5):
             count = stage_stats[f'stage{i}']['passed']
             percentage = (count / total * 100) if total > 0 else 0
 
@@ -187,8 +187,7 @@ class OpportunityReportGenerator:
             'stage1': [],
             'stage2': [],
             'stage3': [],
-            'stage4': [],
-            'stage5': []
+            'stage4': []
         }
 
         for result in analysis_results:
@@ -196,7 +195,7 @@ class OpportunityReportGenerator:
                 grouped['passed'].append(result)
             else:
                 stage = result.get('eliminated_at_stage', 0)
-                if 1 <= stage <= 5:
+                if 1 <= stage <= 4:
                     grouped[f'stage{stage}'].append(result)
 
         # 排序：通过的按分数降序，淘汰的按分数降序
@@ -335,6 +334,14 @@ class OpportunityReportGenerator:
                 name_txt = st.get('name', '未知')
                 display_txt = f"{name_txt}{f'({code_txt})' if code_txt else ''}"
                 tags_html += f"<span class=\"stock-tag\"><span class=\"rating-badge {rating_class}\">{st.get('rating', 'C')}</span> {display_txt}</span>"
+            # 新增：展示采集器识别的相关板块关键词
+            sector_tags_html = ''
+            try:
+                sectors = item.get('related_sectors') or []
+                for sec in sectors[:4]:
+                    sector_tags_html += f"<span class=\"stock-tag muted\">{sec}</span>"
+            except Exception:
+                pass
             meta_parts = []
             if source and ('股吧话题' not in source):
                 meta_parts.append(f"<span class=\"source-badge\">{source}</span>")
@@ -343,7 +350,7 @@ class OpportunityReportGenerator:
             meta_parts.append(f"<span class=\"heat-badge\">热度 {heat}</span>")
             meta_parts.append(f"<span class=\"rank-badge small\">{rank if rank else '-'}</span>")
             meta_html = f"<div class=\"news-meta\">{''.join(meta_parts)}</div>"
-            stock_tags_section = f"<div class=\"stock-tags\">{tags_html}</div>" if tags_html else ""
+            stock_tags_section = f"<div class=\"stock-tags\">{tags_html}{sector_tags_html}</div>" if (tags_html or sector_tags_html) else ""
             hot_news_html += (
                 f"<div class=\"hot-news-item\">"
                 f"<a href=\"{url}\" target=\"_blank\" class=\"news-title\">{title}</a>"
@@ -1085,8 +1092,7 @@ class OpportunityReportGenerator:
             'stage1': '阶段1: 量化模型筛选 - 淘汰',
             'stage2': '阶段2: 技术面筛选 - 淘汰',
             'stage3': '阶段3: 情绪面筛选 - 淘汰',
-            'stage4': '阶段4: 基本面筛选 - 淘汰',
-            'stage5': '阶段5: 事件面筛选 - 淘汰'
+            'stage4': '阶段4: 基本面筛选 - 淘汰'
         }
 
         for stage_key, stage_name in stage_names.items():
@@ -1265,6 +1271,10 @@ class OpportunityReportGenerator:
                 except Exception:
                     stage_num = None
 
+                name_str = str(stage.get('stage_name', ''))
+                if stage_num == 5:
+                    continue
+
                 # 构造合并后的维度元信息
                 meta = ''
                 if stage_num == 1:
@@ -1390,13 +1400,13 @@ class OpportunityReportGenerator:
 
             events = details.get('events') or {}
             ev_rating = str(events.get('rating', '')).strip()
-            if ev_rating:
-                if '利好' in ev_rating:
-                    phrases.append('事件利好')
-                elif '利空' in ev_rating:
-                    phrases.append('事件利空')
-                else:
-                    phrases.append('事件中性')
+            # if ev_rating:
+            #     if '利好' in ev_rating:
+            #         phrases.append('事件利好')
+            #     elif '利空' in ev_rating:
+            #         phrases.append('事件利空')
+            #     else:
+            #         phrases.append('事件中性')
 
             # 兜底：至少给出综合分与评级
             if not phrases:
@@ -1443,12 +1453,12 @@ def main():
             'rating': 'S' if i < 2 else 'A+' if i < 5 else 'A',
             'filter_history': [
                 {'stage': j, 'stage_name': f'阶段{j}', 'passed': True, 'reason': f'✓ 通过阶段{j}筛选'}
-                for j in range(1, 6)
+                for j in range(1, 5)
             ]
         })
 
-    # 90只在各阶段被淘汰的股票
-    for stage in range(1, 6):
+    # 在各阶段被淘汰的股票（仅阶段1-4）
+    for stage in range(1, 5):
         for i in range(18):
             stock_idx = len(mock_results)
             mock_results.append({
