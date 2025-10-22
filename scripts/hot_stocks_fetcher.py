@@ -157,130 +157,225 @@ class HotStocksFetcher:
 
     def _fetch_from_eastmoney(self) -> List[Dict]:
         """
-        从东方财富获取热度榜
+        从东方财富获取热榜-热股100
 
         API说明:
-        - 排序字段 TRADE: 成交额
-        - 排序字段 TURNOVERRATE: 换手率
-        - 排序字段 CHANGEPERCENT: 涨跌幅
+        - 使用东方财富热榜（基于用户关注度、搜索量、讨论热度等综合人气）
+        - f164: 热度指数/人气值
         """
         stocks = []
 
-        # 东方财富行情中心 - 人气榜API
-        url = "https://push2.eastmoney.com/api/qt/clist/get"
+        # 方案1: 东方财富热榜-热股100（按热度指数排序）
+        popularity_url = "https://push2.eastmoney.com/api/qt/clist/get"
 
-        params = {
-            'pn': '1',  # 页码
-            'pz': '100',  # 每页数量
-            'po': '1',  # 排序方式
-            'np': '1',  # 不分页
-            'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
-            'fltt': '2',
-            'invt': '2',
-            'fid': 'f3',  # 排序字段ID (f3=涨跌幅)
-            'fs': 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23',  # 市场筛选：A股
-            'fields': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f22,f11,f62,f128,f136,f115,f152',
-            '_': str(int(time.time() * 1000))
-        }
+        # 尝试多个可能的热度排序字段
+        heat_fields = [
+            ('f164', '热度指数'),
+            ('f128', '动态市盈率/关注度'),
+            ('f62', '主力资金净流入'),
+            ('f8', '换手率')
+        ]
 
-        try:
-            response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+        for field_id, field_name in heat_fields:
+            try:
+                popularity_params = {
+                    'pn': '1',
+                    'pz': '100',
+                    'po': '1',
+                    'np': '1',
+                    'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+                    'fltt': '2',
+                    'invt': '2',
+                    'fid': field_id,  # 热度排序字段
+                    'fs': 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23',  # A股市场（主板+创业板+科创板）
+                    'fields': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f22,f11,f62,f128,f136,f115,f152,f164',
+                    '_': str(int(time.time() * 1000))
+                }
 
-            if data.get('data') and data['data'].get('diff'):
-                for item in data['data']['diff']:
-                    try:
-                        # 解析股票信息
-                        code = item.get('f12', '')  # 股票代码
-                        name = item.get('f14', '')  # 股票名称
-                        market = item.get('f13', '')  # 市场代码 (0=深市, 1=沪市)
+                logger.info(f"尝试获取热榜（按{field_name}排序）...")
+                response = requests.get(popularity_url, params=popularity_params, headers=self.headers, timeout=10)
+                response.raise_for_status()
+                data = response.json()
 
-                        # 确定交易所
-                        exchange = 'SZ' if market == '0' else 'SH' if market == '1' else 'UNKNOWN'
+                if data.get('data') and data['data'].get('diff') and len(data['data']['diff']) > 0:
+                    logger.info(f"✓ 热榜API返回 {len(data['data']['diff'])} 只股票（使用{field_name}）")
 
-                        # 计算综合热度评分（基于多个维度）
-                        change_pct = float(item.get('f3', 0)) if item.get('f3') else 0  # 涨跌幅
-                        turnover_rate = float(item.get('f8', 0)) if item.get('f8') else 0  # 换手率
-                        volume = float(item.get('f5', 0)) if item.get('f5') else 0  # 成交量（手）
-                        amount = float(item.get('f6', 0)) if item.get('f6') else 0  # 成交额（元）
+                    for item in data['data']['diff']:
+                        try:
+                            # 解析股票信息
+                            code = item.get('f12', '')  # 股票代码
+                            name = item.get('f14', '')  # 股票名称
+                            market = item.get('f13', '')  # 市场代码 (0=深市, 1=沪市)
 
-                        # 综合热度评分算法（0-100分）
-                        # 权重: 成交额40% + 换手率30% + 涨跌幅20% + 成交量10%
-                        popularity_score = self._calculate_popularity_score(
-                            amount=amount,
-                            turnover_rate=turnover_rate,
-                            change_pct=change_pct,
-                            volume=volume
-                        )
+                            # 过滤无效数据
+                            if not code or not name:
+                                continue
 
-                        stock_info = {
-                            'code': code,
-                            'name': name,
-                            'exchange': exchange,
-                            'popularity_score': round(popularity_score, 2),
-                            'change_pct': round(change_pct, 2),
-                            'turnover_rate': round(turnover_rate, 2),
-                            'volume': int(volume * 100),  # 手转换为股
-                            'amount': round(amount, 2),
-                            'latest_price': float(item.get('f2', 0)) if item.get('f2') else 0,  # 最新价
-                            'source': 'eastmoney'
-                        }
+                            # 确定交易所（使用股票代码判断，更可靠）
+                            if market == '0':
+                                exchange = 'SZ'
+                            elif market == '1':
+                                exchange = 'SH'
+                            else:
+                                # 根据股票代码判断交易所
+                                if code.startswith(('000', '001', '002', '003', '300')):
+                                    exchange = 'SZ'
+                                elif code.startswith(('600', '601', '603', '605', '688', '689')):
+                                    exchange = 'SH'
+                                else:
+                                    exchange = 'SZ'  # 默认深交所
 
-                        stocks.append(stock_info)
-                    except Exception as e:
-                        logger.debug(f"解析股票信息失败: {e}")
-                        continue
+                            # 获取各项指标
+                            change_pct = float(item.get('f3', 0)) if item.get('f3') else 0  # 涨跌幅
+                            turnover_rate = float(item.get('f8', 0)) if item.get('f8') else 0  # 换手率
+                            volume = float(item.get('f5', 0)) if item.get('f5') else 0  # 成交量（手）
+                            amount = float(item.get('f6', 0)) if item.get('f6') else 0  # 成交额（元）
+                            main_fund_flow = float(item.get('f62', 0)) if item.get('f62') else 0  # 主力资金净流入
+                            heat_index = float(item.get('f164', 0)) if item.get('f164') else 0  # 热度指数
 
-            return stocks
+                            # 计算综合人气评分
+                            if heat_index > 0:
+                                # 如果有热度指数，直接使用并归一化到0-100
+                                popularity_score = min(100, heat_index)
+                            else:
+                                # 否则使用其他指标计算
+                                popularity_score = self._calculate_popularity_score_v2(
+                                    main_fund_flow=main_fund_flow,
+                                    amount=amount,
+                                    turnover_rate=turnover_rate,
+                                    change_pct=change_pct,
+                                    volume=volume
+                                )
 
-        except Exception as e:
-            logger.error(f"东方财富API请求失败: {e}")
-            raise
+                            stock_info = {
+                                'code': code,
+                                'name': name,
+                                'exchange': exchange,
+                                'popularity_score': round(popularity_score, 2),
+                                'change_pct': round(change_pct, 2),
+                                'turnover_rate': round(turnover_rate, 2),
+                                'volume': int(volume * 100),  # 手转换为股
+                                'amount': round(amount, 2),
+                                'latest_price': float(item.get('f2', 0)) if item.get('f2') else 0,  # 最新价
+                                'source': f'eastmoney_heat_{field_id}'
+                            }
+
+                            stocks.append(stock_info)
+                        except Exception as e:
+                            logger.debug(f"解析股票信息失败: {e}")
+                            continue
+
+                    if len(stocks) >= 50:  # 如果获取到足够数量的股票，认为成功
+                        return stocks
+
+            except Exception as e:
+                logger.warning(f"使用{field_name}获取失败: {e}，尝试下一个字段...")
+                continue
+
+        # 如果所有方案都失败
+        if not stocks:
+            logger.error("所有热榜API方案均失败")
+            raise Exception("无法获取东方财富热榜数据")
+
+        return stocks
+
+    def _calculate_popularity_score_v2(self, main_fund_flow: float, amount: float,
+                                       turnover_rate: float, change_pct: float, volume: float) -> float:
+        """
+        计算人气评分V2（基于主力资金流向）
+
+        评分维度:
+        1. 主力资金净流入 (50%) - 核心人气指标
+        2. 成交额 (25%) - 市场关注度
+        3. 换手率 (15%) - 交易活跃度
+        4. 涨跌幅 (10%) - 市场情绪
+        """
+        import math
+
+        # 主力资金评分（亿为单位，正流入加分，负流入减分）
+        fund_score = 0
+        if main_fund_flow != 0:
+            fund_yi = main_fund_flow / 1e8
+            # 使用sigmoid函数将资金流入映射到0-100
+            # 正值越大分数越高，负值越小分数越低
+            fund_score = 50 + 50 * (2 / (1 + math.exp(-fund_yi / 5)) - 1)
+        else:
+            fund_score = 50  # 无数据时给中性分
+
+        # 成交额评分
+        amount_score = min(100, (math.log10(amount / 1e8 + 1) / math.log10(1000)) * 100) if amount > 0 else 0
+
+        # 换手率评分
+        turnover_score = min(100, (turnover_rate / 20) * 100)
+
+        # 涨跌幅评分
+        change_score = min(100, (abs(change_pct) / 10) * 100)
+
+        # 加权计算
+        total_score = (
+            fund_score * 0.5 +
+            amount_score * 0.25 +
+            turnover_score * 0.15 +
+            change_score * 0.1
+        )
+
+        return total_score
 
     def _fetch_from_tonghuashun(self) -> List[Dict]:
         """
-        从同花顺获取热度榜
+        从同花顺获取热度榜/人气榜
 
-        注意: 同花顺需要更复杂的反爬处理，这里提供基础实现
+        优化说明:
+        - 使用同花顺人气榜专用URL
+        - 多URL备选，提高成功率
+        - 改进HTML解析逻辑
         """
         stocks = []
 
-        # 尝试多个同花顺URL
+        # 同花顺人气榜URL（多个备选）
         urls_to_try = [
-            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/page/1/ajax/1/",
-            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/page/1/",
-            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/"
+            # 人气榜（按关注度排序）
+            "https://data.10jqka.com.cn/rank/lhb/board/all/field/lbhy/order/desc/page/1/ajax/1/",
+            "https://data.10jqka.com.cn/rank/cjl/board/all/field/hs/order/desc/page/1/ajax/1/",  # 换手率榜
+            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/page/1/ajax/1/",  # 成交额榜
+            # 不带ajax参数的备用URL
+            "https://data.10jqka.com.cn/rank/lhb/board/all/field/lbhy/order/desc/page/1/",
+            "https://data.10jqka.com.cn/rank/cjl/board/all/field/hs/order/desc/page/1/",
         ]
 
         headers = {
             **self.headers,
             'Referer': 'https://data.10jqka.com.cn/',
             'Host': 'data.10jqka.com.cn',
-            'X-Requested-With': 'XMLHttpRequest'
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'text/html, */*; q=0.01'
         }
 
         for url in urls_to_try:
             try:
                 logger.info(f"尝试同花顺URL: {url}")
-                response = requests.get(url, headers=headers, timeout=12)
+                response = requests.get(url, headers=headers, timeout=15)
                 response.raise_for_status()
 
                 html = response.text
                 logger.debug(f"同花顺响应长度: {len(html)}")
-                
+
                 # 检查是否返回了有效内容
                 if len(html) < 100 or '<html><head></head><body></body></html>' in html:
                     logger.warning(f"同花顺URL返回空内容: {url}")
                     continue
-                    
-                parsed = self._parse_tonghuashun_table(html)
-                if parsed:
+
+                # 尝试多种解析方法
+                parsed = self._parse_tonghuashun_table_v2(html)
+                if not parsed:
+                    parsed = self._parse_tonghuashun_table(html)
+
+                if parsed and len(parsed) >= 20:  # 至少要有20只股票才认为成功
                     stocks.extend(parsed[:100])
                     logger.info(f"✓ 同花顺获取成功: {len(parsed)} 只股票")
                     return stocks
                 else:
-                    logger.warning(f"同花顺HTML解析失败: {url}")
+                    logger.warning(f"同花顺HTML解析结果不足: 仅{len(parsed) if parsed else 0}只股票")
 
             except Exception as e:
                 logger.warning(f"同花顺URL失败: {url} - {e}")
@@ -294,6 +389,96 @@ class HotStocksFetcher:
             return stocks
         except Exception as e:
             logger.error(f"同花顺浏览器采集也失败: {e}")
+            return []
+
+    def _parse_tonghuashun_table_v2(self, html: str) -> List[Dict]:
+        """解析同花顺排行榜HTML片段为股票列表（改进版）"""
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+
+            result: List[Dict] = []
+            rows = soup.find_all('tr')
+
+            for row in rows:
+                try:
+                    cells = row.find_all('td')
+                    if len(cells) < 3:
+                        continue
+
+                    # 尝试提取股票代码和名称
+                    code_cell = cells[1] if len(cells) > 1 else None
+                    name_cell = cells[2] if len(cells) > 2 else None
+
+                    if not code_cell or not name_cell:
+                        continue
+
+                    code = code_cell.get_text(strip=True)
+                    name = name_cell.get_text(strip=True)
+
+                    # 验证股票代码格式
+                    if not code or not code.isdigit() or len(code) != 6:
+                        continue
+
+                    # 确定交易所
+                    if code.startswith(('000', '001', '002', '003', '300')):
+                        exchange = 'SZ'
+                    elif code.startswith(('600', '601', '603', '605', '688', '689')):
+                        exchange = 'SH'
+                    else:
+                        exchange = 'SZ'
+
+                    # 尝试提取更多数据
+                    price = 0.0
+                    change_pct = 0.0
+                    turnover_rate = 0.0
+
+                    if len(cells) > 3:
+                        try:
+                            price = float(cells[3].get_text(strip=True).replace(',', ''))
+                        except:
+                            pass
+
+                    if len(cells) > 4:
+                        try:
+                            change_text = cells[4].get_text(strip=True).replace('%', '')
+                            change_pct = float(change_text)
+                        except:
+                            pass
+
+                    if len(cells) > 7:
+                        try:
+                            turnover_text = cells[7].get_text(strip=True).replace('%', '')
+                            turnover_rate = float(turnover_text)
+                        except:
+                            pass
+
+                    # 计算人气评分
+                    popularity_score = 50.0 + abs(change_pct) * 2 + turnover_rate * 1.5
+                    popularity_score = min(100, popularity_score)
+
+                    result.append({
+                        'code': code,
+                        'name': name,
+                        'exchange': exchange,
+                        'popularity_score': round(popularity_score, 2),
+                        'change_pct': round(change_pct, 2),
+                        'turnover_rate': round(turnover_rate, 2),
+                        'volume': 0,
+                        'amount': 0.0,
+                        'latest_price': price,
+                        'source': 'tonghuashun'
+                    })
+                except Exception as e:
+                    logger.debug(f"解析行失败: {e}")
+                    continue
+
+            return result
+        except ImportError:
+            logger.warning("BeautifulSoup未安装，回退到正则表达式解析")
+            return []
+        except Exception as parse_err:
+            logger.debug(f"同花顺HTML解析异常(V2): {parse_err}")
             return []
 
     def _parse_tonghuashun_table(self, html: str) -> List[Dict]:
@@ -672,6 +857,18 @@ def main():
 
         # 保存到CSV
         df = pd.DataFrame(hot_stocks)
+
+        # 添加格式化的成交额（亿）字段，便于阅读
+        df['amount_yi'] = df['amount'].apply(lambda x: round(x / 1e8, 2) if x > 0 else 0)
+
+        # 调整列顺序，将amount_yi放在amount之后
+        cols = list(df.columns)
+        if 'amount_yi' in cols and 'amount' in cols:
+            amount_idx = cols.index('amount')
+            cols.remove('amount_yi')
+            cols.insert(amount_idx + 1, 'amount_yi')
+            df = df[cols]
+
         output_file = "data/hot_stocks_top100.csv"
         df.to_csv(output_file, index=False, encoding='utf-8-sig')
         print(f"\n✓ 数据已保存到: {output_file}")
