@@ -338,9 +338,9 @@ def main():
             x_timestamp=x_timestamp,
             y_timestamp=y_timestamp,
             pred_len=pred_len,
-            T=0.6,
+            T=0.8,  # 平衡预测，适合一般市场环境
             top_p=0.9,
-            sample_count=10,
+            sample_count=3,  # 建议1-5次，根据需求调整
             verbose=True
         )
 

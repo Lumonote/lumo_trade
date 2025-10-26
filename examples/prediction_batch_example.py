@@ -20,7 +20,7 @@ from analysis.data_processor import DataProcessor
 from analysis.fundamental_data_collector import FundamentalDataCollector
 from analysis.news_sentiment_collector import NewsSentimentCollector
 from analysis.investor_sentiment import InvestorSentimentAnalyzer
-from analysis.sampling_tuner import tune_sampling_params
+# 已移除动态调参模块：from analysis.sampling_tuner import tune_sampling_params
 from analysis.event_analyzer import EventAnalyzer
 from scripts.html_report_generator import generate_comprehensive_report
 
@@ -35,12 +35,12 @@ def parse_args():
                         help='选择预测模式：overlap(重叠验证) 或 realtime(实时预测)')
     parser.add_argument('--timestamps-only', action='store_true',
                         help='仅生成并打印预测时间戳，不执行模型预测与图表生成')
-    parser.add_argument('--temperature', '-T', type=float, default=0.6,
-                        help='采样温度（默认0.6）')
+    parser.add_argument('--temperature', '-T', type=float, default=0.8,
+                        help='采样温度（默认0.8，范围0.5-1.5+）保守0.5-0.7，平衡0.8-1.0，激进>1.0')
     parser.add_argument('--top-p', '-p', dest='top_p', type=float, default=0.90,
-                        help='核采样Top-p（默认0.90）')
-    parser.add_argument('--sample-count', '-n', type=int, default=10,
-                        help='样本数量（默认10）')
+                        help='核采样Top-p（默认0.90，推荐范围0.8-0.95）平衡多样性和稳定性')
+    parser.add_argument('--sample-count', '-n', type=int, default=3,
+                        help='采样次数（默认3，建议1-5次）通过多次采样取平均提高稳定性')
     return parser.parse_args()
 
 
@@ -1520,7 +1520,7 @@ try:
     print("📊 预测参数优化 (基础/可覆盖):")
     print(f"   - Temperature: {getattr(args, 'temperature', 0.8)} ")
     print(f"   - Top-p: {getattr(args, 'top_p', 0.90)} ")
-    print(f"   - Sample Count: {getattr(args, 'sample_count', 10)} ")
+    print(f"   - Sample Count: {getattr(args, 'sample_count', 3)} (建议1-5次，根据市场波动性调整)")
 
     # 基于情绪+事件动态调整采样参数（前置采集与量化分析）
     try:
@@ -1555,44 +1555,34 @@ try:
         print(f"    - 机会等级: {summary.get('opportunity_level','未知')}")
         print("✅ 综合面数据采集完成")
 
-        tuned = tune_sampling_params(sentiment_data, events_summary=event_data.get("summary"))
-        print("\n🧠 动态采样参数调整:")
-        print(f"   - Temperature: {tuned['T']}")
-        print(f"   - Top-p: {tuned['top_p']}")
-        print(f"   - Sample Count: {tuned['sample_count']}")
-        print(f"   - 依据: {tuned['reason']}")
+        # 📌 固定采样参数配置（不进行动态调参）
+        # 使用命令行参数，如未指定则使用默认值
+        # 默认参数参考：平衡型策略，适合一般市场环境
+        #   - Temperature: 0.8 (平衡预测，适合一般市场环境)
+        #   - Top-p: 0.90 (平衡多样性和稳定性)
+        #   - Sample Count: 3 (通过多次采样取平均提高稳定性)
+        tuned = {
+            "T": getattr(args, 'temperature', 0.8),
+            "top_p": getattr(args, 'top_p', 0.90),
+            "sample_count": getattr(args, 'sample_count', 3)
+        }
 
-        # 🔒 限幅裁剪，避免调参偏离CLI设定值过多
-        base_T = getattr(args, 'temperature', 0.8)
-        base_top_p = getattr(args, 'top_p', 0.90)
-        base_samples = getattr(args, 'sample_count', 10)
+        print("\n🎯 采样参数配置:")
+        print(f"   - Temperature: {tuned['T']} (温度参数，控制预测随机性)")
+        print(f"     · 保守预测: 0.5-0.7 (趋势明确市场)")
+        print(f"     · 平衡预测: 0.8-1.0 (一般市场环境)")
+        print(f"     · 激进预测: >1.0 (高波动市场)")
+        print(f"   - Top-p: {tuned['top_p']} (核采样，平衡多样性和稳定性，推荐0.8-0.95)")
+        print(f"   - Sample Count: {tuned['sample_count']} (采样次数，建议1-5次)")
+        print(f"   - 策略: 平衡型策略，适合一般市场环境")
 
-        # T_lo = max(0.10, base_T * 0.75)
-        # T_hi = min(2.00, base_T * 1.25)
-        # top_p_lo = max(0.10, base_top_p - 0.08)
-        # top_p_hi = min(1.00, base_top_p + 0.08)
-        # samples_lo = max(1, int(round(base_samples * 0.5)))
-        # samples_hi = max(samples_lo, int(round(base_samples * 1.5)))
-        #
-        # capped_T = min(max(tuned['T'], T_lo), T_hi)
-        # capped_top_p = min(max(tuned['top_p'], top_p_lo), top_p_hi)
-        # capped_samples = int(min(max(int(tuned['sample_count']), samples_lo), samples_hi))
-        #
-        # if (capped_T != tuned['T']) or (capped_top_p != tuned['top_p']) or (capped_samples != tuned['sample_count']):
-        #     print("\n🔒 已应用采样参数限幅，保证与CLI设定接近")
-        #     print(f"   - 基准 Temperature: {base_T} | 允许范围: [{T_lo:.2f}, {T_hi:.2f}]")
-        #     print(f"   - 基准 Top-p: {base_top_p} | 允许范围: [{top_p_lo:.2f}, {top_p_hi:.2f}]")
-        #     print(f"   - 基准 Sample Count: {base_samples} | 允许范围: [{samples_lo}, {samples_hi}]")
-        #     print(f"   - 限幅后 Temperature: {capped_T} (原: {tuned['T']})")
-        #     print(f"   - 限幅后 Top-p: {capped_top_p} (原: {tuned['top_p']})")
-        #     print(f"   - 限幅后 Sample Count: {capped_samples} (原: {tuned['sample_count']})")
-
-        tuned['T'] = base_T
-        tuned['top_p'] = base_top_p
-        tuned['sample_count'] = base_samples
     except Exception as e:
-        print(f"⚠️ 动态调参失败，回退默认参数: {e}")
-        tuned = {"T": getattr(args, 'temperature', 0.8), "top_p": getattr(args, 'top_p', 0.90), "sample_count": getattr(args, 'sample_count', 10)}
+        print(f"⚠️ 参数配置失败，使用默认参数: {e}")
+        tuned = {
+            "T": getattr(args, 'temperature', 0.8),
+            "top_p": getattr(args, 'top_p', 0.90),
+            "sample_count": getattr(args, 'sample_count', 3)
+        }
 
     pred_df_list = predictor.predict_batch(
         df_list=dfs,

@@ -335,7 +335,8 @@ echo.
 echo PREDICT: 开始运行预测...
 echo 使用股票 %clean_symbol% 进行预测演示
 echo 预测完成后将自动生成HTML综合分析报告并打开浏览器
-python examples/prediction_batch_example.py --stock-code %clean_symbol% -T 0.6 -p 0.90 -n 10
+REM 使用代码中的默认参数：T=0.8, p=0.90, n=3
+python examples/prediction_batch_example.py --stock-code %clean_symbol%
 if errorlevel 1 (
     echo WARN: 预测运行失败，但数据已成功获取
 ) else (

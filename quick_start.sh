@@ -1523,8 +1523,8 @@ EOF
             echo -e "${BLUE}使用股票 $clean_symbol 进行预测演示${NC}"
             echo -e "${YELLOW}预测完成后将自动生成HTML综合分析报告并打开浏览器${NC}"
             
-            # 执行预测脚本
-            if safe_execute_python "examples/prediction_batch_example.py" "批量股票预测" --stock-code "$clean_symbol" -T 0.6 -p 0.90 -n 10; then
+            # 执行预测脚本（使用代码中的默认参数：T=0.8, p=0.90, n=3）
+            if safe_execute_python "examples/prediction_batch_example.py" "批量股票预测" --stock-code "$clean_symbol"; then
                 echo -e "${GREEN}OK: 批量预测完成！${NC}"
                 echo -e "${GREEN}REPORT: HTML分析报告已自动生成到 ${KRONOS_RESULTS_DIR} 目录${NC}"
             else
