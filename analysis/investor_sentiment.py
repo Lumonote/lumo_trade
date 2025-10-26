@@ -1731,9 +1731,9 @@ class InvestorSentimentAnalyzer:
         return {
             'total_posts': 0,
             'active_users': 0,
-            'bullish_ratio': 50,
-            'bearish_ratio': 30,
-            'neutral_ratio': 20,
+            'bullish_ratio': 0.0,  # 修复显示为0.0%的问题
+            'bearish_ratio': 0.0,
+            'neutral_ratio': 100.0,
             'hot_keywords': [],
             'sentiment_score': 50,
             'overall': '中性',

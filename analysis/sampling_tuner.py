@@ -135,6 +135,13 @@ def tune_sampling_params(sentiment: Dict[str, Any], events_summary: Optional[Dic
     top_p += top_p_adj
     top_p = _clip(top_p, 0.85, 0.95)  # 标准范围，轻微上下浮动
 
+    # 市场状态识别：基于风险评分和波动率
+    market_volatility = "normal"
+    if risk_score >= 0.35 or abs(market_change) > 2.0 or abs(sector_change) > 3.0:
+        market_volatility = "volatile"
+    elif bullish_bias > 0.3 or bearish_bias > 0.3:
+        market_volatility = "trending"
+    
     # sample_count：风险越高越倾向多样化（上限3），稳定时保持1
     if risk_score >= 0.35:
         sample_count = 3
@@ -159,6 +166,7 @@ def tune_sampling_params(sentiment: Dict[str, Any], events_summary: Optional[Dic
         "sample_count": int(sample_count),
         "reason": reason,
         "weights": weights,
+        "market_state": market_volatility,
     }
 
 

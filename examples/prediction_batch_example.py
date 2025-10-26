@@ -1518,7 +1518,7 @@ print(f"  💡 说明: 使用全局统计可确保预测结果与历史数据在
 try:
     print("🔮 开始进行批量预测...")
     print("📊 预测参数优化 (基础/可覆盖):")
-    print(f"   - Temperature: {getattr(args, 'temperature', 0.6)} ")
+    print(f"   - Temperature: {getattr(args, 'temperature', 0.8)} ")
     print(f"   - Top-p: {getattr(args, 'top_p', 0.90)} ")
     print(f"   - Sample Count: {getattr(args, 'sample_count', 10)} ")
 
@@ -1563,36 +1563,36 @@ try:
         print(f"   - 依据: {tuned['reason']}")
 
         # 🔒 限幅裁剪，避免调参偏离CLI设定值过多
-        base_T = getattr(args, 'temperature', 0.6)
+        base_T = getattr(args, 'temperature', 0.8)
         base_top_p = getattr(args, 'top_p', 0.90)
         base_samples = getattr(args, 'sample_count', 10)
 
-        T_lo = max(0.10, base_T * 0.75)
-        T_hi = min(2.00, base_T * 1.25)
-        top_p_lo = max(0.10, base_top_p - 0.08)
-        top_p_hi = min(1.00, base_top_p + 0.08)
-        samples_lo = max(1, int(round(base_samples * 0.5)))
-        samples_hi = max(samples_lo, int(round(base_samples * 1.5)))
+        # T_lo = max(0.10, base_T * 0.75)
+        # T_hi = min(2.00, base_T * 1.25)
+        # top_p_lo = max(0.10, base_top_p - 0.08)
+        # top_p_hi = min(1.00, base_top_p + 0.08)
+        # samples_lo = max(1, int(round(base_samples * 0.5)))
+        # samples_hi = max(samples_lo, int(round(base_samples * 1.5)))
+        #
+        # capped_T = min(max(tuned['T'], T_lo), T_hi)
+        # capped_top_p = min(max(tuned['top_p'], top_p_lo), top_p_hi)
+        # capped_samples = int(min(max(int(tuned['sample_count']), samples_lo), samples_hi))
+        #
+        # if (capped_T != tuned['T']) or (capped_top_p != tuned['top_p']) or (capped_samples != tuned['sample_count']):
+        #     print("\n🔒 已应用采样参数限幅，保证与CLI设定接近")
+        #     print(f"   - 基准 Temperature: {base_T} | 允许范围: [{T_lo:.2f}, {T_hi:.2f}]")
+        #     print(f"   - 基准 Top-p: {base_top_p} | 允许范围: [{top_p_lo:.2f}, {top_p_hi:.2f}]")
+        #     print(f"   - 基准 Sample Count: {base_samples} | 允许范围: [{samples_lo}, {samples_hi}]")
+        #     print(f"   - 限幅后 Temperature: {capped_T} (原: {tuned['T']})")
+        #     print(f"   - 限幅后 Top-p: {capped_top_p} (原: {tuned['top_p']})")
+        #     print(f"   - 限幅后 Sample Count: {capped_samples} (原: {tuned['sample_count']})")
 
-        capped_T = min(max(tuned['T'], T_lo), T_hi)
-        capped_top_p = min(max(tuned['top_p'], top_p_lo), top_p_hi)
-        capped_samples = int(min(max(int(tuned['sample_count']), samples_lo), samples_hi))
-
-        if (capped_T != tuned['T']) or (capped_top_p != tuned['top_p']) or (capped_samples != tuned['sample_count']):
-            print("\n🔒 已应用采样参数限幅，保证与CLI设定接近")
-            print(f"   - 基准 Temperature: {base_T} | 允许范围: [{T_lo:.2f}, {T_hi:.2f}]")
-            print(f"   - 基准 Top-p: {base_top_p} | 允许范围: [{top_p_lo:.2f}, {top_p_hi:.2f}]")
-            print(f"   - 基准 Sample Count: {base_samples} | 允许范围: [{samples_lo}, {samples_hi}]")
-            print(f"   - 限幅后 Temperature: {capped_T} (原: {tuned['T']})")
-            print(f"   - 限幅后 Top-p: {capped_top_p} (原: {tuned['top_p']})")
-            print(f"   - 限幅后 Sample Count: {capped_samples} (原: {tuned['sample_count']})")
-
-        tuned['T'] = capped_T
-        tuned['top_p'] = capped_top_p
-        tuned['sample_count'] = capped_samples
+        tuned['T'] = base_T
+        tuned['top_p'] = base_top_p
+        tuned['sample_count'] = base_samples
     except Exception as e:
         print(f"⚠️ 动态调参失败，回退默认参数: {e}")
-        tuned = {"T": getattr(args, 'temperature', 0.6), "top_p": getattr(args, 'top_p', 0.90), "sample_count": getattr(args, 'sample_count', 10)}
+        tuned = {"T": getattr(args, 'temperature', 0.8), "top_p": getattr(args, 'top_p', 0.90), "sample_count": getattr(args, 'sample_count', 10)}
 
     pred_df_list = predictor.predict_batch(
         df_list=dfs,
