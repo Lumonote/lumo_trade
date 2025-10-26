@@ -37,6 +37,7 @@ CLAUDE.md
 .vscode/
 
 .trae/
+.cache/
 
 # macOS
 .DS_Store

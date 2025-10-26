@@ -1346,7 +1346,7 @@ EOF
                     1|3)
                         # 使用 ModelScope 命令行下载 Kronos 模型
                         download_model_with_fallback "northwind9898/Kronos-Tokenizer-base" "$KRONOS_MODELS_DIR/Kronos-Tokenizer-base" "Kronos Tokenizer"
-                        download_model_with_fallback "northwind9898/Kronos-base" "$KRONOS_MODELS_DIR/Kronos-base" "Kronos 模型"
+                        download_model_with_fallback "northwind9898/Kronos-small" "$KRONOS_MODELS_DIR/Kronos-small" "Kronos 模型"
 
                         # 如果选择下载所有模型，继续下载 Chronos-T5-Small
                         if [ ${model_choice:-1} -eq 3 ]; then

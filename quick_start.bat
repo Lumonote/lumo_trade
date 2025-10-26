@@ -228,7 +228,7 @@ if defined MODELSCOPE_VERSION (
 
     if "%model_choice%"=="1" (
         call :download_model_with_retry "northwind9898/Kronos-Tokenizer-base" "./models/Kronos-Tokenizer-base" "Kronos Tokenizer"
-        call :download_model_with_retry "northwind9898/Kronos-base" "./models/Kronos-base" "Kronos 模型"
+        call :download_model_with_retry "northwind9898/Kronos-small" "./models/Kronos-small" "Kronos 模型"
     ) else if "%model_choice%"=="2" (
         echo 正在下载 Chronos-T5-Small 模型...
         modelscope download --model AI-ModelScope/chronos-t5-small --local_dir ./models/chronos-t5-small
@@ -241,7 +241,7 @@ if defined MODELSCOPE_VERSION (
         )
     ) else if "%model_choice%"=="3" (
         call :download_model_with_retry "northwind9898/Kronos-Tokenizer-base" "./models/Kronos-Tokenizer-base" "Kronos Tokenizer"
-        call :download_model_with_retry "northwind9898/Kronos-base" "./models/Kronos-base" "Kronos 模型"
+        call :download_model_with_retry "northwind9898/Kronos-small" "./models/Kronos-small" "Kronos 模型"
         echo 正在下载 Chronos-T5-Small 模型...
         modelscope download --model AI-ModelScope/chronos-t5-small --local_dir ./models/chronos-t5-small
         if errorlevel 1 (

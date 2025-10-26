@@ -100,7 +100,7 @@ class Config:
         # TODO: Update these paths to your pretrained model locations.
         # These can be local paths or Hugging Face Hub model identifiers.
         self.pretrained_tokenizer_path = "path/to/your/Kronos-Tokenizer-base"
-        self.pretrained_predictor_path = "path/to/your/Kronos-base"
+        self.pretrained_predictor_path = "path/to/your/Kronos-small"
 
         # Paths to the fine-tuned models, derived from the save_path.
         # These will be generated automatically during training.

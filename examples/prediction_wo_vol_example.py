@@ -44,7 +44,7 @@ model_dir.mkdir(exist_ok=True)
 
 # 一级目录结构，直接在models下
 tokenizer_dir = model_dir / "Kronos-Tokenizer-base"
-model_dir_path = model_dir / "Kronos-base"
+model_dir_path = model_dir / "Kronos-small"
 
 try:
     # 优先使用本地模型（一级目录结构）

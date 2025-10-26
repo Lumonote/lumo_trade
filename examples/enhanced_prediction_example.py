@@ -209,7 +209,7 @@ def main():
 
     # 一级目录结构，直接在models下
     tokenizer_dir = model_dir / "Kronos-Tokenizer-base"
-    model_dir_path = model_dir / "Kronos-base"
+    model_dir_path = model_dir / "Kronos-small"
 
     try:
         # 优先使用本地模型（一级目录结构）
@@ -233,7 +233,7 @@ def main():
         else:
             # 下载并保存到一级目录
             print("Downloading model...")
-            downloaded_path = snapshot_download('northwind9898/Kronos-base', cache_dir=str(model_dir))
+            downloaded_path = snapshot_download('northwind9898/Kronos-small', cache_dir=str(model_dir))
             # 如果下载路径有嵌套结构，将其移动到一级目录
             if "northwind9898" in downloaded_path:
                 if not model_dir_path.exists():

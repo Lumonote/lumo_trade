@@ -127,7 +127,7 @@ except ImportError as e:
 class KronosStockPredictor:
     """Kronos股票预测器封装"""
 
-    def __init__(self, model_name: str = "kronos-base", device: str = "cpu"):
+    def __init__(self, model_name: str = "kronos-small", device: str = "cpu"):
         """初始化预测器"""
         self.model_name = model_name
         self.device = device
@@ -1024,8 +1024,8 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='Kronos预测工具')
     parser.add_argument('--data', '-d', help='数据文件路径')
-    parser.add_argument('--model', '-m', default='kronos-base',
-                        help='模型名称 (默认: kronos-base, 可选: kronos-small)')
+    parser.add_argument('--model', '-m', default='kronos-small',
+                        help='模型名称 (默认: kronos-small, 可选: kronos-base)')
     parser.add_argument('--lookback', '-l', type=int, default=400,
                         help='历史数据长度 (默认: 400)')
     parser.add_argument('--pred-len', '-p', type=int, default=5,
