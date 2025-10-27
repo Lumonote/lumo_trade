@@ -16,6 +16,7 @@ from urllib.parse import urljoin
 import logging
 from playwright.async_api import Page, BrowserContext, TimeoutError as PlaywrightTimeoutError
 from scripts.browser_manager import BrowserManager
+from scripts.anti_crawler_helper import RequestOptimizer, classify_playwright_error
 import pandas as pd
 
 
@@ -49,12 +50,20 @@ class EastMoneyCrawler:
         })
 
         # 网络配置
-        self.timeout = self.crawler_settings.get('timeout', 30) * 1000  # 转换为毫秒
+        self.timeout = self.crawler_settings.get('timeout', 45) * 1000  # 增加到45秒
         self.max_retries = self.crawler_settings.get('max_retries', 3)
-        self.retry_delay = self.crawler_settings.get('retry_delay', 2)
+        self.retry_delay = self.crawler_settings.get('retry_delay', 3)  # 增加到3秒
 
-        # 速率限制
-        self.rate_limit = self.config.get('rate_limit', 0.5)
+        # 初始化请求优化器（智能频率控制和重试）
+        self.request_optimizer = RequestOptimizer(
+            requests_per_minute=6,  # 降低到6次/分钟
+            max_retries=self.max_retries,
+            base_delay=self.retry_delay,
+            enable_adaptive=True
+        )
+
+        # 速率限制（保留用于兼容性）
+        self.rate_limit = self.config.get('rate_limit', 1.0)  # 增加到1秒
         self.min_interval = self.rate_limit
         self.last_request_time = 0
 
@@ -66,36 +75,26 @@ class EastMoneyCrawler:
         # 日志配置
         self.logger = logging.getLogger(__name__)
 
-        print(f"🚀 东方财富爬虫初始化完成")
-        print(f"📡 基础URL: {self.base_url}")
-        print(f"⏱️ 速率限制: {self.rate_limit}秒")
-        print(f"⏰ 超时设置: {self.timeout / 1000}秒")
-        print(f"🔄 重试次数: {self.max_retries}")
-        print(f"🔧 端点配置: {self.endpoints}")
+        print(f"✅ 东方财富爬虫已加载")
 
     async def check_availability(self) -> bool:
         """检查数据源可用性 - 使用浏览器页面监听模式"""
         try:
-            print(f"🔍 东方财富可用性检查开始...")
-            
             if not self.browser_manager:
-                print(f"🚀 初始化浏览器...")
                 await self._init_browser()
 
             # 使用股票详情页测试，监听内部API调用
             test_stock_page = "https://quote.eastmoney.com/sz000001.html"
-            print(f"🌐 测试股票页面: {test_stock_page}")
-            
+
             # 设置网络监听
             api_responses = []
-            
+
             async def handle_response(response):
                 if 'push2.eastmoney.com' in response.url and response.status == 200:
                     api_responses.append(response)
-                    print(f"✅ 捕获到API响应: {response.url[:100]}...")
-            
+
             self.page.on('response', handle_response)
-            
+
             # 访问股票页面
             try:
                 response = await self.page.goto(
@@ -103,21 +102,17 @@ class EastMoneyCrawler:
                     wait_until='domcontentloaded',
                     timeout=15000
                 )
-                
+
                 if not response or response.status != 200:
-                    print(f"❌ 股票页面访问失败，状态码: {response.status if response else 'None'}")
                     return False
-                
-                print(f"📄 股票页面加载成功，等待API调用...")
-                
+
                 # 等待API调用
                 await asyncio.sleep(3)
-                
+
                 if api_responses:
-                    print(f"✅ 东方财富可用性检查通过，捕获到 {len(api_responses)} 个API响应")
+                    print(f"✅ 东方财富可用性检查通过")
                     return True
                 else:
-                    print(f"⚠️ 未捕获到API响应，但页面可访问")
                     return True  # 页面可访问就认为可用
                     
             except Exception as page_error:
@@ -179,83 +174,65 @@ class EastMoneyCrawler:
         return symbol
 
     async def _make_request(self, url: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
-        """发送HTTP请求，带重试机制"""
+        """发送HTTP请求，使用智能重试和频率控制"""
         await self._init_browser()
-        await self._rate_limit_wait()
 
-        for attempt in range(self.max_retries + 1):
-            try:
-                # 构建完整URL
-                if params:
-                    param_str = '&'.join([f"{k}={v}" for k, v in params.items()])
-                    full_url = f"{url}?{param_str}"
-                else:
-                    full_url = url
+        # 使用请求优化器执行请求
+        async def _do_request():
+            # 构建完整URL
+            if params:
+                param_str = '&'.join([f"{k}={v}" for k, v in params.items()])
+                full_url = f"{url}?{param_str}"
+            else:
+                full_url = url
 
-                if attempt > 0:
-                    print(f"🔄 重试请求 ({attempt}/{self.max_retries}): {full_url[:100]}...")
-                else:
-                    print(f"🌐 请求URL: {full_url[:100]}...")
+            print(f"🌐 请求URL: {full_url[:100]}...")
 
-                # 发送请求，使用配置的超时时间
-                response = await self.page.goto(full_url, timeout=self.timeout, wait_until='networkidle')
+            # 添加随机延迟，模拟人类行为
+            await asyncio.sleep(random.uniform(0.5, 1.5))
 
-                if response and response.status == 200:
-                    # 获取页面文本内容
-                    text_content = await self.page.evaluate('() => document.body.innerText')
+            # 发送请求
+            response = await self.page.goto(full_url, timeout=self.timeout, wait_until='networkidle')
 
-                    # 处理JSONP响应
-                    if text_content and ('jQuery' in text_content or 'callback' in text_content):
-                        # 查找JSON部分
-                        start_idx = text_content.find('(')
-                        end_idx = text_content.rfind(')')
+            if not response:
+                raise Exception("No response received")
 
-                        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                            json_str = text_content[start_idx + 1:end_idx]
-                            try:
-                                return json.loads(json_str)
-                            except json.JSONDecodeError as e:
-                                print(f"❌ JSONP解析失败: {e}")
-                                print(f"原始内容: {text_content[:200]}...")
-                                if attempt == self.max_retries:
-                                    return None
-                                continue
+            if response.status != 200:
+                raise Exception(f"HTTP {response.status}")
 
-                    # 尝试直接解析JSON
+            # 获取页面文本内容
+            text_content = await self.page.evaluate('() => document.body.innerText')
+
+            # 处理JSONP响应
+            if text_content and ('jQuery' in text_content or 'callback' in text_content):
+                start_idx = text_content.find('(')
+                end_idx = text_content.rfind(')')
+
+                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                    json_str = text_content[start_idx + 1:end_idx]
                     try:
-                        return json.loads(text_content)
-                    except json.JSONDecodeError:
-                        print(f"❌ JSON解析失败")
-                        print(f"响应内容: {text_content[:200]}...")
-                        if attempt == self.max_retries:
-                            return None
-                        continue
+                        return json.loads(json_str)
+                    except json.JSONDecodeError as e:
+                        raise Exception(f"JSONP解析失败: {e}")
 
-                elif response and response.status in [429, 503]:  # 速率限制或服务不可用
-                    print(f"⚠️ 遇到速率限制或服务不可用 (状态码: {response.status})，等待后重试")
-                    if attempt < self.max_retries:
-                        await asyncio.sleep(self.retry_delay * (2 ** attempt))  # 指数退避
-                        continue
-                    else:
-                        print(f"❌ 请求失败，状态码: {response.status}")
-                        return None
-                else:
-                    print(f"❌ 请求失败，状态码: {response.status if response else 'None'}")
-                    if attempt < self.max_retries:
-                        await asyncio.sleep(self.retry_delay)
-                        continue
-                    return None
+            # 尝试直接解析JSON
+            try:
+                return json.loads(text_content)
+            except json.JSONDecodeError:
+                raise Exception(f"JSON解析失败，内容: {text_content[:200]}")
 
-            except Exception as e:
-                print(f"❌ 请求异常 (尝试 {attempt + 1}/{self.max_retries + 1}): {e}")
-                if attempt < self.max_retries:
-                    await asyncio.sleep(self.retry_delay * (attempt + 1))
-                    continue
-                return None
+        try:
+            # 使用RequestOptimizer执行请求（带智能重试和频率控制）
+            result = await self.request_optimizer.execute_request(
+                _do_request,
+                error_classifier=classify_playwright_error
+            )
+            print(f"✅ 请求成功")
+            return result
 
-        # 模拟人类行为
-        await asyncio.sleep(random.uniform(0.1, 0.3))
-        return None
+        except Exception as e:
+            print(f"❌ 请求最终失败: {e}")
+            return None
 
     async def get_realtime_data(self, symbol: str) -> Optional[Dict[str, Any]]:
         """获取实时数据"""

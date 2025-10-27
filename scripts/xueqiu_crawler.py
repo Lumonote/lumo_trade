@@ -17,6 +17,7 @@ from urllib.parse import urlencode
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from scripts.browser_manager import BrowserManager
+from scripts.anti_crawler_helper import RequestOptimizer, classify_playwright_error
 
 
 class XueQiuCrawler:
@@ -33,9 +34,17 @@ class XueQiuCrawler:
 
         # 加载爬虫通用设置
         crawler_settings = config.get('crawler_settings', {})
-        self.timeout = crawler_settings.get('timeout', 30) * 1000  # 转换为毫秒
+        self.timeout = crawler_settings.get('timeout', 45) * 1000  # 增加到45秒
         self.max_retries = crawler_settings.get('max_retries', 3)
-        self.retry_delay = crawler_settings.get('retry_delay', 2)
+        self.retry_delay = crawler_settings.get('retry_delay', 3)  # 增加到3秒
+
+        # 初始化请求优化器
+        self.request_optimizer = RequestOptimizer(
+            requests_per_minute=5,  # 雪球最严格，降低到5次/分钟
+            max_retries=self.max_retries,
+            base_delay=self.retry_delay,
+            enable_adaptive=True
+        )
 
         # 加载雪球特定配置
         self.config = config.get('data_sources', {}).get('xueqiu', {})
@@ -46,7 +55,7 @@ class XueQiuCrawler:
         self.browser = None
         self.page = None
         self.last_request_time = 0
-        self.rate_limit_delay = 1.0  # 请求间隔
+        self.rate_limit_delay = 2.0  # 增加到2秒
 
         # 会话管理
         self.session = None
@@ -224,103 +233,77 @@ class XueQiuCrawler:
 
     async def _make_request(self, url: str, params: Dict[str, Any] = None,
                             retries: int = None) -> Optional[Dict[str, Any]]:
-        """发送HTTP请求，带重试机制"""
-        if retries is None:
-            retries = self.config.get('max_retries', 3)
-
-        await self._rate_limit()
-
+        """发送HTTP请求，使用智能重试和频率控制"""
         if not self.page:
             await self._init_token()
 
-        for attempt in range(retries + 1):
+        # 使用请求优化器执行请求
+        async def _do_request():
+            # 构建完整URL
+            if params:
+                query_string = urlencode(params)
+                full_url = f"{url}?{query_string}"
+            else:
+                full_url = url
+
+            self.logger.info(f"🌐 请求URL: {full_url}")
+
+            # 添加随机延迟，模拟人类行为
+            await asyncio.sleep(random.uniform(1.0, 2.0))  # 雪球需要更长延迟
+
+            # 使用Playwright发送请求
+            response = await self.page.goto(full_url, wait_until='networkidle', timeout=self.timeout)
+
+            if response.status != 200:
+                raise Exception(f"HTTP {response.status}")
+
+            # 尝试解析JSON
             try:
-                # 构建完整URL
-                if params:
-                    query_string = urlencode(params)
-                    full_url = f"{url}?{query_string}"
-                else:
-                    full_url = url
+                # 如果页面包含JSON数据，提取它
+                json_data = await self.page.evaluate('''() => {
+                    try {
+                        const pre = document.querySelector("pre");
+                        if (pre) {
+                            return JSON.parse(pre.textContent);
+                        }
+                        return window.jsonData || null;
+                    } catch (e) {
+                        return null;
+                    }
+                }''')
 
-                if attempt > 0:
-                    self.logger.info(f"🔄 重试请求 ({attempt}/{retries}): {full_url}")
-                else:
-                    self.logger.info(f"🌐 请求URL: {full_url}")
+                if json_data:
+                    return json_data
 
-                # 使用Playwright发送请求，使用配置的超时时间
-                response = await self.page.goto(full_url, wait_until='networkidle', timeout=self.timeout)
+                # 如果没有找到JSON，尝试从响应中解析
+                text_content = await response.text()
+                if text_content.strip().startswith('{') or text_content.strip().startswith('['):
+                    return json.loads(text_content)
 
-                if response.status == 200:
-                    # 获取页面内容
-                    content = await self.page.content()
+                # 返回原始内容
+                content = await self.page.content()
+                return {'content': content}
 
-                    # 尝试解析JSON
-                    try:
-                        # 如果页面包含JSON数据，提取它
-                        json_data = await self.page.evaluate('''() => {
-                            try {
-                                const pre = document.querySelector("pre");
-                                if (pre) {
-                                    return JSON.parse(pre.textContent);
-                                }
-                                return window.jsonData || null;
-                            } catch (e) {
-                                return null;
-                            }
-                        }''')
+            except json.JSONDecodeError as e:
+                raise Exception(f"无法解析JSON响应: {e}")
 
-                        if json_data:
-                            return json_data
+        try:
+            # 使用RequestOptimizer执行请求（带智能重试和频率控制）
+            result = await self.request_optimizer.execute_request(
+                _do_request,
+                error_classifier=classify_playwright_error
+            )
+            self.logger.info(f"✅ 请求成功")
+            return result
 
-                        # 如果没有找到JSON，尝试从响应中解析
-                        text_content = await response.text()
-                        if text_content.strip().startswith('{') or text_content.strip().startswith('['):
-                            return json.loads(text_content)
+        except Exception as e:
+            # 如果是401错误，尝试重新获取token
+            if '401' in str(e):
+                self.logger.warning(f"🔑 检测到401错误，尝试重新获取token")
+                await self._init_token()
 
-                    except json.JSONDecodeError:
-                        self.logger.warning(f"无法解析JSON响应: {url}")
-                        if attempt == retries:
-                            return None
-                        continue
-
-                    return {'content': content}
-
-                elif response.status in [429, 503]:  # 速率限制或服务不可用
-                    self.logger.warning(f"⚠️ 遇到速率限制或服务不可用 (状态码: {response.status})，等待后重试")
-                    if attempt < retries:
-                        await asyncio.sleep(self.retry_delay * (2 ** attempt))  # 指数退避
-                        continue
-                    else:
-                        self.logger.warning(f"请求失败，状态码: {response.status}")
-                        return None
-                else:
-                    self.logger.warning(f"请求失败，状态码: {response.status}")
-                    if attempt < retries:
-                        await asyncio.sleep(self.retry_delay)
-                        continue
-                    return None
-
-            except PlaywrightTimeoutError:
-                self.logger.warning(f"请求超时 (尝试 {attempt + 1}/{retries + 1}): {url}")
-                if attempt < retries:
-                    await asyncio.sleep(self.retry_delay * (attempt + 1))
-                    continue
-            except Exception as e:
-                self.logger.error(f"请求异常 (尝试 {attempt + 1}/{retries + 1}): {e}")
-                if attempt < retries:
-                    # 如果是401错误，重新获取token
-                    if hasattr(e, 'response') and e.response.status_code == 401:
-                        await self._init_token()
-
-                    wait_time = (2 ** attempt) + random.uniform(0, 1)
-                    await asyncio.sleep(wait_time)
-                else:
-                    self.logger.error(f"❌ 请求最终失败: {url}")
-                    return None
-
-        # 模拟人类行为
-        await asyncio.sleep(random.uniform(0.1, 0.3))
-        return None
+            self.logger.error(f"❌ 请求最终失败: {e}")
+            return None
 
     async def get_realtime_data(self, symbols: List[str]) -> List[Dict[str, Any]]:
         """获取实时股票数据"""

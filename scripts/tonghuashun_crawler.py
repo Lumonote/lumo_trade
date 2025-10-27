@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Any
 from urllib.parse import urlencode, urljoin
 from playwright.async_api import async_playwright, Page, BrowserContext, TimeoutError as PlaywrightTimeoutError
 from scripts.browser_manager import BrowserManager
+from scripts.anti_crawler_helper import RequestOptimizer, classify_playwright_error
 import pandas as pd
 import re
 
@@ -50,12 +51,20 @@ class TongHuaShunCrawler:
         })
 
         # 网络配置
-        self.timeout = self.crawler_settings.get('timeout', 30) * 1000  # 转换为毫秒
+        self.timeout = self.crawler_settings.get('timeout', 45) * 1000  # 增加到45秒
         self.max_retries = self.crawler_settings.get('max_retries', 3)
-        self.retry_delay = self.crawler_settings.get('retry_delay', 2)
+        self.retry_delay = self.crawler_settings.get('retry_delay', 3)  # 增加到3秒
 
-        # 速率限制
-        self.rate_limit = self.config.get('rate_limit', 1.0)
+        # 初始化请求优化器
+        self.request_optimizer = RequestOptimizer(
+            requests_per_minute=6,
+            max_retries=self.max_retries,
+            base_delay=self.retry_delay,
+            enable_adaptive=True
+        )
+
+        # 速率限制（保留用于兼容性）
+        self.rate_limit = self.config.get('rate_limit', 1.5)  # 增加到1.5秒
         self.min_interval = self.rate_limit
         self.last_request_time = 0
 
@@ -67,12 +76,7 @@ class TongHuaShunCrawler:
         # 日志配置
         self.logger = logging.getLogger(__name__)
 
-        print(f"🚀 同花顺爬虫初始化完成")
-        print(f"📡 基础URL: {self.base_url}")
-        print(f"⏱️ 速率限制: {self.rate_limit}秒")
-        print(f"⏰ 超时设置: {self.timeout / 1000}秒")
-        print(f"🔄 重试次数: {self.max_retries}")
-        print(f"🔧 端点配置: {self.endpoints}")
+        print(f"✅ 同花顺爬虫已加载")
 
     async def check_availability(self) -> bool:
         """检查数据源可用性"""
@@ -198,107 +202,80 @@ class TongHuaShunCrawler:
         return 'sh'
 
     async def _make_request(self, url: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
-        """发送HTTP请求，带重试机制"""
+        """发送HTTP请求，使用智能重试和频率控制"""
         await self._init_browser()
-        await self._rate_limit_wait()
 
-        for attempt in range(self.max_retries + 1):
-            try:
-                # 构建完整URL
-                if params:
-                    query_string = urlencode(params)
-                    full_url = f"{url}?{query_string}"
-                else:
-                    full_url = url
+        # 使用请求优化器执行请求
+        async def _do_request():
+            # 构建完整URL
+            if params:
+                query_string = urlencode(params)
+                full_url = f"{url}?{query_string}"
+            else:
+                full_url = url
 
-                if attempt > 0:
-                    print(f"🔄 重试请求 ({attempt}/{self.max_retries}): {full_url[:100]}...")
-                else:
-                    print(f"🌐 请求URL: {full_url[:100]}...")
+            print(f"🌐 请求URL: {full_url[:100]}...")
 
-                # 发送请求，使用配置的超时时间
-                response = await self.page.goto(full_url, timeout=self.timeout, wait_until='networkidle')
+            # 添加随机延迟，模拟人类行为
+            await asyncio.sleep(random.uniform(0.5, 1.5))
 
-                if response and response.status == 200:
-                    # 获取页面文本内容
-                    text_content = await self.page.evaluate('() => document.body.innerText')
+            # 发送请求
+            response = await self.page.goto(full_url, timeout=self.timeout, wait_until='networkidle')
 
-                    if not text_content:
-                        print("❌ 页面内容为空")
-                        if attempt < self.max_retries:
-                            await asyncio.sleep(self.retry_delay)
-                            continue
-                        return None
+            if not response:
+                raise Exception("No response received")
 
-                    # 处理JSONP响应
-                    if 'callback(' in text_content or '(' in text_content:
-                        # 查找JSONP函数名和JSON部分
-                        import re
-                        # 匹配JSONP格式: function_name({...})
-                        jsonp_pattern = r'\w+\((.+)\)$'
-                        match = re.search(jsonp_pattern, text_content.strip())
+            if response.status != 200:
+                raise Exception(f"HTTP {response.status}")
 
-                        if match:
-                            json_str = match.group(1)
-                            try:
-                                return json.loads(json_str)
-                            except json.JSONDecodeError as e:
-                                print(f"❌ JSONP解析失败: {e}")
-                                print(f"原始内容: {text_content[:200]}...")
-                                if attempt == self.max_retries:
-                                    return None
-                                continue
-                        else:
-                            # 尝试简单的括号匹配
-                            start_idx = text_content.find('(')
-                            end_idx = text_content.rfind(')')
+            # 获取页面文本内容
+            text_content = await self.page.evaluate('() => document.body.innerText')
 
-                            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                                json_str = text_content[start_idx + 1:end_idx]
-                                try:
-                                    return json.loads(json_str)
-                                except json.JSONDecodeError as e:
-                                    print(f"❌ JSONP解析失败: {e}")
-                                    print(f"原始内容: {text_content[:200]}...")
-                                    if attempt == self.max_retries:
-                                        return None
-                                    continue
+            if not text_content:
+                raise Exception("页面内容为空")
 
-                    # 尝试直接解析JSON
+            # 处理JSONP响应
+            if 'callback(' in text_content or '(' in text_content:
+                # 匹配JSONP格式: function_name({...})
+                jsonp_pattern = r'\w+\((.+)\)$'
+                match = re.search(jsonp_pattern, text_content.strip())
+
+                if match:
+                    json_str = match.group(1)
                     try:
-                        return json.loads(text_content)
-                    except json.JSONDecodeError:
-                        print(f"❌ JSON解析失败")
-                        print(f"响应内容: {text_content[:200]}...")
-                        if attempt == self.max_retries:
-                            return None
-                        continue
-
-                elif response and response.status in [429, 503]:  # 速率限制或服务不可用
-                    print(f"⚠️ 遇到速率限制或服务不可用 (状态码: {response.status})，等待后重试")
-                    if attempt < self.max_retries:
-                        await asyncio.sleep(self.retry_delay * (2 ** attempt))  # 指数退避
-                        continue
-                    else:
-                        print(f"❌ 请求失败，状态码: {response.status}")
-                        return None
+                        return json.loads(json_str)
+                    except json.JSONDecodeError as e:
+                        raise Exception(f"JSONP解析失败: {e}")
                 else:
-                    print(f"❌ 请求失败，状态码: {response.status if response else 'None'}")
-                    if attempt < self.max_retries:
-                        await asyncio.sleep(self.retry_delay)
-                        continue
-                    return None
+                    # 尝试简单的括号匹配
+                    start_idx = text_content.find('(')
+                    end_idx = text_content.rfind(')')
 
-            except Exception as e:
-                print(f"❌ 请求异常 (尝试 {attempt + 1}/{self.max_retries + 1}): {e}")
-                if attempt < self.max_retries:
-                    await asyncio.sleep(self.retry_delay * (attempt + 1))
-                    continue
-                return None
+                    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                        json_str = text_content[start_idx + 1:end_idx]
+                        try:
+                            return json.loads(json_str)
+                        except json.JSONDecodeError as e:
+                            raise Exception(f"JSONP解析失败: {e}")
 
-        # 模拟人类行为
-        await asyncio.sleep(random.uniform(0.1, 0.3))
-        return None
+            # 尝试直接解析JSON
+            try:
+                return json.loads(text_content)
+            except json.JSONDecodeError:
+                raise Exception(f"JSON解析失败，内容: {text_content[:200]}")
+
+        try:
+            # 使用RequestOptimizer执行请求（带智能重试和频率控制）
+            result = await self.request_optimizer.execute_request(
+                _do_request,
+                error_classifier=classify_playwright_error
+            )
+            print(f"✅ 请求成功")
+            return result
+
+        except Exception as e:
+            print(f"❌ 请求最终失败: {e}")
+            return None
 
     async def get_realtime_data(self, symbol: str) -> Optional[Dict[str, Any]]:
         """获取实时数据"""

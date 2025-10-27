@@ -138,16 +138,15 @@ class CrawlerManager:
             try:
                 crawler = self.crawlers[source_name]
 
-                # 检查数据源是否可用
-                print(f"🔍 检查数据源 {source_name} 可用性...")
-                is_available = await self._check_source_availability(source_name)
-                print(f"📊 数据源 {source_name} 可用性检查结果: {is_available}")
-                if not is_available:
-                    print(f"❌ 数据源 {source_name} 不可用，跳过")
-                    continue
+                # 可用性检查已禁用 - 直接尝试获取数据
+                # print(f"🔍 检查数据源 {source_name} 可用性...")
+                # is_available = await self._check_source_availability(source_name)
+                # print(f"📊 数据源 {source_name} 可用性检查结果: {is_available}")
+                # if not is_available:
+                #     print(f"❌ 数据源 {source_name} 不可用，跳过")
+                #     continue
 
-                logger.info(f"使用数据源 {source_name} 获取 {symbol} 的实时数据")
-                print(f"✅ 开始使用数据源 {source_name} 获取 {symbol} 的实时数据")
+                logger.info(f"使用数据源 {source_name} 获取 {symbol} 的数据")
 
                 # 获取数据 - 雪球爬虫需要传递列表参数
                 if source_name == 'xueqiu':
