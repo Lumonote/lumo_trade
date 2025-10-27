@@ -1,4 +1,4 @@
-﻿# Kronos Quick Start Script (PowerShell Version)
+# Kronos Quick Start Script (PowerShell Version)
 # Purpose: Run stably with UTF-8 on Windows, avoid encoding issues
 # Encoding: UTF-8 with BOM
 
@@ -97,10 +97,27 @@ function Invoke-Python {
     $python = Get-PythonCommand
 
     Write-Host "INFO: 使用 Python: $python" -ForegroundColor Cyan
-    if ($Args) {
-        & $python $Script @Args
-    } else {
-        & $python $Script
+
+    # 如果在打包环境中，设置环境变量以便Python脚本能找到模块
+    $originalEnv = $env:KRONOS_PACKED_ROOT
+    if ($IsPackaged) {
+        $env:KRONOS_PACKED_ROOT = $scriptDir
+        Write-Host "INFO: 设置打包路径: $scriptDir" -ForegroundColor Cyan
+    }
+
+    try {
+        if ($Args) {
+            & $python $Script @Args
+        } else {
+            & $python $Script
+        }
+    } finally {
+        # 恢复原始环境变量
+        if ($null -eq $originalEnv) {
+            Remove-Item env:KRONOS_PACKED_ROOT -ErrorAction SilentlyContinue
+        } else {
+            $env:KRONOS_PACKED_ROOT = $originalEnv
+        }
     }
 }
 
@@ -740,6 +757,56 @@ elseif ($Choice -eq "6") {
     $cleanSymbol = $firstSymbol -replace '\..*$', ''
     Write-Host "PREDICT: Starting prediction ($cleanSymbol)" -ForegroundColor Green
     Invoke-Python -Script 'examples/prediction_batch_example.py' -Args @('--stock-code', $cleanSymbol, '-T', '0.6', '-p', '0.90', '-n', '10')
+}
+elseif ($Choice -eq "7") {
+    Write-Host "🔥 投资机会挖掘 - 分析热门股票（可自定义数量）" -ForegroundColor Blue
+    Write-Host "本功能将自动完成以下流程：" -ForegroundColor Yellow
+    Write-Host "  1. 获取市场热度TOPN股票（默认100，最小10，最大300）"
+    Write-Host "  2. 多维度打分分析（量化模型、技术、情绪、板块、基本面、事件）"
+    Write-Host "  3. 5阶段漏斗筛选"
+    Write-Host "  4. 生成HTML投资机会挖掘报告"
+    Write-Host ""
+    Write-Host "注意：此过程可能需要15-30分钟，请耐心等待..." -ForegroundColor Yellow
+    Write-Host ""
+
+    # 自动模式：在应用包/非交互/提供环境变量时，跳过交互输入
+    if ($env:AUTO_CHOICE -or $env:KRONOS_IS_APP_BUNDLE -eq 'true' -or $IsPackaged) {
+        $limit = if ($env:KRONOS_LIMIT) { [int]$env:KRONOS_LIMIT } else { 100 }
+        # 约束范围
+        if ($limit -lt 10) { $limit = 10 }
+        if ($limit -gt 300) { $limit = 300 }
+        Write-Host "AUTO: 检测到自动模式，使用采集数量: $limit" -ForegroundColor Blue
+        Write-Host "正在启动投资机会挖掘系统..." -ForegroundColor Green
+        Invoke-Python -Script 'scripts/run_opportunity_discovery.py' -Args @('--limit', $limit, '--workers', '10')
+    } else {
+        # 交互模式：询问用户输入
+        $limit = Read-Host "请输入采集数量(默认100，最小10，最大300)"
+        if (-not $limit) { $limit = 100 }
+        try {
+            $limit = [int]$limit
+        } catch {
+            Write-Host "WARN: 输入非数字，已使用默认100" -ForegroundColor Yellow
+            $limit = 100
+        }
+        if ($limit -lt 10) {
+            Write-Host "WARN: 输入过小，已调整为最小值10" -ForegroundColor Yellow
+            $limit = 10
+        }
+        if ($limit -gt 300) {
+            Write-Host "WARN: 输入过大，已调整为最大值300" -ForegroundColor Yellow
+            $limit = 300
+        }
+
+        $confirm = Read-Host "是否开始投资机会挖掘？(Y/n)"
+        if (-not $confirm) { $confirm = 'Y' }
+
+        if ($confirm -match '^[Yy]$') {
+            Write-Host "正在启动投资机会挖掘系统..." -ForegroundColor Green
+            Invoke-Python -Script 'scripts/run_opportunity_discovery.py' -Args @('--limit', $limit, '--workers', '10')
+        } else {
+            Write-Host "已取消投资机会挖掘" -ForegroundColor Blue
+        }
+    }
 }
 elseif ($Choice -eq "8") {
     Write-Host "Checking license status..." -ForegroundColor Yellow

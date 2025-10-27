@@ -7,12 +7,43 @@ import matplotlib.pyplot as plt
 import sys
 import os
 import argparse
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 
 # 添加项目根目录到路径
-project_root = Path(__file__).parent.parent
+# 支持打包后环境和开发环境
+if getattr(sys, 'frozen', False):
+    # 打包后环境 - 检查是否从打包的EXE调用
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller临时目录
+        project_root = Path(sys._MEIPASS)
+    else:
+        # 回退：使用当前文件的父目录
+        project_root = Path(__file__).parent.parent
+else:
+    # 开发环境
+    project_root = Path(__file__).parent.parent
+
 sys.path.insert(0, str(project_root))
+
+# 如果从外部Python调用（虚拟环境），尝试检测并添加打包路径
+if 'model' not in sys.modules:
+    # 尝试从环境变量获取打包路径
+    packed_root = os.environ.get('KRONOS_PACKED_ROOT')
+    if packed_root and Path(packed_root).exists():
+        sys.path.insert(0, str(packed_root))
+        print(f"INFO: 检测到打包环境路径: {packed_root}")
+    else:
+        # 尝试推断打包路径（检查常见的_MEI目录）
+        temp_dir = Path(tempfile.gettempdir())
+        mei_dirs = list(temp_dir.glob('_MEI*'))
+        if mei_dirs:
+            # 使用最新的_MEI目录
+            latest_mei = max(mei_dirs, key=lambda p: p.stat().st_mtime)
+            if (latest_mei / 'model').exists():
+                sys.path.insert(0, str(latest_mei))
+                print(f"INFO: 自动检测到打包环境路径: {latest_mei}")
 
 from model import Kronos, KronosTokenizer, KronosPredictor
 from analysis.technical_analysis import QuantitativeModels
