@@ -23,6 +23,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from analysis.dynamic_crawler import DynamicCrawler
+from analysis.sector_api import get_stock_sector_info, get_sector_sentiment
 
 
 class InvestorSentimentAnalyzer:
@@ -37,8 +38,18 @@ class InvestorSentimentAnalyzer:
         """
         self.stock_code = stock_code
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'http://guba.eastmoney.com/'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Referer': 'http://quote.eastmoney.com/',
+            'Origin': 'http://quote.eastmoney.com',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site'
         }
 
         # 轻量缓存目录（用于网络不稳定时的短期回退）
@@ -614,31 +625,224 @@ class InvestorSentimentAnalyzer:
                 return cached
             return self._get_default_overall_market_sentiment()
 
+    def _safe_request_with_retry(self, url, params=None, max_retries=3, timeout=15):
+        """
+        带重试机制的安全请求方法
+        
+        Args:
+            url: 请求URL
+            params: 请求参数
+            max_retries: 最大重试次数
+            timeout: 超时时间
+            
+        Returns:
+            dict: 解析后的JSON数据，失败时返回None
+        """
+        for attempt in range(max_retries):
+            try:
+                # 使用会话保持连接
+                session = requests.Session()
+                
+                # 设置完整的请求头
+                session.headers.update(self.headers)
+                
+                # 添加随机延迟，避免被识别为机器人
+                if attempt > 0:
+                    time.sleep(random.uniform(1, 3))
+                
+                response = session.get(
+                    url, 
+                    params=params, 
+                    timeout=timeout,
+                    verify=False,  # 忽略SSL证书验证
+                    allow_redirects=True
+                )
+                
+                # 检查HTTP状态码
+                if response.status_code == 200:
+                    # 检查响应内容是否为空
+                    if response.text.strip():
+                        try:
+                            return response.json()
+                        except json.JSONDecodeError as e:
+                            print(f"   ⚠️  JSON解析错误 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
+                            print(f"   📄 响应内容: {response.text[:200]}...")
+                    else:
+                        print(f"   ⚠️  响应内容为空 (尝试 {attempt + 1}/{max_retries})")
+                else:
+                    print(f"   ⚠️  HTTP错误 {response.status_code} (尝试 {attempt + 1}/{max_retries})")
+                    print(f"   📄 响应内容: {response.text[:200]}...")
+                    
+            except requests.exceptions.ConnectionError as e:
+                print(f"   ⚠️  连接错误 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
+            except requests.exceptions.Timeout as e:
+                print(f"   ⚠️  请求超时 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
+            except requests.exceptions.RequestException as e:
+                print(f"   ⚠️  请求异常 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
+            except Exception as e:
+                print(f"   ⚠️  未知错误 (尝试 {attempt + 1}/{max_retries}): {str(e)}")
+            
+            # 重试前等待，避免频繁请求
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 2  # 递增等待时间：2s, 4s, 6s
+                print(f"   🔄 等待 {wait_time}s 后重试...")
+                time.sleep(wait_time)
+        
+        return None
+
     def get_sector_info_and_sentiment(self):
         """
-        获取股票所属板块及板块情绪
+        获取股票所属板块及板块情绪 - 使用新的API获取真实数据
 
         Returns:
             dict: 板块信息和情绪数据
         """
+        print(f"   🔍 获取股票 {self.stock_code} 的板块情绪...")
+
         try:
-            # 获取股票所属行业/板块
-            url = "http://push2.eastmoney.com/api/qt/stock/get"
+            # 使用新的板块API获取真实数据
+            sector_info = get_stock_sector_info(self.stock_code)
+            sector_sentiment = get_sector_sentiment(self.stock_code)
+
+            # 调试日志
+            print(f"   🔍 sector_info: sector_name={sector_info.get('sector_name')}, success={sector_info.get('success')}")
+            print(f"   🔍 sector_sentiment: overall={sector_sentiment.get('overall')}, change_pct={sector_sentiment.get('change_pct')}, data_source={sector_sentiment.get('data_source')}")
+
+            if sector_info.get('success'):
+                print(f"   ✅ 通过{sector_info.get('data_source', 'API')}获取板块信息成功")
+
+                return {
+                    'sector_name': sector_info.get('sector_name', '未知'),
+                    'sector_sentiment': {
+                        'sector_name': sector_sentiment.get('sector_name', '未知'),
+                        'sentiment_score': sector_sentiment.get('sentiment_score', 50),
+                        'overall': sector_sentiment.get('overall', '市场情绪中性'),
+                        'change_pct': sector_sentiment.get('change_pct', 0),
+                        'turnover_rate': sector_sentiment.get('turnover_rate', 0),
+                        'emotion': sector_sentiment.get('emotion', '中性'),
+                        'data_source': sector_sentiment.get('data_source', 'api')
+                    },
+                    'stock_name': sector_info.get('stock_name', ''),
+                    'current_price': sector_info.get('current_price', 0),
+                    'industry': sector_info.get('industry', '未知'),
+                    'concept_sectors': sector_info.get('concept_sectors', []),
+                    'data_source': sector_info.get('data_source', 'api')
+                }
+            else:
+                print(f"   ⚠️ API获取失败，使用备用方案")
+                return self._get_sector_info_fallback()
+
+        except Exception as e:
+            print(f"   ❌ 板块API调用失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return self._get_sector_info_fallback()
+    
+    def _get_sector_from_tencent(self):
+        """
+        从腾讯财经获取股票板块信息
+        
+        Returns:
+            dict: 板块信息和情绪数据
+        """
+        try:
+            print(f"   🔍 尝试腾讯财经API获取板块信息...")
+            
+            # 腾讯财经股票详情API，需要添加市场前缀
+            market_prefix = 'sh' if self.stock_code.startswith('6') or self.stock_code.startswith('688') else 'sz'
+            tencent_code = f"{market_prefix}{self.stock_code}"
+            tencent_url = f"http://qt.gtimg.cn/q={tencent_code}"
+            
+            response = requests.get(tencent_url, headers=self.headers, timeout=10)
+            if response.status_code == 200 and response.text:
+                content = response.text.strip()
+                
+                # 解析腾讯财经数据格式: v_sh688343="1~股票名称~688343~..."
+                if f'v_{tencent_code}=' in content:
+                    data_part = content.split('"')[1]
+                    fields = data_part.split('~')
+                    
+                    if len(fields) > 10:
+                        stock_name = fields[1]  # 股票名称
+                        current_price = fields[3]  # 当前价格
+                        prev_close = fields[4]  # 昨收价
+                        
+                        # 计算涨跌幅
+                        try:
+                            change_pct = ((float(current_price) - float(prev_close)) / float(prev_close)) * 100
+                            change_pct_str = f"{change_pct:.2f}"
+                        except (ValueError, ZeroDivisionError):
+                            change_pct_str = '0.00'
+                        
+                        # 不再使用硬编码推断，直接返回综合
+                        sector_name = '综合'
+                        
+                        print(f"   📊 腾讯财经获取成功: {stock_name} ({current_price})")
+                        print(f"   🏢 备用板块分类: {sector_name}")
+                        print(f"   📈 涨跌幅: {change_pct_str}%")
+                        
+                        # 计算情绪评分
+                        sentiment_score = self._calculate_sentiment_from_change(change_pct_str)
+                        
+                        return {
+                            'sector_name': sector_name,
+                            'sector_sentiment': {
+                                'sector_name': sector_name,
+                                'sector_code': 'N/A',
+                                'change_pct': change_pct_str,
+                                'turnover_rate': 'N/A',
+                                'sentiment_score': sentiment_score,
+                                'overall': self._get_sentiment_description(sentiment_score),
+                                'emotion': self._get_emotion_from_score(sentiment_score)
+                            }
+                        }
+            
+        except Exception as e:
+            print(f"   ⚠️  腾讯财经API失败: {str(e)}")
+        
+        return {
+            'sector_name': 'N/A',
+            'sector_sentiment': self._get_default_sector_sentiment()
+        }
+    
+    def _get_sector_from_eastmoney(self):
+        """
+        从东方财富获取股票板块信息（原有逻辑）
+        
+        Returns:
+            dict: 板块信息和情绪数据
+        """
+        try:
+            # 尝试多个API端点获取股票所属行业/板块
+            api_endpoints = [
+                "http://quote.eastmoney.com/api/qt/stock/get",
+                "https://push2.eastmoney.com/api/qt/stock/get",
+                "http://push2.eastmoney.com/api/qt/stock/get"
+            ]
+            
             params = {
                 'secid': f"{'1' if self.stock_code.startswith('6') else '0'}.{self.stock_code}",
                 'fields': 'f127,f128'  # 行业相关字段
             }
 
-            response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            data = response.json()
+            data = None
+            for url in api_endpoints:
+                print(f"   🔍 尝试API端点: {url}")
+                data = self._safe_request_with_retry(url, params, max_retries=2, timeout=10)
+                if data and data.get('data'):
+                    print(f"   ✅ 成功获取数据")
+                    break
+                else:
+                    print(f"   ❌ 端点无响应或数据为空")
 
-            sector_name = 'N/A'
-            sector_code = None
-
-            if data.get('data'):
+            if data and data.get('data'):
                 # f127: 所属行业名称；f128: 行业板块代码
                 sector_name = data['data'].get('f127', 'N/A')
                 sector_code = data['data'].get('f128')
+            else:
+                print(f"   ⚠️  所有API端点均失败，尝试备用方案")
+                # 尝试备用API获取基本股票信息
+                return self._get_sector_info_fallback()
 
             # 如果无法获取行业名称，尝试基于行业代码回退计算板块情绪
             if sector_name == 'N/A' or not sector_name:
@@ -658,10 +862,9 @@ class InvestorSentimentAnalyzer:
                             'fields': 'f12,f14,f3,f8'
                         }
 
-                        resp = requests.get(constituents_url, params=constituents_params, headers=self.headers, timeout=10)
-                        d = resp.json()
-                        if d.get('data') and d['data'].get('diff'):
-                            stocks = d['data']['diff']
+                        resp_data = self._safe_request_with_retry(constituents_url, constituents_params)
+                        if resp_data and resp_data.get('data') and resp_data['data'].get('diff'):
+                            stocks = resp_data['data']['diff']
                             changes = [s.get('f3') for s in stocks if isinstance(s.get('f3'), (int, float))]
                             turns = [s.get('f8') for s in stocks if isinstance(s.get('f8'), (int, float))]
 
@@ -748,10 +951,9 @@ class InvestorSentimentAnalyzer:
                         'fs': 'm:90 t:2',
                         'fields': 'f12,f14,f3,f8'
                     }
-                    respx = requests.get(sector_url, params=sector_params, headers=self.headers, timeout=10)
-                    datx = respx.json()
-                    if datx.get('data') and datx['data'].get('diff'):
-                        lst = datx['data']['diff']
+                    respx_data = self._safe_request_with_retry(sector_url, sector_params)
+                    if respx_data and respx_data.get('data') and respx_data['data'].get('diff'):
+                        lst = respx_data['data']['diff']
                         changes = [x.get('f3') for x in lst if isinstance(x.get('f3'), (int, float))]
                         turns = [x.get('f8') for x in lst if isinstance(x.get('f8'), (int, float))]
                         avg_change = round(sum(changes) / len(changes), 2) if changes else 'N/A'
@@ -818,8 +1020,7 @@ class InvestorSentimentAnalyzer:
                     'fields': 'f12,f14,f2,f3,f8'  # 代码、名称、价格、涨跌幅、换手率
                 }
 
-                response = requests.get(sector_url, params=sector_params, headers=self.headers, timeout=10)
-                sector_data = response.json()
+                sector_data = self._safe_request_with_retry(sector_url, sector_params)
 
                 sector_sentiment = None
 
@@ -1644,8 +1845,22 @@ class InvestorSentimentAnalyzer:
             except Exception:
                 pass
             try:
-                print(f"   - 板块情绪: {data['sector_sentiment'].get('overall', 'N/A')} ({data['sector_sentiment'].get('sector_name', 'N/A')}) 涨跌: {data['sector_sentiment'].get('change_pct', 'N/A')}%")
-            except Exception:
+                sector_info = data['sector_sentiment']
+                if isinstance(sector_info, dict) and 'sector_sentiment' in sector_info:
+                    # 新的数据结构：有嵌套的sector_sentiment
+                    inner_sector = sector_info['sector_sentiment']
+                    sector_name = sector_info.get('sector_name', 'N/A')
+                    overall = inner_sector.get('overall', 'N/A')
+                    change_pct = inner_sector.get('change_pct', 'N/A')
+                    print(f"   - 板块情绪: {overall} ({sector_name}) 涨跌: {change_pct}%")
+                else:
+                    # 旧的数据结构：直接访问
+                    sector_name = sector_info.get('sector_name', 'N/A')
+                    overall = sector_info.get('overall', 'N/A')
+                    change_pct = sector_info.get('change_pct', 'N/A')
+                    print(f"   - 板块情绪: {overall} ({sector_name}) 涨跌: {change_pct}%")
+            except Exception as e:
+                print(f"   - 板块情绪: 获取失败 - {str(e)}")
                 pass
             try:
                 cf = data.get('capital_flow', {})
@@ -1714,6 +1929,138 @@ class InvestorSentimentAnalyzer:
             'avg_change_pct': 'N/A',
         }
 
+    def _get_sector_info_fallback(self):
+        """
+        备用方案：从其他数据源获取板块信息
+        
+        Returns:
+            dict: 板块信息和情绪数据
+        """
+        try:
+            # 尝试从新浪财经获取股票基本信息
+            sina_url = f"http://hq.sinajs.cn/list={self.stock_code}"
+            
+            response = requests.get(sina_url, headers=self.headers, timeout=10)
+            if response.status_code == 200 and response.text:
+                # 解析新浪财经数据
+                content = response.text.strip()
+                if 'var hq_str_' in content:
+                    data_part = content.split('="')[1].split('";')[0]
+                    fields = data_part.split(',')
+                    
+                    if len(fields) > 10:
+                        stock_name = fields[0]
+                        # 不再使用硬编码推断，直接返回综合
+                        sector_name = '综合'
+                        
+                        print(f"   📊 从新浪财经获取股票信息: {stock_name}")
+                        print(f"   🏢 备用板块分类: {sector_name}")
+                        
+                        return {
+                            'sector_name': sector_name,
+                            'sector_sentiment': {
+                                'sector_name': sector_name,
+                                'sector_code': 'N/A',
+                                'change_pct': 'N/A',
+                                'turnover_rate': 'N/A',
+                                'sentiment_score': 50,
+                                'overall': '数据来源受限',
+                                'emotion': 'neutral'
+                            }
+                        }
+            
+        except Exception as e:
+            print(f"   ⚠️  备用方案也失败: {str(e)}")
+        
+        # 最终回退到默认值
+        print(f"   ⚠️  获取股票板块信息失败，使用默认值")
+        return {
+            'sector_name': 'N/A',
+            'sector_sentiment': self._get_default_sector_sentiment()
+        }
+    
+    def _infer_sector_from_name(self, stock_name):
+        """
+        根据股票名称推断可能的行业
+        
+        Args:
+            stock_name: 股票名称
+            
+        Returns:
+            str: 推断的行业名称
+        """
+        # 移除硬编码的行业关键词映射，直接返回综合
+        # 现在使用真实的API获取板块信息，不再依赖关键词匹配
+        return '综合'
+    
+    def _calculate_sentiment_from_change(self, change_pct_str):
+        """
+        根据涨跌幅计算情绪评分
+        
+        Args:
+            change_pct_str: 涨跌幅字符串
+            
+        Returns:
+            int: 情绪评分 (0-100)
+        """
+        try:
+            change_pct = float(change_pct_str)
+            
+            # 基于涨跌幅计算情绪评分
+            if change_pct >= 5:
+                return 90
+            elif change_pct >= 2:
+                return 75
+            elif change_pct >= 0:
+                return 60
+            elif change_pct >= -2:
+                return 40
+            elif change_pct >= -5:
+                return 25
+            else:
+                return 10
+                
+        except (ValueError, TypeError):
+            return 50
+    
+    def _get_sentiment_description(self, score):
+        """
+        根据评分获取情绪描述
+        
+        Args:
+            score: 情绪评分
+            
+        Returns:
+            str: 情绪描述
+        """
+        if score >= 80:
+            return "市场热情高涨"
+        elif score >= 60:
+            return "市场情绪积极"
+        elif score >= 40:
+            return "市场情绪平稳"
+        elif score >= 20:
+            return "市场情绪谨慎"
+        else:
+            return "市场情绪低迷"
+    
+    def _get_emotion_from_score(self, score):
+        """
+        根据评分获取情绪标签
+        
+        Args:
+            score: 情绪评分
+            
+        Returns:
+            str: 情绪标签
+        """
+        if score >= 70:
+            return "positive"
+        elif score >= 30:
+            return "neutral"
+        else:
+            return "negative"
+    
     def _get_default_sector_sentiment(self):
         """返回默认板块情绪数据"""
         return {

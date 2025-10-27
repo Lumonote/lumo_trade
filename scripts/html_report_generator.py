@@ -1341,12 +1341,24 @@ class KronosHTMLReportGenerator:
             # 🏭 所属板块情绪
             sector = sentiment_data.get('sector_sentiment') or {}
             if sector:
-                sname = sector.get('sector_name', 'N/A')
-                sscore = sector.get('sentiment_score', 50)
-                soverall = sector.get('overall', '数据不足')
-                schg = sector.get('change_pct', 'N/A')
-                tr = sector.get('turnover_rate', 'N/A')
-                leader_info = sector.get('leader_stock')
+                # 检查是否是新的嵌套数据结构
+                if 'sector_sentiment' in sector and isinstance(sector['sector_sentiment'], dict):
+                    # 新的嵌套结构：从内层获取情绪数据
+                    inner_sector = sector['sector_sentiment']
+                    sname = sector.get('sector_name', 'N/A')
+                    sscore = inner_sector.get('sentiment_score', 50)
+                    soverall = inner_sector.get('overall', '数据不足')
+                    schg = inner_sector.get('change_pct', 'N/A')
+                    tr = inner_sector.get('turnover_rate', 'N/A')
+                    leader_info = inner_sector.get('leader_stock')
+                else:
+                    # 旧的平铺结构：直接从顶层获取
+                    sname = sector.get('sector_name', 'N/A')
+                    sscore = sector.get('sentiment_score', 50)
+                    soverall = sector.get('overall', '数据不足')
+                    schg = sector.get('change_pct', 'N/A')
+                    tr = sector.get('turnover_rate', 'N/A')
+                    leader_info = sector.get('leader_stock')
 
                 # 计算辨识度（基于股吧活跃度与决断度）
                 guba = sentiment_data.get('guba_sentiment') or {}

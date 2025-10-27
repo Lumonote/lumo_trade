@@ -74,42 +74,58 @@ class EastMoneyCrawler:
         print(f"🔧 端点配置: {self.endpoints}")
 
     async def check_availability(self) -> bool:
-        """检查数据源可用性"""
+        """检查数据源可用性 - 使用浏览器页面监听模式"""
         try:
             print(f"🔍 东方财富可用性检查开始...")
-            # 简单的连通性测试
-            test_url = f"{self.base_url}/api/qt/stock/kline/get"
-            params = {
-                'secid': '0.000001',  # 测试用股票代码
-                'klt': '101',
-                'fqt': '1',
-                'lmt': '1'
-            }
-
-            print(f"🌐 测试URL: {test_url}")
-            print(f"📋 测试参数: {params}")
-
+            
             if not self.browser_manager:
                 print(f"🚀 初始化浏览器...")
                 await self._init_browser()
 
-            full_test_url = f"{test_url}?{'&'.join([f'{k}={v}' for k, v in params.items()])}"
-            print(f"📡 完整测试URL: {full_test_url}")
-
-            response = await self.page.goto(
-                full_test_url,
-                wait_until='networkidle',
-                timeout=10000
-            )
-
-            print(f"📊 响应状态码: {response.status if response else 'None'}")
-
-            if response and response.status == 200:
-                print(f"✅ 东方财富可用性检查通过")
-                return True
-            else:
-                print(f"❌ 东方财富可用性检查失败，状态码: {response.status if response else 'None'}")
+            # 使用股票详情页测试，监听内部API调用
+            test_stock_page = "https://quote.eastmoney.com/sz000001.html"
+            print(f"🌐 测试股票页面: {test_stock_page}")
+            
+            # 设置网络监听
+            api_responses = []
+            
+            async def handle_response(response):
+                if 'push2.eastmoney.com' in response.url and response.status == 200:
+                    api_responses.append(response)
+                    print(f"✅ 捕获到API响应: {response.url[:100]}...")
+            
+            self.page.on('response', handle_response)
+            
+            # 访问股票页面
+            try:
+                response = await self.page.goto(
+                    test_stock_page,
+                    wait_until='domcontentloaded',
+                    timeout=15000
+                )
+                
+                if not response or response.status != 200:
+                    print(f"❌ 股票页面访问失败，状态码: {response.status if response else 'None'}")
+                    return False
+                
+                print(f"📄 股票页面加载成功，等待API调用...")
+                
+                # 等待API调用
+                await asyncio.sleep(3)
+                
+                if api_responses:
+                    print(f"✅ 东方财富可用性检查通过，捕获到 {len(api_responses)} 个API响应")
+                    return True
+                else:
+                    print(f"⚠️ 未捕获到API响应，但页面可访问")
+                    return True  # 页面可访问就认为可用
+                    
+            except Exception as page_error:
+                print(f"❌ 页面访问异常: {page_error}")
                 return False
+            finally:
+                # 移除监听器
+                self.page.remove_listener('response', handle_response)
 
         except Exception as e:
             print(f"❌ 东方财富可用性检查异常: {e}")

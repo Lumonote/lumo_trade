@@ -77,21 +77,61 @@ class TongHuaShunCrawler:
     async def check_availability(self) -> bool:
         """检查数据源可用性"""
         try:
-            # 简单的连通性测试
-            test_url = "https://d.10jqka.com.cn/v6/line/hs_000001/01/last.js"
-
             if not self.browser_manager:
                 await self._init_browser()
-
+            
+            # 使用页面监听模式检查可用性
+            test_url = 'https://stockpage.10jqka.com.cn/000001/'
+            print(f"🔍 同花顺可用性检查开始...")
+            print(f"🌐 测试URL: {test_url}")
+            
+            # 设置网络监听
+            api_responses = []
+            
+            async def handle_response(response):
+                if '10jqka.com.cn' in response.url and response.status == 200:
+                    try:
+                        content_type = response.headers.get('content-type', '')
+                        if 'json' in content_type or 'javascript' in content_type:
+                            api_responses.append(response)
+                    except:
+                        pass
+            
+            self.page.on('response', handle_response)
+            
+            # 访问测试页面
             response = await self.page.goto(
                 test_url,
-                wait_until='networkidle',
-                timeout=10000
+                wait_until='domcontentloaded',
+                timeout=15000
             )
-
-            return response.status == 200
+            
+            if response and response.status == 200:
+                # 等待数据加载
+                await asyncio.sleep(3)
+                
+                # 检查是否有API响应或页面数据
+                if api_responses:
+                    print(f"✅ 同花顺数据源可用 - 捕获到 {len(api_responses)} 个API响应")
+                    self.page.remove_listener('response', handle_response)
+                    return True
+                
+                # 检查页面是否正常加载
+                try:
+                    page_title = await self.page.title()
+                    if page_title and '000001' in page_title:
+                        print(f"✅ 同花顺数据源可用 - 页面正常加载")
+                        self.page.remove_listener('response', handle_response)
+                        return True
+                except:
+                    pass
+            
+            self.page.remove_listener('response', handle_response)
+            print(f"❌ 同花顺数据源不可用")
+            return False
+            
         except Exception as e:
-            self.logger.error(f"同花顺数据源可用性检查失败: {e}")
+            print(f"❌ 同花顺可用性检查异常: {e}")
             return False
 
     async def _init_browser(self):
@@ -307,27 +347,113 @@ class TongHuaShunCrawler:
 
         ths_period = period_map.get(period, 'D')
 
-        # 尝试多个可能的API端点 - 更新为可能的新格式
-        urls_to_try = [
-            f'http://d.10jqka.com.cn/v6/line/{exchange}_{ths_symbol}/{ths_period}/last.js',
-            f'http://d.10jqka.com.cn/v2/line/{exchange}_{ths_symbol}/{ths_period}.js',
-            f'https://d.10jqka.com.cn/v6/line/{exchange}_{ths_symbol}/{ths_period}/last.js',
-            f'https://d.10jqka.com.cn/v2/line/{exchange}_{ths_symbol}/{ths_period}.js',
-            f'http://d.10jqka.com.cn/v6/line/hs_{ths_symbol}/{ths_period}/last.js',
-            f'https://stockpage.10jqka.com.cn/realHead_v2.html#{exchange}{ths_symbol}'
-        ]
-
-        params = {
-            '_': int(time.time() * 1000)
-        }
-
+        # 尝试通过股票页面获取数据 - 使用页面监听模式
         print(f"📈 获取K线数据: {symbol} -> {exchange}_{ths_symbol}, 周期: {period}")
-
-        for url in urls_to_try:
-            print(f"🔄 尝试K线URL: {url}")
-            data = await self._make_request(url, params)
-            if data:
-                return data
+        
+        # 构造股票详情页URL
+        stock_page_url = f'https://stockpage.10jqka.com.cn/{ths_symbol}/'
+        print(f"🔄 尝试股票页面: {stock_page_url}")
+        
+        try:
+            if not self.browser_manager:
+                await self._init_browser()
+            
+            # 设置网络监听
+            api_responses = []
+            
+            async def handle_response(response):
+                # 监听可能的数据接口
+                if any(domain in response.url for domain in ['10jqka.com.cn', 'hexun.com', 'ifeng.com']) and response.status == 200:
+                    try:
+                        content_type = response.headers.get('content-type', '')
+                        if 'json' in content_type or 'javascript' in content_type:
+                            api_responses.append(response)
+                            print(f"✅ 捕获到数据响应: {response.url[:80]}...")
+                    except:
+                        pass
+            
+            self.page.on('response', handle_response)
+            
+            # 访问股票页面
+            response = await self.page.goto(
+                stock_page_url,
+                wait_until='domcontentloaded',
+                timeout=15000
+            )
+            
+            if response and response.status == 200:
+                print(f"📄 股票页面加载成功，等待数据加载...")
+                # 等待页面数据加载
+                await asyncio.sleep(5)
+                
+                # 尝试从页面中提取数据
+                try:
+                    # 执行JavaScript获取页面数据
+                    page_data = await self.page.evaluate("""
+                        () => {
+                            // 尝试获取页面中的股票数据
+                            const data = {};
+                            
+                            // 查找可能的数据变量
+                            if (typeof window.stockData !== 'undefined') {
+                                data.stockData = window.stockData;
+                            }
+                            if (typeof window.klineData !== 'undefined') {
+                                data.klineData = window.klineData;
+                            }
+                            if (typeof window.priceData !== 'undefined') {
+                                data.priceData = window.priceData;
+                            }
+                            
+                            return data;
+                        }
+                    """)
+                    
+                    if page_data and any(page_data.values()):
+                        print(f"✅ 从页面获取到数据")
+                        return page_data
+                        
+                except Exception as js_error:
+                    print(f"⚠️ JavaScript执行失败: {js_error}")
+                
+                # 检查API响应
+                if api_responses:
+                    print(f"✅ 捕获到 {len(api_responses)} 个API响应，尝试解析...")
+                    for api_response in api_responses:
+                        try:
+                            text = await api_response.text()
+                            if text and len(text) > 100:  # 有实际内容
+                                return {'raw_data': text, 'url': api_response.url}
+                        except:
+                            continue
+                            
+            # 移除监听器
+            self.page.remove_listener('response', handle_response)
+            
+        except Exception as e:
+            print(f"❌ 页面访问异常: {e}")
+        
+        # 如果页面方式失败，尝试备用方案
+        print(f"⚠️ 页面方式获取失败，尝试备用数据源...")
+        
+        # 尝试一些可能仍然可用的端点
+        backup_urls = [
+            f'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={exchange}.{ths_symbol}&klt={ths_period}&fqt=1&lmt=100',
+            f'https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param={exchange}{ths_symbol},day,,,100,qfq',
+            f'https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol={exchange.upper()}{ths_symbol}&begin={int(time.time()*1000)}&period=day&type=before&count=-100'
+        ]
+        
+        for backup_url in backup_urls:
+            print(f"🔄 尝试备用URL: {backup_url[:60]}...")
+            try:
+                response = await self.page.goto(backup_url, timeout=10000)
+                if response and response.status == 200:
+                    content = await response.text()
+                    if content and len(content) > 50:
+                        print(f"✅ 备用数据源成功")
+                        return {'raw_data': content, 'url': backup_url}
+            except:
+                continue
 
         print(f"❌ 获取K线数据失败: {symbol}")
         return None
