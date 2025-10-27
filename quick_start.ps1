@@ -1,4 +1,4 @@
-# Kronos Quick Start Script (PowerShell Version)
+﻿# Kronos Quick Start Script (PowerShell Version)
 # Purpose: Run stably with UTF-8 on Windows, avoid encoding issues
 # Encoding: UTF-8 with BOM
 
