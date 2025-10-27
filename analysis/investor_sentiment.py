@@ -23,7 +23,13 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from analysis.dynamic_crawler import DynamicCrawler
-from analysis.sector_api import get_stock_sector_info, get_sector_sentiment
+from analysis.sector_api import (
+    get_stock_sector_info,
+    get_sector_sentiment,
+    get_stock_sector_info_multi_source,  # 多数据源版本
+    get_sector_sentiment_multi_source    # 多数据源版本
+)
+from analysis.sentiment_cache_manager import get_sentiment_cache
 
 
 class InvestorSentimentAnalyzer:
@@ -51,6 +57,9 @@ class InvestorSentimentAnalyzer:
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Site': 'same-site'
         }
+
+        # 使用全局缓存管理器
+        self.global_cache = get_sentiment_cache()
 
         # 轻量缓存目录（用于网络不稳定时的短期回退）
         try:
@@ -163,6 +172,11 @@ class InvestorSentimentAnalyzer:
         Returns:
             dict: 资金流向数据
         """
+        # 1. 尝试全局缓存
+        cached = self.global_cache.get_capital_flow(self.stock_code)
+        if cached:
+            return cached
+
         try:
             # 东方财富资金流向API
             url = "http://push2his.eastmoney.com/api/qt/stock/fflow/kline/get"
@@ -195,6 +209,9 @@ class InvestorSentimentAnalyzer:
                 capital_flow['trend'] = '流入' if capital_flow['main_inflow'] > 0 else '流出'
                 capital_flow['strength'] = self._classify_capital_strength(capital_flow['main_inflow_rate'])
 
+                # 2. 缓存到全局缓存
+                self.global_cache.set_capital_flow(self.stock_code, capital_flow)
+
                 return capital_flow
 
         except Exception as e:
@@ -209,6 +226,11 @@ class InvestorSentimentAnalyzer:
         Returns:
             dict: 简要的龙虎榜数据摘要
         """
+        # 1. 尝试全局缓存
+        cached = self.global_cache.get_dragon_tiger(self.stock_code)
+        if cached:
+            return cached
+
         try:
             url = "http://datacenter-web.eastmoney.com/api/data/v1/get"
             # 优先尝试通用的日度龙虎榜数据集
@@ -309,6 +331,10 @@ class InvestorSentimentAnalyzer:
                     'recent_negative': sum(1 for r in records[:limit] if r.get('signal') == '负面'),
                     'records': records
                 }
+
+                # 2. 缓存到全局缓存
+                self.global_cache.set_dragon_tiger(self.stock_code, summary)
+
                 return summary
 
         except Exception as e:
@@ -370,6 +396,11 @@ class InvestorSentimentAnalyzer:
         Returns:
             dict: 大盘情绪数据
         """
+        # 1. 尝试全局缓存(大盘数据是全局共享的)
+        cached = self.global_cache.get_overall_market()
+        if cached:
+            return cached
+
         try:
             # 主要指数代码
             indices = {
@@ -608,10 +639,10 @@ class InvestorSentimentAnalyzer:
                 'avg_change_pct': round(avg_change, 2) if isinstance(avg_change, (int, float)) else 'N/A',
             }
 
-            # 成功获取到有效数据时写入缓存
+            # 成功获取到有效数据时写入全局缓存
             try:
                 if isinstance(result.get('primary_change_pct'), (int, float)) or isinstance(result.get('avg_change_pct'), (int, float)):
-                    self._write_cache('overall_market', result)
+                    self.global_cache.set_overall_market(result)
             except Exception:
                 pass
 
@@ -619,8 +650,8 @@ class InvestorSentimentAnalyzer:
 
         except Exception as e:
             print(f"⚠️ 获取大盘情绪失败: {str(e)}")
-            # 失败时尝试读取短期缓存
-            cached = self._read_cache('overall_market', max_age_sec=600)
+            # 失败时尝试读取全局缓存
+            cached = self.global_cache.get_overall_market()
             if cached:
                 return cached
             return self._get_default_overall_market_sentiment()
@@ -692,7 +723,7 @@ class InvestorSentimentAnalyzer:
 
     def get_sector_info_and_sentiment(self):
         """
-        获取股票所属板块及板块情绪 - 使用新的API获取真实数据
+        获取股票所属板块及板块情绪 - 使用新的API获取真实数据(支持多数据源)
 
         Returns:
             dict: 板块信息和情绪数据
@@ -700,9 +731,9 @@ class InvestorSentimentAnalyzer:
         print(f"   🔍 获取股票 {self.stock_code} 的板块情绪...")
 
         try:
-            # 使用新的板块API获取真实数据
-            sector_info = get_stock_sector_info(self.stock_code)
-            sector_sentiment = get_sector_sentiment(self.stock_code)
+            # 使用多数据源API获取真实数据(自动切换)
+            sector_info = get_stock_sector_info_multi_source(self.stock_code)
+            sector_sentiment = get_sector_sentiment_multi_source(self.stock_code)
 
             # 调试日志
             print(f"   🔍 sector_info: sector_name={sector_info.get('sector_name')}, success={sector_info.get('success')}")
@@ -711,9 +742,16 @@ class InvestorSentimentAnalyzer:
             if sector_info.get('success'):
                 print(f"   ✅ 通过{sector_info.get('data_source', 'API')}获取板块信息成功")
 
-                return {
-                    'sector_name': sector_info.get('sector_name', '未知'),
-                    'sector_sentiment': {
+                # 先尝试从全局缓存获取板块情绪(按板块名称缓存,多只股票可共享)
+                sector_name = sector_info.get('sector_name', '未知')
+                cached_sentiment = self.global_cache.get_sector(sector_name)
+
+                if cached_sentiment:
+                    print(f"   ✓ 板块情绪缓存命中: {sector_name}")
+                    sector_sentiment = cached_sentiment
+                else:
+                    # 无缓存,使用API获取的情绪数据并缓存
+                    sentiment_data = {
                         'sector_name': sector_sentiment.get('sector_name', '未知'),
                         'sentiment_score': sector_sentiment.get('sentiment_score', 50),
                         'overall': sector_sentiment.get('overall', '市场情绪中性'),
@@ -721,7 +759,13 @@ class InvestorSentimentAnalyzer:
                         'turnover_rate': sector_sentiment.get('turnover_rate', 0),
                         'emotion': sector_sentiment.get('emotion', '中性'),
                         'data_source': sector_sentiment.get('data_source', 'api')
-                    },
+                    }
+                    self.global_cache.set_sector(sector_name, sentiment_data)
+                    sector_sentiment = sentiment_data
+
+                return {
+                    'sector_name': sector_name,
+                    'sector_sentiment': sector_sentiment,
                     'stock_name': sector_info.get('stock_name', ''),
                     'current_price': sector_info.get('current_price', 0),
                     'industry': sector_info.get('industry', '未知'),
