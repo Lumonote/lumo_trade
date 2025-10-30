@@ -460,7 +460,7 @@ class OpportunityReportGenerator:
                 f"<div class=\"hot-news-item\">"
                 f"<a href=\"{url}\" target=\"_blank\" class=\"news-title\">{title}</a>"
                 f"<div class=\"news-meta\">{sector_badge}<span class=\"source-badge\">{source}</span><span>时间: {publish_time}</span><span class=\"heat-badge\">热度 {heat}</span><span class=\"rank-badge small\">{rank if rank else '-'}</span></div>"
-                f"<div class=\"stock-tags\">{tags_html}</div>"
+                # f"<div class=\"stock-tags\">{tags_html}</div>"
                 f"</div>"
             )
 

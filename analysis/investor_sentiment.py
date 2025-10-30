@@ -233,9 +233,9 @@ class InvestorSentimentAnalyzer:
 
         try:
             url = "http://datacenter-web.eastmoney.com/api/data/v1/get"
-            # 优先尝试通用的日度龙虎榜数据集
+            # 使用正确的龙虎榜数据集API (2024年更新)
             params_primary = {
-                'reportName': 'RPT_DAILYBILLBOARD',
+                'reportName': 'RPT_BILLBOARD_DAILYDETAILS',
                 'columns': 'ALL',
                 'filter': f'(SECURITY_CODE="{self.stock_code}")',
                 'pageNumber': '1',
@@ -249,17 +249,17 @@ class InvestorSentimentAnalyzer:
             })
 
             def _normalize_record(rec: dict) -> dict:
-                # 尽量兼容不同字段名
+                # 适配新API字段名 (RPT_BILLBOARD_DAILYDETAILS)
                 date = rec.get('TRADE_DATE') or rec.get('TRADEDATE') or rec.get('TRADE_DATE_S', '')
-                reason = rec.get('BILLBOARD_REASON') or rec.get('EXPLANATION') or rec.get('REASON') or ''
-                net_buy = rec.get('NET_BUY_AMT_VALUE') or rec.get('NETBUYAMT') or rec.get('NET_BUY_AMT')
-                amt = rec.get('DEAL_AMT_VALUE') or rec.get('DEALAMT') or rec.get('DEAL_AMT')
+                reason = rec.get('EXPLANATION') or rec.get('BILLBOARD_REASON') or rec.get('REASON') or ''
+                net_buy = rec.get('TOTAL_NET') or rec.get('NET_BUY_AMT_VALUE') or rec.get('NETBUYAMT') or rec.get('NET_BUY_AMT')
+                amt = rec.get('ACCUM_AMOUNT') or rec.get('DEAL_AMT_VALUE') or rec.get('DEALAMT') or rec.get('DEAL_AMT')
                 buy_seats = rec.get('BUY_SEAT_NUM') or rec.get('BUY_NUM')
                 sell_seats = rec.get('SELL_SEAT_NUM') or rec.get('SELL_NUM')
-                chg1d = rec.get('CHG_PCT_1D') or rec.get('CHGPCT1')
+                chg1d = rec.get('CHANGE_RATE') or rec.get('CHG_PCT_1D') or rec.get('CHGPCT1')
 
                 # 类型信息（涨停、异动、机构）
-                btype = rec.get('BILLBOARD_TYPE') or rec.get('BTYPE') or ''
+                btype = rec.get('CHANGE_TYPE') or rec.get('BILLBOARD_TYPE') or rec.get('BTYPE') or ''
 
                 # 数值安全转换
                 try:
@@ -305,19 +305,6 @@ class InvestorSentimentAnalyzer:
             if data.get('success') and data.get('result'):
                 raw = data['result'].get('data', []) or []
                 records = [_normalize_record(r) for r in raw]
-
-            # 若主数据集无返回，尝试备选数据集（不同环境字段名可能变化）
-            if not records:
-                params_backup = dict(params_primary)
-                params_backup['reportName'] = 'RPT_DAILYSZ_BILLBOARD'
-                try:
-                    resp2 = requests.get(url, params=params_backup, headers=headers, timeout=10)
-                    data2 = resp2.json()
-                    if data2.get('success') and data2.get('result'):
-                        raw2 = data2['result'].get('data', []) or []
-                        records = [_normalize_record(r) for r in raw2]
-                except Exception:
-                    pass
 
             if records:
                 latest = records[0]

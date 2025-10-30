@@ -30,50 +30,54 @@ class OpportunityScorer:
 
     # 评级阈值配置
     RATING_THRESHOLDS = {
-        'S': 85,   # S级：85分以上，极佳投资机会（放宽）
-        'A+': 75,  # A+级：75-85分，优秀投资机会（放宽）
-        'A': 65,   # A级：65-75分，良好投资机会（放宽）
-        'B': 50,   # B级：50-65分，一般投资机会（放宽）
+        'S': 85,   # S级：85分以上，极佳投资机会
+        'A+': 75,  # A+级：75-85分，优秀投资机会
+        'A': 65,   # A级：65-75分，良好投资机会
+        'B': 50,   # B级：50-65分，一般投资机会
         'C': 0     # C级：50分以下，较差投资机会
     }
 
     # 维度权重配置
     DIMENSION_WEIGHTS = {
-        'quantitative': 0.32,    # 量化模型权重 32%
-        'technical': 0.24,       # 技术分析权重 24%
+        'quantitative': 0.28,    # 量化模型权重 28%
+        'technical': 0.22,       # 技术分析权重 22%
         'sentiment': 0.10,       # 股民情绪权重 10%
-        'sector': 0.14,          # 板块情绪权重 14%
-        'fundamental': 0.10,     # 基本面权重 10%（上调）
-        'events': 0.10           # 事件面权重 10%
+        'sector': 0.12,          # 板块情绪权重 12%
+        'fundamental': 0.10,     # 基本面权重 10%
+        'events': 0.10,          # 事件面权重 10%
+        'dragon_tiger': 0.08     # 龙虎榜权重 8%
     }
 
     # 动态权重模板（总和均为1.0）
     DYNAMIC_WEIGHT_PROFILES = {
         'base': {
-            'quantitative': 0.32,
-            'technical': 0.24,
+            'quantitative': 0.28,
+            'technical': 0.22,
             'sentiment': 0.10,
-            'sector': 0.14,
+            'sector': 0.12,
             'fundamental': 0.10,
             'events': 0.10,
+            'dragon_tiger': 0.08,
         },
         # 强趋势、低风险时，提高量化占比
         'trend_bull': {
-            'quantitative': 0.42,
-            'technical': 0.24,
+            'quantitative': 0.38,
+            'technical': 0.22,
             'sentiment': 0.08,
-            'sector': 0.12,
+            'sector': 0.10,
             'fundamental': 0.08,
             'events': 0.06,
+            'dragon_tiger': 0.08,
         },
         # 高风险或消息面主导时，降低量化占比，提升事件/情绪
         'high_risk_news': {
-            'quantitative': 0.22,
-            'technical': 0.22,
-            'sentiment': 0.15,
-            'sector': 0.21,
+            'quantitative': 0.20,
+            'technical': 0.20,
+            'sentiment': 0.14,
+            'sector': 0.18,
             'fundamental': 0.10,
             'events': 0.10,
+            'dragon_tiger': 0.08,
         },
     }
 
@@ -124,7 +128,8 @@ class OpportunityScorer:
                 'sentiment': 0.0,
                 'sector': 0.0,
                 'fundamental': 0.0,
-                'events': 0.0
+                'events': 0.0,
+                'dragon_tiger': 0.0
             },
             'details': {}
         }
@@ -133,22 +138,22 @@ class OpportunityScorer:
             # 准备历史数据，避免技术面/量化评分为0
             if historical_data is None or (hasattr(historical_data, 'empty') and historical_data.empty):
                 historical_data = self._fetch_historical_data(stock_code)
-            # 1. 量化模型评分 (30%)
+            # 1. 量化模型评分 (28%)
             quant_score, quant_details = self._score_quantitative_models(stock_code, historical_data)
             result['scores']['quantitative'] = quant_score
             result['details']['quantitative'] = quant_details
 
-            # 2. 技术分析评分 (20%)
+            # 2. 技术分析评分 (22%)
             tech_score, tech_details = self._score_technical_analysis(stock_code, historical_data)
             result['scores']['technical'] = tech_score
             result['details']['technical'] = tech_details
 
-            # 3. 股民情绪评分 (15%)
+            # 3. 股民情绪评分 (10%)
             sentiment_score, sentiment_details = self._score_investor_sentiment(stock_code)
             result['scores']['sentiment'] = sentiment_score
             result['details']['sentiment'] = sentiment_details
 
-            # 4. 板块情绪评分 (15%)
+            # 4. 板块情绪评分 (12%)
             sector_score, sector_details = self._score_sector_sentiment(stock_code)
             result['scores']['sector'] = sector_score
             result['details']['sector'] = sector_details
@@ -163,6 +168,11 @@ class OpportunityScorer:
             result['scores']['events'] = events_score
             result['details']['events'] = events_details
 
+            # 7. 龙虎榜评分 (8%)
+            dragon_tiger_score, dragon_tiger_details = self._score_dragon_tiger(stock_code, sentiment_details)
+            result['scores']['dragon_tiger'] = dragon_tiger_score
+            result['details']['dragon_tiger'] = dragon_tiger_details
+
             # 选择动态权重
             weights_used, weight_mode = self._select_dynamic_weights(result)
 
@@ -173,7 +183,8 @@ class OpportunityScorer:
                 sentiment_score * weights_used['sentiment'] +
                 sector_score * weights_used['sector'] +
                 fundamental_score * weights_used['fundamental'] +
-                events_score * weights_used['events']
+                events_score * weights_used['events'] +
+                dragon_tiger_score * weights_used['dragon_tiger']
             )
 
             result['total_score'] = round(total_score, 2)
@@ -309,13 +320,15 @@ class OpportunityScorer:
     def _score_technical_analysis(self, stock_code: str,
                                   historical_data: Optional[pd.DataFrame]) -> Tuple[float, Dict]:
         """
-        技术分析评分 (0-100分)
+        技术分析评分 (0-100分) - 增强版
 
         评分维度:
         - RSI: 超卖区(30以下)加分，超买区(70以上)减分
         - MACD: 金叉加分，死叉减分
         - 布林带: 下轨附近加分，上轨附近减分
+        - KDJ: 金叉加分，死叉减分，超买超卖调整
         - 均线排列: 多头排列加分，空头排列减分
+        - 成交量: 放量加分
         """
         try:
             if historical_data is None or historical_data.empty:
@@ -328,6 +341,7 @@ class OpportunityScorer:
             close = historical_data['close']
             high = historical_data['high']
             low = historical_data['low']
+            volume = historical_data['volume']
 
             # RSI评分 (-20 ~ +20)
             try:
@@ -356,7 +370,7 @@ class OpportunityScorer:
             elif macd_signal == '死叉':
                 score -= 15
 
-            # 布林带评分 (+5 or -5)（柔化扣分/加分幅度）
+            # 布林带评分 (+5 or -5)
             try:
                 upper, middle, lower = TechnicalAnalysis.calculate_bollinger_bands(close, period=20, std_dev=2)
                 current_price = float(close.iloc[-1])
@@ -371,21 +385,67 @@ class OpportunityScorer:
             except Exception:
                 bb_status = None
 
-            # 均线排列评分 (+15 or -15)
+            # KDJ评分 (+10 or -10)
+            kdj_k = kdj_d = kdj_j = None
+            try:
+                kdj_k_series, kdj_d_series, kdj_j_series = TechnicalAnalysis.calculate_kdj(high, low, close)
+                kdj_k = float(kdj_k_series.iloc[-1]) if len(kdj_k_series.dropna()) else None
+                kdj_d = float(kdj_d_series.iloc[-1]) if len(kdj_d_series.dropna()) else None
+                kdj_j = float(kdj_j_series.iloc[-1]) if len(kdj_j_series.dropna()) else None
+
+                if kdj_k is not None and kdj_d is not None:
+                    if kdj_k > kdj_d and kdj_k < 80:  # 金叉且未超买
+                        score += 10
+                    elif kdj_k < kdj_d and kdj_k > 20:  # 死叉且未超卖
+                        score -= 10
+
+                    # KDJ超买超卖调整
+                    if kdj_j is not None:
+                        if kdj_j < 20:  # 超卖
+                            score += 5
+                        elif kdj_j > 90:  # 超买
+                            score -= 5
+            except Exception:
+                pass
+
+            # 均线排列评分 (+15 or -15)，新增MA60
+            ma5 = ma10 = ma20 = ma60 = None
             try:
                 ma5_series = TechnicalAnalysis.calculate_ma(close, 5)
                 ma10_series = TechnicalAnalysis.calculate_ma(close, 10)
                 ma20_series = TechnicalAnalysis.calculate_ma(close, 20)
+                ma60_series = TechnicalAnalysis.calculate_ma(close, 60)
+
                 ma5 = float(ma5_series.iloc[-1]) if len(ma5_series.dropna()) else None
                 ma10 = float(ma10_series.iloc[-1]) if len(ma10_series.dropna()) else None
                 ma20 = float(ma20_series.iloc[-1]) if len(ma20_series.dropna()) else None
-                if ma5 is not None and ma10 is not None and ma20 is not None:
-                    if ma5 > ma10 and ma10 > ma20:
+                ma60 = float(ma60_series.iloc[-1]) if len(ma60_series.dropna()) else None
+
+                if all([ma5, ma10, ma20]):
+                    if ma5 > ma10 > ma20:
                         score += 15  # 多头排列
-                    elif ma5 < ma10 and ma10 < ma20:
+                        # 如果MA60也符合,再加5分
+                        if ma60 and ma20 > ma60:
+                            score += 5
+                    elif ma5 < ma10 < ma20:
                         score -= 15  # 空头排列
             except Exception:
-                ma5 = ma10 = ma20 = None
+                pass
+
+            # 成交量评分 (+10 or 0)
+            volume_ratio = 1.0
+            try:
+                if len(volume) >= 6:
+                    current_volume = volume.iloc[-1]
+                    avg_volume_5 = volume.iloc[-6:-1].mean()
+                    if avg_volume_5 > 0:
+                        volume_ratio = current_volume / avg_volume_5
+                        if volume_ratio >= 1.5:  # 放量
+                            score += 10
+                        elif volume_ratio >= 1.2:
+                            score += 5
+            except Exception:
+                pass
 
             # 确保分数在0-100范围内
             score = max(0, min(100, score))
@@ -394,9 +454,14 @@ class OpportunityScorer:
                 'RSI': rsi,
                 'MACD': macd_signal,
                 'Bollinger': bb_status,
+                'KDJ_K': kdj_k,
+                'KDJ_D': kdj_d,
+                'KDJ_J': kdj_j,
                 'MA5': ma5,
                 'MA10': ma10,
-                'MA20': ma20
+                'MA20': ma20,
+                'MA60': ma60,
+                'volume_ratio': volume_ratio
             }
 
             return round(score, 2), details
@@ -695,6 +760,109 @@ class OpportunityScorer:
             logger.warning(f"动态权重选择失败，使用基础权重: {ex}")
             return self.DYNAMIC_WEIGHT_PROFILES['base'], 'base'
 
+    def _score_dragon_tiger(self, stock_code: str, sentiment_details: Dict) -> Tuple[float, Dict]:
+        """
+        龙虎榜评分 (0-100分)
+
+        评分规则:
+        - 未上榜: 50分 (基准分)
+        - 上榜: 根据净买入金额和上榜原因加分
+          - 净买入 > 1000万: +20分
+          - 净买入 500-1000万: +15分
+          - 净买入 100-500万: +10分
+          - 净买入 < 100万: +5分
+          - 净卖出(负值): 基于卖出额扣分
+          - 涨停板上榜: +10分
+          - 跌停板上榜: -10分
+          - 涨幅偏离: +5分
+          - 跌幅偏离: -5分
+
+        Args:
+            stock_code: 股票代码
+            sentiment_details: 情绪分析详情（包含龙虎榜数据）
+
+        Returns:
+            (得分, 详情字典)
+        """
+        try:
+            dragon_tiger = sentiment_details.get('dragon_tiger', {})
+
+            if not dragon_tiger or 'error' in dragon_tiger:
+                return 50.0, {'error': '无龙虎榜数据'}
+
+            has_records = dragon_tiger.get('has_records', False)
+
+            if not has_records:
+                return 50.0, {
+                    'on_list': False,
+                    'score': 50.0,
+                    'reason': '未上榜'
+                }
+
+            score = 50.0
+
+            # 获取最近一次记录的净买入金额和上榜原因
+            records = dragon_tiger.get('records', [])
+            if not records:
+                return 50.0, {
+                    'on_list': False,
+                    'score': 50.0,
+                    'reason': '未上榜'
+                }
+
+            latest_record = records[0]
+            net_buy = latest_record.get('net_buy_amount', 0) or 0
+            reason = dragon_tiger.get('last_reason', '')
+            last_date = dragon_tiger.get('last_date', 'N/A')
+
+            # 根据净买入金额加分/扣分
+            if net_buy > 10000000:  # 1000万以上净买入
+                score += 20
+            elif net_buy > 5000000:  # 500-1000万净买入
+                score += 15
+            elif net_buy > 1000000:  # 100-500万净买入
+                score += 10
+            elif net_buy > 0:  # 小额净买入
+                score += 5
+            elif net_buy < -10000000:  # 1000万以上净卖出
+                score -= 20
+            elif net_buy < -5000000:  # 500-1000万净卖出
+                score -= 15
+            elif net_buy < -1000000:  # 100-500万净卖出
+                score -= 10
+            else:  # 小额净卖出
+                score -= 5
+
+            # 根据上榜原因调整
+            if '涨停' in reason:
+                score += 10
+            elif '跌停' in reason:
+                score -= 10
+
+            if '涨幅偏离' in reason or '涨幅达到' in reason:
+                score += 5
+            elif '跌幅偏离' in reason or '跌幅达到' in reason:
+                score -= 5
+
+            # 确保分数在0-100范围内
+            score = max(0, min(100, score))
+
+            details = {
+                'on_list': True,
+                'score': score,
+                'net_buy_amount': net_buy,
+                'reason': reason,
+                'last_date': last_date,
+                'recent_positive': dragon_tiger.get('recent_positive', 0),
+                'recent_negative': dragon_tiger.get('recent_negative', 0)
+            }
+
+            return round(score, 2), details
+
+        except Exception as e:
+            logger.error(f"龙虎榜评分失败: {e}")
+            return 50.0, {'error': str(e)}
+
 
 def main():
     """测试多维度打分系统"""
@@ -729,6 +897,7 @@ def main():
             print(f"  板块情绪: {result['scores']['sector']:.2f} (权重 {pct('sector')}%)")
             print(f"  基本面: {result['scores']['fundamental']:.2f} (权重 {pct('fundamental')}%)")
             print(f"  事件面: {result['scores']['events']:.2f} (权重 {pct('events')}%)")
+            print(f"  龙虎榜: {result['scores']['dragon_tiger']:.2f} (权重 {pct('dragon_tiger')}%)")
         else:
             print(f"\n✗ 评分失败")
 
