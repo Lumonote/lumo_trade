@@ -66,7 +66,7 @@ def build_dummy_analysis_results():
             {'stage_name': '阶段2: 技术面筛选', 'passed': True, 'reason': '趋势向上、形态良好'},
             {'stage_name': '阶段3: 情绪面筛选', 'passed': True, 'reason': '股吧偏多，板块偏强，资金净流入，近期龙虎榜正面'},
             {'stage_name': '阶段4: 基本面筛选', 'passed': True, 'reason': '估值合理；营收和利润同比增长'}
-            # {'stage_name': '阶段5: 事件面筛选', 'passed': True, 'reason': '利好消息偏多'}
+            # {'stage_name': '阶段5:消息面筛选', 'passed': True, 'reason': '利好消息偏多'}
         ]
     }
 
@@ -116,7 +116,7 @@ def build_dummy_analysis_results():
             {'stage_name': '阶段2: 技术面筛选', 'passed': True, 'reason': '短期压力，等待趋势修复'},
             {'stage_name': '阶段3: 情绪面筛选', 'passed': True, 'reason': '股吧分歧，板块一般，资金净流出，近期龙虎榜负面'},
             {'stage_name': '阶段4: 基本面筛选', 'passed': True, 'reason': '估值略高；营收下滑'}
-            # {'stage_name': '阶段5: 事件面筛选', 'passed': True, 'reason': '消息面暂无明显利好'}
+            # {'stage_name': '阶段5: 消息面筛选', 'passed': True, 'reason': '消息面暂无明显利好'}
         ]
     }
 

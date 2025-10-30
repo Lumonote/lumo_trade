@@ -1234,7 +1234,7 @@ class OpportunityReportGenerator:
             rev_str = _fmt_pct(rev, 1, default='未知')
             prof_str = _fmt_pct(prof, 1, default='未知')
 
-            # 事件面
+            # 消息面
             ed = (scoring_result.get('details', {}).get('events') or {})
             ev_rating = ed.get('rating', None)
             ev_pos = ed.get('positive_events', None)

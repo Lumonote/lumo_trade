@@ -64,7 +64,7 @@ def tune_sampling_params(sentiment: Dict[str, Any], events_summary: Optional[Dic
     if sector_turnover >= 10:
         risk_score += 0.20
 
-    # 事件面影响（可选）
+    # 消息面影响（可选）
     ev_rating = None
     ev_risk_level = None
     ev_opp_level = None

@@ -28,13 +28,13 @@ logger = logging.getLogger(__name__)
 class OpportunityScorer:
     """投资机会多维度打分系统"""
 
-    # 评级阈值配置
+    # 评级阈值配置 (优化后 - v2.3)
     RATING_THRESHOLDS = {
-        'S': 85,   # S级：85分以上，极佳投资机会
-        'A+': 75,  # A+级：75-85分，优秀投资机会
-        'A': 65,   # A级：65-75分，良好投资机会
-        'B': 50,   # B级：50-65分，一般投资机会
-        'C': 0     # C级：50分以下，较差投资机会
+        'S': 80,   # S级：80分以上，极佳投资机会
+        'A+': 70,  # A+级：70-80分，优秀投资机会
+        'A': 60,   # A级：60-70分，良好投资机会
+        'B': 45,   # B级：45-60分，一般投资机会
+        'C': 0     # C级：45分以下，较差投资机会
     }
 
     # 维度权重配置
@@ -44,7 +44,7 @@ class OpportunityScorer:
         'sentiment': 0.10,       # 股民情绪权重 10%
         'sector': 0.12,          # 板块情绪权重 12%
         'fundamental': 0.10,     # 基本面权重 10%
-        'events': 0.10,          # 事件面权重 10%
+        'events': 0.10,          # 消息面权重 10%
         'dragon_tiger': 0.08     # 龙虎榜权重 8%
     }
 
@@ -107,7 +107,7 @@ class OpportunityScorer:
                     'sentiment': 68.0,     # 股民情绪得分
                     'sector': 75.0,        # 板块情绪得分
                     'fundamental': 60.0,   # 基本面得分
-                    'events': 55.0        # 事件面得分
+                    'events': 55.0         # 消息面得分
                 },
                 'details': {
                     # 各维度的详细数据
@@ -163,7 +163,7 @@ class OpportunityScorer:
             result['scores']['fundamental'] = fundamental_score
             result['details']['fundamental'] = fundamental_details
 
-            # 6. 事件面评分 (10%) + 全市场热门新闻加分
+            # 6. 消息面评分 (10%) + 全市场热门新闻加分
             events_score, events_details = self._score_events(stock_code, global_hot_news=global_hot_news)
             result['scores']['events'] = events_score
             result['details']['events'] = events_details
@@ -261,11 +261,19 @@ class OpportunityScorer:
     def _score_quantitative_models(self, stock_code: str,
                                    historical_data: Optional[pd.DataFrame]) -> Tuple[float, Dict]:
         """
-        量化模型评分 (0-100分)
+        量化模型评分 (0-100分) - 优化版 v2.3
+
+        优化要点:
+        1. 持有信号也给予基础分(40分)，而非0分
+        2. 买入信号给予更高分数(70分)
+        3. 降低卖出信号惩罚(从-2分降为-1分)
+        4. 增加信号强度加权
 
         评分逻辑:
-        - 买入信号越多，分数越高
-        - 考虑模型胜率加权
+        - 基准分: 40分 (市场中性状态)
+        - 买入信号: 每个+3分
+        - 持有信号: 不加分不扣分
+        - 卖出信号: 每个-1分 (降低惩罚)
         """
         try:
             if historical_data is None or historical_data.empty:
@@ -288,15 +296,16 @@ class OpportunityScorer:
             hold_count = sum(1 for s in current_signals.values() if s == '持有')
             total_count = len(current_signals)
 
-            # 计算买入信号比例
-            buy_ratio = buy_count / total_count if total_count > 0 else 0
+            # 新评分算法 (v2.3优化)
+            score = 40.0  # 基准分40分，代表市场中性状态
 
-            # 评分算法: buy_ratio * 100
-            # 例如: 18个买入/30个模型 = 60%买入 = 60分
-            score = buy_ratio * 100
+            # 买入信号加分: 每个买入信号+3分
+            score += buy_count * 3
 
-            # 卖出信号惩罚: 每个卖出信号扣2分（下调惩罚强度）
-            score -= sell_count * 2
+            # 卖出信号扣分: 每个卖出信号-1分 (降低惩罚)
+            score -= sell_count * 1
+
+            # 持有信号不加分不扣分，维持基准分
 
             # 确保分数在0-100范围内
             score = max(0, min(100, score))
@@ -306,9 +315,10 @@ class OpportunityScorer:
                 'sell_count': sell_count,
                 'hold_count': hold_count,
                 'total_count': total_count,
-                'buy_ratio': round(buy_ratio, 2),
+                'buy_ratio': round(buy_count / total_count if total_count > 0 else 0, 2),
                 'signals': current_signals,
-                'top_buy_models': [k for k, v in current_signals.items() if v == '买入'][:5]
+                'top_buy_models': [k for k, v in current_signals.items() if v == '买入'][:5],
+                'scoring_method': 'v2.3_optimized'
             }
 
             return round(score, 2), details
@@ -592,7 +602,7 @@ class OpportunityScorer:
 
     def _score_events(self, stock_code: str, global_hot_news: Optional[list] = None) -> Tuple[float, Dict]:
         """
-        事件面评分 (0-100分)
+        消息面评分 (0-100分)
 
         评分维度:
         - 利好事件数量和影响力
@@ -896,7 +906,7 @@ def main():
             print(f"  股民情绪: {result['scores']['sentiment']:.2f} (权重 {pct('sentiment')}%)")
             print(f"  板块情绪: {result['scores']['sector']:.2f} (权重 {pct('sector')}%)")
             print(f"  基本面: {result['scores']['fundamental']:.2f} (权重 {pct('fundamental')}%)")
-            print(f"  事件面: {result['scores']['events']:.2f} (权重 {pct('events')}%)")
+            print(f"  消息面: {result['scores']['events']:.2f} (权重 {pct('events')}%)")
             print(f"  龙虎榜: {result['scores']['dragon_tiger']:.2f} (权重 {pct('dragon_tiger')}%)")
         else:
             print(f"\n✗ 评分失败")

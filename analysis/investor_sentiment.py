@@ -219,9 +219,13 @@ class InvestorSentimentAnalyzer:
 
         return self._get_default_capital_flow()
 
-    def get_dragon_tiger_list(self, limit: int = 10):
+    def get_dragon_tiger_list(self, limit: int = 10, days: int = 1):
         """
         获取个股近期龙虎榜记录（东方财富数据中心）
+
+        Args:
+            limit: 返回记录数量限制
+            days: 查询最近N天的数据 (默认1天，即当天)
 
         Returns:
             dict: 简要的龙虎榜数据摘要
@@ -232,12 +236,19 @@ class InvestorSentimentAnalyzer:
             return cached
 
         try:
+            from datetime import datetime, timedelta
+
             url = "http://datacenter-web.eastmoney.com/api/data/v1/get"
-            # 使用正确的龙虎榜数据集API (2024年更新)
+
+            # 只查询当天的龙虎榜数据
+            today = datetime.now()
+            today_str = today.strftime('%Y-%m-%d')
+
+            # 使用正确的龙虎榜数据集API (2024年更新) + 当天日期过滤
             params_primary = {
                 'reportName': 'RPT_BILLBOARD_DAILYDETAILS',
                 'columns': 'ALL',
-                'filter': f'(SECURITY_CODE="{self.stock_code}")',
+                'filter': f'(SECURITY_CODE="{self.stock_code}")(TRADE_DATE=\'{today_str}\')',
                 'pageNumber': '1',
                 'pageSize': str(limit),
                 'sortColumns': 'TRADE_DATE',

@@ -170,7 +170,7 @@ class OpportunityFilter:
         stage4_result = self.stage4_fundamental_score(scoring_result)
         result['filter_history'].append(stage4_result)
 
-        # 阶段5: 事件面评分（仅评分，不筛选）
+        # 阶段5:消息面评分（仅评分，不筛选）
         stage5_result = self.stage5_events_score(scoring_result)
         result['filter_history'].append(stage5_result)
 
@@ -704,7 +704,7 @@ class OpportunityFilter:
 
     def stage5_events_filter(self, scoring_result: Dict) -> Dict:
         """
-        阶段5: 事件面筛选
+        阶段5:消息面筛选
 
         筛选标准:
         - 利好事件数量 > 利空事件数量 OR
@@ -883,7 +883,7 @@ class OpportunityFilter:
 
     def stage5_events_score(self, scoring_result: Dict) -> Dict:
         """
-        阶段5: 事件面评分（仅评分，不筛选）
+        阶段5: 消息面评分（仅评分，不筛选）
 
         Args:
             scoring_result: OpportunityScorer的评分结果
@@ -923,13 +923,13 @@ class OpportunityFilter:
 
             # 构建理由
             stage_result['reason'] = (
-                f"✓ 事件面{events_score:.0f}分, "
+                f"✓ 消息面{events_score:.0f}分, "
                 f"利好事件{positive_count}个, 利空事件{negative_count}个, "
                 f"评级: {rating}"
             )
 
         except Exception as e:
-            stage_result['reason'] = f"⚠ 事件面评分异常: {str(e)}"
+            stage_result['reason'] = f"⚠ 消息面评分异常: {str(e)}"
             logger.error(f"事件面评分异常: {e}", exc_info=True)
 
         return stage_result
