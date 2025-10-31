@@ -24,6 +24,8 @@ from scripts.opportunity_report_generator import OpportunityReportGenerator
 from analysis.global_hot_news_collector import GlobalHotNewsCollector
 from analysis.sector_hot_news_collector import SectorNewsCollector
 from analysis.trending_topics_collector import TrendingTopicsCollector
+from analysis.llm_service import LLMConfig, LLMAnalyzer
+from analysis.technical_analysis import TechnicalAnalysis
 
 logging.basicConfig(
     level=logging.INFO,
@@ -218,6 +220,70 @@ class OpportunityDiscovery:
             logger.warning(f"热榜话题采集异常: {e}")
             hot_news_title = "🔥 热门话题精选（按热门板块）"
 
+        # 步骤3.5: LLM深度分析 (B级及以上股票)
+        logger.info(f"\n步骤3.5: 对B级及以上股票进行LLM深度分析...")
+
+        try:
+            llm_config = LLMConfig()
+            if llm_config.is_configured():
+                llm_analyzer = LLMAnalyzer(llm_config)
+
+                # 筛选B级及以上股票(评分≥45分)
+                high_grade_stocks = [
+                    r for r in filter_results
+                    if r.get('passed', False) and
+                    r.get('scoring_result', {}).get('total_score', 0) >= 45
+                ]
+
+                if high_grade_stocks:
+                    logger.info(f"发现 {len(high_grade_stocks)} 只B级及以上股票，准备进行LLM分析...")
+
+                    llm_analyzed_count = 0
+                    for stock_result in high_grade_stocks:
+                        stock_code = stock_result.get('stock_code', '')
+                        stock_name = stock_result.get('name', '')
+                        scoring_result = stock_result.get('scoring_result', {})
+
+                        try:
+                            logger.info(f"  正在分析 {stock_code} ({stock_name})...")
+
+                            # 准备LLM分析数据
+                            stock_data = self._prepare_llm_analysis_data(
+                                stock_code, stock_name, scoring_result
+                            )
+
+                            # 调用LLM分析
+                            success, llm_result = llm_analyzer.analyze_stock(stock_data)
+
+                            if success:
+                                # 保存LLM分析结果
+                                stock_result['llm_analysis'] = llm_result
+
+                                # 提取预测K线数据
+                                llm_predicted_kline = llm_analyzer.extract_predicted_kline(llm_result)
+                                if not llm_predicted_kline.empty:
+                                    stock_result['llm_predicted_kline'] = llm_predicted_kline
+                                    logger.info(f"    ✓ LLM分析完成，含{len(llm_predicted_kline)}天预测数据")
+                                else:
+                                    logger.info(f"    ✓ LLM分析完成")
+
+                                llm_analyzed_count += 1
+                            else:
+                                logger.warning(f"    ✗ LLM分析失败: {llm_result}")
+
+                        except Exception as e:
+                            logger.error(f"  LLM分析 {stock_code} 失败: {e}")
+
+                    logger.info(f"✓ LLM深度分析完成: {llm_analyzed_count}/{len(high_grade_stocks)} 只股票")
+                else:
+                    logger.info("无B级及以上股票，跳过LLM分析")
+            else:
+                logger.info("⏭️ LLM未配置，跳过深度分析")
+                logger.info("💡 可在GUI中配置通义千问或DeepSeek API以启用AI智能分析")
+
+        except Exception as e:
+            logger.warning(f"LLM深度分析流程失败: {e}")
+
         # 步骤4: 生成报表
         logger.info(f"\n步骤4: 正在生成投资机会挖掘报表...")
 
@@ -281,6 +347,151 @@ class OpportunityDiscovery:
         except Exception as e:
             logger.error(f"分析 {stock_code} ({stock_name}) 失败: {e}")
             return None
+
+    def _prepare_llm_analysis_data(self, stock_code: str, stock_name: str,
+                                   scoring_result: Dict) -> Dict:
+        """
+        准备LLM分析所需的数据
+
+        Args:
+            stock_code: 股票代码
+            stock_name: 股票名称
+            scoring_result: 多维度评分结果
+
+        Returns:
+            LLM分析所需的数据字典
+        """
+        details = scoring_result.get('details', {})
+        scores = scoring_result.get('scores', {})
+
+        # 格式化技术面数据
+        def format_technical_for_llm(tech_details: Dict) -> str:
+            if not tech_details:
+                return "技术面数据暂缺"
+
+            parts = []
+            if 'RSI' in tech_details and tech_details['RSI']:
+                parts.append(f"RSI: {tech_details['RSI']:.2f}")
+            if 'MACD' in tech_details:
+                parts.append(f"MACD: {tech_details['MACD']}")
+            if 'Bollinger' in tech_details:
+                parts.append(f"布林带: {tech_details['Bollinger']}")
+            if tech_details.get('MA5') and tech_details.get('MA10') and tech_details.get('MA20'):
+                parts.append(
+                    f"均线: MA5={tech_details['MA5']:.2f}, MA10={tech_details['MA10']:.2f}, MA20={tech_details['MA20']:.2f}")
+
+            return "\n".join(parts) if parts else "技术指标数据不足"
+
+        # 格式化量化模型数据
+        def format_quantitative_for_llm(quant_details: Dict) -> str:
+            if not quant_details:
+                return "量化模型数据暂缺"
+
+            buy_count = quant_details.get('buy_count', 0)
+            sell_count = quant_details.get('sell_count', 0)
+            hold_count = quant_details.get('hold_count', 0)
+            total = quant_details.get('total_count', 0)
+
+            result = f"买入信号: {buy_count}个, 持有信号: {hold_count}个, 卖出信号: {sell_count}个 (共{total}个模型)\n"
+            result += f"买入比例: {quant_details.get('buy_ratio', 0) * 100:.1f}%"
+
+            return result
+
+        # 格式化基本面数据
+        def format_fundamental_for_llm(fund_details: Dict) -> str:
+            if not fund_details:
+                return "基本面数据暂缺"
+
+            parts = []
+            if 'pe_ratio' in fund_details and fund_details['pe_ratio']:
+                parts.append(f"PE: {fund_details['pe_ratio']:.2f}")
+            if 'pb_ratio' in fund_details and fund_details['pb_ratio']:
+                parts.append(f"PB: {fund_details['pb_ratio']:.2f}")
+            if 'revenue_yoy' in fund_details and fund_details['revenue_yoy'] is not None:
+                parts.append(f"营收增长: {fund_details['revenue_yoy']:.2f}%")
+            if 'net_profit_yoy' in fund_details and fund_details['net_profit_yoy'] is not None:
+                parts.append(f"利润增长: {fund_details['net_profit_yoy']:.2f}%")
+
+            return "\n".join(parts) if parts else "基本面数据不足"
+
+        # 格式化情绪数据
+        def format_sentiment_for_llm(sentiment_details: Dict, sector_details: Dict) -> str:
+            if not sentiment_details and not sector_details:
+                return "情绪数据暂缺"
+
+            parts = []
+
+            # 股民情绪
+            if sentiment_details:
+                comprehensive = sentiment_details.get('comprehensive_sentiment', '未知')
+                score = sentiment_details.get('comprehensive_score', 50)
+                parts.append(f"综合情绪: {comprehensive} (评分: {score})")
+
+                guba = sentiment_details.get('guba_sentiment', {})
+                if guba:
+                    parts.append(
+                        f"股吧情绪: 看多{guba.get('bullish_ratio', 0)}%, 看空{guba.get('bearish_ratio', 0)}%")
+
+            # 板块情绪
+            if sector_details:
+                sector_name = sector_details.get('sector_name', '未知板块')
+                sector_overall = sector_details.get('overall', '中性')
+                sector_change = sector_details.get('change_pct', 0)
+                parts.append(f"所属板块: {sector_name}, 板块情绪: {sector_overall}, 涨跌幅: {sector_change:.2f}%")
+
+            return "\n".join(parts) if parts else "情绪数据不足"
+
+        # 格式化消息面数据
+        def format_events_for_llm(events_details: Dict) -> str:
+            if not events_details:
+                return "消息面数据暂缺"
+
+            parts = []
+            rating = events_details.get('rating', '中性')
+            comp_score = events_details.get('comprehensive_score', 0)
+            parts.append(f"消息面评级: {rating} (综合分: {comp_score:.1f})")
+
+            pos_events = events_details.get('positive_events', 0)
+            neg_events = events_details.get('negative_events', 0)
+            parts.append(f"利好事件: {pos_events}个, 利空事件: {neg_events}个")
+
+            risk = events_details.get('risk_level', '未知')
+            opp = events_details.get('opportunity_level', '未知')
+            parts.append(f"风险等级: {risk}, 机会等级: {opp}")
+
+            return "\n".join(parts)
+
+        # 构建完整的数据
+        stock_data = {
+            'code': stock_code,
+            'name': stock_name,
+            'current_price': 0,  # 需要从details中获取实时价格
+            'kline_data': "K线数据已通过技术分析模块计算",
+            'technical_analysis': format_technical_for_llm(details.get('technical', {})) + "\n" +
+                                  format_quantitative_for_llm(details.get('quantitative', {})),
+            'fundamental_data': format_fundamental_for_llm(details.get('fundamental', {})),
+            'news_sentiment': format_events_for_llm(details.get('events', {})),
+            'market_env': format_sentiment_for_llm(
+                details.get('sentiment', {}),
+                details.get('sector', {})
+            )
+        }
+
+        # 添加综合评分信息
+        stock_data['overall_rating'] = f"""
+综合评分: {scoring_result.get('total_score', 0):.2f}分
+评级: {scoring_result.get('rating', 'C')}级
+各维度得分:
+- 量化模型: {scores.get('quantitative', 0):.1f}分
+- 技术分析: {scores.get('technical', 0):.1f}分
+- 股民情绪: {scores.get('sentiment', 0):.1f}分
+- 板块情绪: {scores.get('sector', 0):.1f}分
+- 基本面: {scores.get('fundamental', 0):.1f}分
+- 消息面: {scores.get('events', 0):.1f}分
+- 龙虎榜: {scores.get('dragon_tiger', 0):.1f}分
+"""
+
+        return stock_data
 
 
 def main():

@@ -90,7 +90,9 @@ class KronosHTMLReportGenerator:
                                       fundamental_data: Optional[Dict] = None,
                                       news_data: Optional[Dict] = None,
                                       sentiment_data: Optional[Dict] = None,
-                                      event_data: Optional[Dict] = None) -> str:
+                                      event_data: Optional[Dict] = None,
+                                      llm_analysis: Optional[Dict] = None,
+                                      llm_predicted_kline: Optional[pd.DataFrame] = None) -> str:
         """
         生成综合分析报告 - 单页面结构
 
@@ -105,6 +107,8 @@ class KronosHTMLReportGenerator:
             news_data: 消息面数据
             sentiment_data: 情绪数据
             event_data: 利好利空事件数据
+            llm_analysis: LLM分析结果
+            llm_predicted_kline: LLM预测K线数据
 
         Returns:
             生成的HTML报告文件路径
@@ -125,7 +129,9 @@ class KronosHTMLReportGenerator:
             sentiment_data=sentiment_data,
             event_data=event_data,
             predictions=predictions,
-            historical_data=historical_data
+            historical_data=historical_data,
+            llm_analysis=llm_analysis,
+            llm_predicted_kline=llm_predicted_kline
         )
 
         # 写入文件
@@ -187,7 +193,9 @@ class KronosHTMLReportGenerator:
                                        sentiment_data: Dict = None,
                                        event_data: Dict = None,
                                        predictions: Optional[pd.DataFrame] = None,
-                                       historical_data: Optional[pd.DataFrame] = None) -> str:
+                                       historical_data: Optional[pd.DataFrame] = None,
+                                       llm_analysis: Optional[Dict] = None,
+                                       llm_predicted_kline: Optional[pd.DataFrame] = None) -> str:
         """生成单页面HTML模板"""
 
         # 提取数据
@@ -223,6 +231,9 @@ class KronosHTMLReportGenerator:
             fundamental_data or {}, sentiment_data or {}, analysis_data or {},
             predictions=predictions, historical_data=historical_data
         )
+
+        # 生成LLM智能分析板块
+        llm_analysis_html = self._generate_llm_analysis_section(llm_analysis, llm_predicted_kline)
 
         # 嵌入PNG图片
         chart_html = ""
@@ -306,6 +317,14 @@ class KronosHTMLReportGenerator:
                     <h3>🧾 分析总结</h3>
                     {analysis_summary_html}
                 </div>
+            </div>
+        </section>
+
+        <!-- AI智能分析板块 -->
+        <section class="llm-analysis-wrapper" style="display: {'block' if llm_analysis else 'none'};">
+            <h2>🤖 AI智能分析</h2>
+            <div class="analysis-card">
+                {llm_analysis_html}
             </div>
         </section>
 
@@ -1707,6 +1726,208 @@ class KronosHTMLReportGenerator:
         </div>
         """
         html += "</div>"
+
+        html += "</div>"
+        return html
+
+    def _generate_llm_analysis_section(self, llm_analysis: Dict, llm_predicted_kline: Optional[pd.DataFrame] = None) -> str:
+        """生成LLM智能分析板块"""
+        if not llm_analysis:
+            return """
+            <div class='llm-analysis-section'>
+                <p style='text-align: center; color: var(--text-muted); padding: 20px;'>
+                    💡 LLM未配置或分析未启用
+                </p>
+            </div>
+            """
+
+        html = "<div class='llm-analysis-section'>"
+
+        # K线走势预测
+        kline_pred = llm_analysis.get('kline_prediction', {})
+        if kline_pred:
+            trend = kline_pred.get('trend', '未知')
+            confidence = kline_pred.get('confidence', 0) * 100
+
+            html += f"""
+            <div class='llm-subsection'>
+                <h4>📊 K线走势预测</h4>
+                <div class='llm-content'>
+                    <div class='llm-row'>
+                        <span class='llm-label'>预测趋势:</span>
+                        <span class='llm-value trend-{trend}'>{trend}</span>
+                    </div>
+                    <div class='llm-row'>
+                        <span class='llm-label'>信心度:</span>
+                        <span class='llm-value'>{confidence:.0f}%</span>
+                    </div>
+            """
+
+            # 支撑位和压力位
+            support_levels = kline_pred.get('support_levels', [])
+            resistance_levels = kline_pred.get('resistance_levels', [])
+
+            if support_levels:
+                html += f"""
+                    <div class='llm-row'>
+                        <span class='llm-label'>关键支撑位:</span>
+                        <span class='llm-value'>{', '.join(map(str, support_levels))}</span>
+                    </div>
+                """
+
+            if resistance_levels:
+                html += f"""
+                    <div class='llm-row'>
+                        <span class='llm-label'>关键压力位:</span>
+                        <span class='llm-value'>{', '.join(map(str, resistance_levels))}</span>
+                    </div>
+                """
+
+            # 预测K线数据表格
+            predictions = kline_pred.get('predictions', [])
+            if predictions and len(predictions) > 0:
+                html += """
+                    <div class='llm-predictions-table'>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>日期</th>
+                                    <th>开盘</th>
+                                    <th>最高</th>
+                                    <th>最低</th>
+                                    <th>收盘</th>
+                                    <th>涨跌幅</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                """
+
+                for pred in predictions[:10]:  # 只显示前10天
+                    change_pct = pred.get('change_pct', 0)
+                    change_class = 'positive' if change_pct > 0 else 'negative'
+                    html += f"""
+                                <tr>
+                                    <td>{pred.get('date', 'N/A')}</td>
+                                    <td>{pred.get('open', 0):.2f}</td>
+                                    <td>{pred.get('high', 0):.2f}</td>
+                                    <td>{pred.get('low', 0):.2f}</td>
+                                    <td>{pred.get('close', 0):.2f}</td>
+                                    <td class='{change_class}'>{change_pct:+.2f}%</td>
+                                </tr>
+                    """
+
+                html += """
+                            </tbody>
+                        </table>
+                    </div>
+                """
+
+            html += "</div></div>"
+
+        # 操作建议
+        op_advice = llm_analysis.get('operation_advice', {})
+        if op_advice:
+            action = op_advice.get('action', '未知')
+            action_class = {
+                '买入': 'buy-action',
+                '持有': 'hold-action',
+                '卖出': 'sell-action'
+            }.get(action, 'hold-action')
+
+            html += f"""
+            <div class='llm-subsection'>
+                <h4>💡 操作建议</h4>
+                <div class='llm-content'>
+                    <div class='operation-badge {action_class}'>{action}</div>
+                    <div class='llm-row'>
+                        <span class='llm-label'>建议价位:</span>
+                        <span class='llm-value'>{op_advice.get('suggested_price_range', '未知')}</span>
+                    </div>
+                    <div class='llm-row'>
+                        <span class='llm-label'>仓位控制:</span>
+                        <span class='llm-value'>{op_advice.get('position_control', '未知')}</span>
+                    </div>
+                    <div class='llm-row'>
+                        <span class='llm-label'>目标价位:</span>
+                        <span class='llm-value'>{op_advice.get('target_price', '未知')}</span>
+                    </div>
+                    <div class='llm-row'>
+                        <span class='llm-label'>止损价位:</span>
+                        <span class='llm-value'>{op_advice.get('stop_loss', '未知')}</span>
+                    </div>
+                    <div class='llm-row'>
+                        <span class='llm-label'>信心度:</span>
+                        <span class='llm-value'>{op_advice.get('confidence', 0) * 100:.0f}%</span>
+                    </div>
+                </div>
+            </div>
+            """
+
+        # 风险评估
+        risk = llm_analysis.get('risk_assessment', {})
+        if risk:
+            risk_level = risk.get('risk_level', '未知')
+            risk_class = {
+                '低': 'risk-low',
+                '中': 'risk-medium',
+                '高': 'risk-high'
+            }.get(risk_level, 'risk-medium')
+
+            html += f"""
+            <div class='llm-subsection'>
+                <h4>⚠️ 风险评估</h4>
+                <div class='llm-content'>
+                    <div class='risk-badge {risk_class}'>{risk_level}风险</div>
+                    <div class='llm-row'>
+                        <span class='llm-label'>综合评分:</span>
+                        <span class='llm-value'>{risk.get('overall_score', 0)}/100</span>
+                    </div>
+            """
+
+            risk_points = risk.get('risk_points', [])
+            if risk_points:
+                html += "<div class='llm-row'><span class='llm-label'>主要风险:</span></div>"
+                html += "<ul class='risk-points-list'>"
+                for rp in risk_points:
+                    html += f"<li>{rp}</li>"
+                html += "</ul>"
+
+            html += "</div></div>"
+
+        # 操作策略
+        strategy = llm_analysis.get('strategy', {})
+        if strategy:
+            html += f"""
+            <div class='llm-subsection'>
+                <h4>📋 操作策略</h4>
+                <div class='llm-content'>
+                    <div class='llm-row'>
+                        <span class='llm-label'>短线策略:</span>
+                        <span class='llm-value'>{strategy.get('short_term', '未知')}</span>
+                    </div>
+                    <div class='llm-row'>
+                        <span class='llm-label'>中线策略:</span>
+                        <span class='llm-value'>{strategy.get('mid_term', '未知')}</span>
+                    </div>
+                    <div class='llm-row'>
+                        <span class='llm-label'>仓位策略:</span>
+                        <span class='llm-value'>{strategy.get('position_strategy', '未知')}</span>
+                    </div>
+                </div>
+            </div>
+            """
+
+        # 综合总结
+        summary = llm_analysis.get('summary', '')
+        if summary:
+            html += f"""
+            <div class='llm-subsection'>
+                <h4>📝 综合总结</h4>
+                <div class='llm-content'>
+                    <p class='llm-summary'>{summary}</p>
+                </div>
+            </div>
+            """
 
         html += "</div>"
         return html
@@ -3328,6 +3549,190 @@ class KronosHTMLReportGenerator:
             font-weight: 600;
         }
 
+        /* LLM智能分析样式 */
+        .llm-analysis-wrapper {
+            margin: 30px 0;
+            padding: 20px;
+            background: var(--gradient-dark);
+            border-radius: 12px;
+            border: 1px solid var(--border-primary);
+        }
+
+        .llm-analysis-wrapper h2 {
+            color: var(--accent-purple);
+            margin-bottom: 20px;
+            font-size: 1.8em;
+            text-shadow: 0 0 10px rgba(186, 104, 200, 0.5);
+        }
+
+        .llm-analysis-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+        }
+
+        .llm-subsection {
+            background: var(--secondary-bg);
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 3px solid var(--accent-purple);
+        }
+
+        .llm-subsection h4 {
+            color: var(--accent-purple);
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+
+        .llm-content {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .llm-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 5px;
+        }
+
+        .llm-label {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .llm-value {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .trend-上涨 {
+            color: var(--accent-green);
+        }
+
+        .trend-下跌 {
+            color: var(--accent-red);
+        }
+
+        .trend-震荡 {
+            color: var(--accent-yellow);
+        }
+
+        .operation-badge {
+            display: inline-block;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-weight: 700;
+            font-size: 1.1em;
+            text-align: center;
+            margin: 10px 0;
+        }
+
+        .buy-action {
+            background: linear-gradient(135deg, #66bb6a, #43a047);
+            color: white;
+            box-shadow: 0 0 15px rgba(102, 187, 106, 0.5);
+        }
+
+        .hold-action {
+            background: linear-gradient(135deg, #ffca28, #ffa000);
+            color: white;
+            box-shadow: 0 0 15px rgba(255, 202, 40, 0.5);
+        }
+
+        .sell-action {
+            background: linear-gradient(135deg, #ef5350, #d32f2f);
+            color: white;
+            box-shadow: 0 0 15px rgba(239, 83, 80, 0.5);
+        }
+
+        .risk-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 15px;
+            font-weight: 600;
+            margin: 10px 0;
+        }
+
+        .risk-low {
+            background: rgba(102, 187, 106, 0.2);
+            color: var(--accent-green);
+            border: 1px solid var(--accent-green);
+        }
+
+        .risk-medium {
+            background: rgba(255, 202, 40, 0.2);
+            color: var(--accent-yellow);
+            border: 1px solid var(--accent-yellow);
+        }
+
+        .risk-high {
+            background: rgba(239, 83, 80, 0.2);
+            color: var(--accent-red);
+            border: 1px solid var(--accent-red);
+        }
+
+        .risk-points-list {
+            list-style: none;
+            padding-left: 0;
+            margin-top: 10px;
+        }
+
+        .risk-points-list li {
+            padding: 8px 12px;
+            margin: 5px 0;
+            background: rgba(239, 83, 80, 0.1);
+            border-left: 3px solid var(--accent-red);
+            border-radius: 4px;
+            color: var(--text-secondary);
+        }
+
+        .llm-summary {
+            padding: 15px;
+            background: rgba(100, 181, 246, 0.05);
+            border-left: 3px solid var(--accent-blue);
+            border-radius: 5px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        .llm-predictions-table {
+            margin-top: 15px;
+            overflow-x: auto;
+        }
+
+        .llm-predictions-table table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--secondary-bg);
+        }
+
+        .llm-predictions-table th,
+        .llm-predictions-table td {
+            padding: 12px;
+            text-align: center;
+            border-bottom: 1px solid var(--border-primary);
+        }
+
+        .llm-predictions-table th {
+            background: var(--tertiary-bg);
+            color: var(--accent-purple);
+            font-weight: 600;
+        }
+
+        .llm-predictions-table .positive {
+            color: var(--accent-green);
+            font-weight: 600;
+        }
+
+        .llm-predictions-table .negative {
+            color: var(--accent-red);
+            font-weight: 600;
+        }
+
         /* 移动端适配 */
         @media (max-width: 768px) {
             .comprehensive-grid {
@@ -3354,6 +3759,14 @@ class KronosHTMLReportGenerator:
             .guba-stats-compact {
                 grid-template-columns: 1fr;
             }
+
+            .llm-analysis-section {
+                grid-template-columns: 1fr;
+            }
+
+            .llm-predictions-table {
+                font-size: 0.9em;
+            }
         }
         """
 
@@ -3367,10 +3780,12 @@ def generate_comprehensive_report(stock_code: str, analysis_data: Dict,
                                   fundamental_data: Optional[Dict] = None,
                                   news_data: Optional[Dict] = None,
                                   sentiment_data: Optional[Dict] = None,
-                                  event_data: Optional[Dict] = None) -> str:
+                                  event_data: Optional[Dict] = None,
+                                  llm_analysis: Optional[Dict] = None,
+                                  llm_predicted_kline: Optional[pd.DataFrame] = None) -> str:
     """
     便捷函数: 生成综合分析报告
-    
+
     Args:
         stock_code: 股票代码
         analysis_data: 分析数据
@@ -3382,7 +3797,9 @@ def generate_comprehensive_report(stock_code: str, analysis_data: Dict,
         news_data: 消息面数据（可选）
         sentiment_data: 情绪数据（可选）
         event_data: 利好利空事件数据（可选）
-        
+        llm_analysis: LLM分析结果（可选）
+        llm_predicted_kline: LLM预测K线数据（可选）
+
     Returns:
         生成的HTML报告文件路径
     """
@@ -3409,5 +3826,7 @@ def generate_comprehensive_report(stock_code: str, analysis_data: Dict,
         news_data=news_data,
         sentiment_data=sentiment_data,
         event_data=event_data,
+        llm_analysis=llm_analysis,
+        llm_predicted_kline=llm_predicted_kline,
         auto_open=auto_open
     )

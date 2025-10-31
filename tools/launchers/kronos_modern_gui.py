@@ -1216,6 +1216,335 @@ class LicenseActivationSheet:
         self.sheet.destroy()
 
 
+class LLMConfigDialog:
+    """LLM 模型配置对话框"""
+
+    def __init__(self, parent):
+        self.parent = parent
+
+        # 导入 LLM 服务
+        try:
+            sys.path.insert(0, str(project_root))
+            from analysis.llm_service import LLMConfig, LLMAnalyzer
+            self.llm_config = LLMConfig()
+            self.llm_analyzer = LLMAnalyzer(self.llm_config)
+        except ImportError as e:
+            error_msg = str(e)
+            missing_module = error_msg.split("'")[-2] if "'" in error_msg else "未知模块"
+
+            messagebox.showerror(
+                "依赖缺失",
+                f"无法加载 LLM 服务模块\n\n"
+                f"缺少依赖: {missing_module}\n\n"
+                f"请在终端执行以下命令安装:\n"
+                f"pip install {missing_module}\n\n"
+                f"或安装所有依赖:\n"
+                f"pip install -r requirements.txt"
+            )
+            return
+
+        # 创建对话框
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("AI 模型配置")
+        self.dialog.geometry("700x800")
+        self.dialog.resizable(False, False)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        self.dialog.configure(bg="#FFFFFF")
+
+        # 居中显示
+        self.center_window()
+        self.create_interface()
+
+    def center_window(self):
+        """窗口居中"""
+        self.dialog.update_idletasks()
+        x = (self.dialog.winfo_screenwidth() // 2) - (700 // 2)
+        y = (self.dialog.winfo_screenheight() // 2) - (800 // 2)
+        self.dialog.geometry(f"700x800+{x}+{y}")
+
+    def create_interface(self):
+        """创建界面"""
+        # 主容器
+        main_frame = tk.Frame(self.dialog, bg="#FFFFFF")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=20)
+
+        # 标题区域
+        header_frame = tk.Frame(main_frame, bg="#FFFFFF")
+        header_frame.pack(fill=tk.X, pady=(0, 20))
+
+        # 图标
+        icon_label = tk.Label(header_frame, text="🤖",
+                              font=("Apple Color Emoji", 40),
+                              bg="#FFFFFF")
+        icon_label.pack(pady=(0, 10))
+
+        # 主标题
+        title_label = tk.Label(header_frame, text="AI 智能分析配置",
+                               font=("SF Pro Display", 20, "bold"),
+                               fg="#1F2937", bg="#FFFFFF")
+        title_label.pack()
+
+        # 描述文字
+        desc_label = tk.Label(header_frame, text="配置大模型 API，启用 AI 智能预测和投资建议",
+                              font=("SF Pro Display", 13, "normal"),
+                              fg="#6B7280", bg="#FFFFFF")
+        desc_label.pack(pady=(5, 0))
+
+        # 滚动区域
+        canvas = tk.Canvas(main_frame, bg="#FFFFFF", highlightthickness=0)
+        scrollbar = tk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg="#FFFFFF")
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # 通义千问配置
+        self.create_llm_config_section(scrollable_frame, "qwen", "通义千问", "阿里云通义千问大模型")
+
+        # 分隔线
+        tk.Frame(scrollable_frame, bg="#E5E7EB", height=1).pack(fill=tk.X, pady=20)
+
+        # DeepSeek 配置
+        self.create_llm_config_section(scrollable_frame, "deepseek", "DeepSeek", "DeepSeek 大模型")
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # 底部按钮区域
+        button_frame = tk.Frame(main_frame, bg="#FFFFFF")
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(20, 0))
+
+        # Windows和macOS使用不同的按钮样式
+        if platform.system() == "Windows":
+            save_btn = tk.Button(button_frame, text="保存配置",
+                                 font=("Microsoft YaHei", 14, "bold"),
+                                 fg="#FFFFFF", bg="#28A745", relief="flat", bd=0,
+                                 padx=30, pady=10, command=self.save_config,
+                                 cursor="hand2", activebackground="#218838")
+            save_btn.pack(side=tk.RIGHT, padx=(12, 0))
+
+            cancel_btn = tk.Button(button_frame, text="取消",
+                                   font=("Microsoft YaHei", 14, "bold"),
+                                   fg="#374151", bg="#FFFFFF", relief="solid", bd=1,
+                                   padx=30, pady=10, command=self.dialog.destroy,
+                                   cursor="hand2", activebackground="#F9FAFB",
+                                   highlightthickness=1, highlightbackground="#D1D5DB")
+            cancel_btn.pack(side=tk.RIGHT)
+
+            # 悬停效果
+            def on_save_hover(e):
+                save_btn.configure(bg="#218838")
+
+            def on_save_leave(e):
+                save_btn.configure(bg="#28A745")
+
+            save_btn.bind("<Enter>", on_save_hover)
+            save_btn.bind("<Leave>", on_save_leave)
+
+            def on_cancel_hover(e):
+                cancel_btn.configure(bg="#F9FAFB")
+
+            def on_cancel_leave(e):
+                cancel_btn.configure(bg="#FFFFFF")
+
+            cancel_btn.bind("<Enter>", on_cancel_hover)
+            cancel_btn.bind("<Leave>", on_cancel_leave)
+        else:
+            save_btn = tk.Button(button_frame, text="保存配置",
+                                 font=("SF Pro Display", 15, "bold"),
+                                 fg="#FFFFFF", bg="#28A745", relief="flat", bd=0,
+                                 padx=40, pady=13, command=self.save_config,
+                                 cursor="hand2")
+            save_btn.pack(side=tk.RIGHT, padx=(12, 0))
+
+            cancel_btn = tk.Button(button_frame, text="取消",
+                                   font=("SF Pro Display", 15, "bold"),
+                                   fg="#374151", bg="#FFFFFF", relief="solid", bd=1,
+                                   padx=40, pady=12, command=self.dialog.destroy,
+                                   cursor="hand2", highlightthickness=1,
+                                   highlightbackground="#D1D5DB")
+            cancel_btn.pack(side=tk.RIGHT)
+
+            # macOS按钮悬停效果
+            def on_save_hover(e):
+                save_btn.configure(bg="#218838")
+
+            def on_save_leave(e):
+                save_btn.configure(bg="#28A745")
+
+            save_btn.bind("<Enter>", on_save_hover)
+            save_btn.bind("<Leave>", on_save_leave)
+
+            def on_cancel_hover(e):
+                cancel_btn.configure(bg="#F9FAFB")
+
+            def on_cancel_leave(e):
+                cancel_btn.configure(bg="#FFFFFF")
+
+            cancel_btn.bind("<Enter>", on_cancel_hover)
+            cancel_btn.bind("<Leave>", on_cancel_leave)
+
+    def create_llm_config_section(self, parent, llm_name, display_name, description):
+        """创建 LLM 配置区块"""
+        config = self.llm_config.config.get(llm_name, {})
+
+        # 区块容器
+        section_frame = tk.Frame(parent, bg="#F9FAFB", relief="flat", bd=0)
+        section_frame.pack(fill=tk.X, pady=(0, 15))
+
+        # 内容区域
+        content_frame = tk.Frame(section_frame, bg="#F9FAFB")
+        content_frame.pack(fill=tk.X, padx=20, pady=20)
+
+        # 标题行
+        title_row = tk.Frame(content_frame, bg="#F9FAFB")
+        title_row.pack(fill=tk.X, pady=(0, 10))
+
+        title_label = tk.Label(title_row, text=display_name,
+                               font=("SF Pro Display", 16, "bold"),
+                               fg="#1F2937", bg="#F9FAFB")
+        title_label.pack(side=tk.LEFT)
+
+        # 启用开关
+        enabled_var = tk.BooleanVar(value=config.get('enabled', False))
+        setattr(self, f"{llm_name}_enabled_var", enabled_var)
+
+        switch_frame = tk.Frame(title_row, bg="#F9FAFB")
+        switch_frame.pack(side=tk.RIGHT)
+
+        switch_label = tk.Label(switch_frame, text="启用" if enabled_var.get() else "禁用",
+                                font=("SF Pro Display", 12, "normal"),
+                                fg="#10B981" if enabled_var.get() else "#6B7280",
+                                bg="#F9FAFB")
+        switch_label.pack(side=tk.LEFT, padx=(0, 8))
+
+        def toggle_switch():
+            new_state = not enabled_var.get()
+            enabled_var.set(new_state)
+            switch_label.config(
+                text="启用" if new_state else "禁用",
+                fg="#10B981" if new_state else "#6B7280"
+            )
+
+        switch_btn = tk.Button(switch_frame, text="○" if not enabled_var.get() else "●",
+                               font=("SF Pro Display", 16),
+                               fg="#10B981" if enabled_var.get() else "#9CA3AF",
+                               bg="#F9FAFB", relief="flat", bd=0,
+                               command=toggle_switch, cursor="hand2")
+        switch_btn.pack(side=tk.LEFT)
+
+        # 描述
+        desc_label = tk.Label(content_frame, text=description,
+                              font=("SF Pro Display", 12, "normal"),
+                              fg="#6B7280", bg="#F9FAFB")
+        desc_label.pack(anchor="w", pady=(0, 15))
+
+        # API Key 输入
+        api_key_label = tk.Label(content_frame, text="API Key",
+                                 font=("SF Pro Display", 13, "bold"),
+                                 fg="#1F2937", bg="#F9FAFB")
+        api_key_label.pack(anchor="w", pady=(0, 5))
+
+        api_key_entry = tk.Entry(content_frame, font=("SF Pro Display", 13, "normal"),
+                                 bg="#FFFFFF", fg="#1F2937", relief="flat", bd=0,
+                                 highlightthickness=1, highlightbackground="#E5E7EB",
+                                 highlightcolor="#4F46E5", show="*")
+        api_key_entry.pack(fill=tk.X, ipady=10, ipadx=12, pady=(0, 10))
+        api_key_entry.insert(0, config.get('api_key', ''))
+        setattr(self, f"{llm_name}_api_key_entry", api_key_entry)
+
+        # 注册说明
+        register_frame = tk.Frame(content_frame, bg="#FEF3C7", relief="flat", bd=0)
+        register_frame.pack(fill=tk.X, pady=(0, 10))
+
+        register_content = tk.Frame(register_frame, bg="#FEF3C7")
+        register_content.pack(fill=tk.X, padx=12, pady=8)
+
+        info_icon = tk.Label(register_content, text="ℹ️",
+                             font=("Apple Color Emoji", 14),
+                             bg="#FEF3C7")
+        info_icon.pack(side=tk.LEFT, padx=(0, 8))
+
+        register_text = tk.Label(register_content,
+                                 text=f"获取 API Key：{config.get('register_guide', '')}",
+                                 font=("SF Pro Display", 11, "normal"),
+                                 fg="#92400E", bg="#FEF3C7",
+                                 wraplength=550, justify=tk.LEFT)
+        register_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 注册链接按钮
+        def open_register_url():
+            webbrowser.open(config.get('register_url', ''))
+
+        register_btn = tk.Label(register_content, text="前往注册 →",
+                                font=("SF Pro Display", 11, "bold"),
+                                fg="#4F46E5", bg="#FEF3C7",
+                                cursor="hand2")
+        register_btn.pack(side=tk.RIGHT)
+        register_btn.bind("<Button-1>", lambda e: open_register_url())
+
+        # 测试连接按钮
+        def test_connection():
+            # 临时保存当前配置
+            temp_config = self.llm_config.config.copy()
+            temp_config[llm_name]['enabled'] = enabled_var.get()
+            temp_config[llm_name]['api_key'] = api_key_entry.get().strip()
+
+            # 临时应用配置
+            self.llm_config.config = temp_config
+            self.llm_config.llm_name = self.llm_config.get_enabled_llm()
+
+            test_btn.config(text="测试中...", state=tk.DISABLED)
+
+            def do_test():
+                success, result = self.llm_analyzer.test_connection()
+                self.dialog.after(0, lambda: test_btn.config(text="测试连接", state=tk.NORMAL))
+                if success:
+                    messagebox.showinfo("测试成功",
+                                        f"✅ {display_name} 连接测试成功！\n\n{result[:100]}...",
+                                        parent=self.dialog)
+                else:
+                    messagebox.showerror("测试失败",
+                                         f"❌ 连接测试失败\n\n{result}",
+                                         parent=self.dialog)
+
+            threading.Thread(target=do_test, daemon=True).start()
+
+        test_btn = tk.Button(content_frame, text="测试连接",
+                             font=("SF Pro Display", 12, "normal"),
+                             fg="#4F46E5", bg="#EEF2FF", relief="flat", bd=0,
+                             padx=16, pady=8, command=test_connection,
+                             cursor="hand2")
+        test_btn.pack(anchor="w")
+
+    def save_config(self):
+        """保存配置"""
+        try:
+            # 更新配置
+            for llm_name in ['qwen', 'deepseek']:
+                enabled_var = getattr(self, f"{llm_name}_enabled_var", None)
+                api_key_entry = getattr(self, f"{llm_name}_api_key_entry", None)
+
+                if enabled_var and api_key_entry:
+                    self.llm_config.update_llm_config(
+                        llm_name,
+                        enabled_var.get(),
+                        api_key_entry.get().strip()
+                    )
+
+            messagebox.showinfo("成功", "✅ 配置保存成功！", parent=self.dialog)
+            self.dialog.destroy()
+
+        except Exception as e:
+            messagebox.showerror("错误", f"保存配置失败：{e}", parent=self.dialog)
+
+
 class KronosMacOSGUI:
     """Kronos macOS现代化GUI主程序"""
 
@@ -1404,16 +1733,14 @@ class KronosMacOSGUI:
         functions = [
             {"title": "批量分析", "desc": "多股票分析", "icon": "📈", "color": "#EA580C", "command": self.batch_predict},
             {"title": "投资机会挖掘", "desc": "TOP100热门股票分析买入机会", "icon": "🔥", "color": "#DC2626", "command": self.opportunity_discovery},
+            {"title": "AI模型配置", "desc": "配置通义千问/DeepSeek", "icon": "🤖", "color": "#7C3AED",
+             "command": self.config_llm},
             {"title": "环境检查", "desc": "检查系统环境", "icon": "🔍", "color": "#4F46E5",
              "command": self.check_environment},
             {"title": "安装依赖", "desc": "一键安装所有依赖", "icon": "📦", "color": "#059669",
              "command": self.install_dependencies},
-            # {"title": "配置数据源", "desc": "设置API和数据源", "icon": "⚙️", "color": "#DC2626", "command": self.config_wizard},
-            # {"title": "获取数据", "desc": "获取股票数据", "icon": "📊", "color": "#7C3AED", "command": self.fetch_data_unified},
-            # {"title": "AI预测", "desc": "运行股票预测", "icon": "🤖", "color": "#0891B2", "command": self.run_prediction},
             {"title": "授权管理", "desc": "查看授权状态", "icon": "🔐", "color": "#BE185D",
              "command": self.manage_license},
-            # {"title": "帮助文档", "desc": "使用说明", "icon": "📖", "color": "#6B7280", "command": self.show_help},
         ]
 
         # 网格容器
@@ -1723,6 +2050,10 @@ class KronosMacOSGUI:
             if result:
                 self.activate_license()
 
+    def config_llm(self):
+        """AI模型配置"""
+        LLMConfigDialog(self.root)
+
     def fetch_tushare(self):
         """使用Tushare获取股票数据"""
         self.get_stock_input_and_run("tushare", "请输入股票代码 (格式: 000001.SZ):")
@@ -1754,10 +2085,24 @@ class KronosMacOSGUI:
 
     def install_dependencies(self):
         """一键安装所有依赖"""
-        if platform.system() == "Windows":
-            self.run_shell_command("powershell quick_start.ps1 1", "1", "正在执行一键安装...", auto_input=None)
-        else:
-            self.run_shell_command("bash quick_start.sh 1", "1", "正在执行一键安装...", auto_input=None)
+        # 显示确认对话框
+        result = messagebox.askyesno(
+            "安装依赖",
+            "即将安装 Kronos 所需的所有依赖包\n\n"
+            "包括:\n"
+            "• 核心依赖: numpy, pandas, torch\n"
+            "• 数据采集: requests, playwright, tushare\n"
+            "• 可视化: matplotlib\n"
+            "• LLM服务: 支持AI智能分析\n\n"
+            "此过程可能需要几分钟时间\n\n"
+            "是否继续?"
+        )
+
+        if result:
+            if platform.system() == "Windows":
+                self.run_shell_command("powershell quick_start.ps1 1", "1", "正在安装依赖包...", auto_input=None)
+            else:
+                self.run_shell_command("bash quick_start.sh 1", "1", "正在安装依赖包...", auto_input=None)
 
     def config_wizard(self):
         """配置数据源向导"""

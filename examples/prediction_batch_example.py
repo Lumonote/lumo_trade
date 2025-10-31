@@ -53,6 +53,7 @@ from analysis.news_sentiment_collector import NewsSentimentCollector
 from analysis.investor_sentiment import InvestorSentimentAnalyzer
 # 已移除动态调参模块：from analysis.sampling_tuner import tune_sampling_params
 from analysis.event_analyzer import EventAnalyzer
+from analysis.llm_service import LLMConfig, LLMAnalyzer
 from scripts.html_report_generator import generate_comprehensive_report
 
 
@@ -467,18 +468,20 @@ def generate_realtime_prediction_timestamps(historical_df, target_days=5):
 
 
 def plot_prediction_enhanced(historical_df, pred_df, stock_code, save_path=None,
-                             historical_end_marker=None, future_start_marker=None):
+                             historical_end_marker=None, future_start_marker=None,
+                             llm_predicted_kline=None):
     """
     增强版预测图表绘制 - 严格20个交易日显示：15天历史+5天预测（含1天重叠）
     在重叠交易日同时显示真实K线和预测K线进行对比
-    
+
     Args:
         historical_df: 历史数据（已过滤交易时间）
-        pred_df: 预测结果数据  
+        pred_df: 预测结果数据
         stock_code: 股票代码
         save_path: 保存路径
         historical_end_marker: 历史数据结束标记
         future_start_marker: 真正未来预测开始标记（不包含重叠部分）
+        llm_predicted_kline: LLM预测的K线数据(可选)
     """
     import matplotlib.dates as mdates
     from datetime import datetime, timedelta
@@ -656,6 +659,43 @@ def plot_prediction_enhanced(historical_df, pred_df, stock_code, save_path=None,
         if not pred_future_idx.empty:
             ax1.plot(pred_future_idx['plot_index'], pred_future_idx['close'],
                      label='预测数据', color='#FF4444', linewidth=1.5, alpha=0.9)
+
+    # 🤖 绘制LLM预测数据(如果有)
+    if llm_predicted_kline is not None and not llm_predicted_kline.empty:
+        print(f"🤖 正在添加LLM预测数据到图表...")
+
+        # 转换LLM预测数据的日期为datetime
+        llm_df = llm_predicted_kline.copy()
+        if 'date' in llm_df.columns:
+            llm_df['timestamps'] = pd.to_datetime(llm_df['date'])
+        elif 'timestamps' not in llm_df.columns:
+            print(f"  ⚠️ LLM预测数据缺少日期列,无法绘制")
+            llm_df = None
+
+        if llm_df is not None and 'close' in llm_df.columns:
+            # 为LLM预测数据创建连续索引
+            # 从历史数据结束位置开始绘制
+            if not hist_overlap_idx.empty:
+                llm_start_index = hist_overlap_idx['plot_index'].iloc[-1]
+            elif not hist_non_overlap_idx.empty:
+                llm_start_index = hist_non_overlap_idx['plot_index'].iloc[-1]
+            else:
+                llm_start_index = 0
+
+            # 为每个LLM预测点分配连续的索引
+            llm_indices = range(llm_start_index, llm_start_index + len(llm_df))
+            llm_df['plot_index'] = list(llm_indices)
+
+            # 绘制LLM预测线(紫色虚线,与Kronos预测区分)
+            ax1.plot(llm_df['plot_index'], llm_df['close'],
+                     color='#9C27B0', linewidth=2.0, linestyle='--', alpha=0.85,
+                     label='AI预测(LLM)', marker='o', markersize=4, markerfacecolor='#9C27B0',
+                     markeredgecolor='white', markeredgewidth=0.5)
+
+            print(f"  ✅ LLM预测数据已添加: {len(llm_df)}个预测点")
+            print(f"  📈 LLM预测范围: {llm_df['timestamps'].min().strftime('%Y-%m-%d')} 至 {llm_df['timestamps'].max().strftime('%Y-%m-%d')}")
+            print(f"  💰 LLM预测价格区间: ¥{llm_df['close'].min():.2f} - ¥{llm_df['close'].max():.2f}")
+
 
     # 设置标题和标签
     ax1.set_ylabel('收盘价格 (¥)', fontsize=12, fontweight='bold')
@@ -2007,6 +2047,141 @@ try:
         plot_prediction_enhanced(display_df, pred_df, stock_code, chart_path,
                                  training_end_marker, overlap_start_marker)
 
+        # 🤖 LLM 智能分析（如果已配置）
+        llm_analysis_result = None
+        llm_predicted_kline = None
+
+        try:
+            print("\n" + "=" * 60)
+            print("🤖 LLM 智能分析...")
+            print("=" * 60)
+
+            llm_config = LLMConfig()
+            if llm_config.is_configured():
+                llm_analyzer = LLMAnalyzer(llm_config)
+
+                # 格式化K线数据
+                def format_kline_for_llm(df: pd.DataFrame, last_n=30) -> str:
+                    """格式化K线数据供LLM分析"""
+                    if df.empty:
+                        return "无K线数据"
+
+                    recent_df = df.tail(last_n).copy()
+                    output = "日期       | 开盘价 | 最高价 | 最低价 | 收盘价 | 涨跌幅\n"
+                    output += "-" * 60 + "\n"
+
+                    for idx in range(len(recent_df)):
+                        row = recent_df.iloc[idx]
+                        date_str = row['timestamps'].strftime('%Y-%m-%d') if 'timestamps' in row else str(idx)
+                        output += f"{date_str} | {row['open']:.2f} | {row['high']:.2f} | {row['low']:.2f} | {row['close']:.2f}"
+
+                        if idx > 0:
+                            prev_close = recent_df.iloc[idx - 1]['close']
+                            change_pct = (row['close'] - prev_close) / prev_close * 100
+                            output += f" | {change_pct:+.2f}%"
+                        else:
+                            output += " | --"
+                        output += "\n"
+
+                    return output
+
+                # 格式化技术分析结果
+                def format_technical_for_llm(tech_data: dict) -> str:
+                    """格式化技术分析结果供LLM分析"""
+                    if not tech_data:
+                        return "无技术分析数据"
+
+                    output = []
+
+                    # 量化模型信号统计
+                    signal_summary = tech_data.get('signal_summary', {})
+                    if signal_summary:
+                        output.append(f"量化模型信号统计：")
+                        output.append(f"  买入信号：{signal_summary.get('buy_count', 0)}个模型 ({signal_summary.get('buy_ratio', 0):.0f}%)")
+                        output.append(f"  持有信号：{signal_summary.get('hold_count', 0)}个模型 ({signal_summary.get('hold_ratio', 0):.0f}%)")
+                        output.append(f"  卖出信号：{signal_summary.get('sell_count', 0)}个模型 ({signal_summary.get('sell_ratio', 0):.0f}%)")
+
+                    # 技术指标现状
+                    indicators = tech_data.get('technical_indicators', {})
+                    if indicators:
+                        output.append(f"\n技术指标现状：")
+                        output.append(f"  RSI: {indicators.get('current_rsi', 0):.2f}")
+                        output.append(f"  MACD: {indicators.get('macd_signal', '未知')}")
+                        output.append(f"  布林带: {indicators.get('bb_position', '未知')}")
+                        output.append(f"  KDJ: {indicators.get('kdj_status', '未知')}")
+                        output.append(f"  均线: {indicators.get('ma_trend', '未知')}")
+
+                    # 风险评估
+                    risk = tech_data.get('risk_assessment', {})
+                    if risk:
+                        output.append(f"\n风险评估：")
+                        output.append(f"  风险等级: {risk.get('risk_level', '未知')}")
+                        output.append(f"  波动率: {risk.get('volatility', 0):.2f}%")
+                        output.append(f"  RSI风险: {risk.get('rsi_risk', '未知')}")
+
+                    return "\n".join(output)
+
+                # 构建LLM分析数据
+                stock_data = {
+                    'code': stock_code,
+                    'name': f'{stock_code}',  # 可以从数据中获取股票名称
+                    'current_price': display_df['close'].iloc[-1] if not display_df.empty else 0,
+                    'kline_data': format_kline_for_llm(display_df),
+                    'technical_analysis': format_technical_for_llm(analysis_report_data),
+                    'fundamental_data': f"基本面数据已采集",  # fundamental_data将在后面采集
+                    'news_sentiment': f"消息面情绪分析：{sentiment_data.get('comprehensive_sentiment', '未知')} (评分: {sentiment_data.get('comprehensive_score', 0)})" if 'sentiment_data' in locals() else "消息面数据待采集",
+                    'market_env': f"大盘情绪：{sentiment_data.get('overall_market_sentiment', {}).get('overall', '未知')}" if 'sentiment_data' in locals() else "市场环境待采集"
+                }
+
+                print(f"  📊 正在调用 {llm_config.get_enabled_llm().upper()} 进行智能分析...")
+                print(f"  💡 这可能需要5-10秒，请耐心等待...")
+
+                success, result = llm_analyzer.analyze_stock(stock_data)
+
+                if success:
+                    llm_analysis_result = result
+                    print(f"  ✅ LLM分析成功！")
+
+                    # 提取预测K线数据
+                    llm_predicted_kline = llm_analyzer.extract_predicted_kline(result)
+
+                    if not llm_predicted_kline.empty:
+                        print(f"  📈 提取到 {len(llm_predicted_kline)} 天的AI预测数据")
+
+                    # 显示分析摘要
+                    if 'operation_advice' in result:
+                        op = result['operation_advice']
+                        print(f"\n  💡 AI操作建议：")
+                        print(f"     操作：{op.get('action', '未知')}")
+                        print(f"     建议价位：{op.get('suggested_price_range', '未知')}")
+                        print(f"     仓位控制：{op.get('position_control', '未知')}")
+                        print(f"     信心度：{op.get('confidence', 0) * 100:.0f}%")
+
+                    if 'summary' in result:
+                        print(f"\n  📋 AI综合总结：")
+                        print(f"     {result['summary']}")
+
+                    # 🎨 重新生成包含LLM预测的图表
+                    if not llm_predicted_kline.empty:
+                        print(f"\n  🎨 重新生成包含AI预测的K线图...")
+                        plot_prediction_enhanced(display_df, pred_df, stock_code, chart_path,
+                                                 training_end_marker, overlap_start_marker,
+                                                 llm_predicted_kline)
+                        print(f"  ✅ 已更新图表,包含Kronos预测和AI预测对比")
+                else:
+                    print(f"  ⚠️ LLM分析失败：{result}")
+                    print(f"  💡 提示：请检查API配置或网络连接")
+            else:
+                print(f"  ⏭️ LLM未配置，跳过AI智能分析")
+                print(f"  💡 提示：可在GUI中配置通义千问或DeepSeek API")
+
+        except Exception as e:
+            print(f"  ⚠️ LLM分析出错：{str(e)}")
+            import traceback
+            traceback.print_exc()
+
+        print()
+
         # 🆕 生成HTML综合分析报告
         try:
             print("\n" + "=" * 60)
@@ -2067,6 +2242,8 @@ try:
                 news_data=news_data,  # 消息面数据
                 sentiment_data=sentiment_data,  # 情绪数据
                 event_data=event_data,  # 利好利空事件数据
+                llm_analysis=llm_analysis_result,  # LLM分析结果
+                llm_predicted_kline=llm_predicted_kline,  # LLM预测K线数据
                 auto_open=True  # 自动打开浏览器
             )
 
@@ -2083,6 +2260,8 @@ try:
             print("   • 💰 基本面财务数据")
             print("   • 💬 股民情绪")
             print("   • ⏰ 历史分析时间线")
+            if llm_analysis_result:
+                print("   • 🤖 AI智能分析与预测")
             print()
 
         except Exception as e:

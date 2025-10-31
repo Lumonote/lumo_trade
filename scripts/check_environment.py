@@ -157,7 +157,8 @@ def check_required_packages() -> Dict[str, Tuple[bool, str]]:
         'tqdm': 'tqdm',
         'safetensors': 'safetensors',
         'einops': 'einops',
-        'huggingface_hub': 'huggingface_hub'
+        'huggingface_hub': 'huggingface_hub',
+        'requests': 'requests'  # LLM API调用必需
     }
 
     results = {}
@@ -303,9 +304,31 @@ def check_gpu_availability() -> Tuple[bool, str]:
             gpu_name = torch.cuda.get_device_name(0) if gpu_count > 0 else "未知"
             return True, f"{gpu_count}个GPU可用 ({gpu_name})"
         else:
-            return False, "CUDA不可用，将使用CPU"
+            return False, "CUDA不可用,将使用CPU"
     except ImportError:
         return False, "PyTorch未安装"
+    except Exception as e:
+        return False, f"检查失败: {str(e)}"
+
+
+def check_llm_service() -> Tuple[bool, str]:
+    """检查LLM服务配置和依赖"""
+    try:
+        # 检查LLM服务模块是否可导入
+        sys.path.insert(0, str(Path.cwd()))
+        from analysis.llm_service import LLMConfig
+
+        # 检查配置状态
+        llm_config = LLMConfig()
+
+        if llm_config.is_configured():
+            enabled_llm = llm_config.get_enabled_llm()
+            return True, f"已配置 {enabled_llm}"
+        else:
+            return False, "未配置LLM API (可在GUI中配置通义千问或DeepSeek)"
+    except ImportError as e:
+        missing_module = str(e).split("'")[-2] if "'" in str(e) else "未知模块"
+        return False, f"缺少依赖: {missing_module}"
     except Exception as e:
         return False, f"检查失败: {str(e)}"
 
@@ -353,6 +376,13 @@ def main():
         print_success(f"GPU: {gpu_info}")
     else:
         print_warning(f"GPU: {gpu_info}")
+
+    # LLM服务检查
+    llm_ok, llm_info = check_llm_service()
+    if llm_ok:
+        print_success(f"LLM服务: {llm_info}")
+    else:
+        print_warning(f"LLM服务: {llm_info}")
 
     # 必需包检查
     print_header("必需依赖包检查")
