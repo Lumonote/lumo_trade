@@ -8,17 +8,41 @@ Kronos 授权码生成工具
 
 import hashlib
 import sys
+import os
+
+# 导入授权码生成器
+sys.path.insert(0, os.path.dirname(__file__))
+from license_generator import LicenseGenerator
 
 
-def generate_license_code(device_id):
-    """根据设备ID生成授权码"""
-    # 使用设备ID和盐值生成授权码
-    combined = f"{device_id}:KRONOS:2025"
-    code_hash = hashlib.sha256(combined.encode()).hexdigest()[:20].upper()
+def generate_license_code(device_id, license_type="PERMANENT"):
+    """根据设备ID生成授权码（设备绑定）
 
-    # 格式化为 KRONOS-XXXXX-XXXXX-XXXXX-XXXXX
-    parts = [code_hash[i:i + 5] for i in range(0, 20, 5)]
-    return f"KRONOS-{'-'.join(parts)}"
+    Args:
+        device_id: 16位设备ID
+        license_type: 授权类型 (PERMANENT, TRIAL, etc.)
+
+    Returns:
+        格式: KRONOS-XXXXD-XXXXX-XXXXX-XXXXX (D表示设备绑定)
+    """
+    # 使用与验证器相同的盐值和算法
+    salt = "KRONOS_DEVICE_SALT_2024"
+    combined_data = f"{device_id}{salt}{license_type}"
+
+    # 生成SHA256哈希
+    device_hash = hashlib.sha256(combined_data.encode()).hexdigest()
+
+    # 从哈希中提取段落
+    segment1 = device_hash[:4].upper() + "D"  # D表示设备绑定 (Device-bound)
+    segment2 = device_hash[4:9].upper()
+    segment3 = device_hash[9:14].upper()
+
+    # 计算校验码（MD5哈希的前5位）
+    raw_data = f"{segment1}{segment2}{segment3}"
+    checksum = hashlib.md5(raw_data.encode()).hexdigest()[:5].upper()
+
+    # 格式化为 KRONOS-XXXXD-XXXXX-XXXXX-XXXXX
+    return f"KRONOS-{segment1}-{segment2}-{segment3}-{checksum}"
 
 
 def main():
@@ -56,12 +80,15 @@ def main():
     print("-" * 60)
     print(f"设备ID:   {device_id}")
     print(f"授权码:   {license_code}")
+    print(f"授权类型: PERMANENT (永久授权)")
+    print(f"绑定模式: DEVICE_BOUND (设备绑定)")
     print("-" * 60)
     print()
     print("提示:")
     print("1. 请将授权码发送给用户")
     print("2. 用户在应用中输入此授权码即可激活")
-    print("3. 此授权码仅对该设备ID有效")
+    print("3. 此授权码仅对该设备ID有效，不可转移到其他设备")
+    print("4. 授权码以 'D' 结尾表示设备绑定模式")
     print()
 
 

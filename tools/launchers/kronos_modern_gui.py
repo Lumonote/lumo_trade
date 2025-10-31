@@ -284,25 +284,113 @@ class MacOSTheme:
 
 
 class DeviceFingerprint:
-    """设备指纹管理"""
+    """设备指纹管理 - 与实际授权系统保持一致"""
 
     def get_device_id(self):
-        """获取设备ID"""
+        """获取设备ID - 使用完整的硬件信息"""
         try:
             import uuid
-            info = {
+            import subprocess
+
+            # 收集关键硬件信息（与finetune/license_system/device_fingerprint.py保持一致）
+            hardware_info = {
                 'system': platform.system(),
                 'node': platform.node(),
                 'machine': platform.machine(),
                 'processor': platform.processor()[:50] if platform.processor() else 'unknown',
-                'mac': format(uuid.getnode(), '012x')
+                'mac': format(uuid.getnode(), '012x').upper(),
+                'cpu_id': self._get_cpu_id(),
+                'motherboard': self._get_motherboard_info(),
+                'disk_serial': self._get_primary_disk_serial()
             }
-            combined = json.dumps(info, sort_keys=True)
+
+            # 使用相同的哈希算法生成设备ID
+            combined = json.dumps(hardware_info, sort_keys=True)
             device_id = hashlib.sha256(combined.encode()).hexdigest()[:16].upper()
             return device_id
-        except Exception:
-            fallback_id = hashlib.md5(platform.node().encode()).hexdigest()[:16].upper()
+        except Exception as e:
+            # 回退方案：使用简化的硬件信息
+            fallback_info = {
+                'system': platform.system(),
+                'node': platform.node(),
+                'mac': format(uuid.getnode(), '012x').upper()
+            }
+            combined = json.dumps(fallback_info, sort_keys=True)
+            fallback_id = hashlib.sha256(combined.encode()).hexdigest()[:16].upper()
             return fallback_id
+
+    def _get_cpu_id(self):
+        """获取CPU ID"""
+        try:
+            if platform.system() == "Darwin":  # macOS
+                result = subprocess.run(
+                    ['sysctl', '-n', 'machdep.cpu.brand_string'],
+                    capture_output=True, text=True, timeout=10
+                )
+                cpu_brand = result.stdout.strip()
+                result2 = subprocess.run(
+                    ['sysctl', '-n', 'hw.ncpu'],
+                    capture_output=True, text=True, timeout=10
+                )
+                cpu_count = result2.stdout.strip()
+                return hashlib.md5(f"{cpu_brand}_{cpu_count}".encode()).hexdigest()[:16]
+            elif platform.system() == "Windows":
+                result = subprocess.run(
+                    ['wmic', 'cpu', 'get', 'ProcessorId', '/value'],
+                    capture_output=True, text=True, timeout=10
+                )
+                for line in result.stdout.split('\n'):
+                    if 'ProcessorId=' in line:
+                        return line.split('=')[1].strip()
+        except:
+            pass
+        return "UNKNOWN_CPU"
+
+    def _get_motherboard_info(self):
+        """获取主板信息"""
+        try:
+            if platform.system() == "Darwin":  # macOS
+                result = subprocess.run(
+                    ['system_profiler', 'SPHardwareDataType'],
+                    capture_output=True, text=True, timeout=10
+                )
+                for line in result.stdout.split('\n'):
+                    if 'Serial Number' in line:
+                        return line.split(':')[1].strip()
+            elif platform.system() == "Windows":
+                result = subprocess.run(
+                    ['wmic', 'baseboard', 'get', 'SerialNumber', '/value'],
+                    capture_output=True, text=True, timeout=10
+                )
+                for line in result.stdout.split('\n'):
+                    if 'SerialNumber=' in line:
+                        return line.split('=')[1].strip()
+        except:
+            pass
+        return str(uuid.getnode())
+
+    def _get_primary_disk_serial(self):
+        """获取主硬盘序列号"""
+        try:
+            if platform.system() == "Darwin":  # macOS
+                result = subprocess.run(
+                    ['system_profiler', 'SPSerialATADataType'],
+                    capture_output=True, text=True, timeout=10
+                )
+                for line in result.stdout.split('\n'):
+                    if 'Serial Number' in line:
+                        return line.split(':')[1].strip()
+            elif platform.system() == "Windows":
+                result = subprocess.run(
+                    ['wmic', 'diskdrive', 'get', 'SerialNumber', '/value'],
+                    capture_output=True, text=True, timeout=10
+                )
+                for line in result.stdout.split('\n'):
+                    if 'SerialNumber=' in line:
+                        return line.split('=')[1].strip()
+        except:
+            pass
+        return "UNKNOWN_DISK"
 
 
 class LicenseValidator:
@@ -371,29 +459,52 @@ class LicenseValidator:
             return False, f"激活失败: {e}"
 
     def _verify_license_code(self, license_code, device_id):
-        """验证授权码是否与设备ID匹配"""
+        """验证授权码是否与设备ID匹配 - 使用与实际授权系统相同的算法"""
         try:
-            # 移除 KRONOS- 前缀和连字符
-            code_parts = license_code.replace('KRONOS-', '').replace('-', '')
+            # 使用与服务端相同的盐值和算法重新生成授权码
+            salt = "KRONOS_DEVICE_SALT_2024"
+            combined_data = f"{device_id}{salt}PERMANENT"  # PERMANENT类型授权
 
-            # 使用设备ID作为盐值生成校验码
-            combined = f"{device_id}:KRONOS:2025"
-            expected_hash = hashlib.sha256(combined.encode()).hexdigest()[:20].upper()
+            # 生成基于设备ID的哈希
+            device_hash = hashlib.sha256(combined_data.encode()).hexdigest()
 
-            # 比较授权码（取前20位）与期望的哈希值
-            return code_parts == expected_hash
+            # 从哈希中提取段落
+            segment1 = device_hash[:4].upper() + "D"  # D表示设备绑定
+            segment2 = device_hash[4:9].upper()
+            segment3 = device_hash[9:14].upper()
+
+            # 计算校验码
+            raw_data = f"{segment1}{segment2}{segment3}"
+            checksum = hashlib.md5(raw_data.encode()).hexdigest()[:5].upper()
+
+            # 生成期望的授权码
+            expected_license_code = f"KRONOS-{segment1}-{segment2}-{segment3}-{checksum}"
+
+            return license_code == expected_license_code
         except Exception:
             return False
 
     @staticmethod
     def generate_license_code(device_id):
-        """根据设备ID生成授权码（用于管理员生成授权码）"""
-        combined = f"{device_id}:KRONOS:2025"
-        code_hash = hashlib.sha256(combined.encode()).hexdigest()[:20].upper()
+        """根据设备ID生成授权码（用于管理员生成授权码）- 使用与实际授权系统相同的算法"""
+        # 使用与服务端相同的盐值和算法
+        salt = "KRONOS_DEVICE_SALT_2024"
+        combined_data = f"{device_id}{salt}PERMANENT"  # PERMANENT类型授权
 
-        # 格式化为 KRONOS-XXXXX-XXXXX-XXXXX-XXXXX
-        parts = [code_hash[i:i + 5] for i in range(0, 20, 5)]
-        return f"KRONOS-{'-'.join(parts)}"
+        # 生成SHA256哈希
+        device_hash = hashlib.sha256(combined_data.encode()).hexdigest()
+
+        # 从哈希中提取段落
+        segment1 = device_hash[:4].upper() + "D"  # D表示设备绑定 (Device-bound)
+        segment2 = device_hash[4:9].upper()
+        segment3 = device_hash[9:14].upper()
+
+        # 计算校验码（MD5哈希的前5位）
+        raw_data = f"{segment1}{segment2}{segment3}"
+        checksum = hashlib.md5(raw_data.encode()).hexdigest()[:5].upper()
+
+        # 格式化为 KRONOS-XXXXD-XXXXX-XXXXX-XXXXX
+        return f"KRONOS-{segment1}-{segment2}-{segment3}-{checksum}"
 
     def get_license_info(self):
         """获取授权信息"""

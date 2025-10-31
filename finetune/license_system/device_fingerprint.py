@@ -199,7 +199,7 @@ class DeviceFingerprint:
         return format(uuid.getnode(), '012x').upper()
 
     def _get_system_uuid(self):
-        """获取系统UUID"""
+        """获取系统UUID - 使用稳定的硬件UUID，不使用随机生成"""
         try:
             if self.system == "Windows":
                 result = subprocess.run(
@@ -208,16 +208,27 @@ class DeviceFingerprint:
                 )
                 for line in result.stdout.split('\n'):
                     if 'UUID=' in line:
-                        return line.split('=')[1].strip()
+                        uuid_value = line.split('=')[1].strip()
+                        if uuid_value and uuid_value != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
+                            return uuid_value
 
             elif self.system == "Linux":
-                try:
-                    with open('/sys/class/dmi/id/product_uuid', 'r') as f:
-                        return f.read().strip()
-                except:
-                    result = subprocess.run(['cat', '/proc/sys/kernel/random/uuid'],
-                                            capture_output=True, text=True, timeout=5)
-                    return result.stdout.strip()
+                # 尝试多个稳定的硬件UUID来源
+                uuid_sources = [
+                    '/sys/class/dmi/id/product_uuid',
+                    '/sys/class/dmi/id/board_asset_tag',
+                    '/etc/machine-id',
+                    '/var/lib/dbus/machine-id'
+                ]
+
+                for source in uuid_sources:
+                    try:
+                        with open(source, 'r') as f:
+                            uuid_value = f.read().strip()
+                            if uuid_value and uuid_value != "To Be Filled By O.E.M.":
+                                return uuid_value
+                    except (FileNotFoundError, PermissionError):
+                        continue
 
             elif self.system == "Darwin":
                 result = subprocess.run(
@@ -231,7 +242,10 @@ class DeviceFingerprint:
         except Exception as e:
             print(f"获取系统UUID失败: {e}")
 
-        return str(uuid.uuid4())
+        # 备选方案：使用其他稳定硬件特征的组合哈希，而不是随机UUID
+        # 这样即使UUID获取失败，设备ID仍然稳定
+        fallback_info = f"{self._get_cpu_id()}_{self._get_primary_mac()}_{platform.machine()}"
+        return hashlib.md5(fallback_info.encode()).hexdigest()
 
     def _get_system_info(self):
         """获取系统信息"""
