@@ -10,11 +10,13 @@ import hashlib
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -2398,6 +2400,20 @@ class KronosMacOSGUI:
         dialog.bind('<Return>', lambda e: execute())
         dialog.bind('<Escape>', lambda e: dialog.destroy())
 
+    def _enqueue_output(self, out, output_queue):
+        """
+        将子进程输出放入队列的辅助函数
+        用于非阻塞IO，避免Windows平台的缓冲区死锁
+        """
+        try:
+            for line in iter(out.readline, ''):
+                if line:
+                    output_queue.put(line)
+        except Exception as e:
+            output_queue.put(f"[读取输出异常: {e}]\n")
+        finally:
+            out.close()
+
     def run_shell_command_with_analysis(self, command, status_text="正在执行命令...", symbols=""):
         """执行shell命令并在完成后进行预测分析"""
         # 先执行数据获取
@@ -2538,19 +2554,88 @@ class KronosMacOSGUI:
                 env['PYTHON'] = detect_python()
                 env['PYTHON_CMD'] = detect_python()  # 为了与quick_start.sh兼容
 
-                # 执行数据获取命令
-                process = subprocess.Popen(final_command, shell=True, stdout=subprocess.PIPE,
-                                           stderr=subprocess.STDOUT, universal_newlines=True,
-                                           bufsize=1, cwd=work_dir, env=env, encoding='utf-8', errors='replace')
+                # 执行数据获取命令 - 使用非阻塞IO避免Windows缓冲区死锁
+                creationflags = 0
+                if platform.system() == "Windows":
+                    # Windows: 创建新进程组，避免继承父进程
+                    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
+                process = subprocess.Popen(
+                    final_command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                    bufsize=1,
+                    cwd=work_dir,
+                    env=env,
+                    encoding='utf-8',
+                    errors='replace',
+                    creationflags=creationflags
+                )
+
+                # 使用队列和线程异步读取输出，避免阻塞
+                output_queue = queue.Queue()
+                output_thread = threading.Thread(
+                    target=self._enqueue_output,
+                    args=(process.stdout, output_queue)
+                )
+                output_thread.daemon = True
+                output_thread.start()
+
+                # 超时配置
+                timeout_seconds = 1800  # 10分钟总超时
+                no_output_timeout = 120  # 2分钟无输出超时
+                last_output_time = time.time()
+                start_time = time.time()
+
+                # 非阻塞读取输出
                 while True:
-                    output = process.stdout.readline()
-                    if output == '' and process.poll() is not None:
+                    # 检查总超时
+                    if time.time() - start_time > timeout_seconds:
+                        output_text.insert(tk.END, f"\n⚠️ 警告: 执行超过{timeout_seconds}秒，强制终止\n")
+                        try:
+                            process.kill()
+                        except:
+                            pass
                         break
-                    if output:
-                        output_text.insert(tk.END, output)
+
+                    # 检查进程是否结束
+                    if process.poll() is not None:
+                        # 读取剩余输出
+                        remaining_lines = 0
+                        while not output_queue.empty() and remaining_lines < 1000:
+                            try:
+                                line = output_queue.get_nowait()
+                                output_text.insert(tk.END, line)
+                                remaining_lines += 1
+                            except queue.Empty:
+                                break
+                        if remaining_lines > 0:
+                            output_text.see(tk.END)
+                            cmd_window.window.update()
+                        break
+
+                    # 非阻塞读取队列
+                    try:
+                        line = output_queue.get(timeout=0.1)
+                        output_text.insert(tk.END, line)
                         output_text.see(tk.END)
                         cmd_window.window.update()
+                        last_output_time = time.time()
+                    except queue.Empty:
+                        # 队列为空，检查无输出超时
+                        if time.time() - last_output_time > no_output_timeout:
+                            output_text.insert(tk.END, f"\n⚠️ 警告: {no_output_timeout}秒无输出，可能卡住\n")
+                            output_text.insert(tk.END, "继续等待中...\n")
+                            output_text.see(tk.END)
+                            cmd_window.window.update()
+                            # 重置计时器，避免重复提示
+                            last_output_time = time.time()
+
+                        # 保持GUI响应
+                        cmd_window.window.update()
+                        continue
 
                 if process.returncode == 0:
                     output_text.insert(tk.END, "\n✅ 数据获取完成！\n")
@@ -3042,19 +3127,76 @@ class KronosMacOSGUI:
                     output_text.insert(tk.END, stdout)
                     output_text.see(tk.END)
                 else:
-                    process = subprocess.Popen(final_command, shell=True, stdout=subprocess.PIPE,
-                                               stderr=subprocess.STDOUT, universal_newlines=True,
-                                               bufsize=1, cwd=str(work_dir), env=env,
-                                               encoding='utf-8', errors='replace')
+                    # 使用非阻塞IO避免Windows缓冲区死锁
+                    creationflags = 0
+                    if platform.system() == "Windows":
+                        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
+                    process = subprocess.Popen(
+                        final_command,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        universal_newlines=True,
+                        bufsize=1,
+                        cwd=str(work_dir),
+                        env=env,
+                        encoding='utf-8',
+                        errors='replace',
+                        creationflags=creationflags
+                    )
+
+                    # 使用队列和线程异步读取
+                    output_queue = queue.Queue()
+                    output_thread = threading.Thread(
+                        target=self._enqueue_output,
+                        args=(process.stdout, output_queue)
+                    )
+                    output_thread.daemon = True
+                    output_thread.start()
+
+                    # 超时配置
+                    timeout_seconds = 300  # 5分钟总超时
+                    no_output_timeout = 60  # 1分钟无输出超时
+                    last_output_time = time.time()
+                    start_time = time.time()
+
+                    # 非阻塞读取
                     while True:
-                        output = process.stdout.readline()
-                        if output == '' and process.poll() is not None:
+                        if time.time() - start_time > timeout_seconds:
+                            output_text.insert(tk.END, f"\n⚠️ 执行超过{timeout_seconds}秒，强制终止\n")
+                            try:
+                                process.kill()
+                            except:
+                                pass
                             break
-                        if output:
-                            output_text.insert(tk.END, output)
+
+                        if process.poll() is not None:
+                            # 读取剩余输出
+                            while not output_queue.empty():
+                                try:
+                                    line = output_queue.get_nowait()
+                                    output_text.insert(tk.END, line)
+                                except queue.Empty:
+                                    break
                             output_text.see(tk.END)
                             cmd_window.update()
+                            break
+
+                        try:
+                            line = output_queue.get(timeout=0.1)
+                            output_text.insert(tk.END, line)
+                            output_text.see(tk.END)
+                            cmd_window.update()
+                            last_output_time = time.time()
+                        except queue.Empty:
+                            if time.time() - last_output_time > no_output_timeout:
+                                output_text.insert(tk.END, f"\n⚠️ {no_output_timeout}秒无输出，继续等待...\n")
+                                output_text.see(tk.END)
+                                cmd_window.update()
+                                last_output_time = time.time()
+                            cmd_window.update()
+                            continue
 
                 self.status_label.config(text="🟢 系统就绪")
                 status_label.config(text="✅ 执行完成", fg="#10B981")
