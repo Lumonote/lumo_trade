@@ -536,13 +536,13 @@ class EastMoneyCrawler:
         return None
 
     def _is_obvious_no_trading_period(self, start_dt: datetime, end_dt: datetime) -> bool:
-        """检查是否为明显的无交易期"""
-        # 春节期间（简化判断）
-        if start_dt.month == 2 and 10 <= start_dt.day <= 17:
+        """检查是否为明显的无交易期（整个批次都在假期内才跳过）"""
+        # 春节期间（整个批次都在春节假期内）
+        if start_dt.month == 2 and end_dt.month == 2 and 10 <= start_dt.day <= 17 and 10 <= end_dt.day <= 17:
             return True
 
-        # 国庆期间
-        if start_dt.month == 10 and 1 <= start_dt.day <= 7:
+        # 国庆期间（整个批次都在国庆假期内）
+        if start_dt.month == 10 and end_dt.month == 10 and 1 <= start_dt.day <= 7 and 1 <= end_dt.day <= 7:
             return True
 
         return False
