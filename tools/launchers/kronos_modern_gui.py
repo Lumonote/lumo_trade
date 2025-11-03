@@ -1219,35 +1219,144 @@ class LicenseActivationSheet:
 class LLMConfigDialog:
     """LLM 模型配置对话框"""
 
+    def _detect_system_python_with_deps(self):
+        """检测已安装pandas依赖的系统Python"""
+        # 优先使用全局检测到的PYTHON_COMMAND
+        if 'PYTHON_COMMAND' in globals():
+            python_cmd = PYTHON_COMMAND
+            # 验证是否有pandas
+            try:
+                result = subprocess.run(
+                    [python_cmd, '-c', 'import pandas; print("OK")'],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and 'OK' in result.stdout:
+                    return python_cmd
+            except:
+                pass
+
+        # 尝试pyenv Python
+        try:
+            pyenv_path = shutil.which('pyenv')
+            if pyenv_path:
+                result = subprocess.run(
+                    [pyenv_path, 'which', 'python'],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    pyenv_python = result.stdout.strip()
+                    # 验证pandas
+                    result = subprocess.run(
+                        [pyenv_python, '-c', 'import pandas; print("OK")'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0 and 'OK' in result.stdout:
+                        return pyenv_python
+        except:
+            pass
+
+        # 尝试常见Python路径
+        for cmd in ['python3.11', 'python3', 'python']:
+            try:
+                py_path = shutil.which(cmd)
+                if py_path:
+                    result = subprocess.run(
+                        [py_path, '-c', 'import pandas; print("OK")'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0 and 'OK' in result.stdout:
+                        return py_path
+            except:
+                continue
+
+        return None
+
     def __init__(self, parent):
         self.parent = parent
+        self.system_python = None
+        self.llm_config = None
 
-        # 导入 LLM 服务
-        try:
-            sys.path.insert(0, str(project_root))
-            from analysis.llm_service import LLMConfig, LLMAnalyzer
-            self.llm_config = LLMConfig()
-            self.llm_analyzer = LLMAnalyzer(self.llm_config)
-        except ImportError as e:
-            error_msg = str(e)
-            missing_module = error_msg.split("'")[-2] if "'" in error_msg else "未知模块"
+        # 检测系统Python（已安装依赖的环境）
+        self.system_python = self._detect_system_python_with_deps()
 
+        if not self.system_python:
             messagebox.showerror(
                 "依赖缺失",
-                f"无法加载 LLM 服务模块\n\n"
-                f"缺少依赖: {missing_module}\n\n"
-                f"请在终端执行以下命令安装:\n"
-                f"pip install {missing_module}\n\n"
-                f"或安装所有依赖:\n"
-                f"pip install -r requirements.txt"
+                "无法找到已安装依赖的 Python 环境\n\n"
+                "请先点击主界面的【安装依赖】按钮，\n"
+                "或在终端执行:\n"
+                "pip install -r requirements.txt\n\n"
+                "确保 pandas 和 requests 已安装。"
+            )
+            return
+
+        # 验证LLM服务配置文件可访问
+        try:
+            # 不导入pandas，直接使用基础Python模块读取配置
+            import json
+            config_path = project_root / 'config' / 'llm_config.json'
+
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    self.llm_config = json.load(f)
+            else:
+                # 创建默认配置
+                self.llm_config = {
+                    "qwen": {
+                        "enabled": False,
+                        "api_key": "",
+                        "model": "qwen-turbo",
+                        "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                        "register_url": "https://help.aliyun.com/zh/dashscope/developer-reference/activate-dashscope-and-create-an-api-key",
+                        "description": "阿里云通义千问大模型"
+                    },
+                    "deepseek": {
+                        "enabled": False,
+                        "api_key": "",
+                        "model": "deepseek-chat",
+                        "base_url": "https://api.deepseek.com",
+                        "register_url": "https://platform.deepseek.com/api_keys",
+                        "description": "DeepSeek 大模型"
+                    }
+                }
+                # 保存默认配置
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.llm_config, f, indent=2, ensure_ascii=False)
+
+        except Exception as e:
+            messagebox.showerror(
+                "配置错误",
+                f"无法读取 LLM 配置文件\n\n错误: {str(e)}"
             )
             return
 
         # 创建对话框
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("AI 模型配置")
-        self.dialog.geometry("700x800")
-        self.dialog.resizable(False, False)
+
+        # 根据父窗口尺寸进行自适应宽高（默认最小 720x600）
+        try:
+            parent.update_idletasks()
+            parent_w = parent.winfo_width() or 1000
+            parent_h = parent.winfo_height() or 650
+        except Exception:
+            parent_w, parent_h = 1000, 650
+
+        # 再次缩小自适应比例：宽度约为父窗口的 72%
+        # 同时将最小宽度降至 640，以便在窄屏上更紧凑
+        init_w = max(640, int(parent_w * 0.72))
+        init_h = max(600, int(parent_h * 0.92))
+        # 限制最大以避免超出屏幕
+        screen_w = self.dialog.winfo_screenwidth()
+        screen_h = self.dialog.winfo_screenheight()
+        init_w = min(init_w, int(screen_w * 0.85))
+        init_h = min(init_h, int(screen_h * 0.92))
+
+        self.dialog.geometry(f"{init_w}x{init_h}")
+        # 支持窗口大小调整，并设置最小尺寸
+        self.dialog.resizable(True, True)
+        self.dialog.minsize(720, 600)
         self.dialog.transient(parent)
         self.dialog.grab_set()
         self.dialog.configure(bg="#FFFFFF")
@@ -1257,17 +1366,23 @@ class LLMConfigDialog:
         self.create_interface()
 
     def center_window(self):
-        """窗口居中"""
+        """窗口居中（使用当前窗口尺寸）"""
         self.dialog.update_idletasks()
-        x = (self.dialog.winfo_screenwidth() // 2) - (700 // 2)
-        y = (self.dialog.winfo_screenheight() // 2) - (800 // 2)
-        self.dialog.geometry(f"700x800+{x}+{y}")
+        w = self.dialog.winfo_width()
+        h = self.dialog.winfo_height()
+        if not w or not h:
+            # 回退到默认最小尺寸
+            w, h = 720, 600
+        x = (self.dialog.winfo_screenwidth() // 2) - (w // 2)
+        y = (self.dialog.winfo_screenheight() // 2) - (h // 2)
+        self.dialog.geometry(f"{w}x{h}+{x}+{y}")
 
     def create_interface(self):
         """创建界面"""
         # 主容器
         main_frame = tk.Frame(self.dialog, bg="#FFFFFF")
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=20)
+        # 收紧边距以提高有效内容宽度
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
 
         # 标题区域
         header_frame = tk.Frame(main_frame, bg="#FFFFFF")
@@ -1290,19 +1405,139 @@ class LLMConfigDialog:
                               font=("SF Pro Display", 13, "normal"),
                               fg="#6B7280", bg="#FFFFFF")
         desc_label.pack(pady=(5, 0))
+        # 根据窗口大小动态调整描述文字的换行宽度，使其更贴合当前宽度
+        def _update_wraplength(event=None):
+            try:
+                # 预留左右内边距后，为描述文字设置接近全宽的换行
+                wrap_w = max(400, int(self.dialog.winfo_width() * 0.9))
+                desc_label.configure(wraplength=wrap_w)
+            except Exception:
+                pass
+        _update_wraplength()
+        self.dialog.bind("<Configure>", _update_wraplength)
+
+        # 滚动区域容器（避免与顶部/底部区域在同一父级混用 pack 的 side）
+        scroll_container = tk.Frame(main_frame, bg="#FFFFFF")
+        scroll_container.pack(fill=tk.BOTH, expand=True)
 
         # 滚动区域
-        canvas = tk.Canvas(main_frame, bg="#FFFFFF", highlightthickness=0)
-        scrollbar = tk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        canvas = tk.Canvas(scroll_container, bg="#FFFFFF", highlightthickness=0)
+        scrollbar = tk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+        # 让滚动条在 macOS 下也明显可见
+        try:
+            scrollbar.configure(width=14)
+        except Exception:
+            pass
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
         scrollable_frame = tk.Frame(canvas, bg="#FFFFFF")
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        # 防抖刷新滚动区域，避免频繁触发导致视口跳动
+        scroll_update_job = None
 
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        def _update_scrollregion():
+            nonlocal scroll_update_job
+            scroll_update_job = None
+            try:
+                # 记录当前视口位置，刷新后恢复，避免抖动
+                yview = canvas.yview()
+                canvas.configure(scrollregion=canvas.bbox("all"))
+                if yview and isinstance(yview, tuple):
+                    canvas.yview_moveto(yview[0])
+            except Exception:
+                pass
+
+        def _schedule_update_scrollregion(event=None):
+            nonlocal scroll_update_job
+            try:
+                if scroll_update_job:
+                    self.dialog.after_cancel(scroll_update_job)
+                # 使用短延时进行防抖
+                scroll_update_job = self.dialog.after(120, _update_scrollregion)
+            except Exception:
+                pass
+
+        scrollable_frame.bind("<Configure>", _schedule_update_scrollregion)
+
+        # 使用 anchor="nw" 并在创建后设置宽度为 Canvas 可视宽度
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        # 初始宽度同步：以滚动容器宽度为基准，使用 after_idle 确保在布局稳定后执行
+        def _sync_canvas_width():
+            try:
+                scroll_container.update_idletasks()
+                cw = scroll_container.winfo_width()
+                if cw and cw > 0:
+                    canvas.config(width=cw)
+                    canvas.itemconfig(canvas_window, width=cw)
+            except Exception:
+                pass
+        self.dialog.after_idle(_sync_canvas_width)
+
+        # 绑定canvas大小变化事件，让scrollable_frame宽度跟随canvas宽度
+        def on_canvas_configure(event):
+            try:
+                canvas.itemconfig(canvas_window, width=event.width)
+            except Exception:
+                pass
+
+        canvas.bind("<Configure>", on_canvas_configure)
+
+        # 当滚动容器或对话框尺寸变化时，同步 Canvas 窗口宽度（防止某些平台下 Canvas 未触发 Configure）
+        scroll_container.bind("<Configure>", lambda e: _sync_canvas_width())
+        self.dialog.bind("<Configure>", lambda e: _sync_canvas_width())
+
+        # 鼠标/触控板滚动支持（跨平台）
+        def _on_mousewheel(event):
+            try:
+                if platform.system() == "Darwin":
+                    # macOS: delta 为 ±1
+                    canvas.yview_scroll(int(-1 * event.delta), "units")
+                else:
+                    # Windows: delta 为 ±120 的倍数
+                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
+
+        # Linux: 使用 Button-4 / Button-5 事件
+        def _on_button4(event):
+            try:
+                canvas.yview_scroll(-1, "units")
+            except Exception:
+                pass
+
+        def _on_button5(event):
+            try:
+                canvas.yview_scroll(1, "units")
+            except Exception:
+                pass
+
+        # 仅在滚动区域内绑定鼠标滚动，避免全局绑定造成重复触发与抖动
+        def _bind_mousewheel():
+            try:
+                canvas.bind("<MouseWheel>", _on_mousewheel)
+                canvas.bind("<Button-4>", _on_button4)
+                canvas.bind("<Button-5>", _on_button5)
+            except Exception:
+                pass
+
+        def _unbind_mousewheel():
+            try:
+                canvas.unbind("<MouseWheel>")
+                canvas.unbind("<Button-4>")
+                canvas.unbind("<Button-5>")
+            except Exception:
+                pass
+
+        scrollable_frame.bind("<Enter>", lambda e: _bind_mousewheel())
+        scrollable_frame.bind("<Leave>", lambda e: _unbind_mousewheel())
+
+        # 布局稳定后刷新一次滚动区域，确保包含所有内容；刷新后保持视口
+        self.dialog.after_idle(_update_scrollregion)
+        # 再次刷新以避免异步添加内容未被首次捕获；仍保持视口，避免在用户滚动时跳动
+        self.dialog.after(200, _update_scrollregion)
 
         # 通义千问配置
         self.create_llm_config_section(scrollable_frame, "qwen", "通义千问", "阿里云通义千问大模型")
@@ -1312,9 +1547,6 @@ class LLMConfigDialog:
 
         # DeepSeek 配置
         self.create_llm_config_section(scrollable_frame, "deepseek", "DeepSeek", "DeepSeek 大模型")
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
 
         # 底部按钮区域
         button_frame = tk.Frame(main_frame, bg="#FFFFFF")
@@ -1392,15 +1624,16 @@ class LLMConfigDialog:
 
     def create_llm_config_section(self, parent, llm_name, display_name, description):
         """创建 LLM 配置区块"""
-        config = self.llm_config.config.get(llm_name, {})
+        config = self.llm_config.get(llm_name, {})
 
         # 区块容器
         section_frame = tk.Frame(parent, bg="#F9FAFB", relief="flat", bd=0)
-        section_frame.pack(fill=tk.X, pady=(0, 15))
+        section_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
 
         # 内容区域
         content_frame = tk.Frame(section_frame, bg="#F9FAFB")
-        content_frame.pack(fill=tk.X, padx=20, pady=20)
+        # 收紧内部边距，扩大可用内容区
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
 
         # 标题行
         title_row = tk.Frame(content_frame, bg="#F9FAFB")
@@ -1416,6 +1649,7 @@ class LLMConfigDialog:
         setattr(self, f"{llm_name}_enabled_var", enabled_var)
 
         switch_frame = tk.Frame(title_row, bg="#F9FAFB")
+        # 初始放在右侧；窄屏时会自动移动到标题下方，减少挤压
         switch_frame.pack(side=tk.RIGHT)
 
         switch_label = tk.Label(switch_frame, text="启用" if enabled_var.get() else "禁用",
@@ -1443,7 +1677,7 @@ class LLMConfigDialog:
         desc_label = tk.Label(content_frame, text=description,
                               font=("SF Pro Display", 12, "normal"),
                               fg="#6B7280", bg="#F9FAFB")
-        desc_label.pack(anchor="w", pady=(0, 15))
+        desc_label.pack(anchor="w", pady=(0, 12))
 
         # API Key 输入
         api_key_label = tk.Label(content_frame, text="API Key",
@@ -1451,92 +1685,238 @@ class LLMConfigDialog:
                                  fg="#1F2937", bg="#F9FAFB")
         api_key_label.pack(anchor="w", pady=(0, 5))
 
-        api_key_entry = tk.Entry(content_frame, font=("SF Pro Display", 13, "normal"),
+        api_key_entry = tk.Entry(content_frame, font=("SF Pro Display", 12, "normal"),
                                  bg="#FFFFFF", fg="#1F2937", relief="flat", bd=0,
                                  highlightthickness=1, highlightbackground="#E5E7EB",
                                  highlightcolor="#4F46E5", show="*")
-        api_key_entry.pack(fill=tk.X, ipady=10, ipadx=12, pady=(0, 10))
+        api_key_entry.pack(fill=tk.X, ipady=8, ipadx=10, pady=(0, 8))
         api_key_entry.insert(0, config.get('api_key', ''))
         setattr(self, f"{llm_name}_api_key_entry", api_key_entry)
 
-        # 注册说明
+        # 注册说明 - 优化布局（完全填充宽度）
         register_frame = tk.Frame(content_frame, bg="#FEF3C7", relief="flat", bd=0)
-        register_frame.pack(fill=tk.X, pady=(0, 10))
+        register_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         register_content = tk.Frame(register_frame, bg="#FEF3C7")
-        register_content.pack(fill=tk.X, padx=12, pady=8)
+        register_content.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
 
-        info_icon = tk.Label(register_content, text="ℹ️",
+        # 标题行：图标 + 标题
+        help_title_row = tk.Frame(register_content, bg="#FEF3C7")
+        help_title_row.pack(fill=tk.X, expand=True, pady=(0, 5))
+
+        info_icon = tk.Label(help_title_row, text="ℹ️",
                              font=("Apple Color Emoji", 14),
                              bg="#FEF3C7")
         info_icon.pack(side=tk.LEFT, padx=(0, 8))
 
-        register_text = tk.Label(register_content,
-                                 text=f"获取 API Key：{config.get('register_guide', '')}",
+        help_title_label = tk.Label(help_title_row, text="获取 API Key",
+                              font=("SF Pro Display", 11, "bold"),
+                              fg="#92400E", bg="#FEF3C7",
+                              anchor="w")
+        help_title_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 步骤说明 - 每行独立填充
+        help_text_lines = [
+            f"1. 访问 {config.get('register_url', '').split('//')[-1].split('/')[0]}",
+            "2. 注册并登录账号",
+            "3. 创建 API Key",
+            "4. 将 API Key 复制到上方输入框中"
+        ]
+
+        help_labels = []
+        for line in help_text_lines:
+            line_label = tk.Label(register_content, text=line,
                                  font=("SF Pro Display", 11, "normal"),
                                  fg="#92400E", bg="#FEF3C7",
-                                 wraplength=550, justify=tk.LEFT)
-        register_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                                 anchor="w")
+            line_label.pack(fill=tk.X, expand=True, anchor="w", pady=1, padx=(18, 0))
+            help_labels.append(line_label)
 
         # 注册链接按钮
         def open_register_url():
             webbrowser.open(config.get('register_url', ''))
 
-        register_btn = tk.Label(register_content, text="前往注册 →",
+        help_button_row = tk.Frame(register_content, bg="#FEF3C7")
+        help_button_row.pack(fill=tk.X, expand=True, pady=(8, 0), padx=(22, 0))
+
+        register_btn = tk.Label(help_button_row, text="前往注册 →",
                                 font=("SF Pro Display", 11, "bold"),
                                 fg="#4F46E5", bg="#FEF3C7",
                                 cursor="hand2")
-        register_btn.pack(side=tk.RIGHT)
+        register_btn.pack(side=tk.LEFT)
         register_btn.bind("<Button-1>", lambda e: open_register_url())
 
-        # 测试连接按钮
-        def test_connection():
-            # 临时保存当前配置
-            temp_config = self.llm_config.config.copy()
-            temp_config[llm_name]['enabled'] = enabled_var.get()
-            temp_config[llm_name]['api_key'] = api_key_entry.get().strip()
+        # API地址配置（可选）
+        base_url_label = tk.Label(content_frame, text="API 地址（可选，留空使用默认）",
+                                 font=("SF Pro Display", 13, "bold"),
+                                 fg="#1F2937", bg="#F9FAFB")
+        base_url_label.pack(anchor="w", pady=(10, 5))
 
-            # 临时应用配置
-            self.llm_config.config = temp_config
-            self.llm_config.llm_name = self.llm_config.get_enabled_llm()
+        base_url_entry = tk.Entry(content_frame, font=("SF Pro Display", 12, "normal"),
+                                 bg="#FFFFFF", fg="#1F2937", relief="flat", bd=0,
+                                 highlightthickness=1, highlightbackground="#E5E7EB",
+                                 highlightcolor="#4F46E5")
+        base_url_entry.pack(fill=tk.X, ipady=7, ipadx=10, pady=(0, 5))
+        base_url_entry.insert(0, config.get('base_url', ''))
+        setattr(self, f"{llm_name}_base_url_entry", base_url_entry)
+
+        # 默认地址提示
+        default_url_hint = tk.Label(content_frame,
+                                   text=f"默认: {config.get('base_url', '')}",
+                                   font=("SF Pro Display", 10, "normal"),
+                                   fg="#9CA3AF", bg="#F9FAFB")
+        default_url_hint.pack(anchor="w", pady=(0, 10))
+
+        # 模型输入（文本框，留空时使用当前配置默认）
+        model_label = tk.Label(content_frame, text="模型",
+                               font=("SF Pro Display", 13, "bold"),
+                               fg="#1F2937", bg="#F9FAFB")
+        model_label.pack(anchor="w", pady=(0, 5))
+
+        model_entry = tk.Entry(content_frame, font=("SF Pro Display", 12, "normal"),
+                               bg="#FFFFFF", fg="#1F2937", relief="flat", bd=0,
+                               highlightthickness=1, highlightbackground="#E5E7EB",
+                               highlightcolor="#4F46E5")
+        model_entry.pack(fill=tk.X, ipady=7, ipadx=10, pady=(0, 5))
+        model_entry.insert(0, config.get('model', ''))
+        setattr(self, f"{llm_name}_model_entry", model_entry)
+
+        default_model_hint = tk.Label(content_frame,
+                                      text=f"留空使用当前默认: {config.get('model', '')}",
+                                      font=("SF Pro Display", 10, "normal"),
+                                      fg="#9CA3AF", bg="#F9FAFB")
+        default_model_hint.pack(anchor="w", pady=(0, 10))
+
+        # 测试连接按钮 - 简化版本（不依赖LLMAnalyzer）
+        def test_connection():
+            api_key = api_key_entry.get().strip()
+            base_url = base_url_entry.get().strip() or config.get('base_url', '')
+
+            if not api_key:
+                messagebox.showwarning("警告", "请先填写 API Key", parent=self.dialog)
+                return
 
             test_btn.config(text="测试中...", state=tk.DISABLED)
 
             def do_test():
-                success, result = self.llm_analyzer.test_connection()
-                self.dialog.after(0, lambda: test_btn.config(text="测试连接", state=tk.NORMAL))
-                if success:
-                    messagebox.showinfo("测试成功",
-                                        f"✅ {display_name} 连接测试成功！\n\n{result[:100]}...",
-                                        parent=self.dialog)
-                else:
+                try:
+                    import requests
+                    # 简单的连接测试
+                    # 使用文本框输入的模型；留空则回退到当前配置默认
+                    model_entry_obj = getattr(self, f"{llm_name}_model_entry", None)
+                    selected_model = (model_entry_obj.get().strip() if model_entry_obj else "") or config.get('model', '')
+                    if llm_name == 'qwen':
+                        # 通义千问测试
+                        headers = {
+                            'Authorization': f'Bearer {api_key}',
+                            'Content-Type': 'application/json'
+                        }
+                        test_url = f"{base_url}/services/aigc/text-generation/generation"
+                        response = requests.post(test_url, headers=headers,
+                                               json={'model': selected_model, 'input': {'prompt': 'test'}},
+                                               timeout=10)
+                        success = response.status_code in [200, 400, 401]  # 401说明连接正常但key可能有误
+                        result = "连接成功" if response.status_code == 200 else f"状态码: {response.status_code}"
+                    else:
+                        # DeepSeek测试
+                        headers = {
+                            'Authorization': f'Bearer {api_key}',
+                            'Content-Type': 'application/json'
+                        }
+                        test_url = f"{base_url}/chat/completions"
+                        response = requests.post(test_url, headers=headers,
+                                               json={'model': selected_model, 'messages': [{'role': 'user', 'content': 'test'}]},
+                                               timeout=10)
+                        success = response.status_code in [200, 400, 401]
+                        result = "连接成功" if response.status_code == 200 else f"状态码: {response.status_code}"
+
+                    self.dialog.after(0, lambda: test_btn.config(text="测试连接", state=tk.NORMAL))
+                    if success and response.status_code == 200:
+                        messagebox.showinfo("测试成功",
+                                          f"✅ {display_name} 连接测试成功！",
+                                          parent=self.dialog)
+                    else:
+                        messagebox.showwarning("测试结果",
+                                             f"⚠️ 连接到服务器，但可能需要检查API Key\n\n{result}",
+                                             parent=self.dialog)
+                except Exception as e:
+                    self.dialog.after(0, lambda: test_btn.config(text="测试连接", state=tk.NORMAL))
                     messagebox.showerror("测试失败",
-                                         f"❌ 连接测试失败\n\n{result}",
-                                         parent=self.dialog)
+                                       f"❌ 连接测试失败\n\n{str(e)}",
+                                       parent=self.dialog)
 
             threading.Thread(target=do_test, daemon=True).start()
 
         test_btn = tk.Button(content_frame, text="测试连接",
                              font=("SF Pro Display", 12, "normal"),
                              fg="#4F46E5", bg="#EEF2FF", relief="flat", bd=0,
-                             padx=16, pady=8, command=test_connection,
+                             padx=14, pady=7, command=test_connection,
                              cursor="hand2")
-        test_btn.pack(anchor="w")
+        test_btn.pack(anchor="w", pady=(4, 0))
+
+        # 响应式调整：窄屏下将开关移到标题下方；同时压缩帮助文字的换行宽度，避免挤压
+        def _adapt_section_layout(event=None):
+            try:
+                w = content_frame.winfo_width() or self.dialog.winfo_width()
+                # 帮助文字换行宽度：内容区的约 90%
+                wrap_w = max(280, int(w * 0.90))
+                for lbl in help_labels:
+                    lbl.configure(wraplength=wrap_w)
+
+                # 当内容区较窄时，将启用开关移到标题下方
+                if w < 720:
+                    # 重新布局：先忘记，再按新方式pack
+                    try:
+                        switch_frame.pack_forget()
+                    except Exception:
+                        pass
+                    switch_frame.pack(anchor="w", pady=(6, 0))
+                else:
+                    # 宽度足够时恢复到标题行右侧
+                    try:
+                        switch_frame.pack_forget()
+                    except Exception:
+                        pass
+                    switch_frame.pack(side=tk.RIGHT)
+            except Exception:
+                pass
+
+        # 初始适配一次，并在窗口大小变化时动态适配
+        _adapt_section_layout()
+        content_frame.bind("<Configure>", _adapt_section_layout)
 
     def save_config(self):
         """保存配置"""
         try:
+            import json
             # 更新配置
             for llm_name in ['qwen', 'deepseek']:
                 enabled_var = getattr(self, f"{llm_name}_enabled_var", None)
                 api_key_entry = getattr(self, f"{llm_name}_api_key_entry", None)
+                base_url_entry = getattr(self, f"{llm_name}_base_url_entry", None)
+                model_entry = getattr(self, f"{llm_name}_model_entry", None)
 
                 if enabled_var and api_key_entry:
-                    self.llm_config.update_llm_config(
-                        llm_name,
-                        enabled_var.get(),
-                        api_key_entry.get().strip()
-                    )
+                    self.llm_config[llm_name]['enabled'] = enabled_var.get()
+                    self.llm_config[llm_name]['api_key'] = api_key_entry.get().strip()
+
+                    # 保存base_url（如果有）
+                    if base_url_entry:
+                        custom_url = base_url_entry.get().strip()
+                        if custom_url:
+                            self.llm_config[llm_name]['base_url'] = custom_url
+
+                    # 保存模型（如果填写了）
+                    if model_entry:
+                        selected_model = model_entry.get().strip()
+                        if selected_model:
+                            self.llm_config[llm_name]['model'] = selected_model
+
+            # 保存到文件
+            config_path = project_root / 'config' / 'llm_config.json'
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.llm_config, f, indent=2, ensure_ascii=False)
 
             messagebox.showinfo("成功", "✅ 配置保存成功！", parent=self.dialog)
             self.dialog.destroy()

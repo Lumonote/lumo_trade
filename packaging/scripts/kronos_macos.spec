@@ -41,6 +41,8 @@ a = Analysis(
         'tkinter.font',
         'tkinter.scrolledtext',
         '_tkinter',
+        # 注意: pandas/numpy等大型库不打包，通过"安装依赖"按钮安装到系统Python
+        # LLM服务会动态调用系统Python来使用这些库
     ],
     hookspath=[],
     hooksconfig={},
@@ -49,15 +51,18 @@ a = Analysis(
         'IPython',
         'jupyter',
         'notebook',
-        'test', 
+        'test',
         'tests',
         'unittest',
         'pdb',
         'doctest',
+        # 排除大型库，通过"安装依赖"安装到系统Python
         'matplotlib',
         'numpy',
         'pandas',
         'torch',
+        'scipy',
+        'sklearn',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
