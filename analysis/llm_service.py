@@ -34,7 +34,7 @@ class LLMConfig:
                 "qwen": {
                     "enabled": False,
                     "api_key": "",
-                    "model": "qwen-turbo",
+                    "model": "qwen3-max",
                     "base_url": "https://dashscope.aliyuncs.com/api/v1",
                     "register_url": "https://help.aliyun.com/zh/dashscope/developer-reference/activate-dashscope-and-create-an-api-key",
                     "description": "阿里云通义千问大模型"
@@ -69,19 +69,37 @@ class LLMConfig:
             print(f"保存配置失败: {e}")
 
     def get_enabled_llm(self) -> Optional[str]:
-        """获取启用的 LLM 服务"""
-        if self.config.get('qwen', {}).get('enabled'):
-            return 'qwen'
-        elif self.config.get('deepseek', {}).get('enabled'):
-            return 'deepseek'
+        """获取启用且已配置 API Key 的首选 LLM 服务
+
+        优先返回已启用且配置了 API Key 的服务；
+        若都未配置 API Key，则返回已启用的服务（用于提示）。
+        """
+        # 优先选择“已启用且已配置API Key”的模型
+        for name in ['qwen', 'deepseek']:
+            cfg = self.config.get(name, {})
+            if cfg.get('enabled') and cfg.get('api_key'):
+                return name
+
+        # 其次选择“仅启用但未配置API Key”的模型（用于 UI/提示）
+        for name in ['qwen', 'deepseek']:
+            cfg = self.config.get(name, {})
+            if cfg.get('enabled'):
+                return name
+
         return None
 
+    def get_enabled_llms(self) -> list:
+        """获取已启用且配置了 API Key 的所有LLM服务列表"""
+        enabled = []
+        for name in ['qwen', 'deepseek']:
+            cfg = self.config.get(name, {})
+            if cfg.get('enabled') and cfg.get('api_key'):
+                enabled.append(name)
+        return enabled
+
     def is_configured(self) -> bool:
-        """检查是否已配置可用的 LLM"""
-        enabled_llm = self.get_enabled_llm()
-        if not enabled_llm:
-            return False
-        return bool(self.config.get(enabled_llm, {}).get('api_key'))
+        """检查是否已配置可用的 LLM（任一启用且有 API Key 即为已配置）"""
+        return len(self.get_enabled_llms()) > 0
 
     def update_llm_config(self, llm_name: str, enabled: bool, api_key: str = None):
         """更新 LLM 配置"""
@@ -102,6 +120,7 @@ class LLMAnalyzer:
     def __init__(self, config: LLMConfig = None):
         self.config = config or LLMConfig()
         self.llm_name = self.config.get_enabled_llm()
+        self.enabled_llms = self.config.get_enabled_llms()
 
     def _call_qwen_api(self, prompt: str, max_tokens: int = 2000) -> Tuple[bool, str]:
         """调用通义千问 API"""
@@ -201,7 +220,7 @@ class LLMAnalyzer:
         except Exception as e:
             return False, f"未知错误: {str(e)}"
 
-    def analyze_stock(self, stock_data: Dict) -> Tuple[bool, str]:
+    def analyze_stock(self, stock_data: Dict) -> Tuple[bool, Dict]:
         """
         综合分析股票数据
 
@@ -220,27 +239,57 @@ class LLMAnalyzer:
             (success, analysis_result)
         """
         if not self.config.is_configured():
-            return False, "未配置或启用任何 LLM 服务"
+            return False, {"error": "未配置或启用任何 LLM 服务"}
 
         # 构建分析提示词
         prompt = self._build_analysis_prompt(stock_data)
 
-        # 调用对应的 API
+        # 若启用多个模型，则分别调用并按模型分组返回
+        if len(self.enabled_llms) > 1:
+            aggregated: Dict[str, Dict] = {}
+            any_success = False
+            last_error = None
+            for name in self.enabled_llms:
+                if name == 'qwen':
+                    success, raw = self._call_qwen_api(prompt, max_tokens=3000)
+                elif name == 'deepseek':
+                    success, raw = self._call_deepseek_api(prompt, max_tokens=3000)
+                else:
+                    success, raw = False, f"未知的 LLM 服务: {name}"
+
+                if success:
+                    parsed = self.parse_llm_response(raw)
+                    if parsed is not None:
+                        parsed['llm_model'] = name
+                        aggregated[name] = parsed
+                        any_success = True
+                    else:
+                        last_error = f"{name} 返回的数据格式无效，原始响应：\n{raw}"
+                else:
+                    last_error = raw
+
+            if any_success:
+                return True, aggregated
+            else:
+                return False, {"error": last_error or "所有模型调用失败"}
+
+        # 单模型调用（保持兼容）
         if self.llm_name == 'qwen':
             success, result = self._call_qwen_api(prompt, max_tokens=3000)
         elif self.llm_name == 'deepseek':
             success, result = self._call_deepseek_api(prompt, max_tokens=3000)
         else:
-            return False, "未知的 LLM 服务"
+            return False, {"error": "未知的 LLM 服务"}
 
         if not success:
-            return False, result
+            return False, {"error": result}
 
-        # 解析 JSON 结果
         parsed_result = self.parse_llm_response(result)
         if parsed_result is None:
-            return False, f"LLM 返回的数据格式无效，原始响应：\n{result}"
+            return False, {"error": f"LLM 返回的数据格式无效，原始响应：\n{result}"}
 
+        # 注入模型来源，便于前端标注
+        parsed_result['llm_model'] = self.llm_name or 'unknown'
         return True, parsed_result
 
     def parse_llm_response(self, llm_text: str) -> Optional[Dict]:

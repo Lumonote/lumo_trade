@@ -1,16 +1,16 @@
 {
   "qwen": {
-    "enabled": false,
-    "api_key": "",
-    "model": "qwen-turbo",
+    "enabled": true,
+    "api_key": "sk-c5590f4a4f6e4bf6bb52f4f24354040f",
+    "model": "qwen3-max",
     "base_url": "https://dashscope.aliyuncs.com/api/v1",
     "register_url": "https://help.aliyun.com/zh/dashscope/developer-reference/activate-dashscope-and-create-an-api-key",
     "description": "阿里云通义千问大模型",
     "register_guide": "1. 访问阿里云DashScope控制台\n2. 开通DashScope服务\n3. 创建API Key\n4. 将API Key复制到配置中"
   },
   "deepseek": {
-    "enabled": false,
-    "api_key": "",
+    "enabled": true,
+    "api_key": "sk-64f4d0bb9224476e880a4a530c2a8316",
     "model": "deepseek-chat",
     "base_url": "https://api.deepseek.com",
     "register_url": "https://platform.deepseek.com/api_keys",

@@ -235,6 +235,22 @@ class KronosHTMLReportGenerator:
         # 生成LLM智能分析板块
         llm_analysis_html = self._generate_llm_analysis_section(llm_analysis, llm_predicted_kline)
 
+        # 紧凑视图切换脚本，避免在 f-string 中出现未转义的大括号
+        compact_toggle_script = """
+        <script>
+        (function(){
+            const toggle = document.getElementById('llmCompactToggle');
+            const wrapper = document.querySelector('.llm-analysis-wrapper');
+            if (toggle && wrapper) {
+                toggle.addEventListener('click', function(){
+                    wrapper.classList.toggle('llm-compact');
+                    toggle.textContent = wrapper.classList.contains('llm-compact') ? '标准模式' : '紧凑模式';
+                });
+            }
+        })();
+        </script>
+        """
+
         # 嵌入PNG图片
         chart_html = ""
         if png_chart_path:
@@ -321,12 +337,16 @@ class KronosHTMLReportGenerator:
         </section>
 
         <!-- AI智能分析板块 -->
-        <section class="llm-analysis-wrapper" style="display: {'block' if llm_analysis else 'none'};">
-            <h2>🤖 AI智能分析</h2>
+        <section class="llm-analysis-wrapper">
+            <div class="llm-header-bar">
+                <h2>🤖 AI智能分析</h2>
+                <button id="llmCompactToggle" class="llm-view-toggle" title="切换紧凑视图">紧凑模式</button>
+            </div>
             <div class="analysis-card">
                 {llm_analysis_html}
             </div>
         </section>
+        {compact_toggle_script}
 
         <!-- 量化模型 + 时间轴布局 -->
         <section class="models-timeline-section">
@@ -1741,7 +1761,444 @@ class KronosHTMLReportGenerator:
             </div>
             """
 
-        html = "<div class='llm-analysis-section'>"
+        # 多模型分组支持：如果传入的是以模型名为键的字典，则渲染为分组并默认折叠
+        try:
+            is_grouped = (
+                isinstance(llm_analysis, dict)
+                and 'kline_prediction' not in llm_analysis
+                and any(isinstance(v, dict) and (
+                    ('kline_prediction' in v) or ('operation_advice' in v) or ('summary' in v)
+                ) for v in llm_analysis.values())
+            )
+        except Exception:
+            is_grouped = False
+
+        if is_grouped:
+            html = """
+            <div class='llm-analysis-section'>
+                <div class='llm-header'>
+                    <span style='display: inline-block; padding: 10px 20px; background: rgba(100, 181, 246, 0.2);
+                                 border: 1px solid var(--accent-blue); border-radius: 20px;
+                                 font-size: 1.1em; font-weight: bold;'>
+                        🤖 AI多模型智能分析
+                    </span>
+                </div>
+            """
+
+            # 模型显示名映射，兼容常见变体
+            badges = {
+                'qwen': '🌟 通义千问',
+                'qwen3': '🌟 通义千问3',
+                'qwen3-max': '🌟 通义千问3',
+                'qwen-max': '🌟 通义千问Max',
+                'qwen-plus': '🌟 通义千问Plus',
+                'deepseek': '🤖 DeepSeek',
+                'deepseek-chat': '🤖 DeepSeek Chat',
+                'deepseek-reasoner': '🧠 DeepSeek R1',
+                'deepseek-v3': '🤖 DeepSeek V3'
+            }
+
+            # 若 llm_predicted_kline 是字典，按模型名取对应DF作为后备数据源
+            predicted_map = llm_predicted_kline if isinstance(llm_predicted_kline, dict) else {}
+
+            import json
+
+            for idx, (model_key, model_data) in enumerate(llm_analysis.items()):
+                # 过滤非分析字典条目（如顶层 'llm_model' 标识），避免渲染空白卡片
+                if not isinstance(model_data, dict):
+                    continue
+                if not any(k in model_data for k in ('kline_prediction', 'operation_advice', 'risk_assessment', 'strategy', 'summary')):
+                    continue
+
+                model_display = badges.get(str(model_key).lower(), f"🤖 {str(model_key).upper()}")
+
+                html += f"""
+                <div class='model-block'>
+                    <div class='model-header'>
+                        <span class='model-badge'>{model_display}</span>
+                        <button type='button' class='model-toggle'>展开详情</button>
+                    </div>
+                    <div class='model-content collapsed'>
+                """
+
+                # K线走势预测（优先使用结构化的 kline_prediction，缺失时尝试使用 DF 后备）
+                kline_pred = model_data.get('kline_prediction', {}) if isinstance(model_data, dict) else {}
+                predictions = kline_pred.get('predictions', [])
+                if (not predictions) and model_key in predicted_map:
+                    df = predicted_map.get(model_key)
+                    try:
+                        if df is not None and hasattr(df, 'to_dict') and not df.empty:
+                            predictions = df.to_dict('records')
+                    except Exception:
+                        pass
+
+                if kline_pred or predictions:
+                    trend = kline_pred.get('trend', '未知')
+                    confidence = kline_pred.get('confidence', 0) * 100
+
+                    html += f"""
+                    <div class='llm-subsection'>
+                        <h4>📊 K线走势预测</h4>
+                        <div class='llm-content'>
+                            <div class='llm-row'>
+                                <span class='llm-label'>预测趋势:</span>
+                                <span class='llm-value trend-{trend}'>{trend}</span>
+                            </div>
+                            <div class='llm-row'>
+                                <span class='llm-label'>信心度:</span>
+                                <span class='llm-value'>{confidence:.0f}%</span>
+                            </div>
+                    """
+
+                    support_levels = kline_pred.get('support_levels', [])
+                    resistance_levels = kline_pred.get('resistance_levels', [])
+
+                    if support_levels:
+                        html += f"""
+                            <div class='llm-row'>
+                                <span class='llm-label'>关键支撑位:</span>
+                                <span class='llm-value'>{', '.join(map(str, support_levels))}</span>
+                            </div>
+                        """
+
+                    if resistance_levels:
+                        html += f"""
+                            <div class='llm-row'>
+                                <span class='llm-label'>关键压力位:</span>
+                                <span class='llm-value'>{', '.join(map(str, resistance_levels))}</span>
+                            </div>
+                        """
+
+                    if predictions and len(predictions) > 0:
+                        html += """
+                            <div class='llm-predictions-table'>
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>日期</th>
+                                            <th>开盘</th>
+                                            <th>最高</th>
+                                            <th>最低</th>
+                                            <th>收盘</th>
+                                            <th>涨跌幅</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                        """
+
+                        for pred in predictions[:10]:
+                            change_pct = pred.get('change_pct', 0)
+                            change_class = 'positive' if change_pct > 0 else 'negative'
+                            html += f"""
+                                        <tr>
+                                            <td>{pred.get('date', 'N/A')}</td>
+                                            <td>{pred.get('open', 0):.2f}</td>
+                                            <td>{pred.get('high', 0):.2f}</td>
+                                            <td>{pred.get('low', 0):.2f}</td>
+                                            <td>{pred.get('close', 0):.2f}</td>
+                                            <td class='{change_class}'>{change_pct:+.2f}%</td>
+                                        </tr>
+                            """
+
+                        html += """
+                                    </tbody>
+                                </table>
+                            </div>
+                        """
+
+                        # Canvas可视化（ID唯一）
+                        predictions_json = json.dumps(predictions[:10])
+                        chart_id = f"llmKlineChart_{idx}"
+                        html += f"""
+                            <div style='margin-top: 30px; background: var(--secondary-bg);
+                                        padding: 20px; border-radius: 12px;
+                                        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);'>
+                                <h5 style='text-align: center; color: var(--text-secondary); margin-bottom: 20px;
+                                           font-size: 1.3em; font-weight: 600;'>
+                                    📊 AI预测K线走势图
+                                </h5>
+                                <canvas id='{chart_id}' width='900' height='450'
+                                        style='max-width: 100%; border: 2px solid var(--border-primary);
+                                               border-radius: 10px; background: linear-gradient(180deg, #1a1f2e 0%, #252d42 100%);
+                                               box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);'></canvas>
+                            </div>
+                        """
+
+                        script = """
+                            <script>
+                            (function() {
+                                const predictions = __PRED_JSON__;
+                                const canvas = document.getElementById('__CHART_ID__');
+                                if (!canvas) return;
+                                const ctx = canvas.getContext('2d');
+                                const width = canvas.width;
+                                const height = canvas.height;
+                                const padding = 60;
+                                const chartWidth = width - 2 * padding;
+                                const chartHeight = height - 2 * padding;
+
+                                const bgGradient = ctx.createLinearGradient(0, 0, 0, height);
+                                bgGradient.addColorStop(0, '#1a1f2e');
+                                bgGradient.addColorStop(1, '#252d42');
+                                ctx.fillStyle = bgGradient;
+                                ctx.fillRect(0, 0, width, height);
+
+                                if (predictions.length === 0) return;
+
+                                let minPrice = Infinity, maxPrice = -Infinity;
+                                predictions.forEach(p => {
+                                    minPrice = Math.min(minPrice, p.low);
+                                    maxPrice = Math.max(maxPrice, p.high);
+                                });
+                                const priceRange = maxPrice - minPrice;
+                                const priceMargin = priceRange * 0.15;
+                                minPrice -= priceMargin;
+                                maxPrice += priceMargin;
+
+                                ctx.strokeStyle = 'rgba(74, 85, 104, 0.3)';
+                                ctx.lineWidth = 1;
+                                for (let i = 0; i <= predictions.length; i++) {
+                                    const x = padding + (chartWidth / predictions.length) * i;
+                                    ctx.beginPath();
+                                    ctx.moveTo(x, padding);
+                                    ctx.lineTo(x, height - padding);
+                                    ctx.stroke();
+                                }
+
+                                ctx.fillStyle = '#b0bec5';
+                                ctx.font = '13px -apple-system, sans-serif';
+                                ctx.textAlign = 'right';
+                                for (let i = 0; i <= 6; i++) {
+                                    const price = minPrice + (maxPrice - minPrice) * i / 6;
+                                    const y = height - padding - (chartHeight * i / 6);
+
+                                    ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+                                    ctx.shadowBlur = 3;
+                                    ctx.fillText('¥' + price.toFixed(2), padding - 15, y + 5);
+                                    ctx.shadowBlur = 0;
+
+                                    ctx.strokeStyle = 'rgba(74, 85, 104, 0.2)';
+                                    ctx.beginPath();
+                                    ctx.moveTo(padding, y);
+                                    ctx.lineTo(width - padding, y);
+                                    ctx.stroke();
+                                }
+
+                                ctx.strokeStyle = '#64b5f6';
+                                ctx.lineWidth = 2;
+                                ctx.strokeRect(padding, padding, chartWidth, chartHeight);
+
+                                const candleWidth = chartWidth / predictions.length * 0.7;
+                                const spacing = chartWidth / predictions.length;
+
+                                predictions.forEach((pred, i) => {
+                                    const x = padding + spacing * i + spacing / 2;
+                                    const open = pred.open;
+                                    const close = pred.close;
+                                    const high = pred.high;
+                                    const low = pred.low;
+
+                                    const yHigh = height - padding - ((high - minPrice) / (maxPrice - minPrice)) * chartHeight;
+                                    const yLow = height - padding - ((low - minPrice) / (maxPrice - minPrice)) * chartHeight;
+                                    const yOpen = height - padding - ((open - minPrice) / (maxPrice - minPrice)) * chartHeight;
+                                    const yClose = height - padding - ((close - minPrice) / (maxPrice - minPrice)) * chartHeight;
+
+                                    const isRise = close >= open;
+                                    ctx.strokeStyle = isRise ? '#66bb6a' : '#ef5350';
+                                    ctx.fillStyle = isRise ? '#66bb6a' : '#ef5350';
+                                    ctx.lineWidth = 1;
+
+                                    ctx.beginPath();
+                                    ctx.moveTo(x, yHigh);
+                                    ctx.lineTo(x, yLow);
+                                    ctx.stroke();
+
+                                    const bodyTop = Math.min(yOpen, yClose);
+                                    const bodyHeight = Math.abs(yClose - yOpen);
+                                    ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, Math.max(bodyHeight, 1));
+
+                                    if (i % Math.ceil(predictions.length / 5) === 0) {
+                                        ctx.fillStyle = '#b0bec5';
+                                        ctx.font = '11px sans-serif';
+                                        ctx.textAlign = 'center';
+                                        ctx.save();
+                                        ctx.translate(x, height - padding + 15);
+                                        ctx.rotate(-Math.PI / 4);
+                                        const d = (pred.date || '').toString();
+                                        ctx.fillText(d.substring(5), 0, 0);
+                                        ctx.restore();
+                                    }
+                                });
+
+                                ctx.fillStyle = '#64b5f6';
+                                ctx.font = 'bold 14px sans-serif';
+                                ctx.textAlign = 'center';
+                                ctx.fillText('AI未来价格走势预测', width / 2, 25);
+                            })();
+                            </script>
+                        """.replace("__PRED_JSON__", predictions_json).replace("__CHART_ID__", chart_id)
+
+                        html += script
+
+                    html += "</div></div>"  # 结束K线小节
+
+                # 操作建议、操作策略、综合总结 - 使用grid布局并排显示
+                html += "<div class='llm-advice-grid'>"
+
+                # 操作建议
+                op_advice = model_data.get('operation_advice', {}) if isinstance(model_data, dict) else {}
+                if op_advice:
+                    action = op_advice.get('action', '未知')
+                    action_class = {
+                        '买入': 'buy-action',
+                        '持有': 'hold-action',
+                        '卖出': 'sell-action'
+                    }.get(action, 'hold-action')
+
+                    html += f"""
+                    <div class='llm-subsection llm-subsection-compact'>
+                        <h4>💡 操作建议</h4>
+                        <div class='llm-content'>
+                            <div class='operation-badge {action_class}'>{action}</div>
+                            <div class='llm-row'>
+                                <span class='llm-label'>建议价位:</span>
+                                <span class='llm-value'>{op_advice.get('suggested_price_range', '未知')}</span>
+                            </div>
+                            <div class='llm-row'>
+                                <span class='llm-label'>仓位控制:</span>
+                                <span class='llm-value'>{op_advice.get('position_control', '未知')}</span>
+                            </div>
+                            <div class='llm-row'>
+                                <span class='llm-label'>目标价位:</span>
+                                <span class='llm-value'>{op_advice.get('target_price', '未知')}</span>
+                            </div>
+                            <div class='llm-row'>
+                                <span class='llm-label'>止损价位:</span>
+                                <span class='llm-value'>{op_advice.get('stop_loss', '未知')}</span>
+                            </div>
+                            <div class='llm-row'>
+                                <span class='llm-label'>信心度:</span>
+                                <span class='llm-value'>{op_advice.get('confidence', 0) * 100:.0f}%</span>
+                            </div>
+                        </div>
+                    </div>
+                    """
+
+                # 风险评估
+                risk = model_data.get('risk_assessment', {}) if isinstance(model_data, dict) else {}
+                if risk:
+                    risk_level = risk.get('risk_level', '未知')
+                    risk_class = {
+                        '低': 'risk-low',
+                        '中': 'risk-medium',
+                        '高': 'risk-high'
+                    }.get(risk_level, 'risk-medium')
+
+                    html += f"""
+                    <div class='llm-subsection'>
+                        <h4>⚠️ 风险评估</h4>
+                        <div class='llm-content'>
+                            <div class='risk-badge {risk_class}'>{risk_level}风险</div>
+                            <div class='llm-row'>
+                                <span class='llm-label'>综合评分:</span>
+                                <span class='llm-value'>{risk.get('overall_score', 0)}/100</span>
+                            </div>
+                    """
+
+                    risk_points = risk.get('risk_points', [])
+                    if risk_points:
+                        html += "<div class='llm-row'><span class='llm-label'>主要风险:</span></div>"
+                        html += "<ul class='risk-points-list'>"
+                        for rp in risk_points:
+                            html += f"<li>{rp}</li>"
+                        html += "</ul>"
+
+                    html += "</div></div>"
+
+                # 操作策略
+                strategy = model_data.get('strategy', {}) if isinstance(model_data, dict) else {}
+                if strategy:
+                    html += f"""
+                    <div class='llm-subsection llm-subsection-compact'>
+                        <h4>📋 操作策略</h4>
+                        <div class='llm-content'>
+                            <div class='llm-row'>
+                                <span class='llm-label'>短线策略:</span>
+                                <span class='llm-value'>{strategy.get('short_term', '未知')}</span>
+                            </div>
+                            <div class='llm-row'>
+                                <span class='llm-label'>中线策略:</span>
+                                <span class='llm-value'>{strategy.get('mid_term', '未知')}</span>
+                            </div>
+                            <div class='llm-row'>
+                                <span class='llm-label'>仓位策略:</span>
+                                <span class='llm-value'>{strategy.get('position_strategy', '未知')}</span>
+                            </div>
+                        </div>
+                    </div>
+                    """
+
+                # 综合总结
+                summary = model_data.get('summary', '') if isinstance(model_data, dict) else ''
+                if summary:
+                    html += f"""
+                    <div class='llm-subsection llm-subsection-compact'>
+                        <h4>📝 综合总结</h4>
+                        <div class='llm-content'>
+                            <p class='llm-summary'>{summary}</p>
+                        </div>
+                    </div>
+                    """
+
+                html += "</div>"  # 结束 llm-advice-grid
+
+                html += "</div>"  # 结束 model-content
+                html += "</div>"  # 结束 model-block
+
+            # 折叠交互脚本（点击头部或按钮切换）
+            html += """
+            <script>
+            (function() {
+                const blocks = document.querySelectorAll('.model-block');
+                blocks.forEach(block => {
+                    const header = block.querySelector('.model-header');
+                    const btn = block.querySelector('.model-toggle');
+                    const content = block.querySelector('.model-content');
+                    if (!header || !btn || !content) return;
+                    const toggle = () => {
+                        content.classList.toggle('collapsed');
+                        btn.textContent = content.classList.contains('collapsed') ? '展开详情' : '收起';
+                    };
+                    header.addEventListener('click', (e) => {
+                        if (e.target && e.target.classList && e.target.classList.contains('model-toggle')) return;
+                        toggle();
+                    });
+                    btn.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+                });
+            })();
+            </script>
+            """
+
+            html += "</div>"  # 结束 llm-analysis-section
+            return html
+
+        # 获取LLM模型来源
+        llm_model = llm_analysis.get('llm_model', 'unknown')
+        model_display = {
+            'qwen': '🌟 通义千问',
+            'deepseek': '🤖 DeepSeek',
+            'unknown': '🤖 AI'
+        }.get(llm_model.lower(), f'🤖 {llm_model.upper()}')
+
+        html = f"""<div class='llm-analysis-section'>
+        <div class='llm-header'>
+            <span style='display: inline-block; padding: 10px 20px; background: rgba(100, 181, 246, 0.2);
+                         border: 1px solid var(--accent-blue); border-radius: 20px;
+                         font-size: 1.1em; font-weight: bold;'>
+                {model_display} 智能分析
+            </span>
+        </div>
+        """
 
         # K线走势预测
         kline_pred = llm_analysis.get('kline_prediction', {})
@@ -1820,6 +2277,154 @@ class KronosHTMLReportGenerator:
                             </tbody>
                         </table>
                     </div>
+                """
+
+                # 添加Canvas K线可视化图表
+                import json
+                predictions_json = json.dumps(predictions[:10])
+                html += f"""
+                    <div style='margin-top: 30px; background: var(--secondary-bg);
+                                padding: 20px; border-radius: 12px;
+                                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);'>
+                        <h5 style='text-align: center; color: var(--text-secondary); margin-bottom: 20px;
+                                   font-size: 1.3em; font-weight: 600;'>
+                            📊 AI预测K线走势图
+                        </h5>
+                        <canvas id='llmKlineChart' width='900' height='450'
+                                style='max-width: 100%; border: 2px solid var(--border-primary);
+                                       border-radius: 10px; background: linear-gradient(180deg, #1a1f2e 0%, #252d42 100%);
+                                       box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);'></canvas>
+                    </div>
+                    <script>
+                    (function() {{
+                        const predictions = {predictions_json};
+                        const canvas = document.getElementById('llmKlineChart');
+                        const ctx = canvas.getContext('2d');
+                        const width = canvas.width;
+                        const height = canvas.height;
+                        const padding = 60;
+                        const chartWidth = width - 2 * padding;
+                        const chartHeight = height - 2 * padding;
+
+                        // 绘制背景渐变
+                        const bgGradient = ctx.createLinearGradient(0, 0, 0, height);
+                        bgGradient.addColorStop(0, '#1a1f2e');
+                        bgGradient.addColorStop(1, '#252d42');
+                        ctx.fillStyle = bgGradient;
+                        ctx.fillRect(0, 0, width, height);
+
+                        if (predictions.length === 0) return;
+
+                        // 计算价格范围
+                        let minPrice = Infinity, maxPrice = -Infinity;
+                        predictions.forEach(p => {{
+                            minPrice = Math.min(minPrice, p.low);
+                            maxPrice = Math.max(maxPrice, p.high);
+                        }});
+                        const priceRange = maxPrice - minPrice;
+                        const priceMargin = priceRange * 0.15;
+                        minPrice -= priceMargin;
+                        maxPrice += priceMargin;
+
+                        // 绘制网格和坐标轴
+                        ctx.strokeStyle = 'rgba(74, 85, 104, 0.3)';
+                        ctx.lineWidth = 1;
+
+                        // 垂直网格线
+                        for (let i = 0; i <= predictions.length; i++) {{
+                            const x = padding + (chartWidth / predictions.length) * i;
+                            ctx.beginPath();
+                            ctx.moveTo(x, padding);
+                            ctx.lineTo(x, height - padding);
+                            ctx.stroke();
+                        }}
+
+                        // 水平网格线和价格刻度
+                        ctx.fillStyle = '#b0bec5';
+                        ctx.font = '13px -apple-system, sans-serif';
+                        ctx.textAlign = 'right';
+                        for (let i = 0; i <= 6; i++) {{
+                            const price = minPrice + (maxPrice - minPrice) * i / 6;
+                            const y = height - padding - (chartHeight * i / 6);
+
+                            // 绘制刻度文字（带阴影）
+                            ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+                            ctx.shadowBlur = 3;
+                            ctx.fillText('¥' + price.toFixed(2), padding - 15, y + 5);
+                            ctx.shadowBlur = 0;
+
+                            // 绘制网格线
+                            ctx.strokeStyle = 'rgba(74, 85, 104, 0.2)';
+                            ctx.beginPath();
+                            ctx.moveTo(padding, y);
+                            ctx.lineTo(width - padding, y);
+                            ctx.stroke();
+                        }}
+
+                        // 绘制边框
+                        ctx.strokeStyle = '#64b5f6';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(padding, padding, chartWidth, chartHeight);
+
+                        // 计算每根K线的宽度
+                        const candleWidth = chartWidth / predictions.length * 0.7;
+                        const spacing = chartWidth / predictions.length;
+
+                        // 绘制K线
+                        predictions.forEach((pred, idx) => {{
+                            const x = padding + spacing * idx + spacing / 2;
+                            const open = pred.open;
+                            const close = pred.close;
+                            const high = pred.high;
+                            const low = pred.low;
+
+                            // 坐标转换
+                            const yHigh = height - padding - ((high - minPrice) / (maxPrice - minPrice)) * chartHeight;
+                            const yLow = height - padding - ((low - minPrice) / (maxPrice - minPrice)) * chartHeight;
+                            const yOpen = height - padding - ((open - minPrice) / (maxPrice - minPrice)) * chartHeight;
+                            const yClose = height - padding - ((close - minPrice) / (maxPrice - minPrice)) * chartHeight;
+
+                            // 判断涨跌
+                            const isRise = close >= open;
+                            ctx.strokeStyle = isRise ? '#66bb6a' : '#ef5350';
+                            ctx.fillStyle = isRise ? '#66bb6a' : '#ef5350';
+                            ctx.lineWidth = 1;
+
+                            // 绘制上下影线
+                            ctx.beginPath();
+                            ctx.moveTo(x, yHigh);
+                            ctx.lineTo(x, yLow);
+                            ctx.stroke();
+
+                            // 绘制实体
+                            const bodyTop = Math.min(yOpen, yClose);
+                            const bodyHeight = Math.abs(yClose - yOpen);
+                            if (isRise) {{
+                                ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, Math.max(bodyHeight, 1));
+                            }} else {{
+                                ctx.fillRect(x - candleWidth / 2, bodyTop, candleWidth, Math.max(bodyHeight, 1));
+                            }}
+
+                            // 绘制日期标签
+                            if (idx % Math.ceil(predictions.length / 5) === 0) {{
+                                ctx.fillStyle = '#b0bec5';
+                                ctx.font = '11px sans-serif';
+                                ctx.textAlign = 'center';
+                                ctx.save();
+                                ctx.translate(x, height - padding + 15);
+                                ctx.rotate(-Math.PI / 4);
+                                ctx.fillText(pred.date.substring(5), 0, 0);
+                                ctx.restore();
+                            }}
+                        }});
+
+                        // 标题
+                        ctx.fillStyle = '#64b5f6';
+                        ctx.font = 'bold 14px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('AI未来价格走势预测', width / 2, 25);
+                    }})();
+                    </script>
                 """
 
             html += "</div></div>"
@@ -3560,28 +4165,151 @@ class KronosHTMLReportGenerator:
 
         .llm-analysis-wrapper h2 {
             color: var(--accent-purple);
-            margin-bottom: 20px;
-            font-size: 1.8em;
+            margin-bottom: 8px;
+            font-size: 1.7em;
             text-shadow: 0 0 10px rgba(186, 104, 200, 0.5);
+        }
+
+        .llm-header-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .llm-view-toggle {
+            padding: 6px 10px;
+            border-radius: 14px;
+            border: 1px solid var(--accent-blue);
+            background: rgba(100, 181, 246, 0.15);
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+        .llm-view-toggle:hover {
+            background: rgba(100, 181, 246, 0.25);
         }
 
         .llm-analysis-section {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(100%, 600px), 1fr));
             gap: 20px;
+            max-width: 100%;
+        }
+        /* 单模型时自动填充整行 - 兼容性更好的写法 */
+        @supports selector(:has(*)) {
+            .llm-analysis-section:has(.model-block:only-of-type) {
+                grid-template-columns: 1fr;
+            }
+        }
+        /* 旧版浏览器fallback - 检测单个model-block */
+        .llm-analysis-section .model-block:first-child:last-child {
+            grid-column: 1 / -1;
+        }
+        .llm-header {
+            grid-column: 1 / -1;
+            text-align: center;
+            margin-bottom: 6px;
+        }
+        /* 多模型块与折叠样式 */
+        .model-block {
+            background: var(--secondary-bg);
+            border: 1px solid var(--border-primary);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .model-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: rgba(186, 104, 200, 0.08);
+            border-bottom: 1px solid var(--border-primary);
+            cursor: pointer;
+        }
+        .model-header:hover {
+            background: rgba(186, 104, 200, 0.14);
+        }
+        .model-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 16px;
+            border: 1px solid var(--accent-purple);
+            color: var(--accent-purple);
+            font-weight: 600;
+            background: rgba(186, 104, 200, 0.12);
+        }
+        .model-toggle {
+            padding: 6px 10px;
+            border-radius: 14px;
+            border: 1px solid var(--accent-blue);
+            background: rgba(100, 181, 246, 0.15);
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+        .model-toggle:hover {
+            background: rgba(100, 181, 246, 0.25);
+        }
+        .model-content {
+            display: block;
+            padding: 16px;
+        }
+        .model-content.collapsed {
+            display: none;
+        }
+
+        /* 操作建议/策略/总结的grid布局 */
+        .llm-advice-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        /* 紧凑型subsection - 减小padding */
+        .llm-subsection-compact {
+            padding: 16px !important;
+        }
+        .llm-subsection-compact h4 {
+            font-size: 1.1em !important;
+            margin-bottom: 12px !important;
+        }
+        .llm-subsection-compact .llm-content {
+            font-size: 0.95em;
         }
 
         .llm-subsection {
             background: var(--secondary-bg);
-            padding: 20px;
-            border-radius: 8px;
-            border-left: 3px solid var(--accent-purple);
+            padding: 24px;
+            border-radius: 12px;
+            border-left: 4px solid var(--accent-purple);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2), 0 0 20px rgba(186, 104, 200, 0.15);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .llm-subsection::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--accent-purple), transparent);
+            opacity: 0.5;
+        }
+
+        .llm-subsection:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3), 0 0 30px rgba(186, 104, 200, 0.25);
+            border-left-color: #e1bee7;
         }
 
         .llm-subsection h4 {
             color: var(--accent-purple);
-            margin-bottom: 15px;
-            font-size: 1.2em;
+            margin-bottom: 12px;
+            font-size: 1.1em;
         }
 
         .llm-content {
@@ -3623,10 +4351,10 @@ class KronosHTMLReportGenerator:
 
         .operation-badge {
             display: inline-block;
-            padding: 10px 20px;
+            padding: 8px 16px;
             border-radius: 20px;
             font-weight: 700;
-            font-size: 1.1em;
+            font-size: 1em;
             text-align: center;
             margin: 10px 0;
         }
@@ -3764,9 +4492,39 @@ class KronosHTMLReportGenerator:
                 grid-template-columns: 1fr;
             }
 
+            .model-content {
+                grid-template-columns: 1fr;
+            }
+
             .llm-predictions-table {
                 font-size: 0.9em;
             }
+        }
+
+        /* 紧凑模式，整体减少留白与字号 */
+        .llm-compact .model-header {
+            padding: 8px 12px;
+        }
+        .llm-compact .model-badge {
+            padding: 4px 10px;
+            font-size: 0.95em;
+        }
+        .llm-compact .model-toggle {
+            padding: 4px 8px;
+            font-size: 0.9em;
+        }
+        .llm-compact .llm-subsection {
+            padding: 12px;
+        }
+        .llm-compact .llm-subsection h4 {
+            font-size: 1em;
+            margin-bottom: 8px;
+        }
+        .llm-compact .llm-row {
+            padding: 6px;
+        }
+        .llm-compact .llm-summary {
+            padding: 10px;
         }
         """
 

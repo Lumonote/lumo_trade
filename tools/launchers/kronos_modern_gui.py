@@ -1307,7 +1307,7 @@ class LLMConfigDialog:
                     "qwen": {
                         "enabled": False,
                         "api_key": "",
-                        "model": "qwen-turbo",
+                        "model": "qwen3-max",
                         "base_url": "https://dashscope.aliyuncs.com/api/v1",
                         "register_url": "https://help.aliyun.com/zh/dashscope/developer-reference/activate-dashscope-and-create-an-api-key",
                         "description": "阿里云通义千问大模型"
@@ -1516,25 +1516,33 @@ class LLMConfigDialog:
             except Exception:
                 pass
 
-        # 仅在滚动区域内绑定鼠标滚动，避免全局绑定造成重复触发与抖动
-        def _bind_mousewheel():
+        # 改回全局绑定，但加入指针位置判定，仅当指针在滚动容器内时才响应
+        def _pointer_inside_widget(widget):
             try:
-                canvas.bind("<MouseWheel>", _on_mousewheel)
-                canvas.bind("<Button-4>", _on_button4)
-                canvas.bind("<Button-5>", _on_button5)
+                px, py = widget.winfo_pointerx(), widget.winfo_pointery()
+                rx, ry = widget.winfo_rootx(), widget.winfo_rooty()
+                return (rx <= px < rx + widget.winfo_width()) and (ry <= py < ry + widget.winfo_height())
             except Exception:
-                pass
+                return True
 
-        def _unbind_mousewheel():
-            try:
-                canvas.unbind("<MouseWheel>")
-                canvas.unbind("<Button-4>")
-                canvas.unbind("<Button-5>")
-            except Exception:
-                pass
+        def _safe_mousewheel(event):
+            if not _pointer_inside_widget(scroll_container):
+                return
+            _on_mousewheel(event)
 
-        scrollable_frame.bind("<Enter>", lambda e: _bind_mousewheel())
-        scrollable_frame.bind("<Leave>", lambda e: _unbind_mousewheel())
+        def _safe_button4(event):
+            if not _pointer_inside_widget(scroll_container):
+                return
+            _on_button4(event)
+
+        def _safe_button5(event):
+            if not _pointer_inside_widget(scroll_container):
+                return
+            _on_button5(event)
+
+        self.dialog.bind_all("<MouseWheel>", _safe_mousewheel)
+        self.dialog.bind_all("<Button-4>", _safe_button4)
+        self.dialog.bind_all("<Button-5>", _safe_button5)
 
         # 布局稳定后刷新一次滚动区域，确保包含所有内容；刷新后保持视口
         self.dialog.after_idle(_update_scrollregion)
