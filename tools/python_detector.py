@@ -25,6 +25,41 @@ class PythonDetector:
         """检测最适合的Python命令"""
         print("🔍 检测Python环境...")
 
+        # 最高优先级:检查环境变量 KRONOS_PYTHON_PATH
+        env_python = os.environ.get('KRONOS_PYTHON_PATH')
+        if env_python and Path(env_python).exists():
+            try:
+                result = subprocess.run([env_python, "--version"],
+                                        capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    version_match = re.search(r'3\.(\d+)\.(\d+)', result.stdout)
+                    if version_match:
+                        version = version_match.group(0)
+                        print(f"✅ 使用环境变量指定的Python {version}: {env_python}")
+                        self.detected_command = env_python
+                        return
+            except Exception as e:
+                print(f"环境变量Python检测失败: {e}")
+
+        # Windows: 检查用户虚拟环境
+        if self.system == 'Windows':
+            local_app_data = os.environ.get('LocalAppData', '')
+            if local_app_data:
+                venv_python = Path(local_app_data) / 'Kronos' / 'venv' / 'Scripts' / 'python.exe'
+                if venv_python.exists():
+                    try:
+                        result = subprocess.run([str(venv_python), "--version"],
+                                                capture_output=True, text=True, timeout=5)
+                        if result.returncode == 0:
+                            version_match = re.search(r'3\.(\d+)\.(\d+)', result.stdout)
+                            if version_match:
+                                version = version_match.group(0)
+                                print(f"✅ 使用用户虚拟环境Python {version}: {venv_python}")
+                                self.detected_command = str(venv_python)
+                                return
+                    except Exception as e:
+                        print(f"虚拟环境Python检测失败: {e}")
+
         # 首先尝试使用pyenv中的Python 3.11.13
         if self._try_pyenv_python():
             return
