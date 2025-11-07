@@ -89,6 +89,30 @@ def get_actual_python_path():
     """获取实际的Python解释器路径"""
     import shutil
 
+    # 优先检查环境变量中指定的 Python (通常由 quick_start.ps1 设置)
+    venv_python = os.environ.get('KRONOS_PYTHON_PATH')
+    if venv_python and os.path.exists(venv_python):
+        try:
+            result = subprocess.run([venv_python, "--version"],
+                                    capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and "3." in result.stdout:
+                return venv_python
+        except:
+            pass
+
+    # Windows: 检查用户虚拟环境
+    if platform.system() == "Windows":
+        venv_dir = os.path.join(os.environ.get('LocalAppData', ''), 'Kronos', 'venv')
+        venv_py = os.path.join(venv_dir, 'Scripts', 'python.exe')
+        if os.path.exists(venv_py):
+            try:
+                result = subprocess.run([venv_py, "--version"],
+                                        capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and "3." in result.stdout:
+                    return venv_py
+            except:
+                pass
+
     # 如果在应用包内，sys.executable可能指向应用本身，需要检测真实的Python
     python_names = ['python3.11', 'python3', 'python']
 

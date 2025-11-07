@@ -100,10 +100,14 @@ function Invoke-Python {
 
     # 如果在打包环境中，设置环境变量以便Python脚本能找到模块
     $originalEnv = $env:KRONOS_PACKED_ROOT
+    $originalPyPath = $env:KRONOS_PYTHON_PATH
     if ($IsPackaged) {
         $env:KRONOS_PACKED_ROOT = $scriptDir
         Write-Host "INFO: 设置打包路径: $scriptDir" -ForegroundColor Cyan
     }
+
+    # 设置 Python 路径环境变量，让检查脚本能使用正确的 Python
+    $env:KRONOS_PYTHON_PATH = $python
 
     try {
         if ($Args) {
@@ -117,6 +121,12 @@ function Invoke-Python {
             Remove-Item env:KRONOS_PACKED_ROOT -ErrorAction SilentlyContinue
         } else {
             $env:KRONOS_PACKED_ROOT = $originalEnv
+        }
+
+        if ($null -eq $originalPyPath) {
+            Remove-Item env:KRONOS_PYTHON_PATH -ErrorAction SilentlyContinue
+        } else {
+            $env:KRONOS_PYTHON_PATH = $originalPyPath
         }
     }
 }
@@ -720,6 +730,161 @@ elseif ($Choice -eq "3") {
     Write-Host "Checking environment status..." -ForegroundColor Yellow
     Invoke-Python -Script 'scripts/check_environment.py'
 }
+elseif ($Choice -eq "4") {
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "  PyTorch DLL 问题修复工具" -ForegroundColor Cyan
+    Write-Host "========================================`n" -ForegroundColor Cyan
+
+    $python = Get-PythonCommand
+
+    # 检查当前PyTorch状态
+    Write-Host "1. 检查当前PyTorch状态..." -ForegroundColor Yellow
+    try {
+        $version = & $python -c "import torch; print(torch.__version__)" 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "   当前版本: $version" -ForegroundColor Green
+
+            # 测试能否正常加载
+            Write-Host "   测试PyTorch加载..." -ForegroundColor Yellow
+            $testResult = & $python -c "import torch; print('OK')" 2>&1
+            if ($LASTEXITCODE -eq 0 -and $testResult -eq 'OK') {
+                Write-Host "   ✓ PyTorch加载正常！" -ForegroundColor Green
+                Write-Host "`n如果环境检查仍超时,建议增加超时时间(修改check_environment.py第139行)" -ForegroundColor Cyan
+                exit 0
+            } else {
+                Write-Host "   × PyTorch加载失败" -ForegroundColor Red
+            }
+        }
+    } catch {
+        Write-Host "   × 无法导入PyTorch" -ForegroundColor Red
+    }
+
+    # 询问用户选择修复方案
+    Write-Host "`n2. 选择修复方案:" -ForegroundColor Yellow
+    Write-Host "   [1] 重装PyTorch (CPU版本,推荐)" -ForegroundColor Cyan
+    Write-Host "   [2] 重装PyTorch (GPU版本,需要NVIDIA显卡)" -ForegroundColor Cyan
+    Write-Host "   [3] 仅重新安装当前版本" -ForegroundColor Cyan
+    Write-Host "   [4] 取消" -ForegroundColor Gray
+
+    $fixChoice = Read-Host "`n请选择 (1-4)"
+
+    $mirrorArgs = @('-i', 'https://pypi.tuna.tsinghua.edu.cn/simple/')
+
+    switch ($fixChoice) {
+        "1" {
+            Write-Host "`n正在重装PyTorch (CPU版本)..." -ForegroundColor Green
+
+            # 卸载
+            Write-Host "   卸载现有PyTorch..." -ForegroundColor Yellow
+            & $python -m pip uninstall torch torchvision torchaudio -y
+
+            # 安装CPU版本
+            Write-Host "   安装PyTorch CPU版本..." -ForegroundColor Yellow
+            & $python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "`n✓ 安装完成！" -ForegroundColor Green
+            } else {
+                Write-Host "`n× 安装失败" -ForegroundColor Red
+                exit 1
+            }
+        }
+
+        "2" {
+            Write-Host "`n正在重装PyTorch (GPU版本)..." -ForegroundColor Green
+            Write-Host "注意: 需要先安装NVIDIA驱动和CUDA Toolkit 11.8" -ForegroundColor Yellow
+
+            # 卸载
+            Write-Host "   卸载现有PyTorch..." -ForegroundColor Yellow
+            & $python -m pip uninstall torch torchvision torchaudio -y
+
+            # 安装GPU版本 (CUDA 11.8)
+            Write-Host "   安装PyTorch GPU版本 (CUDA 11.8)..." -ForegroundColor Yellow
+            & $python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "`n✓ 安装完成！" -ForegroundColor Green
+            } else {
+                Write-Host "`n× 安装失败" -ForegroundColor Red
+                exit 1
+            }
+        }
+
+        "3" {
+            Write-Host "`n正在重新安装PyTorch..." -ForegroundColor Green
+
+            # 卸载并重装
+            & $python -m pip uninstall torch torchvision torchaudio -y
+            & $python -m pip install torch torchvision torchaudio @mirrorArgs
+
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "`n✓ 安装完成！" -ForegroundColor Green
+            } else {
+                Write-Host "`n× 安装失败" -ForegroundColor Red
+                exit 1
+            }
+        }
+
+        "4" {
+            Write-Host "`n已取消" -ForegroundColor Gray
+            exit 0
+        }
+
+        default {
+            Write-Host "`n无效选择" -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    # 验证安装
+    Write-Host "`n3. 验证安装..." -ForegroundColor Yellow
+    try {
+        $version = & $python -c "import torch; print(torch.__version__)"
+        $cudaAvailable = & $python -c "import torch; print(torch.cuda.is_available())"
+
+        Write-Host "   PyTorch版本: $version" -ForegroundColor Green
+        Write-Host "   CUDA可用: $cudaAvailable" -ForegroundColor Green
+
+        # 完整测试
+        Write-Host "`n   执行完整测试..." -ForegroundColor Yellow
+        & $python -c @"
+import torch
+import time
+
+print('   - 创建张量测试...')
+t = torch.randn(100, 100)
+print('   ✓ 张量创建成功')
+
+print('   - 矩阵运算测试...')
+start = time.time()
+result = torch.matmul(t, t)
+elapsed = time.time() - start
+print(f'   ✓ 矩阵运算成功 ({elapsed*1000:.2f}ms)')
+
+if torch.cuda.is_available():
+    print('   - GPU测试...')
+    t_gpu = t.cuda()
+    result_gpu = torch.matmul(t_gpu, t_gpu)
+    print('   ✓ GPU运算成功')
+else:
+    print('   ℹ 使用CPU模式')
+"@
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "`n========================================" -ForegroundColor Green
+            Write-Host "  ✓ PyTorch修复完成！" -ForegroundColor Green
+            Write-Host "========================================" -ForegroundColor Green
+            Write-Host "`n下一步: 运行选项 3 检查环境" -ForegroundColor Cyan
+        }
+    } catch {
+        Write-Host "`n× 验证失败: $_" -ForegroundColor Red
+        Write-Host "`n可能需要:" -ForegroundColor Yellow
+        Write-Host "1. 安装 Microsoft Visual C++ 2015-2022 Redistributable" -ForegroundColor Yellow
+        Write-Host "   下载: https://aka.ms/vs/17/release/vc_redist.x64.exe" -ForegroundColor Cyan
+        Write-Host "2. 重启计算机" -ForegroundColor Yellow
+        Write-Host "3. 重新运行此选项" -ForegroundColor Yellow
+    }
+}
 elseif ($Choice -eq "6") {
     Write-Host "CHART: Batch fetch data and prediction K-line" -ForegroundColor Yellow
 
@@ -756,7 +921,7 @@ elseif ($Choice -eq "6") {
     $firstSymbol = ($symbolsEnv -split ',')[0]
     $cleanSymbol = $firstSymbol -replace '\..*$', ''
     Write-Host "PREDICT: Starting prediction ($cleanSymbol)" -ForegroundColor Green
-    Invoke-Python -Script 'examples/prediction_batch_example.py' -Args @('--stock-code', $cleanSymbol, '-T', '0.6', '-p', '0.90', '-n', '10')
+    Invoke-Python -Script 'examples/prediction_batch_example.py' -Args @('--stock-code', $cleanSymbol)
 }
 elseif ($Choice -eq "7") {
     Write-Host "🔥 投资机会挖掘 - 分析热门股票（可自定义数量）" -ForegroundColor Blue
