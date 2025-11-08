@@ -1,7 +1,7 @@
 {
   "qwen": {
     "enabled": true,
-    "api_key": "sk-c5590f4a4f6e4bf6bb52f4f24354040f",
+    "api_key": "",
     "model": "qwen3-max",
     "base_url": "https://dashscope.aliyuncs.com/api/v1",
     "register_url": "https://help.aliyun.com/zh/dashscope/developer-reference/activate-dashscope-and-create-an-api-key",
@@ -10,7 +10,7 @@
   },
   "deepseek": {
     "enabled": true,
-    "api_key": "sk-64f4d0bb9224476e880a4a530c2a8316",
+    "api_key": "",
     "model": "deepseek-chat",
     "base_url": "https://api.deepseek.com",
     "register_url": "https://platform.deepseek.com/api_keys",
