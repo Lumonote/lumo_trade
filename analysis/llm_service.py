@@ -161,10 +161,58 @@ class LLMAnalyzer:
             response.raise_for_status()
 
             result = response.json()
-            if result.get('output', {}).get('text'):
-                return True, result['output']['text']
-            else:
-                return False, f"API 返回格式异常: {result}"
+
+            # 兼容不同版本的 DashScope 返回结构
+            # 1) 旧版: { output: { text: "..." } }
+            output = result.get('output') or {}
+            text = output.get('text')
+            if isinstance(text, str) and text.strip():
+                return True, text
+
+            # 2) 新版: { output: { choices: [ { message: { content: "..." } } ] } }
+            choices = output.get('choices')
+            if isinstance(choices, list) and choices:
+                first = choices[0] or {}
+                # 优先 message.content
+                msg = first.get('message') or {}
+                content = msg.get('content')
+                if isinstance(content, str) and content.strip():
+                    return True, content
+                # 兼容形态: choices[0].text
+                if isinstance(first.get('text'), str) and first.get('text').strip():
+                    return True, first.get('text')
+                # 兼容形态: message.content 为数组（富文本）
+                if isinstance(content, list) and content:
+                    try:
+                        # 将文本片段拼接
+                        parts = []
+                        for seg in content:
+                            if isinstance(seg, str):
+                                parts.append(seg)
+                            elif isinstance(seg, dict):
+                                txt = seg.get('text') or seg.get('content')
+                                if isinstance(txt, str):
+                                    parts.append(txt)
+                        joined = "\n".join(parts).strip()
+                        if joined:
+                            return True, joined
+                    except Exception:
+                        pass
+
+            # 3) 兜底: 常见的其他字段名
+            for key in [
+                'output_text', 'outputText', 'result', 'data'
+            ]:
+                val = result.get(key)
+                if isinstance(val, str) and val.strip():
+                    return True, val
+
+            # 无法识别的返回结构，回传精简后的错误信息
+            try:
+                compact = json.dumps(result, ensure_ascii=False)[:1200]
+            except Exception:
+                compact = str(result)
+            return False, f"API 返回格式异常: {compact}"
 
         except requests.exceptions.Timeout:
             return False, "请求超时，请检查网络连接"
@@ -248,7 +296,7 @@ class LLMAnalyzer:
         if len(self.enabled_llms) > 1:
             aggregated: Dict[str, Dict] = {}
             any_success = False
-            last_error = None
+            # 对每个启用模型进行调用；即使失败也记录占位，便于前端显示徽章与状态
             for name in self.enabled_llms:
                 if name == 'qwen':
                     success, raw = self._call_qwen_api(prompt, max_tokens=3000)
@@ -264,14 +312,22 @@ class LLMAnalyzer:
                         aggregated[name] = parsed
                         any_success = True
                     else:
-                        last_error = f"{name} 返回的数据格式无效，原始响应：\n{raw}"
+                        aggregated[name] = {
+                            'llm_model': name,
+                            'error': f"{name} 返回数据无法解析为结构化JSON",
+                            'raw_text': raw
+                        }
                 else:
-                    last_error = raw
+                    aggregated[name] = {
+                        'llm_model': name,
+                        'error': raw
+                    }
 
-            if any_success:
+            # 只要聚合结果存在，就返回成功，让前端渲染多模型版块
+            if aggregated:
                 return True, aggregated
             else:
-                return False, {"error": last_error or "所有模型调用失败"}
+                return False, {"error": "所有模型调用失败"}
 
         # 单模型调用（保持兼容）
         if self.llm_name == 'qwen':

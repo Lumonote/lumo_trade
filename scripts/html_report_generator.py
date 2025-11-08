@@ -1774,13 +1774,21 @@ class KronosHTMLReportGenerator:
             is_grouped = False
 
         if is_grouped:
-            html = """
-            <div class='llm-analysis-section'>
+            # 计算有效模型数量（包含带错误信息的模型）
+            try:
+                num_models = sum(1 for v in llm_analysis.values() if isinstance(v, dict))
+            except Exception:
+                num_models = 0
+            section_class = 'llm-analysis-section single-model' if num_models == 1 else 'llm-analysis-section'
+            header_text = '🤖 AI智能分析' if num_models == 1 else '🤖 AI多模型智能分析'
+
+            html = f"""
+            <div class='{section_class}'>
                 <div class='llm-header'>
                     <span style='display: inline-block; padding: 10px 20px; background: rgba(100, 181, 246, 0.2);
                                  border: 1px solid var(--accent-blue); border-radius: 20px;
                                  font-size: 1.1em; font-weight: bold;'>
-                        🤖 AI多模型智能分析
+                        {header_text}
                     </span>
                 </div>
             """
@@ -1804,10 +1812,8 @@ class KronosHTMLReportGenerator:
             import json
 
             for idx, (model_key, model_data) in enumerate(llm_analysis.items()):
-                # 过滤非分析字典条目（如顶层 'llm_model' 标识），避免渲染空白卡片
+                # 仅排除非字典项，其余即使只有错误信息也展示模型卡片
                 if not isinstance(model_data, dict):
-                    continue
-                if not any(k in model_data for k in ('kline_prediction', 'operation_advice', 'risk_assessment', 'strategy', 'summary')):
                     continue
 
                 model_display = badges.get(str(model_key).lower(), f"🤖 {str(model_key).upper()}")
@@ -1831,8 +1837,20 @@ class KronosHTMLReportGenerator:
                             predictions = df.to_dict('records')
                     except Exception:
                         pass
-
-                if kline_pred or predictions:
+                # 当无预测数据时，显示错误或占位提示
+                if not (kline_pred or predictions):
+                    err_msg = model_data.get('error') or '该模型未返回可解析的预测数据'
+                    html += f"""
+                    <div class='llm-subsection'>
+                        <div class='llm-content'>
+                            <div class='llm-row'>
+                                <span class='llm-label'>状态:</span>
+                                <span class='llm-value'>{err_msg}</span>
+                            </div>
+                        </div>
+                    </div>
+                    """
+                else:
                     trend = kline_pred.get('trend', '未知')
                     confidence = kline_pred.get('confidence', 0) * 100
 
@@ -2190,7 +2208,7 @@ class KronosHTMLReportGenerator:
             'unknown': '🤖 AI'
         }.get(llm_model.lower(), f'🤖 {llm_model.upper()}')
 
-        html = f"""<div class='llm-analysis-section'>
+        html = f"""<div class='llm-analysis-section single-model'>
         <div class='llm-header'>
             <span style='display: inline-block; padding: 10px 20px; background: rgba(100, 181, 246, 0.2);
                          border: 1px solid var(--accent-blue); border-radius: 20px;
@@ -4196,13 +4214,11 @@ class KronosHTMLReportGenerator:
             gap: 20px;
             max-width: 100%;
         }
-        /* 单模型时自动填充整行 - 兼容性更好的写法 */
-        @supports selector(:has(*)) {
-            .llm-analysis-section:has(.model-block:only-of-type) {
-                grid-template-columns: 1fr;
-            }
+        /* 单模型时自动满宽 */
+        .llm-analysis-section.single-model {
+            grid-template-columns: 1fr;
         }
-        /* 旧版浏览器fallback - 检测单个model-block */
+        /* 旧版浏览器fallback - 单个model-block时让其占满 */
         .llm-analysis-section .model-block:first-child:last-child {
             grid-column: 1 / -1;
         }
