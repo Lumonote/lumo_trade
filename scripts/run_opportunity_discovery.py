@@ -364,21 +364,42 @@ class OpportunityDiscovery:
         details = scoring_result.get('details', {})
         scores = scoring_result.get('scores', {})
 
+        # 通用的安全数值转换/格式化
+        def _to_float(val, default=None):
+            try:
+                if val is None:
+                    return default
+                if isinstance(val, str):
+                    v = val.strip()
+                    if not v:
+                        return default
+                    v = v.replace('%', '').replace(',', '')
+                    return float(v)
+                return float(val)
+            except Exception:
+                return default
+
+        def _fmt_num(val, digits=2, default='未知'):
+            tv = _to_float(val, None)
+            if tv is None:
+                return str(val) if isinstance(val, str) and val.strip() else default
+            return f"{tv:.{digits}f}"
+
         # 格式化技术面数据
         def format_technical_for_llm(tech_details: Dict) -> str:
             if not tech_details:
                 return "技术面数据暂缺"
 
             parts = []
-            if 'RSI' in tech_details and tech_details['RSI']:
-                parts.append(f"RSI: {tech_details['RSI']:.2f}")
+            if 'RSI' in tech_details:
+                parts.append(f"RSI: {_fmt_num(tech_details.get('RSI'), 2)}")
             if 'MACD' in tech_details:
                 parts.append(f"MACD: {tech_details['MACD']}")
             if 'Bollinger' in tech_details:
                 parts.append(f"布林带: {tech_details['Bollinger']}")
-            if tech_details.get('MA5') and tech_details.get('MA10') and tech_details.get('MA20'):
+            if tech_details.get('MA5') is not None and tech_details.get('MA10') is not None and tech_details.get('MA20') is not None:
                 parts.append(
-                    f"均线: MA5={tech_details['MA5']:.2f}, MA10={tech_details['MA10']:.2f}, MA20={tech_details['MA20']:.2f}")
+                    f"均线: MA5={_fmt_num(tech_details.get('MA5'), 2)}, MA10={_fmt_num(tech_details.get('MA10'), 2)}, MA20={_fmt_num(tech_details.get('MA20'), 2)}")
 
             return "\n".join(parts) if parts else "技术指标数据不足"
 
@@ -393,7 +414,8 @@ class OpportunityDiscovery:
             total = quant_details.get('total_count', 0)
 
             result = f"买入信号: {buy_count}个, 持有信号: {hold_count}个, 卖出信号: {sell_count}个 (共{total}个模型)\n"
-            result += f"买入比例: {quant_details.get('buy_ratio', 0) * 100:.1f}%"
+            br = _to_float(quant_details.get('buy_ratio'), 0.0) or 0.0
+            result += f"买入比例: {br * 100:.1f}%"
 
             return result
 
@@ -403,14 +425,14 @@ class OpportunityDiscovery:
                 return "基本面数据暂缺"
 
             parts = []
-            if 'pe_ratio' in fund_details and fund_details['pe_ratio']:
-                parts.append(f"PE: {fund_details['pe_ratio']:.2f}")
-            if 'pb_ratio' in fund_details and fund_details['pb_ratio']:
-                parts.append(f"PB: {fund_details['pb_ratio']:.2f}")
-            if 'revenue_yoy' in fund_details and fund_details['revenue_yoy'] is not None:
-                parts.append(f"营收增长: {fund_details['revenue_yoy']:.2f}%")
-            if 'net_profit_yoy' in fund_details and fund_details['net_profit_yoy'] is not None:
-                parts.append(f"利润增长: {fund_details['net_profit_yoy']:.2f}%")
+            if 'pe_ratio' in fund_details:
+                parts.append(f"PE: {_fmt_num(fund_details.get('pe_ratio'), 2)}")
+            if 'pb_ratio' in fund_details:
+                parts.append(f"PB: {_fmt_num(fund_details.get('pb_ratio'), 2)}")
+            if 'revenue_yoy' in fund_details:
+                parts.append(f"营收增长: {_fmt_num(fund_details.get('revenue_yoy'), 2)}%")
+            if 'net_profit_yoy' in fund_details:
+                parts.append(f"利润增长: {_fmt_num(fund_details.get('net_profit_yoy'), 2)}%")
 
             return "\n".join(parts) if parts else "基本面数据不足"
 
@@ -424,7 +446,7 @@ class OpportunityDiscovery:
             # 股民情绪
             if sentiment_details:
                 comprehensive = sentiment_details.get('comprehensive_sentiment', '未知')
-                score = sentiment_details.get('comprehensive_score', 50)
+                score = _fmt_num(sentiment_details.get('comprehensive_score', 50), 1, default='-')
                 parts.append(f"综合情绪: {comprehensive} (评分: {score})")
 
                 guba = sentiment_details.get('guba_sentiment', {})
@@ -436,7 +458,7 @@ class OpportunityDiscovery:
             if sector_details:
                 sector_name = sector_details.get('sector_name', '未知板块')
                 sector_overall = sector_details.get('overall', '中性')
-                sector_change = sector_details.get('change_pct', 0)
+                sector_change = _to_float(sector_details.get('change_pct', 0), 0.0) or 0.0
                 parts.append(f"所属板块: {sector_name}, 板块情绪: {sector_overall}, 涨跌幅: {sector_change:.2f}%")
 
             return "\n".join(parts) if parts else "情绪数据不足"
@@ -448,7 +470,7 @@ class OpportunityDiscovery:
 
             parts = []
             rating = events_details.get('rating', '中性')
-            comp_score = events_details.get('comprehensive_score', 0)
+            comp_score = _to_float(events_details.get('comprehensive_score', 0), 0.0) or 0.0
             parts.append(f"消息面评级: {rating} (综合分: {comp_score:.1f})")
 
             pos_events = events_details.get('positive_events', 0)
