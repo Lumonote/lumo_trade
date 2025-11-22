@@ -52,7 +52,8 @@ class HotStocksFetcher:
                 self.cache_dir = tempfile.mkdtemp(prefix="kronos_cache_")
                 logger.warning(f"缓存目录不可写，回退到临时目录: {self.cache_dir}")
 
-        self.cache_file = os.path.join(cache_dir, "hot_stocks_cache.json")
+        # 使用最终确定的缓存目录，避免在回退后仍指向不可写目录
+        self.cache_file = os.path.join(self.cache_dir, "hot_stocks_cache.json")
         self.cache_ttl = 3600  # 缓存1小时
 
         self.headers = {
@@ -109,32 +110,40 @@ class HotStocksFetcher:
             else:
                 logger.info("检测到缓存来源非直接采集（可能为fallback/未知），忽略缓存，改为直接采集")
 
-        # 尝试从多个数据源获取
         stocks = []
 
-        # 1. 尝试东方财富热度榜
         try:
-            logger.info("正在从东方财富获取热度榜...")
-            eastmoney_stocks = self._fetch_from_eastmoney()
-            if eastmoney_stocks:
-                stocks.extend(eastmoney_stocks)
-                logger.info(f"✓ 东方财富获取成功: {len(eastmoney_stocks)} 只股票")
+            logger.info("正在从东方财富VIP接口获取热度榜...")
+            vip_stocks = self._fetch_from_eastmoney_vip(limit=limit)
+            if vip_stocks:
+                stocks = vip_stocks
+                logger.info(f"✓ 东方财富VIP获取成功: {len(vip_stocks)} 只股票")
+            else:
+                logger.info("VIP接口为空，尝试东方财富API...")
+                eastmoney_stocks = self._fetch_from_eastmoney()
+                if eastmoney_stocks:
+                    stocks = eastmoney_stocks
+                    logger.info(f"✓ 东方财富API获取成功: {len(eastmoney_stocks)} 只股票")
         except Exception as e:
             logger.warning(f"东方财富获取失败: {e}")
+            try:
+                logger.info("尝试东方财富备用入口...")
+                alt_stocks = self._fetch_from_eastmoney_alt(limit=limit)
+                if alt_stocks:
+                    stocks = alt_stocks
+                    logger.info(f"✓ 东方财富备用入口获取成功: {len(alt_stocks)} 只股票")
+            except Exception as e2:
+                logger.warning(f"东方财富备用入口获取失败: {e2}")
 
-        # 2. 尝试同花顺热度榜（备用）
-        if len(stocks) < limit:
+        if not stocks:
             try:
                 logger.info("正在从同花顺获取热度榜...")
                 tonghuashun_stocks = self._fetch_from_tonghuashun()
                 if tonghuashun_stocks:
-                    stocks.extend(tonghuashun_stocks)
+                    stocks = tonghuashun_stocks[:limit]
                     logger.info(f"✓ 同花顺获取成功: {len(tonghuashun_stocks)} 只股票")
             except Exception as e:
                 logger.warning(f"同花顺获取失败: {e}")
-
-        # 去重并排序
-        stocks = self._deduplicate_and_sort(stocks)
 
         if not stocks:
             logger.error("所有数据源均获取失败，尝试使用备用数据源")
@@ -170,10 +179,7 @@ class HotStocksFetcher:
 
         # 尝试多个可能的热度排序字段
         heat_fields = [
-            ('f164', '热度指数'),
-            ('f128', '动态市盈率/关注度'),
-            ('f62', '主力资金净流入'),
-            ('f8', '换手率')
+            ('f164', '热度指数')
         ]
 
         for field_id, field_name in heat_fields:
@@ -200,7 +206,7 @@ class HotStocksFetcher:
                 if data.get('data') and data['data'].get('diff') and len(data['data']['diff']) > 0:
                     logger.info(f"✓ 热榜API返回 {len(data['data']['diff'])} 只股票（使用{field_name}）")
 
-                    for item in data['data']['diff']:
+                    for idx, item in enumerate(data['data']['diff'], start=1):
                         try:
                             # 解析股票信息
                             code = item.get('f12', '')  # 股票代码
@@ -257,7 +263,8 @@ class HotStocksFetcher:
                                 'volume': int(volume * 100),  # 手转换为股
                                 'amount': round(amount, 2),
                                 'latest_price': float(item.get('f2', 0)) if item.get('f2') else 0,  # 最新价
-                                'source': f'eastmoney_heat_{field_id}'
+                                'source': 'eastmoney',
+                                'rank': idx
                             }
 
                             stocks.append(stock_info)
@@ -265,8 +272,8 @@ class HotStocksFetcher:
                             logger.debug(f"解析股票信息失败: {e}")
                             continue
 
-                    if len(stocks) >= 50:  # 如果获取到足够数量的股票，认为成功
-                        return stocks
+                    if len(stocks) >= 50:
+                        return stocks[:100]
 
             except Exception as e:
                 logger.warning(f"使用{field_name}获取失败: {e}，尝试下一个字段...")
@@ -278,6 +285,205 @@ class HotStocksFetcher:
             raise Exception("无法获取东方财富热榜数据")
 
         return stocks
+
+    def _fetch_from_eastmoney_alt(self, limit: int = 100) -> List[Dict]:
+        if self._BrowserManager is None:
+            return []
+        try:
+            return asyncio.run(self._fetch_from_eastmoney_alt_async(limit))
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop)
+                return loop.run_until_complete(self._fetch_from_eastmoney_alt_async(limit))
+            finally:
+                loop.close()
+
+    async def _fetch_from_eastmoney_alt_async(self, limit: int = 100) -> List[Dict]:
+        url = "https://vipmoney.eastmoney.com/collect/app_ranking/ranking/app.html?hashcode=_1763026482032&market=&appfenxiang=1#/stock"
+        extra_headers = {
+            **self.headers,
+            'Referer': 'https://vipmoney.eastmoney.com/',
+            'Cache-Control': 'no-cache'
+        }
+        stocks: List[Dict] = []
+        async with self._BrowserManager() as manager:
+            async with manager.get_page() as page:
+                await page.set_extra_http_headers(extra_headers)
+                resp = await page.goto(url, wait_until='networkidle', timeout=20000)
+                if not resp or resp.status != 200:
+                    return []
+                try:
+                    await page.wait_for_selector('table', timeout=10000)
+                except Exception:
+                    pass
+                rows = await page.locator('tr').all()
+                rank_idx = 0
+                for row in rows:
+                    try:
+                        cells = await row.locator('td').all()
+                        if len(cells) < 3:
+                            continue
+                        texts = []
+                        for c in cells[:8]:
+                            try:
+                                texts.append((await c.inner_text()).strip())
+                            except Exception:
+                                texts.append('')
+                        joined = ' '.join(texts)
+                        import re
+                        m_code = re.search(r'(\d{6})', joined)
+                        if not m_code:
+                            continue
+                        code = m_code.group(1)
+                        name = texts[1] if len(texts) > 1 and texts[1] and not texts[1].isdigit() else ''
+                        if not name:
+                            m_name = re.search(r'(\D+)', joined)
+                            name = m_name.group(1).strip() if m_name else ''
+                        if code.startswith(('000','001','002','003','300')):
+                            exchange = 'SZ'
+                        elif code.startswith(('600','601','603','605','688','689')):
+                            exchange = 'SH'
+                        else:
+                            exchange = 'SZ'
+                        latest_price = 0.0
+                        change_pct = 0.0
+                        turnover_rate = 0.0
+                        for t in texts:
+                            try:
+                                if t.endswith('%'):
+                                    change_pct = float(t.replace('%','').replace(',',''))
+                                elif t.replace('.','',1).replace(',','').isdigit():
+                                    latest_price = float(t.replace(',',''))
+                            except Exception:
+                                pass
+                        rank_idx += 1
+                        popularity_score = max(0, 100 - (rank_idx - 1))
+                        stocks.append({
+                            'code': code,
+                            'name': name,
+                            'exchange': exchange,
+                            'popularity_score': round(popularity_score, 2),
+                            'change_pct': round(change_pct, 2),
+                            'turnover_rate': round(turnover_rate, 2),
+                            'volume': 0,
+                            'amount': 0.0,
+                            'latest_price': latest_price,
+                            'source': 'eastmoney_alt',
+                            'rank': rank_idx
+                        })
+                        if len(stocks) >= limit:
+                            break
+                    except Exception:
+                        continue
+        return stocks
+
+    def _fetch_from_eastmoney_vip(self, limit: int = 100) -> List[Dict]:
+        stocks: List[Dict] = []
+        headers = {
+            **self.headers,
+            'Referer': 'https://vipmoney.eastmoney.com/collect/stockranking/pages/ranking/list.html'
+        }
+        try:
+            js_url = 'https://vipmoney.eastmoney.com/collect/stockranking/static/script/ranking_list.js'
+            r1 = requests.get(js_url, headers=headers, timeout=10)
+            r1.raise_for_status()
+            txt = r1.text
+            import re
+            m_ut = re.search(r'ut:"(.*?)"', txt)
+            m_fields = re.search(r'fields:"(.*?)"', txt)
+            m_gid = re.search(r'globalId:"(.*?)"', txt)
+            ut_val = m_ut.group(1) if m_ut else ''
+            fields_val = m_fields.group(1) if m_fields else ''
+            gid_val = m_gid.group(1) if m_gid else ''
+            if not ut_val or not fields_val:
+                return []
+            h2 = {
+                **headers,
+                'Host': 'emappdata.eastmoney.com',
+                'Origin': 'https://vipmoney.eastmoney.com'
+            }
+            payload = {
+                'appId': 'appId01',
+                'globalId': gid_val,
+                'pageNo': '1',
+                'pageSize': str(limit)
+            }
+            r2 = requests.post('https://emappdata.eastmoney.com/stockrank/getAllCurrentList', json=payload, headers=h2, timeout=10)
+            r2.raise_for_status()
+            j2 = r2.json()
+            items = j2.get('data') or []
+            if not items:
+                return []
+            secids: List[str] = []
+            for it in items[:limit]:
+                sc = str(it.get('sc') or '')
+                if not sc:
+                    continue
+                if 'SH' in sc:
+                    secids.append('1.' + sc.replace('SH', ''))
+                elif 'SZ' in sc:
+                    secids.append('0.' + sc.replace('SZ', ''))
+            if not secids:
+                return []
+            secids_str = ','.join(secids)
+            h3 = {
+                **headers,
+                'Host': 'push2.eastmoney.com'
+            }
+            params = {
+                'ut': ut_val,
+                'fltt': '2',
+                'invt': '2',
+                'fields': fields_val,
+                'secids': secids_str
+            }
+            r3 = requests.post('https://push2.eastmoney.com/api/qt/ulist.np/get?', data=params, headers=h3, timeout=10)
+            r3.raise_for_status()
+            j3 = r3.json()
+            diff = ((j3.get('data') or {}).get('diff')) or []
+            rank_idx = 0
+            for item in diff:
+                try:
+                    code = str(item.get('f12') or '')
+                    name = str(item.get('f14') or '')
+                    if not code or not name:
+                        continue
+                    if code.startswith(('000', '001', '002', '003', '300')):
+                        exchange = 'SZ'
+                    elif code.startswith(('600', '601', '603', '605', '688', '689')):
+                        exchange = 'SH'
+                    else:
+                        exchange = 'SZ'
+                    change_pct = float(item.get('f3', 0) or 0)
+                    turnover_rate = float(item.get('f8', 0) or 0)
+                    volume = float(item.get('f5', 0) or 0)
+                    amount = float(item.get('f6', 0) or 0)
+                    heat_index = float(item.get('f164', 0) or 0)
+                    latest_price = float(item.get('f2', 0) or 0)
+                    rank_idx += 1
+                    popularity_score = heat_index if heat_index > 0 else max(0, 100 - (rank_idx - 1))
+                    stocks.append({
+                        'code': code,
+                        'name': name,
+                        'exchange': exchange,
+                        'popularity_score': round(popularity_score, 2),
+                        'change_pct': round(change_pct, 2),
+                        'turnover_rate': round(turnover_rate, 2),
+                        'volume': int(volume * 100),
+                        'amount': round(amount, 2),
+                        'latest_price': latest_price,
+                        'source': 'eastmoney_vip',
+                        'rank': rank_idx
+                    })
+                    if len(stocks) >= limit:
+                        break
+                except Exception:
+                    continue
+            return stocks
+        except Exception as e:
+            logger.warning(f"东方财富VIP接口失败: {e}")
+            return []
 
     def _calculate_popularity_score_v2(self, main_fund_flow: float, amount: float,
                                        turnover_rate: float, change_pct: float, volume: float) -> float:
@@ -809,24 +1015,35 @@ class HotStocksFetcher:
 
     def _save_cache(self, stocks: List[Dict]):
         """
-        保存缓存数据
+        保存缓存数据（原子写入，避免文件损坏）
 
         Args:
             stocks: 股票列表
         """
+        tmp_file = self.cache_file + ".tmp"
         try:
             cache_data = {
                 'timestamp': datetime.now().isoformat(),
                 'stocks': stocks
             }
 
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
+            # 先写入临时文件并确保刷盘，再原子替换
+            with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
 
+            os.replace(tmp_file, self.cache_file)
             logger.info(f"缓存已保存: {self.cache_file}")
 
         except Exception as e:
             logger.warning(f"保存缓存失败: {e}")
+            # 清理可能残留的临时文件
+            try:
+                if os.path.exists(tmp_file):
+                    os.remove(tmp_file)
+            except Exception:
+                pass
 
 
 def main():
