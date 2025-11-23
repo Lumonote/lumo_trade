@@ -30,11 +30,13 @@ class MacOSNativeUI:
 
     @staticmethod
     def show_dialog(title, message, buttons=["确定"], default_button=1, icon="note"):
-        """显示原生对话框"""
         button_list = ', '.join([f'"{btn}"' for btn in buttons])
         script = f'''
-        display dialog "{message}" with title "{title}" buttons {{{button_list}}} default button {default_button} with icon {icon}
-        button returned of result
+        tell application "System Events"
+            activate
+            display dialog "{message}" with title "{title}" buttons {{{button_list}}} default button {default_button} with icon {icon}
+            button returned of result
+        end tell
         '''
         try:
             result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
@@ -46,13 +48,15 @@ class MacOSNativeUI:
 
     @staticmethod
     def show_list_dialog(title, prompt, items):
-        """显示列表选择对话框"""
         item_list = ', '.join([f'"{item}"' for item in items])
         script = f'''
-        set itemList to {{{item_list}}}
-        set userChoice to choose from list itemList with prompt "{prompt}" with title "{title}"
-        if userChoice is false then return "CANCEL"
-        return userChoice as string
+        tell application "System Events"
+            activate
+            set itemList to {{{item_list}}}
+            set userChoice to choose from list itemList with prompt "{prompt}" with title "{title}"
+            if userChoice is false then return "CANCEL"
+            return userChoice as string
+        end tell
         '''
         try:
             result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
@@ -64,10 +68,12 @@ class MacOSNativeUI:
 
     @staticmethod
     def get_input(title, prompt, default_answer=""):
-        """获取用户输入"""
         script = f'''
-        display dialog "{prompt}" with title "{title}" default answer "{default_answer}" buttons {{"取消", "确定"}} default button 2
-        text returned of result
+        tell application "System Events"
+            activate
+            display dialog "{prompt}" with title "{title}" default answer "{default_answer}" buttons {"取消", "确定"} default button 2
+            text returned of result
+        end tell
         '''
         try:
             result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
@@ -79,9 +85,11 @@ class MacOSNativeUI:
 
     @staticmethod
     def show_notification(title, subtitle, message):
-        """显示系统通知"""
         script = f'''
-        display notification "{message}" with title "{title}" subtitle "{subtitle}" sound name "Glass"
+        tell application "System Events"
+            activate
+            display notification "{message}" with title "{title}" subtitle "{subtitle}" sound name "Glass"
+        end tell
         '''
         try:
             subprocess.run(['osascript', '-e', script], check=False)

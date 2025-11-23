@@ -286,113 +286,9 @@ class MacOSTheme:
 
 
 class DeviceFingerprint:
-    """设备指纹管理 - 与实际授权系统保持一致"""
-
     def get_device_id(self):
-        """获取设备ID - 使用完整的硬件信息"""
-        try:
-            import uuid
-            import subprocess
-
-            # 收集关键硬件信息（与finetune/license_system/device_fingerprint.py保持一致）
-            hardware_info = {
-                'system': platform.system(),
-                'node': platform.node(),
-                'machine': platform.machine(),
-                'processor': platform.processor()[:50] if platform.processor() else 'unknown',
-                'mac': format(uuid.getnode(), '012x').upper(),
-                'cpu_id': self._get_cpu_id(),
-                'motherboard': self._get_motherboard_info(),
-                'disk_serial': self._get_primary_disk_serial()
-            }
-
-            # 使用相同的哈希算法生成设备ID
-            combined = json.dumps(hardware_info, sort_keys=True)
-            device_id = hashlib.sha256(combined.encode()).hexdigest()[:16].upper()
-            return device_id
-        except Exception as e:
-            # 回退方案：使用简化的硬件信息
-            fallback_info = {
-                'system': platform.system(),
-                'node': platform.node(),
-                'mac': format(uuid.getnode(), '012x').upper()
-            }
-            combined = json.dumps(fallback_info, sort_keys=True)
-            fallback_id = hashlib.sha256(combined.encode()).hexdigest()[:16].upper()
-            return fallback_id
-
-    def _get_cpu_id(self):
-        """获取CPU ID"""
-        try:
-            if platform.system() == "Darwin":  # macOS
-                result = subprocess.run(
-                    ['sysctl', '-n', 'machdep.cpu.brand_string'],
-                    capture_output=True, text=True, timeout=10
-                )
-                cpu_brand = result.stdout.strip()
-                result2 = subprocess.run(
-                    ['sysctl', '-n', 'hw.ncpu'],
-                    capture_output=True, text=True, timeout=10
-                )
-                cpu_count = result2.stdout.strip()
-                return hashlib.md5(f"{cpu_brand}_{cpu_count}".encode()).hexdigest()[:16]
-            elif platform.system() == "Windows":
-                result = subprocess.run(
-                    ['wmic', 'cpu', 'get', 'ProcessorId', '/value'],
-                    capture_output=True, text=True, timeout=10
-                )
-                for line in result.stdout.split('\n'):
-                    if 'ProcessorId=' in line:
-                        return line.split('=')[1].strip()
-        except:
-            pass
-        return "UNKNOWN_CPU"
-
-    def _get_motherboard_info(self):
-        """获取主板信息"""
-        try:
-            if platform.system() == "Darwin":  # macOS
-                result = subprocess.run(
-                    ['system_profiler', 'SPHardwareDataType'],
-                    capture_output=True, text=True, timeout=10
-                )
-                for line in result.stdout.split('\n'):
-                    if 'Serial Number' in line:
-                        return line.split(':')[1].strip()
-            elif platform.system() == "Windows":
-                result = subprocess.run(
-                    ['wmic', 'baseboard', 'get', 'SerialNumber', '/value'],
-                    capture_output=True, text=True, timeout=10
-                )
-                for line in result.stdout.split('\n'):
-                    if 'SerialNumber=' in line:
-                        return line.split('=')[1].strip()
-        except:
-            pass
-        return str(uuid.getnode())
-
-    def _get_primary_disk_serial(self):
-        """获取主硬盘序列号"""
-        try:
-            if platform.system() == "Darwin":  # macOS
-                result = subprocess.run(
-                    ['system_profiler', 'SPSerialATADataType'],
-                    capture_output=True, text=True, timeout=10
-                )
-                for line in result.stdout.split('\n'):
-                    if 'Serial Number' in line:
-                        return line.split(':')[1].strip()
-            elif platform.system() == "Windows":
-                result = subprocess.run(
-                    ['wmic', 'diskdrive', 'get', 'SerialNumber', '/value'],
-                    capture_output=True, text=True, timeout=10
-                )
-                for line in result.stdout.split('\n'):
-                    if 'SerialNumber=' in line:
-                        return line.split('=')[1].strip()
-        except:
-            pass
-        return "UNKNOWN_DISK"
+        from finetune.license_system.device_fingerprint import DeviceFingerprint as DF
+        return DF().get_device_fingerprint()["device_id"]
 
 
 class LicenseValidator:
@@ -977,6 +873,26 @@ class MacOSWidget:
 
         return container
 
+    @staticmethod
+    def center_modal(window, parent):
+        window.transient(parent)
+        window.grab_set()
+        window.update_idletasks()
+        pw = parent.winfo_width() or parent.winfo_reqwidth()
+        ph = parent.winfo_height() or parent.winfo_reqheight()
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+        ww = window.winfo_width() or window.winfo_reqwidth()
+        wh = window.winfo_height() or window.winfo_reqheight()
+        x = px + max(0, (pw - ww) // 2)
+        y = py + max(0, (ph - wh) // 2)
+        window.geometry(f"{ww}x{wh}+{x}+{y}")
+        try:
+            window.attributes("-topmost", True)
+            window.after(200, lambda: window.attributes("-topmost", False))
+        except:
+            pass
+
 
 class LicenseActivationSheet:
     """现代化授权激活表单"""
@@ -1334,6 +1250,7 @@ class LLMConfigDialog:
             return
 
         # 创建对话框
+        self.parent = parent
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("AI 模型配置")
 
@@ -1368,16 +1285,21 @@ class LLMConfigDialog:
         self.create_interface()
 
     def center_window(self):
-        """窗口居中（使用当前窗口尺寸）"""
         self.dialog.update_idletasks()
-        w = self.dialog.winfo_width()
-        h = self.dialog.winfo_height()
-        if not w or not h:
-            # 回退到默认最小尺寸
-            w, h = 720, 600
-        x = (self.dialog.winfo_screenwidth() // 2) - (w // 2)
-        y = (self.dialog.winfo_screenheight() // 2) - (h // 2)
+        w = self.dialog.winfo_width() or self.dialog.winfo_reqwidth()
+        h = self.dialog.winfo_height() or self.dialog.winfo_reqheight()
+        pw = self.parent.winfo_width() or self.parent.winfo_reqwidth()
+        ph = self.parent.winfo_height() or self.parent.winfo_reqheight()
+        px = self.parent.winfo_rootx()
+        py = self.parent.winfo_rooty()
+        x = px + max(0, (pw - w) // 2)
+        y = py + max(0, (ph - h) // 2)
         self.dialog.geometry(f"{w}x{h}+{x}+{y}")
+        try:
+            self.dialog.attributes("-topmost", True)
+            self.dialog.after(200, lambda: self.dialog.attributes("-topmost", False))
+        except:
+            pass
 
     def create_interface(self):
         """创建界面"""
@@ -2414,6 +2336,66 @@ class KronosMacOSGUI:
 
     # ==== 新增功能实现方法 ====
 
+    def _mb_info(self, title, message):
+        try:
+            self.root.attributes("-topmost", True)
+        except:
+            pass
+        try:
+            return messagebox.showinfo(title, message, parent=self.root)
+        finally:
+            try:
+                self.root.attributes("-topmost", False)
+                self.root.lift()
+                self.root.focus_force()
+            except:
+                pass
+
+    def _mb_error(self, title, message):
+        try:
+            self.root.attributes("-topmost", True)
+        except:
+            pass
+        try:
+            return messagebox.showerror(title, message, parent=self.root)
+        finally:
+            try:
+                self.root.attributes("-topmost", False)
+                self.root.lift()
+                self.root.focus_force()
+            except:
+                pass
+
+    def _mb_warning(self, title, message):
+        try:
+            self.root.attributes("-topmost", True)
+        except:
+            pass
+        try:
+            return messagebox.showwarning(title, message, parent=self.root)
+        finally:
+            try:
+                self.root.attributes("-topmost", False)
+                self.root.lift()
+                self.root.focus_force()
+            except:
+                pass
+
+    def _mb_askyesno(self, title, message):
+        try:
+            self.root.attributes("-topmost", True)
+        except:
+            pass
+        try:
+            return messagebox.askyesno(title, message, parent=self.root)
+        finally:
+            try:
+                self.root.attributes("-topmost", False)
+                self.root.lift()
+                self.root.focus_force()
+            except:
+                pass
+
     def fetch_data_unified(self):
         """统一数据获取入口"""
         self.get_stock_input_and_run("auto", "请输入股票代码:")
@@ -2430,13 +2412,12 @@ class KronosMacOSGUI:
                 info_text += f"授权码: {license_info.get('license_code', 'N/A')}\n"
                 info_text += f"设备ID: {license_info.get('device_id', 'N/A')}\n"
                 info_text += f"激活时间: {license_info.get('activation_time', 'N/A')[:19]}"
-                messagebox.showinfo("授权信息", info_text)
+                self._mb_info("授权信息", info_text)
             else:
-                messagebox.showinfo("授权状态", "✅ 授权有效")
+                self._mb_info("授权状态", "✅ 授权有效")
         else:
             # 显示激活对话框
-            result = messagebox.askyesno("授权状态",
-                                         f"❌ {message}\n\n是否现在激活授权码？")
+            result = self._mb_askyesno("授权状态", f"❌ {message}\n\n是否现在激活授权码？")
             if result:
                 self.activate_license()
 
@@ -2456,7 +2437,7 @@ class KronosMacOSGUI:
         """检查授权状态"""
         is_valid, message = self.validator.validate_license()
         status = "✅ 已授权" if is_valid else f"❌ {message}"
-        messagebox.showinfo("授权状态", f"授权状态: {status}")
+        self._mb_info("授权状态", f"授权状态: {status}")
 
     def show_system_status(self):
         """查看系统状态"""
@@ -2476,7 +2457,7 @@ class KronosMacOSGUI:
     def install_dependencies(self):
         """一键安装所有依赖"""
         # 显示确认对话框
-        result = messagebox.askyesno(
+        result = self._mb_askyesno(
             "安装依赖",
             "即将安装 Kronos 所需的所有依赖包\n\n"
             "包括:\n"
@@ -2525,7 +2506,7 @@ class KronosMacOSGUI:
     def opportunity_discovery(self):
         """投资机会挖掘 - TOP100热门股票"""
         # 显示确认对话框
-        result = messagebox.askyesno(
+        result = self._mb_askyesno(
             "投资机会挖掘",
             "🔥 投资机会挖掘功能\n\n"
             "本功能将自动完成以下流程：\n"
@@ -2603,10 +2584,7 @@ class KronosMacOSGUI:
         dialog.resizable(False, False)
 
         # 居中
-        dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (450 // 2)
-        y = (dialog.winfo_screenheight() // 2) - (400 // 2)  # 更新y坐标
-        dialog.geometry(f"450x400+{x}+{y}")
+        MacOSWidget.center_modal(dialog, self.root)
 
         # 主容器
         main_frame = tk.Frame(dialog, bg="#FFFFFF")
@@ -2765,10 +2743,7 @@ class KronosMacOSGUI:
         dialog.resizable(False, False)
 
         # 居中
-        dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (450 // 2)
-        y = (dialog.winfo_screenheight() // 2) - (400 // 2)  # 更新y坐标
-        dialog.geometry(f"450x400+{x}+{y}")
+        MacOSWidget.center_modal(dialog, self.root)
 
         # 主容器
         main_frame = tk.Frame(dialog, bg="#FFFFFF")
@@ -2925,10 +2900,7 @@ class KronosMacOSGUI:
         dialog.resizable(False, False)
 
         # 居中
-        dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (550 // 2)
-        y = (dialog.winfo_screenheight() // 2) - (550 // 2)  # 更新y坐标计算
-        dialog.geometry(f"550x550+{x}+{y}")
+        MacOSWidget.center_modal(dialog, self.root)
 
         # 添加圆角效果和阴影
         dialog.configure(relief="flat", bd=0)

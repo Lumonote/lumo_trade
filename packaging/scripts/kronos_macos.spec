@@ -12,6 +12,7 @@ a = Analysis(
     pathex=[project_root],
     binaries=[],
     datas=[
+        (os.path.join(project_root, 'finetune'), 'finetune'),
         (os.path.join(project_root, 'tools'), 'tools'),
         (os.path.join(project_root, 'assets'), 'assets'),
         (os.path.join(project_root, 'config'), 'config'),
@@ -32,6 +33,8 @@ a = Analysis(
         'time',
         'subprocess',
         'psutil',
+        'uuid',
+        're',
         'webbrowser',
         'http.server',
         'urllib.parse',
@@ -41,6 +44,10 @@ a = Analysis(
         'tkinter.font',
         'tkinter.scrolledtext',
         '_tkinter',
+        'finetune.license_system.device_fingerprint',
+        'finetune.license_system.license_validator',
+        'finetune.license_system.json_storage',
+        'finetune.license_system.activate',
         # 注意: pandas/numpy等大型库不打包，通过"安装依赖"按钮安装到系统Python
         # LLM服务会动态调用系统Python来使用这些库
     ],

@@ -163,12 +163,25 @@ class DeviceFingerprint:
                             return parts[1]
 
             elif self.system == "Darwin":
-                result = subprocess.run(
+                result_nvme = subprocess.run(
+                    ['system_profiler', 'SPNVMeDataType'],
+                    capture_output=True, text=True, timeout=10
+                )
+                for line in result_nvme.stdout.split('\n'):
+                    if 'Serial Number' in line:
+                        return line.split(':')[1].strip()
+                result_sata = subprocess.run(
                     ['system_profiler', 'SPSerialATADataType'],
                     capture_output=True, text=True, timeout=10
                 )
-                # 解析序列号
-                for line in result.stdout.split('\n'):
+                for line in result_sata.stdout.split('\n'):
+                    if 'Serial Number' in line:
+                        return line.split(':')[1].strip()
+                result_storage = subprocess.run(
+                    ['system_profiler', 'SPStorageDataType'],
+                    capture_output=True, text=True, timeout=10
+                )
+                for line in result_storage.stdout.split('\n'):
                     if 'Serial Number' in line:
                         return line.split(':')[1].strip()
 
@@ -180,14 +193,30 @@ class DeviceFingerprint:
     def _get_primary_mac(self):
         """获取主网卡MAC地址"""
         try:
-            # 获取默认网关接口
+            if self.system == "Darwin":
+                result = subprocess.run(
+                    ['networksetup', '-listallhardwareports'],
+                    capture_output=True, text=True, timeout=10
+                )
+                device = None
+                for line in result.stdout.split('\n'):
+                    if line.strip().startswith('Device:') and ('en0' in line or 'en1' in line):
+                        device = line.split(':')[1].strip()
+                        break
+                if device:
+                    ifconfig = subprocess.run(
+                        ['ifconfig', device],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    for l in ifconfig.stdout.split('\n'):
+                        if 'ether ' in l:
+                            mac = l.split('ether')[1].strip()
+                            return mac.replace(':', '').upper()
             interfaces = psutil.net_if_addrs()
-
-            # 优先获取非回环接口的MAC
             for interface_name, addresses in interfaces.items():
                 if 'lo' not in interface_name.lower() and 'loopback' not in interface_name.lower():
                     for addr in addresses:
-                        if addr.family == psutil.AF_LINK:  # MAC地址
+                        if addr.family == psutil.AF_LINK:
                             mac = addr.address
                             if mac != '00:00:00:00:00:00':
                                 return mac.replace(':', '').upper()
