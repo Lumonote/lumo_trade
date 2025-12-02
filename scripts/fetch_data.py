@@ -802,6 +802,11 @@ class TushareDataFetcher:
         elif 'timestamp' not in df.columns and 'trade_date' in df.columns:
             df['timestamp'] = df['trade_date']
 
+        # 删除原始时间列，避免后续处理时产生重复列名
+        for col in ['trade_time', 'trade_date']:
+            if col in df.columns and 'timestamp' in df.columns:
+                df = df.drop(columns=[col])
+
         # 确保必需的列存在
         required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
         missing_cols = [col for col in required_cols if col not in df.columns]

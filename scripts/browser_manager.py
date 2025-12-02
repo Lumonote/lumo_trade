@@ -165,8 +165,13 @@ class BrowserManager:
 
         # 设置额外的HTTP头
         extra_headers = playwright_settings.get("extra_http_headers", {})
-        if extra_headers:
-            options["extra_http_headers"] = extra_headers
+        if not extra_headers:
+            extra_headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Referer": "https://quote.eastmoney.com/",
+            }
+        options["extra_http_headers"] = extra_headers
 
         # 合并用户提供的选项
         options.update(kwargs)

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>江恩八卦·天机预测系统 (数据修正版)</title>
+    <!-- 核心依赖 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        gray: { 850: '#1f2937', 900: '#111827', 950: '#0b0f19' },
+                        gold: { 400: '#fbbf24', 500: '#f59e0b', 600: '#d97706', 900: '#78350f' }
+                    },
+                    fontFamily: {
+                        mono: ['"JetBrains Mono"', 'Menlo', 'Consolas', 'monospace'],
+                        serif: ['"Noto Serif SC"', 'serif']
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0b0f19; }
+        ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+
+        .gann-wrapper {
+            position: relative;
+            transform-origin: center center;
+            transition: transform 0.1s ease-out;
+            padding: 100px;
+        }
+
+        .gann-grid {
+            display: grid; gap: 1px;
+            background-color: #374151;
+            border: 2px solid #52525b;
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            position: relative; z-index: 10;
+        }
+
+        .gann-cell {
+            width: 60px; height: 60px;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            font-family: 'JetBrains Mono', monospace; font-size: 13px;
+            background-color: #111827; transition: all 0.2s;
+        }
+        .gann-cell:hover { z-index: 20; background-color: #1f2937; border: 1px solid #f59e0b; }
+
+        .cell-center { background-color: #f59e0b !important; color: #000 !important; font-weight: 900; }
+        .cell-cardinal { background-color: #1e3a8a; color: #bfdbfe; }
+        .cell-diagonal { background-color: #064e3b; color: #a7f3d0; }
+        .cell-date { font-size: 9px; opacity: 0.6; margin-top: 2px; transform: scale(0.9); }
+
+        /* 八卦层样式 */
+        .bagua-layer { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+        .bagua-label {
+            position: absolute; color: #94a3b8; font-family: "Noto Serif SC", serif;
+            display: flex; align-items: center; justify-content: center;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+        .trigram { font-size: 32px; line-height: 1; color: #475569; margin: 0 8px; }
+        .label-text { font-size: 18px; font-weight: bold; }
+        .sub-text { font-size: 10px; color: #64748b; margin-top: 2px; }
+
+        /* 装饰线 */
+        .decor-line { position: absolute; background: #334155; z-index: 0; }
+        .line-h { height: 3px; width: 120%; left: -10%; border-top: 1px solid #1e293b; border-bottom: 1px solid #1e293b; background: transparent; }
+        .line-v { width: 3px; height: 120%; top: -10%; border-left: 1px solid #1e293b; border-right: 1px solid #1e293b; background: transparent; }
+
+        /* 定位 */
+        .pos-top { top: 0; left: 50%; transform: translate(-50%, -100%); padding-bottom: 15px; flex-direction: column; }
+        .pos-bottom { bottom: 0; left: 50%; transform: translate(-50%, 100%); padding-top: 15px; flex-direction: column-reverse; }
+        .pos-left { left: 0; top: 50%; transform: translate(-100%, -50%); padding-right: 20px; flex-direction: row-reverse; writing-mode: vertical-rl; }
+        .pos-right { right: 0; top: 50%; transform: translate(100%, -50%); padding-left: 20px; flex-direction: row; writing-mode: vertical-rl; }
+        .pos-corner { font-size: 20px; color: #334155; position: absolute; }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-200 font-sans antialiased h-screen flex flex-col overflow-hidden">
+
+<div id="app" class="h-full flex flex-col">
+
+    <!-- 顶部栏 -->
+    <header class="bg-gray-900 border-b border-gray-800 p-2 flex items-center justify-between shrink-0 z-50 shadow-xl">
+        <div class="flex items-center gap-4">
+            <div class="flex items-center text-gold-500 font-bold text-lg tracking-wider">
+                <span class="text-2xl mr-2">☯</span><span>天机·预测系统</span>
+            </div>
+
+            <div class="flex items-center gap-px bg-gray-800 rounded border border-gray-700 overflow-hidden">
+                <div class="px-3 py-1 text-xs text-gray-400 bg-gray-800/50">基准价</div>
+                <!-- 修正：监听 change 事件 -->
+                <input type="number" v-model.number="basePrice" @change="handleInputUpdate" class="w-20 bg-gray-900 text-white text-center text-sm font-mono focus:bg-gray-800 outline-none h-8">
+
+                <div class="px-3 py-1 text-xs text-gray-400 border-l border-gray-700 bg-gray-800/50">基准日</div>
+                <input type="date" v-model="baseDate" @change="handleInputUpdate" class="bg-gray-900 text-white text-sm px-2 focus:bg-gray-800 outline-none h-8">
+
+                <div class="px-3 py-1 text-xs text-gray-400 border-l border-gray-700 bg-gray-800/50">方向</div>
+                <select v-model="direction" @change="handleInputUpdate" class="bg-gray-900 text-white text-sm px-1 focus:bg-gray-800 outline-none h-8">
+                    <option value="up">看涨 (找压力)</option>
+                    <option value="down">看跌 (找支撑)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="flex bg-gray-800 rounded p-1 gap-1">
+            <button @click="activeTab = 'chart'" :class="['px-3 py-1 text-xs font-bold rounded transition flex items-center', activeTab==='chart' ? 'bg-gold-600 text-white' : 'text-gray-400 hover:text-white']">
+                <i class="fas fa-chart-line mr-1"></i> K线推演
+            </button>
+            <button @click="activeTab = 'grid'" :class="['px-3 py-1 text-xs font-bold rounded transition flex items-center', activeTab==='grid' ? 'bg-gold-600 text-white' : 'text-gray-400 hover:text-white']">
+                <i class="fas fa-border-all mr-1"></i> 八卦方图
+            </button>
+        </div>
+    </header>
+
+    <!-- 主体 -->
+    <main class="flex-grow relative overflow-hidden bg-[#050505]">
+
+        <!-- 视图 A: K线图表 -->
+        <div v-show="activeTab === 'chart'" class="h-full w-full p-4 flex flex-col">
+            <div class="flex justify-between items-center mb-2 px-2">
+                <div class="text-xs text-gray-400 font-mono">
+                    起点: <span class="text-gold-500">{{ baseDate }} @ {{ basePrice }}</span> |
+                    <span class="text-red-400">---</span> 时间窗 |
+                    <span class="text-blue-400">---</span> 价格位
+                </div>
+            </div>
+            <div id="kline-chart" class="flex-grow rounded-lg border border-gray-800 bg-gray-900/50 shadow-2xl"></div>
+        </div>
+
+        <!-- 视图 B: 八卦方图 -->
+        <div v-show="activeTab === 'grid'" class="h-full w-full relative flex flex-col">
+            <!-- 缩放控制 -->
+            <div class="absolute bottom-6 right-6 z-50 flex flex-col gap-2 bg-gray-800 p-2 rounded-lg shadow-xl border border-gray-700">
+                <button @click="adjustScale(0.1)" class="w-8 h-8 flex items-center justify-center hover:bg-gray-700 text-white rounded">+</button>
+                <span class="text-xs text-center text-gold-500 font-mono">{{ Math.round(gridScale * 100) }}%</span>
+                <button @click="adjustScale(-0.1)" class="w-8 h-8 flex items-center justify-center hover:bg-gray-700 text-white rounded">-</button>
+                <button @click="resetScale" class="text-[10px] text-gray-400 hover:text-white mt-1">重置</button>
+            </div>
+
+            <!-- 拖拽画布 -->
+            <div class="flex-grow overflow-auto flex items-center justify-center cursor-move"
+                 @mousedown="startDrag" @mousemove="onDrag" @mouseup="stopDrag" @mouseleave="stopDrag" @wheel.prevent="onWheel">
+                <div class="gann-wrapper" :style="{ transform: `scale(${gridScale}) translate(${offset.x}px, ${offset.y}px)` }">
+                    <!-- 八卦层 -->
+                    <div class="bagua-layer">
+                        <div class="bagua-label pos-top"><span class="trigram">☲</span><div class="flex flex-col items-center"><span class="label-text text-red-900/80">离</span><span class="sub-text">(顶/压力)</span></div></div>
+                        <div class="decor-line line-h" style="top: 0"></div>
+                        <div class="bagua-label pos-bottom"><div class="flex flex-col items-center"><span class="sub-text">(底/支撑)</span><span class="label-text text-blue-900/80">坎</span></div><span class="trigram">☵</span></div>
+                        <div class="decor-line line-h" style="bottom: 0"></div>
+                        <div class="bagua-label pos-left"><span class="trigram">☳</span><div class="flex flex-col items-center"><span class="label-text text-green-900/80">震</span><span class="sub-text">(起/转折)</span></div></div>
+                        <div class="decor-line line-v" style="left: 0"></div>
+                        <div class="bagua-label pos-right"><span class="trigram">☱</span><div class="flex flex-col items-center"><span class="label-text text-yellow-900/80">兑</span><span class="sub-text">(收/震荡)</span></div></div>
+                        <div class="decor-line line-v" style="right: 0"></div>
+                        <div class="pos-corner pos-tl" style="top:-40px;left:-40px;transform:rotate(-45deg)">巽</div>
+                        <div class="pos-corner pos-tr" style="top:-40px;right:-40px;transform:rotate(45deg)">坤</div>
+                        <div class="pos-corner pos-bl" style="bottom:-40px;left:-40px;transform:rotate(45deg)">艮</div>
+                        <div class="pos-corner pos-br" style="bottom:-40px;right:-40px;transform:rotate(-45deg)">乾</div>
+                    </div>
+                    <!-- 网格层 -->
+                    <div class="gann-grid" :style="{ gridTemplateColumns: `repeat(${gridSize}, 60px)` }">
+                        <div v-for="cell in gridCells" :key="cell.index" :class="['gann-cell', cell.cssClass]">
+                            <span :class="{'text-gold-500 font-bold': cell.isCardinal}">{{ parseFloat(cell.value).toFixed(0) }}</span>
+                            <span class="cell-date text-gray-500">{{ cell.shortDate }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script>
+    const { createApp, ref, computed, onMounted, watch, nextTick } = Vue;
+
+    createApp({
+        setup() {
+            // 参数状态
+            const activeTab = ref('chart'); // 默认看图表，方便验证修正结果
+            const basePrice = ref(3260); // 默认当前点位
+            const baseDate = ref(new Date().toISOString().split('T')[0]);
+            const direction = ref('up');
+
+            // Grid 参数
+            const step = ref(1);
+            const layers = ref(7);
+            const gridSize = computed(() => layers.value * 2 + 1);
+
+            // 交互参数
+            const gridScale = ref(0.9);
+            const offset = ref({ x: 0, y: 0 });
+            const isDragging = ref(false);
+            const dragStart = ref({ x: 0, y: 0 });
+
+            const gridCells = ref([]);
+            const chartInstance = ref(null);
+
+            // --- 日期工具 (跳过周末) ---
+            const addTradeDays = (startStr, days) => {
+                let d = new Date(startStr);
+                // 解决时区问题：直接按本地时间处理
+                // 或者简单处理：new Date(str)在UTC会漂移，这里用分割法更稳
+                const parts = startStr.split('-');
+                d = new Date(parts[0], parts[1]-1, parts[2]);
+
+                let count = 0;
+                while(count < days) {
+                    d.setDate(d.getDate() + 1);
+                    if(d.getDay() !== 0 && d.getDay() !== 6) count++;
+                }
+                return d;
+            };
+
+            const formatDate = (date) => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+
+            // --- 核心修正：严格的 K线与江恩线生成 ---
+            const initChart = () => {
+                if(chartInstance.value) chartInstance.value.dispose();
+                chartInstance.value = echarts.init(document.getElementById('kline-chart'), 'dark');
+
+                // 1. 生成数据 (严格从 basePrice 和 baseDate 开始)
+                const dataCount = 180; // 推演半年
+                const dates = [];
+                const kData = []; // [open, close, low, high]
+
+                let currentP = basePrice.value;
+
+                for(let i=0; i<dataCount; i++) {
+                    // 计算日期
+                    let d = addTradeDays(baseDate.value, i);
+                    dates.push(formatDate(d));
+
+                    // 模拟价格 (从 basePrice 开始随机游走，仅演示用)
+                    // 第一天 Open 必须是 basePrice
+                    let open = (i === 0) ? basePrice.value : currentP;
+
+                    // 随机波动
+                    let change = (Math.random() - 0.5) * (basePrice.value * 0.02);
+                    let close = open + change;
+                    // 增加一点向上或向下的趋势倾向
+                    if(direction.value === 'up') close += basePrice.value * 0.001;
+                    else close -= basePrice.value * 0.001;
+
+                    let low = Math.min(open, close) - Math.random() * (basePrice.value * 0.01);
+                    let high = Math.max(open, close) + Math.random() * (basePrice.value * 0.01);
+
+                    kData.push([open.toFixed(2), close.toFixed(2), low.toFixed(2), high.toFixed(2)]);
+                    currentP = close;
+                }
+
+                // 2. 计算江恩阻力位 (MarkLine) - 几何公式
+                // 公式：(√Base ± Angle/180)^2
+                const markLines = [];
+                const sqrtBase = Math.sqrt(basePrice.value);
+                const angles = [45, 90, 135, 180, 225, 270, 315, 360];
+
+                angles.forEach(ang => {
+                    let factor = ang / 180;
+                    let targetP = 0;
+                    if(direction.value === 'up') targetP = Math.pow(sqrtBase + factor, 2);
+                    else targetP = Math.pow(sqrtBase - factor, 2);
+
+                    // 价格线 (蓝色)
+                    markLines.push({
+                        yAxis: targetP.toFixed(2),
+                        label: { formatter: `${targetP.toFixed(0)} (${ang}°)`, position: 'end', color: '#60a5fa' },
+                        lineStyle: { color: '#60a5fa', type: 'dashed', opacity: 0.7 }
+                    });
+
+                    // 时间窗 (红色) - 简单映射：1度 = 1天 (或者网格序列)
+                    // 这里使用网格序列逻辑：第N格对应的时间
+                    // 在九方图中，角度往往对应步数。比如 360度 = 8步(一圈)? 不，通常是按照角度数/系数。
+                    // 这里采用：Grid Index 对应天数。关键角度位置的 Index。
+                    // 比如 90度位置大约在... 这里简化为直接用角度数作为天数 (象征性)
+                    // 或者更严谨：使用斐波那契数或江恩轮中轮数
+
+                    // 为了演示效果，我们标记关键时间点：45天, 90天, 180天后
+                    let tDate = addTradeDays(baseDate.value, Math.round(ang * 0.5)); // 假设系数0.5
+                    let tDateStr = formatDate(tDate);
+
+                    markLines.push({
+                        xAxis: tDateStr,
+                        label: { formatter: `T+${Math.round(ang*0.5)}`, position: 'start', color: '#f87171' },
+                        lineStyle: { color: '#f87171', type: 'dashed', opacity: 0.7 }
+                    });
+                });
+
+                // 3. 绘制
+                const option = {
+                    backgroundColor: 'transparent',
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+                    grid: { left: '3%', right: '8%', bottom: '3%', containLabel: true },
+                    xAxis: { type: 'category', data: dates, boundaryGap: false },
+                    yAxis: { scale: true, splitLine: { show: false } },
+                    dataZoom: [{ type: 'inside' }],
+                    series: [{
+                        type: 'candlestick',
+                        data: kData,
+                        itemStyle: { color: '#ef4444', color0: '#22c55e', borderColor: '#ef4444', borderColor0: '#22c55e' },
+                        markLine: {
+                            symbol: ['none', 'none'],
+                            data: markLines,
+                            label: { fontSize: 10 }
+                        }
+                    }]
+                };
+                chartInstance.value.setOption(option);
+            };
+
+            const generateGrid = () => {
+                const size = gridSize.value;
+                const center = Math.floor(size / 2);
+                const cells = new Array(size * size);
+                let x = center, y = center;
+                let dx = 1, dy = 0;
+                let segmentLen = 1;
+                let segmentPass = 0;
+                let turn = 0;
+                let price = basePrice.value;
+                let pStep = direction.value === 'up' ? step.value : -step.value;
+
+                for(let i=0; i < size*size; i++) {
+                    if(x >=0 && x < size && y >=0 && y < size) {
+                        let relX = x - center;
+                        let relY = center - y;
+                        let angle = Math.round(Math.atan2(relY, relX) * 180 / Math.PI);
+                        if(angle < 0) angle += 360;
+                        let isCenter = (i===0);
+                        let isCardinal = (angle%90===0) && !isCenter;
+                        let dateObj = addTradeDays(baseDate.value, i);
+
+                        cells[y * size + x] = {
+                            index: i, value: price,
+                            shortDate: `${dateObj.getMonth()+1}/${dateObj.getDate()}`,
+                            cssClass: isCenter ? 'cell-center' : isCardinal ? 'cell-cardinal' : (angle%45===0 && !isCenter) ? 'cell-diagonal' : 'gann-cell',
+                            isCardinal
+                        };
+                    }
+                    x += dx; y -= dy; price += pStep;
+                    segmentPass++;
+                    if(segmentPass === segmentLen) {
+                        segmentPass = 0;
+                        let t = dx; dx = -dy; dy = t;
+                        turn++; if(turn % 2 === 0) segmentLen++;
+                    }
+                }
+                gridCells.value = cells;
+            };
+
+            const handleInputUpdate = () => {
+                generateGrid();
+                if(activeTab.value === 'chart') initChart();
+            };
+
+            // 拖拽缩放逻辑
+            const adjustScale = (d) => gridScale.value = Math.max(0.3, gridScale.value + d);
+            const resetScale = () => { gridScale.value = 0.9; offset.value = {x:0, y:0}; };
+            const startDrag = (e) => { isDragging.value = true; dragStart.value = {x: e.clientX, y: e.clientY}; };
+            const onDrag = (e) => {
+                if(!isDragging.value) return;
+                offset.value.x += e.clientX - dragStart.value.x;
+                offset.value.y += e.clientY - dragStart.value.y;
+                dragStart.value = {x: e.clientX, y: e.clientY};
+            };
+            const stopDrag = () => isDragging.value = false;
+            const onWheel = (e) => adjustScale(e.deltaY > 0 ? -0.05 : 0.05);
+
+            watch(activeTab, (v) => {
+                if(v === 'chart') nextTick(() => chartInstance.value ? chartInstance.value.resize() : initChart());
+            });
+
+            onMounted(() => {
+                handleInputUpdate();
+                window.addEventListener('resize', () => chartInstance.value && chartInstance.value.resize());
+            });
+
+            return {
+                activeTab, basePrice, baseDate, direction, step, layers,
+                gridSize, gridCells, gridScale, offset,
+                handleInputUpdate, adjustScale, resetScale, startDrag, onDrag, stopDrag, onWheel
+            };
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>

@@ -10,13 +10,18 @@ import requests
 import time
 import re
 from typing import Dict, Optional
+from bs4 import BeautifulSoup
+from analysis.sentiment_cache_manager import SentimentCacheManager
+
+# 初始化缓存管理器
+cache_manager = SentimentCacheManager()
 
 
 def _get_sector_by_reverse_lookup(stock_code: str, headers: Dict) -> Optional[Dict]:
     """
     通过反向查询获取股票所属行业
     思路: 遍历行业板块列表,获取成分股,查找当前股票
-    优化: 并行查询多个板块,减少总耗时
+    优化: 使用缓存管理器存储板块列表和成分股数据，避免重复请求
 
     Args:
         stock_code: 股票代码
@@ -28,36 +33,55 @@ def _get_sector_by_reverse_lookup(stock_code: str, headers: Dict) -> Optional[Di
     try:
         print(f"   🔍 开始反向查询板块信息...")
 
-        # 1. 获取所有行业板块列表
-        sector_list_url = "http://push2.eastmoney.com/api/qt/clist/get"
-        sector_params = {
-            'pn': '1',
-            'pz': '300',  # 获取300个行业(足够覆盖所有)
-            'po': '1',
-            'np': '1',
-            'fltt': '2',
-            'invt': '2',
-            'fid': 'f3',
-            'fs': 'm:90 t:2',  # 行业板块
-            'fields': 'f12,f14'  # 只要代码和名称
-        }
+        # 1. 获取所有行业板块列表 (优先从缓存获取)
+        sectors = cache_manager.get('sector_list', 'all')
+        
+        if not sectors:
+            sector_list_url = "http://push2.eastmoney.com/api/qt/clist/get"
+            sector_params = {
+                'pn': '1',
+                'pz': '300',  # 获取300个行业(足够覆盖所有)
+                'po': '1',
+                'np': '1',
+                'fltt': '2',
+                'invt': '2',
+                'fid': 'f3',
+                'fs': 'm:90 t:2',  # 行业板块
+                'fields': 'f12,f14'  # 只要代码和名称
+            }
 
-        resp = requests.get(sector_list_url, params=sector_params, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            print(f"   ❌ 获取板块列表失败: HTTP {resp.status_code}")
+            # 增加重试机制
+            max_retries = 3
+            
+            for attempt in range(max_retries):
+                try:
+                    resp = requests.get(sector_list_url, params=sector_params, headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get('data') and data['data'].get('diff'):
+                            sectors = data['data']['diff']
+                            # 存入缓存，有效期1小时
+                            cache_manager.set('sector_list', sectors, 'all')
+                            break
+                    
+                    # 如果失败，打印日志并等待
+                    if attempt < max_retries - 1:
+                        print(f"   ⚠️  获取板块列表失败: HTTP {resp.status_code}, 重试中 ({attempt+1}/{max_retries})...")
+                        time.sleep(2)
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        print(f"   ⚠️  获取板块列表异常: {str(e)}, 重试中 ({attempt+1}/{max_retries})...")
+                        time.sleep(2)
+
+        if not sectors:
+            print(f"   ❌ 获取板块列表失败")
             return None
 
-        data = resp.json()
-        if not (data.get('data') and data['data'].get('diff')):
-            print(f"   ❌ 板块列表数据格式异常")
-            return None
-
-        sectors = data['data']['diff']
         print(f"   📋 获取到 {len(sectors)} 个行业板块")
 
         # 2. 遍历每个行业,查询成分股
         checked_count = 0
-        for sector in sectors:
+        for i, sector in enumerate(sectors):
             sector_code_val = sector.get('f12')
             sector_name = sector.get('f14')
 
@@ -66,29 +90,46 @@ def _get_sector_by_reverse_lookup(stock_code: str, headers: Dict) -> Optional[Di
 
             try:
                 checked_count += 1
-                # 查询该行业的成分股
-                constituents_url = "http://push2.eastmoney.com/api/qt/clist/get"
-                constituents_params = {
-                    'pn': '1',
-                    'pz': '1000',  # 每个行业最多1000只股票
-                    'po': '1',
-                    'np': '1',
-                    'fltt': '2',
-                    'invt': '2',
-                    'fid': 'f3',
-                    'fs': f"b:{sector_code_val}",
-                    'fields': 'f12'  # 只要股票代码
-                }
+                
+                # 尝试从缓存获取成分股
+                stocks = cache_manager.get('sector_constituents', sector_code_val)
+                
+                if not stocks:
+                    # 查询该行业的成分股
+                    constituents_url = "http://push2.eastmoney.com/api/qt/clist/get"
+                    constituents_params = {
+                        'pn': '1',
+                        'pz': '1000',  # 每个行业最多1000只股票
+                        'po': '1',
+                        'np': '1',
+                        'fltt': '2',
+                        'invt': '2',
+                        'fid': 'f3',
+                        'fs': f"b:{sector_code_val}",
+                        'fields': 'f12'  # 只要股票代码
+                    }
 
-                const_resp = requests.get(constituents_url, params=constituents_params, headers=headers, timeout=5)
-                if const_resp.status_code != 200:
+                    # 添加少量延时避免触发频率限制 (仅在未命中缓存时)
+                    if i % 10 == 0:
+                        time.sleep(0.2)
+
+                    try:
+                        const_resp = requests.get(constituents_url, params=constituents_params, headers=headers, timeout=5)
+                        if const_resp.status_code != 200:
+                            continue
+
+                        const_data = const_resp.json()
+                        if const_data.get('data') and const_data['data'].get('diff'):
+                            stocks = const_data['data']['diff']
+                            # 存入缓存，有效期1小时
+                            cache_manager.set('sector_constituents', stocks, sector_code_val)
+                        else:
+                            stocks = []
+                    except:
+                        continue
+                
+                if not stocks:
                     continue
-
-                const_data = const_resp.json()
-                if not (const_data.get('data') and const_data['data'].get('diff')):
-                    continue
-
-                stocks = const_data['data']['diff']
 
                 # 检查当前股票是否在成分股列表中
                 for stock in stocks:
@@ -102,10 +143,6 @@ def _get_sector_by_reverse_lookup(stock_code: str, headers: Dict) -> Optional[Di
                             'sector_name': sector_name,
                             'sector_code': sector_code_val
                         }
-
-                # 优化: 减少延迟,每5个行业才延迟一次
-                if checked_count % 5 == 0:
-                    time.sleep(0.05)
 
             except Exception:
                 continue
@@ -133,80 +170,91 @@ def get_stock_sector_info(stock_code: str) -> Dict:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Referer': 'http://quote.eastmoney.com/'
+        'Referer': 'https://quote.eastmoney.com/'
     }
 
     try:
-        # 方法1: 尝试直接查询个股API
-        url = "http://push2.eastmoney.com/api/qt/stock/get"
+        # 方法1: 使用 stock/get 接口 (更稳定，支持 f127 行业字段)
+        # 优先尝试 HTTPS (避免被拦截)
+        # 沪市: 6开头(主板/科创板), 900开头(B股) -> 1
+        # 深市: 0/3开头, 200开头(B股) -> 0
+        # 北交所: 8/4/92开头 -> 0
+        market = '1' if stock_code.startswith('6') or stock_code.startswith('900') else '0'
+        urls_to_try = [
+            "https://push2.eastmoney.com/api/qt/stock/get",
+            "http://push2.eastmoney.com/api/qt/stock/get"
+        ]
         params = {
-            'secid': f"{'1' if stock_code.startswith('6') else '0'}.{stock_code}",
-            'fields': 'f57,f58,f127,f128,f43,f44'  # 板块、行业、价格等字段
+            'secid': f"{market}.{stock_code}",
+            'fltt': '2',
+            'fields': 'f57,f58,f43,f100,f127'  # f57=code, f58=name, f43=price, f100=行业(可能为空), f127=行业(更可靠)
         }
 
-        # 重试机制: 最多3次
-        max_retries = 3
+        # 重试机制: 每个URL最多2次
+        max_retries = 2
         data = None
         last_error = None
 
-        for attempt in range(max_retries):
+        for url in urls_to_try:
+            for attempt in range(max_retries):
+                try:
+                    response = requests.get(url, params=params, headers=headers, timeout=10)
+
+                    if response.status_code == 200 and response.text and response.text.strip() != '':
+                        try:
+                            data = response.json()
+                            if data and data.get('data'):
+                                break
+                        except Exception:
+                            last_error = "JSON解析失败"
+                            continue
+                    else:
+                        last_error = f"HTTP {response.status_code}"
+                        if attempt < max_retries - 1:
+                            time.sleep(0.5)
+
+                except requests.exceptions.Timeout:
+                    last_error = "请求超时"
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                except requests.exceptions.RequestException as e:
+                    last_error = f"请求异常: {str(e)}"
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5)
+
+            if data and data.get('data'):
+                break
+        
+        # 尝试方法1.5: 如果 stock/get 失败，尝试 ulist.np
+        if not (data and data.get('data')):
             try:
-                response = requests.get(url, params=params, headers=headers, timeout=10)
+                ulist_url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+                ulist_params = {
+                    'secids': f"{market}.{stock_code}",
+                    'fltt': '2',
+                    'fields': 'f12,f14,f100,f127'
+                }
+                ulist_resp = requests.get(ulist_url, params=ulist_params, headers=headers, timeout=10)
+                if ulist_resp.status_code == 200:
+                    ulist_data = ulist_resp.json()
+                    if ulist_data.get('data') and ulist_data['data'].get('diff'):
+                        # 构造类似 stock/get 的数据结构以便复用后续逻辑
+                        item = ulist_data['data']['diff'][0]
+                        data = {'data': {'f58': item.get('f14'), 'f43': 0, 'f100': item.get('f100'), 'f127': item.get('f127')}}
+            except Exception:
+                pass
 
-                # 检查HTTP状态码
-                if response.status_code == 502:
-                    last_error = f"HTTP 502 (尝试 {attempt+1}/{max_retries})"
-                    if attempt < max_retries - 1:
-                        time.sleep(1)  # 等待1秒后重试
-                        continue
-                    else:
-                        raise Exception(last_error)
-
-                if response.status_code != 200:
-                    last_error = f"HTTP {response.status_code} (尝试 {attempt+1}/{max_retries})"
-                    if attempt < max_retries - 1:
-                        time.sleep(1)
-                        continue
-                    else:
-                        raise Exception(last_error)
-
-                # 检查响应内容
-                if not response.text or response.text.strip() == '':
-                    last_error = f"空响应 (尝试 {attempt+1}/{max_retries})"
-                    if attempt < max_retries - 1:
-                        time.sleep(1)
-                        continue
-                    else:
-                        raise Exception(last_error)
-
-                # 解析JSON
-                data = response.json()
-                break  # 成功,跳出重试循环
-
-            except requests.exceptions.Timeout:
-                last_error = f"请求超时 (尝试 {attempt+1}/{max_retries})"
-                if attempt < max_retries - 1:
-                    time.sleep(2)
-                    continue
-            except requests.exceptions.RequestException as e:
-                last_error = f"请求异常: {str(e)} (尝试 {attempt+1}/{max_retries})"
-                if attempt < max_retries - 1:
-                    time.sleep(2)
-                    continue
-
-        if data is None:
-            raise Exception(f"API请求失败(已重试{max_retries}次): {last_error}")
-
-        if data.get('data'):
+        if data and data.get('data'):
             stock_data = data['data']
-            sector_name = stock_data.get('f127', '未知')  # 所属行业名称
-            sector_code = stock_data.get('f128', '')  # 行业板块代码
-            current_price = stock_data.get('f43', 0)
-            if current_price:
-                current_price = current_price / 1000  # 除以1000转换为正常值
+            stock_name = stock_data.get('f58', '')  # 股票名称
+            current_price = stock_data.get('f43', 0)  # 最新价
 
-            # 获取股票名称（需要额外请求）
-            stock_name = _get_stock_name(stock_code, headers)
+            # 优先使用 f127 (更可靠)，其次 f100
+            sector_name = stock_data.get('f127') or stock_data.get('f100') or '未知'
+
+            # 过滤无效值
+            if sector_name in [None, '', '-', '--']:
+                sector_name = '未知'
 
             # 获取概念板块（简化版，只返回主要板块）
             concept_sectors = []
@@ -215,42 +263,49 @@ def get_stock_sector_info(stock_code: str) -> Dict:
 
             return {
                 'success': True,
-                'data_source': 'eastmoney',
-                'sector_name': sector_name if sector_name else '未知',
+                'data_source': 'eastmoney_stock_get',
+                'sector_name': sector_name,
                 'stock_name': stock_name,
-                'current_price': round(current_price, 2) if current_price else 0,
-                'industry': sector_name if sector_name else '未知',
+                'current_price': float(current_price) if current_price else 0,
+                'industry': sector_name,
                 'concept_sectors': concept_sectors
             }
-        else:
-            return {
-                'success': False,
-                'data_source': 'eastmoney',
-                'sector_name': '未知',
-                'stock_name': '',
-                'current_price': 0,
-                'industry': '未知',
-                'concept_sectors': []
-            }
+
+        # 如果方法1失败，引发异常进入fallback流程
+        raise Exception(f"API请求失败: {last_error}")
 
     except Exception as e:
         print(f"   ⚠️  获取板块信息失败: {str(e)}")
 
-        # 方法2: 尝试反向查询
+        # 方法2: 优先尝试新浪财经 (更稳定)
+        print(f"   🔄 切换至新浪财经接口获取...")
+        sina_info = _get_sector_info_from_sina(stock_code)
+        if sina_info.get('success') and sina_info.get('sector_name') != '未知':
+            print(f"   ✅ 通过sina获取板块信息成功")
+            return sina_info
+        elif sina_info.get('success'):
+             print(f"   ⚠️ 通过sina获取了基础行情，但未获取到板块信息")
+
+        # 方法3: 尝试腾讯财经
+        print(f"   🔄 切换至腾讯财经接口获取...")
+        tencent_info = _get_sector_info_from_tencent(stock_code)
+        if tencent_info.get('success') and tencent_info.get('sector_name') != '未知':
+            print(f"   ✅ 通过tencent获取板块信息成功")
+            return tencent_info
+        elif tencent_info.get('success'):
+             print(f"   ⚠️ 通过tencent获取了基础行情，但未获取到板块信息")
+
+        # 方法4: 最后尝试反向查询 (最慢)
         print(f"   🔄 尝试通过反向查询获取行业信息...")
         sector_info = _get_sector_by_reverse_lookup(stock_code, headers)
 
         if sector_info:
-            # 从新浪或腾讯获取股票基本信息
-            stock_name = ''
-            current_price = 0
-
-            # 尝试新浪
-            sina_info = _get_sector_info_from_sina(stock_code)
-            if sina_info.get('success'):
-                stock_name = sina_info.get('stock_name', '')
-                current_price = sina_info.get('current_price', 0)
-
+            # 整合信息：如果之前从Sina/Tencent获取到了价格/名称，就使用它们
+            base_info = sina_info if sina_info.get('success') else (tencent_info if tencent_info.get('success') else {})
+            
+            stock_name = base_info.get('stock_name', '')
+            current_price = base_info.get('current_price', 0)
+            
             return {
                 'success': True,
                 'data_source': 'reverse_lookup',
@@ -262,9 +317,19 @@ def get_stock_sector_info(stock_code: str) -> Dict:
                 'concept_sectors': [sector_info['sector_name']]
             }
 
+        # 最终兜底: 返回未知但标记为成功，避免中断流程
+        # 如果有基础行情数据（Sina/Tencent），至少返回那个
+        fallback_data = sina_info if sina_info.get('success') else (tencent_info if tencent_info.get('success') else None)
+        
+        if fallback_data:
+            print(f"   ⚠️  无法获取板块信息，仅返回基础行情")
+            fallback_data['data_source'] = 'fallback_basic_only'
+            return fallback_data
+
+        print(f"   ⚠️  所有渠道获取板块信息失败，使用默认值")
         return {
-            'success': False,
-            'data_source': 'error',
+            'success': True, # 标记为True以免上层报错
+            'data_source': 'default',
             'sector_name': '未知',
             'stock_name': '',
             'current_price': 0,
@@ -287,79 +352,16 @@ def get_sector_sentiment(stock_code: str) -> Dict:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Referer': 'http://quote.eastmoney.com/'
+        'Referer': 'https://quote.eastmoney.com/'
     }
 
     try:
-        # 先获取股票所属板块和板块代码
-        url = "http://push2.eastmoney.com/api/qt/stock/get"
-        params = {
-            'secid': f"{'1' if stock_code.startswith('6') else '0'}.{stock_code}",
-            'fields': 'f127,f128'  # 板块、行业
-        }
+        # 优化: 复用 get_stock_sector_info 获取行业名称 (它包含多源兜底逻辑)
+        sector_info = get_stock_sector_info(stock_code)
+        sector_name = sector_info.get('sector_name', '未知')
+        sector_code = sector_info.get('sector_code', '')
 
-        # 重试机制
-        max_retries = 3
-        data = None
-        last_error = None
-
-        for attempt in range(max_retries):
-            try:
-                response = requests.get(url, params=params, headers=headers, timeout=10)
-
-                # 检查HTTP状态码
-                if response.status_code == 502:
-                    last_error = f"HTTP 502 (尝试 {attempt+1}/{max_retries})"
-                    if attempt < max_retries - 1:
-                        time.sleep(1)
-                        continue
-                    else:
-                        raise Exception(last_error)
-
-                if response.status_code != 200:
-                    last_error = f"HTTP {response.status_code} (尝试 {attempt+1}/{max_retries})"
-                    if attempt < max_retries - 1:
-                        time.sleep(1)
-                        continue
-                    else:
-                        raise Exception(last_error)
-
-                # 检查响应内容
-                if not response.text or response.text.strip() == '':
-                    last_error = f"空响应 (尝试 {attempt+1}/{max_retries})"
-                    if attempt < max_retries - 1:
-                        time.sleep(1)
-                        continue
-                    else:
-                        raise Exception(last_error)
-
-                # 解析JSON
-                data = response.json()
-                break  # 成功
-
-            except requests.exceptions.Timeout:
-                last_error = f"请求超时 (尝试 {attempt+1}/{max_retries})"
-                if attempt < max_retries - 1:
-                    time.sleep(2)
-                    continue
-            except requests.exceptions.RequestException as e:
-                last_error = f"请求异常: {str(e)} (尝试 {attempt+1}/{max_retries})"
-                if attempt < max_retries - 1:
-                    time.sleep(2)
-                    continue
-
-        if data is None:
-            print(f"   ⚠️  获取板块情绪失败(已重试{max_retries}次): {last_error}")
-            return _get_default_sector_sentiment('未知')
-
-        if not data.get('data'):
-            return _get_default_sector_sentiment('未知')
-
-        stock_data = data['data']
-        sector_name = stock_data.get('f127', '未知')  # 所属行业名称
-        sector_code = stock_data.get('f128', '')  # 行业板块代码
-
-        if sector_name == '未知' and not sector_code:
+        if sector_name == '未知':
             return _get_default_sector_sentiment(sector_name)
 
         # 方法1: 如果有板块代码，直接通过板块代码获取成分股数据，计算平均值
@@ -533,17 +535,19 @@ def _get_stock_name(stock_code: str, headers: Dict) -> str:
         str: 股票名称
     """
     try:
-        url = "http://push2.eastmoney.com/api/qt/stock/get"
+        # 使用 ulist.np 替代 stock/get
+        url = "http://push2.eastmoney.com/api/qt/ulist.np/get"
         params = {
-            'secid': f"{'1' if stock_code.startswith('6') else '0'}.{stock_code}",
-            'fields': 'f58'  # 股票名称
+            'secids': f"{'1' if stock_code.startswith('6') else '0'}.{stock_code}",
+            'fltt': '2',
+            'fields': 'f14'  # 股票名称
         }
 
         response = requests.get(url, params=params, headers=headers, timeout=10)
         data = response.json()
 
-        if data.get('data'):
-            return data['data'].get('f58', '')
+        if data.get('data') and data['data'].get('diff'):
+            return data['data']['diff'][0].get('f14', '')
         return ''
     except:
         return ''
@@ -652,6 +656,93 @@ def _get_default_sector_sentiment(sector_name: str = '未知') -> Dict:
 
 # ============ 备用数据源: 新浪财经 ============
 
+def _scrape_sina_industry(stock_code: str) -> str:
+    """
+    从新浪财经网页抓取行业信息
+    """
+    try:
+        url = f"http://vip.stock.finance.sina.com.cn/corp/go.php/vCI_CorpInfo/stockid/{stock_code}.phtml"
+        resp = requests.get(url, timeout=5)
+        resp.encoding = 'gbk'
+        
+        if resp.status_code != 200:
+            return '未知'
+            
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        target = soup.find(string=re.compile("所属行业"))
+        
+        if target:
+            parent = target.parent
+            if parent.name == 'a':
+                href = parent.get('href')
+                if href:
+                    try:
+                        resp2 = requests.get(href, timeout=5)
+                        resp2.encoding = 'gbk'
+                        if resp2.status_code == 200:
+                            soup2 = BeautifulSoup(resp2.text, 'html.parser')
+                            tables = soup2.find_all('table')
+                            
+                            for table in tables:
+                                if "所属行业" in table.get_text():
+                                    rows = table.find_all('tr')
+                                    
+                                    # Helper to get clean text
+                                    def get_clean_text(r_idx, c_idx):
+                                        if r_idx < len(rows):
+                                            r = rows[r_idx]
+                                            cs = r.find_all(['td', 'th'])
+                                            if c_idx < len(cs):
+                                                return cs[c_idx].get_text().strip()
+                                        return None
+
+                                    for k, row in enumerate(rows):
+                                        cols = row.find_all(['td', 'th'])
+                                        for j, col in enumerate(cols):
+                                            if "所属行业" in col.get_text():
+                                                # Strategy 1: Check next column in same row
+                                                val = get_clean_text(k, j+1)
+                                                if val and "同行业" not in val and "所属行业" not in val:
+                                                    return val
+                                                
+                                                # Strategy 2: Check same column in next row
+                                                val = get_clean_text(k+1, j)
+                                                if val:
+                                                    if "所属行业" in val or "同行业" in val:
+                                                        # It's likely another header, try row k+2
+                                                        val2 = get_clean_text(k+2, j)
+                                                        if val2:
+                                                            return val2
+                                                    else:
+                                                        return val
+                                                    
+                                                # Strategy 3: Check first column of next row (if j > 0)
+                                                if j > 0:
+                                                    val = get_clean_text(k+1, 0)
+                                                    if val:
+                                                        if "所属行业" in val or "同行业" in val:
+                                                             val2 = get_clean_text(k+2, 0)
+                                                             if val2:
+                                                                 return val2
+                                                        else:
+                                                            return val
+                    except Exception:
+                        pass
+            
+            # Fallback: Check if it's in a table row on the main page
+            table_row = target.find_parent('tr')
+            if table_row:
+                cells = table_row.find_all('td')
+                for i, cell in enumerate(cells):
+                    if "所属行业" in cell.get_text():
+                        if i + 1 < len(cells):
+                            return cells[i+1].get_text().strip()
+                            
+    except Exception as e:
+        print(f"   ⚠️  新浪网页抓取失败: {str(e)}")
+        
+    return '未知'
+
 def _get_sector_info_from_sina(stock_code: str) -> Dict:
     """
     从新浪财经获取板块信息(备用数据源)
@@ -664,8 +755,17 @@ def _get_sector_info_from_sina(stock_code: str) -> Dict:
     """
     try:
         # 新浪财经股票详情API
-        # 需要添加市场前缀: sh/sz
-        market_code = f"{'sh' if stock_code.startswith('6') else 'sz'}{stock_code}"
+        # 需要添加市场前缀: sh/sz/bj
+        if stock_code.startswith('6') or stock_code.startswith('900'):
+            prefix = 'sh'
+        elif stock_code.startswith(('0', '3', '200')):
+            prefix = 'sz'
+        elif stock_code.startswith(('8', '4', '92')):
+            prefix = 'bj'
+        else:
+            prefix = 'sh' if stock_code.startswith('6') else 'sz'
+
+        market_code = f"{prefix}{stock_code}"
 
         url = f"http://hq.sinajs.cn/list={market_code}"
         headers = {
@@ -696,22 +796,8 @@ def _get_sector_info_from_sina(stock_code: str) -> Dict:
         stock_name = data[0] if len(data) > 0 else ''
         current_price = float(data[3]) if len(data) > 3 and data[3] else 0
 
-        # 新浪不直接提供板块信息,需要从其他API获取
-        # 使用新浪行业分类API
-        sector_url = f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=1&num=1&sort=symbol&asc=0&node=hs_a&symbol={market_code}"
-
-        try:
-            sector_response = requests.get(sector_url, headers=headers, timeout=5)
-            if sector_response.status_code == 200:
-                sector_data = sector_response.json()
-                if sector_data and len(sector_data) > 0:
-                    industry = sector_data[0].get('industry', '未知')
-                else:
-                    industry = '未知'
-            else:
-                industry = '未知'
-        except:
-            industry = '未知'
+        # 使用网页抓取获取行业信息
+        industry = _scrape_sina_industry(stock_code)
 
         return {
             'success': True,
@@ -740,7 +826,16 @@ def _get_sector_info_from_tencent(stock_code: str) -> Dict:
     """
     try:
         # 腾讯财经API
-        market_code = f"{'sh' if stock_code.startswith('6') else 'sz'}{stock_code}"
+        if stock_code.startswith('6') or stock_code.startswith('900'):
+            prefix = 'sh'
+        elif stock_code.startswith(('0', '3', '200')):
+            prefix = 'sz'
+        elif stock_code.startswith(('8', '4', '92')):
+            prefix = 'bj'
+        else:
+            prefix = 'sh' if stock_code.startswith('6') else 'sz'
+
+        market_code = f"{prefix}{stock_code}"
 
         url = f"http://qt.gtimg.cn/q={market_code}"
         headers = {

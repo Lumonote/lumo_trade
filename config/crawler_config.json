@@ -120,6 +120,11 @@
       "enabled": true,
       "priority": 1,
       "base_url": "https://push2.eastmoney.com",
+      "domains": {
+        "realtime": "push2.eastmoney.com",
+        "minute": "push2.eastmoney.com",
+        "kline": "push2his.eastmoney.com"
+      },
       "endpoints": {
         "realtime": "/api/qt/stock/get",
         "kline": "/api/qt/stock/kline/get",
@@ -145,6 +150,11 @@
       "enabled": true,
       "priority": 2,
       "base_url": "https://d.10jqka.com.cn",
+      "domains": {
+        "realtime": "d.10jqka.com.cn",
+        "minute": "d.10jqka.com.cn",
+        "kline": "stockpage.10jqka.com.cn"
+      },
       "endpoints": {
         "realtime": "/v6/line/hs_{symbol}/01/last.js",
         "kline": "/v6/line/hs_{symbol}/01/today.js",
@@ -164,6 +174,11 @@
       "enabled": true,
       "priority": 3,
       "base_url": "https://stock.xueqiu.com",
+      "domains": {
+        "realtime": "stock.xueqiu.com",
+        "minute": "stock.xueqiu.com",
+        "kline": "stock.xueqiu.com"
+      },
       "endpoints": {
         "realtime": "/v5/stock/quote.json",
         "kline": "/v5/stock/chart/kline.json",
@@ -245,5 +260,16 @@
     "emergency_sources": [
       "tushare"
     ]
+  },
+  "domain_limits": {
+    "push2his.eastmoney.com": { "concurrency": 1, "max_per_minute": 6, "window_seconds": 60 },
+    "push2.eastmoney.com":    { "concurrency": 1, "max_per_minute": 6, "window_seconds": 60 },
+    "d.10jqka.com.cn":        { "concurrency": 1, "max_per_minute": 6, "window_seconds": 60 },
+    "stockpage.10jqka.com.cn":{ "concurrency": 1, "max_per_minute": 6, "window_seconds": 60 },
+    "basic.10jqka.com.cn":    { "concurrency": 1, "max_per_minute": 4, "window_seconds": 60 },
+    "searchapi.10jqka.com.cn":{ "concurrency": 1, "max_per_minute": 4, "window_seconds": 60 },
+    "stock.xueqiu.com":       { "concurrency": 1, "max_per_minute": 4, "window_seconds": 60 },
+    "web.ifzq.gtimg.cn":      { "concurrency": 1, "max_per_minute": 10, "window_seconds": 60 },
+    "qt.gtimg.cn":            { "concurrency": 2, "max_per_minute": 20, "window_seconds": 60 }
   }
 }

@@ -33,98 +33,287 @@ class FundamentalDataCollector:
         """
         self.stock_code = stock_code
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'http://quote.eastmoney.com/'
+            'User-Agent': 'curl/8.6.0',
+            'Connection': 'close'
         }
+
+    def _get_data_via_curl(self, url, params):
+        """使用curl命令行工具获取数据（作为requests的fallback）"""
+        import subprocess
+        import time
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # 构建完整的URL参数
+                query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+                full_url = f"{url}?{query_string}"
+                
+                cmd = ['curl', '-s', full_url, '-H', 'User-Agent: curl/8.6.0']
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                
+                if result.returncode == 0:
+                    try:
+                        return json.loads(result.stdout)
+                    except json.JSONDecodeError:
+                        if attempt < max_retries - 1:
+                            time.sleep(1)
+                            continue
+                        return None
+                else:
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                        continue
+                    print(f"   ⚠️  Curl请求失败: {result.stderr}")
+                    return None
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                print(f"   ⚠️  Curl执行出错: {e}")
+                return None
+        return None
 
     def _get_market_code(self):
         """获取市场代码"""
-        if self.stock_code.startswith('6'):
+        if self.stock_code.startswith('6') or self.stock_code.startswith('900'):
             return 'sh' + self.stock_code  # 沪市
-        elif self.stock_code.startswith(('0', '3')):
-            return 'sz' + self.stock_code  # 深市
-        elif self.stock_code.startswith('688'):
-            return 'sh' + self.stock_code  # 科创板
+        elif self.stock_code.startswith(('8', '4', '92')):
+            return 'bj' + self.stock_code  # 北交所
         else:
-            return 'sz' + self.stock_code
+            return 'sz' + self.stock_code  # 深市 (0, 3, 200等)
+
+    def _get_market_id(self):
+        """获取市场标识 (沪市1, 深市/北交所0)"""
+        # 沪市: 6开头(主板/科创板), 900开头(B股)
+        # 注意: 92开头是北交所, 应归为0
+        if self.stock_code.startswith('6') or self.stock_code.startswith('900'):
+            return '1'
+        # 深市: 0开头(主板), 3开头(创业板), 2开头(B股)
+        # 北交所: 8开头, 4开头, 92开头 -> 也在东方财富接口中通常归为0
+        else:
+            return '0'
 
     def get_financial_indicators(self):
         """
-        获取关键财务指标
-
+        获取主要财务指标 (PE, PB, 市值等)
+        
         Returns:
             dict: 财务指标数据
         """
         try:
-            market_code = self._get_market_code()
-
-            # 东方财富财务指标API
-            url = f"http://push2.eastmoney.com/api/qt/stock/get"
+            # 1. 尝试使用 stock/get 接口 (最准确)
+            url = "https://push2.eastmoney.com/api/qt/stock/get"
+            secid = f"{self._get_market_id()}.{self.stock_code}"
+            
             params = {
-                'secid': f"{'1' if market_code.startswith('sh') else '0'}.{self.stock_code}",
-                'fields': 'f57,f58,f162,f167,f173,f116,f117,f189,f135,f136'
+                'secid': secid,
+                'ut': 'bd1d9ddb04089700cf9c27f6f7426281', # 使用通用token
+                'fields': 'f9,f23,f20,f21,f162,f167,f116,f117', # f9/f23(clist用), f162/f167(stock用)
+                'invt': '2',
+                'fltt': '2'
             }
+            
+            headers = self.headers.copy()
+            headers['Referer'] = 'https://quote.eastmoney.com/'
+            
+            try:
+                response = requests.get(url, params=params, headers=headers, timeout=5)
+                data = response.json()
+                
+                if data and data.get('data'):
+                    stock_data = data['data']
+                    # 优先使用 stock/get 的字段 (f162=PE-TTM, f167=PB, f116=总市值, f117=流通市值)
+                    pe = stock_data.get('f162') or stock_data.get('f9')
+                    pb = stock_data.get('f167') or stock_data.get('f23')
+                    total_mv = stock_data.get('f116') or stock_data.get('f20')
+                    circ_mv = stock_data.get('f117') or stock_data.get('f21')
+                    
+                    return self._format_indicators(pe, pb, total_mv, circ_mv)
+            except Exception as e:
+                print(f"⚠️ stock/get接口请求失败: {e}")
 
-            response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            data = response.json()
-
-            if data.get('data'):
-                stock_data = data['data']
-
-                # 调试：打印原始数据
-                # print(f"   调试: f162={stock_data.get('f162')}, f167={stock_data.get('f167')}, f173={stock_data.get('f173')}")
-
-                # PE值需要除以100，负值表示亏损
-                pe_raw = stock_data.get('f162')
-                if isinstance(pe_raw, (int, float)) and pe_raw > 0:
-                    pe_ratio = round(pe_raw / 100, 2)
-                elif isinstance(pe_raw, (int, float)) and pe_raw < 0:
-                    pe_ratio = '亏损'
-                else:
-                    pe_ratio = 'N/A'
-
-                # PB值需要除以100
-                pb_raw = stock_data.get('f167')
-                if isinstance(pb_raw, (int, float)) and pb_raw > 0:
-                    pb_ratio = round(pb_raw / 100, 2)
-                else:
-                    pb_ratio = 'N/A'
-
-                # PS值需要除以100
-                ps_raw = stock_data.get('f173')
-                if isinstance(ps_raw, (int, float)) and ps_raw > 0:
-                    ps_ratio = round(ps_raw / 100, 2)
-                else:
-                    ps_ratio = 'N/A'
-
-                indicators = {
-                    'pe_ratio': pe_ratio,  # 市盈率(动态)
-                    'pb_ratio': pb_ratio,  # 市净率
-                    'ps_ratio': ps_ratio,  # 市销率
-                    'total_market_cap': stock_data.get('f116', 'N/A'),  # 总市值(亿)
-                    'circulation_market_cap': stock_data.get('f117', 'N/A'),  # 流通市值(亿)
-                    'roe': 'N/A',  # ROE需要从财报获取
-                    'gross_margin': 'N/A',  # 毛利率
-                    'net_margin': 'N/A',  # 净利率
-                    'debt_ratio': 'N/A',  # 资产负债率
-                    'current_ratio': 'N/A',  # 流动比率
-                }
-
-                # 转换市值单位(亿元)
-                if isinstance(indicators['total_market_cap'], (int, float)):
-                    indicators['total_market_cap'] = round(indicators['total_market_cap'] / 100000000, 2)
-                if isinstance(indicators['circulation_market_cap'], (int, float)):
-                    indicators['circulation_market_cap'] = round(indicators['circulation_market_cap'] / 100000000, 2)
-
-                return indicators
-            else:
-                print(f"   ⚠️  API未返回数据: {data}")
-                return self._get_default_indicators()
+            # 2. 尝试备用方案: ulist.np (统一列表)
+            return self._get_financial_indicators_fallback()
 
         except Exception as e:
             print(f"⚠️ 获取财务指标失败: {str(e)}")
+            return self._get_default_indicators()
 
+    def _get_financial_indicators_fallback(self):
+        """备用方案：使用腾讯接口、ulist或clist获取"""
+        try:
+            # 尝试方案A: 腾讯财经接口 (最优先备用，稳定且包含PE/PB/市值)
+            tencent_data = self._get_financial_indicators_tencent()
+            if tencent_data:
+                print(f"✅ 通过腾讯财经接口获取指标成功")
+                return tencent_data
+
+            # 尝试方案B: ulist.np (指定股票代码)
+            url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+            params = {
+                'fltt': '2',
+                'secids': f"{self._get_market_id()}.{self.stock_code}",
+                'fields': 'f12,f14,f9,f23,f20,f21', # f9=PE, f23=PB
+                'ut': 'bd1d9ddb04089700cf9c27f6f7426281'
+            }
+            
+            try:
+                response = requests.get(url, params=params, headers=self.headers, timeout=5)
+                data = response.json()
+                if data and data.get('data') and data['data'].get('diff'):
+                    stock_data = data['data']['diff'][0]
+                    return self._format_indicators(
+                        stock_data.get('f9'), 
+                        stock_data.get('f23'), 
+                        stock_data.get('f20'), 
+                        stock_data.get('f21')
+                    )
+            except:
+                pass
+
+            # 尝试方案B: clist (全市场热门/活跃股查找 - 最后的兜底)
+            # 获取成交额前200的股票（覆盖大部分热门股）
+            return self._get_from_top_active_stocks()
+
+        except Exception as e:
+            print(f"⚠️ 备用方案失败: {str(e)}")
+        
         return self._get_default_indicators()
+
+    def _get_financial_indicators_tencent(self):
+        """从腾讯财经获取实时指标"""
+        try:
+            # 确定前缀
+            if self.stock_code.startswith('6') or self.stock_code.startswith('900'):
+                prefix = 'sh'
+            elif self.stock_code.startswith(('0', '3', '2')):
+                prefix = 'sz'
+            elif self.stock_code.startswith(('4', '8', '92')):
+                prefix = 'bj'
+            else:
+                return None
+            
+            url = f"http://qt.gtimg.cn/q={prefix}{self.stock_code}"
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                content = resp.text
+                if f"v_{prefix}{self.stock_code}=" in content:
+                    data_str = content.split('="')[1].strip('";')
+                    data = data_str.split('~')
+                    if len(data) > 53:
+                        # Index 52: PE (TTM)
+                        # Index 46: PB
+                        # Index 44: Total Market Cap (100M)
+                        # Index 45: Circulating Market Cap (100M)
+                        
+                        pe = data[52]
+                        pb = data[46]
+                        total_mv = float(data[44]) * 100000000 if data[44] else None
+                        circ_mv = float(data[45]) * 100000000 if data[45] else None
+                        
+                        return {
+                            'pe_ratio': float(pe) if pe else 'N/A',
+                            'pb_ratio': float(pb) if pb else 'N/A',
+                            'total_market_cap': total_mv,
+                            'circulation_market_cap': circ_mv,
+                            # Others default to N/A
+                            'ps_ratio': 'N/A',
+                            'roe': 'N/A',
+                            'gross_margin': 'N/A',
+                            'net_margin': 'N/A',
+                            'debt_ratio': 'N/A',
+                            'current_ratio': 'N/A'
+                        }
+        except Exception as e:
+            print(f"   ⚠️ 腾讯接口获取失败: {str(e)}")
+        return None
+
+    def _get_from_top_active_stocks(self):
+        """从全市场成交额前200名中查找 (兜底方案)"""
+        try:
+            url = "https://push2.eastmoney.com/api/qt/clist/get"
+            params = {
+                'pn': '1',
+                'pz': '200', # 前200名
+                'po': '1',   # 降序
+                'np': '1',
+                'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+                'fltt': '2',
+                'invt': '2',
+                'fid': 'f6', # 按成交额排序 (f6)
+                'fs': 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23',
+                'fields': 'f12,f9,f23,f20,f21'
+            }
+            
+            response = requests.get(url, params=params, headers=self.headers, timeout=8)
+            data = response.json()
+            
+            if data and data.get('data') and data['data'].get('diff'):
+                for stock in data['data']['diff']:
+                    if str(stock.get('f12')) == self.stock_code:
+                        print(f"✅ 在活跃股列表中找到 {self.stock_code}")
+                        return self._format_indicators(
+                            stock.get('f9'), 
+                            stock.get('f23'), 
+                            stock.get('f20'), 
+                            stock.get('f21')
+                        )
+        except Exception as e:
+            print(f"⚠️ 活跃股列表查找失败: {e}")
+            
+        return self._get_default_indicators()
+
+    def _format_indicators(self, pe, pb, total_mv, circ_mv):
+        """格式化指标数据"""
+        # 处理PE
+        pe_ratio = 'N/A'
+        if pe != '-':
+            try:
+                pe_val = float(pe)
+                if pe_val < 0:
+                    pe_ratio = f"亏损({pe_val})"
+                else:
+                    pe_ratio = round(pe_val, 2)
+            except:
+                pass
+
+        # 处理PB
+        pb_ratio = 'N/A'
+        if pb != '-':
+            try:
+                pb_ratio = round(float(pb), 2)
+            except:
+                pass
+
+        # 处理市值 (API通常返回的是元，需要确认)
+        # clist返回的通常是元
+        total_market_cap = 'N/A'
+        if total_mv != '-':
+            try:
+                total_market_cap = float(total_mv)
+            except:
+                pass
+                
+        circulation_market_cap = 'N/A'
+        if circ_mv != '-':
+            try:
+                circulation_market_cap = float(circ_mv)
+            except:
+                pass
+
+        return {
+            'pe_ratio': pe_ratio,
+            'pb_ratio': pb_ratio,
+            'ps_ratio': 'N/A',
+            'total_market_cap': total_market_cap,
+            'circulation_market_cap': circulation_market_cap,
+            'roe': 'N/A',
+            'gross_margin': 'N/A',
+            'net_margin': 'N/A',
+            'debt_ratio': 'N/A',
+            'current_ratio': 'N/A',
+        }
 
     def get_financial_reports(self):
         """
@@ -412,26 +601,32 @@ class FundamentalDataCollector:
             dict: 行业对比数据
         """
         try:
-            # 东方财富行业数据API
-            url = "http://push2.eastmoney.com/api/qt/stock/get"
+            # 东方财富行业数据API - 使用ulist.np替代stock/get
+            url = "http://push2.eastmoney.com/api/qt/ulist.np/get"
+            market_id = '1' if self.stock_code.startswith('6') or self.stock_code.startswith('900') else '0'
             params = {
-                'secid': f"{'1' if self.stock_code.startswith('6') else '0'}.{self.stock_code}",
-                'fields': 'f127,f128'  # 行业相关字段
+                'secids': f"{market_id}.{self.stock_code}",
+                'fltt': '2',
+                'fields': 'f100'  # f100: 所属行业
             }
 
             response = requests.get(url, params=params, headers=self.headers, timeout=10)
             data = response.json()
 
-            if data.get('data'):
-                stock_data = data['data']
+            if data.get('data') and data['data'].get('diff'):
+                stock_data = data['data']['diff'][0]
 
                 comparison = {
-                    'industry': stock_data.get('f127', 'N/A'),  # 所属行业
+                    'industry': stock_data.get('f100', 'N/A'),  # 所属行业
                     'industry_rank': 'N/A',  # 行业排名
                     'industry_pe': 'N/A',  # 行业平均PE
                     'industry_pb': 'N/A',  # 行业平均PB
                     'vs_industry_pe': 'N/A',  # vs行业PE
                 }
+                
+                # 兼容逻辑
+                if comparison['industry'] == 'N/A':
+                     comparison['industry'] = stock_data.get('f102', 'N/A')
 
                 return comparison
 

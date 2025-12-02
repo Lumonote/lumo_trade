@@ -174,7 +174,7 @@ class EastMoneyCrawler:
         return symbol
 
     async def _make_request(self, url: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
-        """发送HTTP请求，使用智能重试和频率控制"""
+        """发送请求，Playwright为主，APIRequestContext 备选；带智能重试与频控"""
         await self._init_browser()
 
         # 使用请求优化器执行请求
@@ -191,17 +191,27 @@ class EastMoneyCrawler:
             # 添加随机延迟，模拟人类行为
             await asyncio.sleep(random.uniform(0.5, 1.5))
 
-            # 发送请求
-            response = await self.page.goto(full_url, timeout=self.timeout, wait_until='networkidle')
-
-            if not response:
-                raise Exception("No response received")
-
-            if response.status != 200:
-                raise Exception(f"HTTP {response.status}")
-
-            # 获取页面文本内容
-            text_content = await self.page.evaluate('() => document.body.innerText')
+            # 发送请求（主路径：页面式）
+            text_content = None
+            try:
+                response = await self.page.goto(full_url, timeout=self.timeout, wait_until='load')
+                if not response:
+                    raise Exception("No response received")
+                if response.status != 200:
+                    raise Exception(f"HTTP {response.status}")
+                text_content = await self.page.evaluate('() => document.body.innerText')
+            except Exception as page_err:
+                # 备选：Playwright 内置 APIRequestContext 发起 GET（仍保持 Playwright 通道）
+                try:
+                    api_ctx = await self.browser_manager.playwright.request.new_context(extra_http_headers=self.headers)
+                    api_resp = await api_ctx.get(full_url, timeout=self.timeout)
+                    if api_resp.status != 200:
+                        raise Exception(f"HTTP {api_resp.status}")
+                    text_content = await api_resp.text()
+                    await api_ctx.dispose()
+                except Exception as api_err:
+                    # 双路径都失败，抛出原始页面错误以触发重试分类
+                    raise page_err
 
             # 处理JSONP响应
             if text_content and ('jQuery' in text_content or 'callback' in text_content):

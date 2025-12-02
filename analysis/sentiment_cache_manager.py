@@ -57,6 +57,8 @@ class SentimentCacheManager:
             'sector': 600,               # 板块情绪:10分钟
             'capital_flow': 300,         # 资金流向:5分钟
             'dragon_tiger': 1800,        # 龙虎榜:30分钟
+            'sector_list': 3600,         # 板块列表:1小时
+            'sector_constituents': 3600, # 板块成分股:1小时
         }
 
         logger.info(f"✓ 情绪缓存管理器已初始化: {self.cache_dir}")

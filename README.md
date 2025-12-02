@@ -700,3 +700,23 @@ This project is licensed under the [MIT License](./LICENSE).
 
 
 
+## 实时获取热门股票（禁用缓存）
+
+为保证“投资机会挖掘”使用的热股数据总是最新，系统已在 `scripts/run_opportunity_discovery.py` 中默认禁用热门股票缓存并强制实时采集。
+
+如需在其他脚本中也禁用缓存，可使用以下方式：
+
+- 设置环境变量：
+
+  - macOS/Linux: `export KRONOS_DISABLE_HOT_CACHE=1`
+  - Windows PowerShell: `$env:KRONOS_DISABLE_HOT_CACHE = '1'`
+
+- 或在代码中显式传参：
+
+  ```python
+  from scripts.hot_stocks_fetcher import HotStocksFetcher
+  fetcher = HotStocksFetcher(disable_cache=True)
+  hot_stocks = fetcher.get_hot_stocks(limit=100, force_refresh=True)
+  ```
+
+另外也可以通过环境变量 `KRONOS_FORCE_REFRESH=1` 强制本次采集忽略缓存（仍会在来源有效时写入缓存）。

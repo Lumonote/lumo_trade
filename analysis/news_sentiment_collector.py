@@ -386,11 +386,20 @@ class NewsSentimentCollector:
         """通过东财push2接口加载公司名"""
         try:
             exchange_flag = '1' if str(self.stock_code).startswith(('600', '601', '603', '605', '688')) else '0'
-            url = "http://push2.eastmoney.com/api/qt/stock/get"
-            params = {'secid': f"{exchange_flag}.{self.stock_code}", 'fields': 'f58'}
+            # 使用 ulist.np 替代 stock/get
+            url = "http://push2.eastmoney.com/api/qt/ulist.np/get"
+            params = {
+                'secids': f"{exchange_flag}.{self.stock_code}",
+                'fltt': '2',
+                'fields': 'f14'  # f14: 股票名称
+            }
             resp = requests.get(url, params=params, headers=self.headers, timeout=8)
             data = resp.json() if resp.content else {}
-            name = (data or {}).get('data', {}).get('f58')
+            # ulist返回结构: data -> diff -> [0]
+            name = None
+            if data.get('data') and data['data'].get('diff'):
+                name = data['data']['diff'][0].get('f14')
+                
             if isinstance(name, str) and name.strip():
                 self.company_name = name.strip()
         except Exception:
@@ -468,33 +477,48 @@ class NewsSentimentCollector:
             list: 研报列表
         """
         try:
-            # 东方财富研报API
-            url = "http://reportapi.eastmoney.com/report/list"
+            # 东方财富研报API (HTTPS)
+            url = "https://reportapi.eastmoney.com/report/list"
             reports = []
+            
+            # 计算时间范围 (过去2年)
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=365*2)
+            
+            begin_time = start_date.strftime('%Y-%m-%d')
+            end_time = end_date.strftime('%Y-%m-%d')
 
             variants = self._format_stock_code_variants(self.stock_code)
             for idx, code_variant in enumerate(variants, start=1):
                 params = {
                     'qType': '0',
                     'pageSize': str(limit),
-                    'code': code_variant
+                    'code': code_variant,
+                    'beginTime': begin_time,
+                    'endTime': end_time,
+                    'pageNo': '1',
+                    'type': '0'
                 }
                 print(f"   🔁 尝试研报API代码格式({idx}/{len(variants)}): code={code_variant}")
-                response = requests.get(url, params=params, headers=self.headers, timeout=10)
-                data = response.json()
-                if data.get('data'):
-                    for item in data['data']:
-                        report = {
-                            'title': item.get('title', ''),
-                            'date': item.get('publishDate', ''),
-                            'institution': item.get('orgSName', ''),
-                            'researcher': item.get('researcher', ''),
-                            'rating': item.get('investRating', ''),
-                            'target_price': item.get('predictNextTwoYearEps', ''),
-                            'summary': item.get('title', '')[:100],
-                        }
-                        reports.append(report)
-                    break
+                try:
+                    response = requests.get(url, params=params, headers=self.headers, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('data'):
+                            for item in data['data']:
+                                report = {
+                                    'title': item.get('title', ''),
+                                    'date': item.get('publishDate', ''),
+                                    'institution': item.get('orgSName', ''),
+                                    'researcher': item.get('researcher', ''),
+                                    'rating': item.get('emRatingName', '') or item.get('sRatingName', ''),
+                                    'target_price': item.get('indvAimPriceT', '') or item.get('predictNextTwoYearEps', ''),
+                                    'summary': item.get('title', '')[:100],
+                                }
+                                reports.append(report)
+                            break
+                except Exception:
+                    pass
 
             # 如果API为空，尝试网页搜索研报作为兜底
             if not reports:
@@ -647,11 +671,18 @@ class NewsSentimentCollector:
         variants = [code]
         # 根据常见规则推断交易所前缀
         try:
-            if code.startswith(('600', '601', '603', '605', '688')):
+            if code.startswith('6') or code.startswith('900'):
                 prefix = 'SH'
-            else:
+                variants.extend([f"{prefix}{code}", f"{prefix.lower()}{code}"])
+            elif code.startswith(('0', '3', '2')):
                 prefix = 'SZ'
-            variants.extend([f"{prefix}{code}", f"{prefix.lower()}{code}"])
+                variants.extend([f"{prefix}{code}", f"{prefix.lower()}{code}"])
+            elif code.startswith(('4', '8', '92')):
+                prefix = 'BJ'
+                variants.extend([f"{prefix}{code}", f"{prefix.lower()}{code}", f"SZ{code}", f"sz{code}"]) # 尝试BJ和SZ
+            else:
+                # 默认尝试SZ
+                variants.extend([f"SZ{code}", f"sz{code}"])
         except Exception:
             pass
         # 去重保持顺序

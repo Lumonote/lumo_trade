@@ -37,46 +37,54 @@ class OpportunityScorer:
         'C': 0     # C级：45分以下，较差投资机会
     }
 
-    # 维度权重配置
+    # 维度权重配置 (v3.0优化版 - 基于回测收益分析调整)
     DIMENSION_WEIGHTS = {
-        'quantitative': 0.28,    # 量化模型权重 28%
-        'technical': 0.22,       # 技术分析权重 22%
-        'sentiment': 0.10,       # 股民情绪权重 10%
-        'sector': 0.12,          # 板块情绪权重 12%
+        'quantitative': 0.28,    # 量化模型权重 28% (原28%，降低因信号分散)
+        'technical': 0.12,       # 技术分析权重 12% (原22%，金叉同质化严重)
+        'momentum': 0.08,        # 【新增】短期动量权重 8%
+        'volume_health': 0.12,   # 【新增】量价健康度权重 12%
+        'sentiment': 0.08,       # 股民情绪权重 8%
+        'sector': 0.06,          # 板块情绪权重 6% (原12%，数据缺失严重)
         'fundamental': 0.10,     # 基本面权重 10%
         'events': 0.10,          # 消息面权重 10%
-        'dragon_tiger': 0.08     # 龙虎榜权重 8%
+        'dragon_tiger': 0.06     # 龙虎榜权重 6%
     }
 
-    # 动态权重模板（总和均为1.0）
+    # 动态权重模板（总和均为1.0）- v3.0优化版
     DYNAMIC_WEIGHT_PROFILES = {
         'base': {
-            'quantitative': 0.28,
-            'technical': 0.22,
-            'sentiment': 0.10,
-            'sector': 0.12,
-            'fundamental': 0.10,
-            'events': 0.10,
-            'dragon_tiger': 0.08,
-        },
-        # 强趋势、低风险时，提高量化占比
-        'trend_bull': {
-            'quantitative': 0.38,
-            'technical': 0.22,
+            'quantitative': 0.18,
+            'technical': 0.12,
+            'momentum': 0.18,
+            'volume_health': 0.12,
             'sentiment': 0.08,
-            'sector': 0.10,
-            'fundamental': 0.08,
-            'events': 0.06,
-            'dragon_tiger': 0.08,
-        },
-        # 高风险或消息面主导时，降低量化占比，提升事件/情绪
-        'high_risk_news': {
-            'quantitative': 0.20,
-            'technical': 0.20,
-            'sentiment': 0.14,
-            'sector': 0.18,
+            'sector': 0.06,
             'fundamental': 0.10,
             'events': 0.10,
+            'dragon_tiger': 0.06,
+        },
+        # 强趋势、低风险时，提高动量和量化占比
+        'trend_bull': {
+            'quantitative': 0.22,
+            'technical': 0.10,
+            'momentum': 0.25,      # 强趋势时动量权重提高
+            'volume_health': 0.15,
+            'sentiment': 0.06,
+            'sector': 0.04,
+            'fundamental': 0.06,
+            'events': 0.06,
+            'dragon_tiger': 0.06,
+        },
+        # 高风险或消息面主导时，降低动量占比，提升事件/情绪
+        'high_risk_news': {
+            'quantitative': 0.14,
+            'technical': 0.12,
+            'momentum': 0.10,      # 高风险时降低动量权重
+            'volume_health': 0.10,
+            'sentiment': 0.12,
+            'sector': 0.10,
+            'fundamental': 0.10,
+            'events': 0.14,
             'dragon_tiger': 0.08,
         },
     }
@@ -88,13 +96,16 @@ class OpportunityScorer:
 
     def calculate_comprehensive_score(self, stock_code: str,
                                      historical_data: Optional[pd.DataFrame] = None,
-                                     global_hot_news: Optional[list] = None) -> Dict:
+                                     global_hot_news: Optional[list] = None,
+                                     fundamental_data: Optional[Dict] = None) -> Dict:
         """
         计算综合评分
 
         Args:
             stock_code: 股票代码（6位数字，如 "000001"）
             historical_data: 历史K线数据（可选，如果不提供则自动获取）
+            global_hot_news: 全市场热门新闻（可选，用于事件面加分）
+            fundamental_data: 外部传入的基本面数据（可选，包含PE/PB/市值/增长率等，用于加速）
 
         Returns:
             {
@@ -125,53 +136,75 @@ class OpportunityScorer:
             'scores': {
                 'quantitative': 0.0,
                 'technical': 0.0,
+                'momentum': 0.0,        # 新增
+                'volume_health': 0.0,   # 新增
                 'sentiment': 0.0,
                 'sector': 0.0,
                 'fundamental': 0.0,
                 'events': 0.0,
                 'dragon_tiger': 0.0
             },
-            'details': {}
+            'details': {},
+            'exclusion_flags': []       # 新增：一票否决标记
         }
 
         try:
             # 准备历史数据，避免技术面/量化评分为0
             if historical_data is None or (hasattr(historical_data, 'empty') and historical_data.empty):
                 historical_data = self._fetch_historical_data(stock_code)
-            # 1. 量化模型评分 (28%)
+            # 1. 量化模型评分 (18%)
             quant_score, quant_details = self._score_quantitative_models(stock_code, historical_data)
             result['scores']['quantitative'] = quant_score
             result['details']['quantitative'] = quant_details
 
-            # 2. 技术分析评分 (22%)
+            # 2. 技术分析评分 (12%)
             tech_score, tech_details = self._score_technical_analysis(stock_code, historical_data)
             result['scores']['technical'] = tech_score
             result['details']['technical'] = tech_details
 
-            # 3. 股民情绪评分 (10%)
+            # 3. 【新增】短期动量评分 (18%)
+            momentum_score, momentum_details = self._score_momentum(stock_code, historical_data)
+            result['scores']['momentum'] = momentum_score
+            result['details']['momentum'] = momentum_details
+
+            # 4. 【新增】量价健康度评分 (12%)
+            volume_health_score, volume_health_details = self._score_volume_health(stock_code, historical_data)
+            result['scores']['volume_health'] = volume_health_score
+            result['details']['volume_health'] = volume_health_details
+
+            # 5. 股民情绪评分 (8%)
             sentiment_score, sentiment_details = self._score_investor_sentiment(stock_code)
             result['scores']['sentiment'] = sentiment_score
             result['details']['sentiment'] = sentiment_details
 
-            # 4. 板块情绪评分 (12%)
+            # 6. 板块情绪评分 (6%)
             sector_score, sector_details = self._score_sector_sentiment(stock_code)
             result['scores']['sector'] = sector_score
             result['details']['sector'] = sector_details
 
-            # 5. 基本面评分 (10%)
-            fundamental_score, fundamental_details = self._score_fundamental(stock_code)
+            # 7. 基本面评分 (10%)
+            fundamental_score, fundamental_details = self._score_fundamental(stock_code, external_data=fundamental_data)
             result['scores']['fundamental'] = fundamental_score
             result['details']['fundamental'] = fundamental_details
 
-            # 6. 消息面评分 (10%) + 全市场热门新闻加分
+            # 8. 消息面评分 (10%) + 全市场热门新闻加分
             events_score, events_details = self._score_events(stock_code, global_hot_news=global_hot_news)
             result['scores']['events'] = events_score
             result['details']['events'] = events_details
 
-            # 7. 龙虎榜评分 (8%)
+            # 9. 龙虎榜评分 (6%)
             dragon_tiger_score, dragon_tiger_details = self._score_dragon_tiger(stock_code, sentiment_details)
             result['scores']['dragon_tiger'] = dragon_tiger_score
             result['details']['dragon_tiger'] = dragon_tiger_details
+
+            # 10. 【新增】低位启动检测 (额外加分)
+            low_pos_bonus, low_pos_details = self._check_low_position_start(stock_code, historical_data)
+            if low_pos_bonus > 0:
+                result['details']['low_position_start'] = low_pos_details
+
+            # 11. 【新增】一票否决检查
+            exclusion_flags = self._check_exclusion_rules(result, historical_data)
+            result['exclusion_flags'] = exclusion_flags
 
             # 选择动态权重
             weights_used, weight_mode = self._select_dynamic_weights(result)
@@ -180,12 +213,26 @@ class OpportunityScorer:
             total_score = (
                 quant_score * weights_used['quantitative'] +
                 tech_score * weights_used['technical'] +
+                momentum_score * weights_used['momentum'] +
+                volume_health_score * weights_used['volume_health'] +
                 sentiment_score * weights_used['sentiment'] +
                 sector_score * weights_used['sector'] +
                 fundamental_score * weights_used['fundamental'] +
                 events_score * weights_used['events'] +
                 dragon_tiger_score * weights_used['dragon_tiger']
             )
+            
+            # 应用低位启动加分 (直接加在总分上，因为这是强信号)
+            if low_pos_bonus > 0:
+                total_score += low_pos_bonus
+                logger.info(f"{stock_code} 触发低位启动加分: +{low_pos_bonus}")
+
+            # 一票否决：如果有严重风险信号，大幅降低评分
+            if exclusion_flags:
+                penalty = len(exclusion_flags) * 15  # 每个否决因素扣15分
+                total_score = max(0, total_score - penalty)
+                logger.warning(f"{stock_code} 触发一票否决: {exclusion_flags}, 扣除{penalty}分")
+                # logger.info(f"{stock_code} 触发一票否决信号: {exclusion_flags}, 但已禁用一票否决权，不扣分")
 
             result['total_score'] = round(total_score, 2)
             result['rating'] = self._get_rating(total_score)
@@ -241,6 +288,16 @@ class OpportunityScorer:
             if df is None or df.empty:
                 logger.warning(f"{stock_code}: 历史数据获取为空，技术面与量化评分可能为0")
                 return None
+
+            # 列名映射：兼容不同数据源的列名差异
+            column_mapping = {
+                'trade_date': 'timestamps',
+                'timestamp': 'timestamps',
+                'date': 'timestamps',
+                'vol': 'volume',
+                'turnover': 'amount',
+            }
+            df = df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns})
 
             # 确保列名兼容
             required_cols = {'timestamps', 'open', 'high', 'low', 'close', 'volume'}
@@ -480,6 +537,384 @@ class OpportunityScorer:
             logger.error(f"技术分析评分失败: {e}")
             return 50.0, {'error': str(e)}
 
+    def _check_low_position_start(self, stock_code: str,
+                                  historical_data: Optional[pd.DataFrame]) -> Tuple[float, Dict]:
+        """
+        低位启动检测 (额外加分项)
+
+        检测逻辑:
+        1. 长期低位: 当前价格处于近一年(250日)价格分位数的20%以下
+        2. 底部企稳: 近20日振幅收窄
+        3. 启动信号:
+           - 放量上涨: 当日涨幅>3%且量比>1.5
+           - 均线突破: 站上20日均线且20日线走平或向上
+        """
+        try:
+            if historical_data is None or historical_data.empty or len(historical_data) < 60:
+                return 0.0, {}
+
+            close = historical_data['close']
+            volume = historical_data['volume']
+            current_price = float(close.iloc[-1])
+
+            # 1. 长期低位检测
+            lookback = min(len(close), 250)
+            recent_data = close.iloc[-lookback:]
+            high_year = float(recent_data.max())
+            low_year = float(recent_data.min())
+            
+            # 价格分位数 (0-1)
+            position_pct = (current_price - low_year) / (high_year - low_year + 1e-6)
+            
+            is_low_position = position_pct < 0.25  # 处于底部25%区间
+
+            if not is_low_position:
+                return 0.0, {'is_low_position': False, 'position_pct': round(position_pct, 2)}
+
+            bonus = 0.0
+            signals = []
+
+            # 2. 启动信号检测
+            # 2.1 放量大涨
+            prev_close = float(close.iloc[-2])
+            change_pct = (current_price / prev_close - 1) * 100
+            
+            avg_vol_5 = float(volume.iloc[-6:-1].mean())
+            current_vol = float(volume.iloc[-1])
+            vol_ratio = current_vol / avg_vol_5 if avg_vol_5 > 0 else 0
+            
+            if change_pct > 3.0 and vol_ratio > 1.5:
+                bonus += 10.0
+                signals.append('低位放量大涨')
+
+            # 2.2 均线突破 (站上20日线)
+            ma20 = float(close.rolling(window=20).mean().iloc[-1])
+            ma20_prev = float(close.rolling(window=20).mean().iloc[-2])
+            
+            if current_price > ma20 and ma20 >= ma20_prev:
+                # 且之前在均线下方
+                if prev_close < ma20:
+                    bonus += 5.0
+                    signals.append('底部突破20日线')
+
+            # 2.3 筹码集中 (简单模拟: 波动率收窄)
+            volatility = close.iloc[-20:].std() / close.iloc[-20:].mean()
+            if volatility < 0.02: # 波动率很低，横盘整理
+                bonus += 5.0
+                signals.append('底部横盘缩量')
+
+            return bonus, {
+                'is_low_position': True,
+                'position_pct': round(position_pct, 2),
+                'bonus': bonus,
+                'signals': signals
+            }
+
+        except Exception as e:
+            logger.warning(f"低位启动检测失败: {e}")
+            return 0.0, {}
+
+    def _score_momentum(self, stock_code: str,
+                        historical_data: Optional[pd.DataFrame]) -> Tuple[float, Dict]:
+        """
+        短期动量评分 (0-100分) - v3.0新增
+
+        评分逻辑（基于回测分析）:
+        - 近5日涨幅: 核心指标，5%-15%区间最佳
+        - 近10日涨幅: 趋势确认
+        - 相对强弱: 与大盘对比
+        - 入场时机: 回撤3%-8%为最佳买点
+        """
+        try:
+            if historical_data is None or historical_data.empty:
+                return 50.0, {'error': '无历史数据'}
+
+            close = historical_data['close']
+            if len(close) < 10:
+                return 50.0, {'error': '数据不足10日'}
+
+            score = 50.0  # 基准分
+
+            # 1. 近5日涨幅评分 (-25 ~ +30)
+            change_5d = (float(close.iloc[-1]) / float(close.iloc[-6]) - 1) * 100 if len(close) >= 6 else 0
+            if 5 <= change_5d <= 15:
+                score += 30  # 最佳区间，强势但未过热
+            elif 2 <= change_5d < 5:
+                score += 20  # 温和上涨
+            elif 15 < change_5d <= 25:
+                score += 10  # 涨幅较大，有获利盘压力
+            elif 0 <= change_5d < 2:
+                score += 5   # 微涨
+            elif change_5d > 25:
+                score -= 10  # 涨幅过大，风险高
+            elif -5 <= change_5d < 0:
+                score -= 5   # 微跌
+            else:
+                score -= 25  # 大幅下跌
+
+            # 2. 近10日涨幅趋势确认 (-15 ~ +15)
+            change_10d = (float(close.iloc[-1]) / float(close.iloc[-11]) - 1) * 100 if len(close) >= 11 else 0
+            if change_10d > 10:
+                score += 15  # 中期趋势向上
+            elif change_10d > 5:
+                score += 10
+            elif change_10d > 0:
+                score += 5
+            elif change_10d < -10:
+                score -= 15  # 中期趋势向下
+            elif change_10d < -5:
+                score -= 10
+            else:
+                score -= 5
+
+            # 2.1. 60日涨幅检查 (长期涨幅惩罚)
+            change_60d = (float(close.iloc[-1]) / float(close.iloc[-61]) - 1) * 100 if len(close) >= 61 else 0
+            if change_60d > 50:
+                score -= 25  # 60日涨幅超50%，大幅扣分
+            elif change_60d > 30:
+                score -= 15  # 60日涨幅超30%，中等扣分
+            elif change_60d > 20:
+                score -= 5   # 60日涨幅超20%，轻微扣分
+
+            # 2.2. 距离历史高点检查
+            year_high = float(close.max())
+            distance_from_high = (year_high - float(close.iloc[-1])) / year_high * 100 if year_high > 0 else 0
+            
+            if distance_from_high < 5:
+                score -= 20  # 接近历史高点，风险大
+            elif distance_from_high < 10:
+                score -= 10
+
+            # 3. 入场时机评分 - 回撤买入法 (-10 ~ +15)
+            recent_high = float(close.iloc[-10:].max())
+            current_price = float(close.iloc[-1])
+            drawdown = (recent_high - current_price) / recent_high * 100 if recent_high > 0 else 0
+
+            entry_timing = '观望'
+            if 3 <= drawdown <= 8:
+                score += 15  # 最佳买点：回撤3%-8%
+                entry_timing = '最佳买点'
+            elif 1 <= drawdown < 3:
+                score += 10  # 可买入
+                entry_timing = '可买入'
+            elif drawdown < 1:
+                score += 0   # 突破新高，等待回撤
+                entry_timing = '等待回撤'
+            elif 8 < drawdown <= 12:
+                score -= 5   # 回撤较深
+                entry_timing = '回撤较深'
+            else:
+                score -= 10  # 回撤过深，趋势可能反转
+                entry_timing = '趋势转弱'
+
+            # 4. 连续上涨天数 (+5 ~ +10)
+            consecutive_up = 0
+            for i in range(1, min(6, len(close))):
+                if float(close.iloc[-i]) > float(close.iloc[-i-1]):
+                    consecutive_up += 1
+                else:
+                    break
+
+            if 2 <= consecutive_up <= 4:
+                score += 10  # 连续2-4天上涨，趋势确立
+            elif consecutive_up >= 5:
+                score += 5   # 连涨过多，注意回调
+
+            score = max(0, min(100, score))
+
+            details = {
+                'change_5d': round(change_5d, 2),
+                'change_10d': round(change_10d, 2),
+                'change_60d': round(change_60d, 2),
+                'distance_from_high': round(distance_from_high, 2),
+                'drawdown_pct': round(drawdown, 2),
+                'entry_timing': entry_timing,
+                'consecutive_up_days': consecutive_up,
+                'recent_high': recent_high,
+                'current_price': current_price
+            }
+
+            return round(score, 2), details
+
+        except Exception as e:
+            logger.error(f"动量评分失败: {e}")
+            return 50.0, {'error': str(e)}
+
+    def _score_volume_health(self, stock_code: str,
+                             historical_data: Optional[pd.DataFrame]) -> Tuple[float, Dict]:
+        """
+        量价健康度评分 (0-100分) - v3.0新增
+
+        评分逻辑:
+        - 量价同向: 价涨量增/价跌量缩为健康
+        - 量比: 当日成交量与5日均量比值
+        - 资金流入连续性: 连续放量天数
+        - 异常放量检测: 突然巨量可能是风险信号
+        """
+        try:
+            if historical_data is None or historical_data.empty:
+                return 50.0, {'error': '无历史数据'}
+
+            close = historical_data['close']
+            volume = historical_data['volume']
+
+            if len(close) < 6 or len(volume) < 6:
+                return 50.0, {'error': '数据不足'}
+
+            score = 50.0  # 基准分
+
+            # 1. 量价同向评分 (-20 ~ +25)
+            price_changes = []
+            vol_changes = []
+            for i in range(1, min(6, len(close))):
+                pc = float(close.iloc[-i]) - float(close.iloc[-i-1])
+                vc = float(volume.iloc[-i]) - float(volume.iloc[-i-1])
+                price_changes.append(pc)
+                vol_changes.append(vc)
+
+            # 计算量价同向率
+            same_direction_count = sum(1 for pc, vc in zip(price_changes, vol_changes)
+                                      if (pc > 0 and vc > 0) or (pc < 0 and vc < 0))
+            same_direction_rate = same_direction_count / len(price_changes) if price_changes else 0
+
+            if same_direction_rate >= 0.8:
+                score += 25  # 量价高度同向
+            elif same_direction_rate >= 0.6:
+                score += 15  # 量价较为同向
+            elif same_direction_rate >= 0.4:
+                score += 5   # 量价一般
+            else:
+                score -= 20  # 量价背离严重
+
+            # 2. 量比评分 (-15 ~ +20)
+            current_vol = float(volume.iloc[-1])
+            avg_vol_5 = float(volume.iloc[-6:-1].mean())
+            volume_ratio = current_vol / avg_vol_5 if avg_vol_5 > 0 else 1.0
+
+            if 1.5 <= volume_ratio <= 3.0:
+                score += 20  # 温和放量，资金流入
+            elif 1.2 <= volume_ratio < 1.5:
+                score += 10  # 略微放量
+            elif 0.8 <= volume_ratio < 1.2:
+                score += 0   # 量能平稳
+            elif volume_ratio > 3.0:
+                score -= 5   # 异常放量，需警惕
+            else:
+                score -= 15  # 缩量严重
+
+            # 3. 连续放量天数评分 (+5 ~ +15)
+            consecutive_vol_up = 0
+            for i in range(1, min(6, len(volume))):
+                if float(volume.iloc[-i]) > float(volume.iloc[-i-1]):
+                    consecutive_vol_up += 1
+                else:
+                    break
+
+            if 2 <= consecutive_vol_up <= 4:
+                score += 15  # 连续放量，资金持续流入
+            elif consecutive_vol_up >= 5:
+                score += 10  # 放量过久需注意
+            elif consecutive_vol_up == 1:
+                score += 5
+
+            # 4. 价涨量增检测（最近一天）
+            last_price_up = float(close.iloc[-1]) > float(close.iloc[-2])
+            last_vol_up = float(volume.iloc[-1]) > float(volume.iloc[-2])
+
+            if last_price_up and last_vol_up:
+                score += 10  # 价涨量增，最健康信号
+            elif not last_price_up and not last_vol_up:
+                score += 5   # 价跌量缩，正常调整
+            elif last_price_up and not last_vol_up:
+                score -= 5   # 价涨量缩，上涨乏力
+            else:
+                score -= 10  # 价跌量增，抛压较重
+
+            score = max(0, min(100, score))
+
+            volume_health = '健康'
+            if score >= 70:
+                volume_health = '非常健康'
+            elif score >= 55:
+                volume_health = '健康'
+            elif score >= 40:
+                volume_health = '一般'
+            else:
+                volume_health = '较差'
+
+            details = {
+                'volume_ratio': round(volume_ratio, 2),
+                'same_direction_rate': round(same_direction_rate, 2),
+                'consecutive_vol_up_days': consecutive_vol_up,
+                'last_price_up': last_price_up,
+                'last_vol_up': last_vol_up,
+                'volume_health': volume_health
+            }
+
+            return round(score, 2), details
+
+        except Exception as e:
+            logger.error(f"量价健康度评分失败: {e}")
+            return 50.0, {'error': str(e)}
+
+    def _check_exclusion_rules(self, result: Dict,
+                               historical_data: Optional[pd.DataFrame]) -> list:
+        """
+        一票否决检查 - v3.0新增
+
+        触发任一条件则标记为风险:
+        - RSI > 85: 极度超买
+        - 利润同比下滑 > 50%: 业绩大幅下滑
+        - 连续3日跌停: 重大风险
+        - 量价严重背离: 价涨量大幅缩小
+        """
+        exclusion_flags = []
+
+        try:
+            # 1. RSI超买检查
+            tech_details = result.get('details', {}).get('technical', {})
+            rsi = tech_details.get('RSI')
+            if rsi is not None and rsi > 85:
+                exclusion_flags.append(f'RSI极度超买({rsi:.1f})')
+
+            # 2. 基本面风险检查
+            fund_details = result.get('details', {}).get('fundamental', {})
+            profit_yoy = fund_details.get('net_profit_yoy')
+            if profit_yoy is not None and isinstance(profit_yoy, (int, float)) and profit_yoy < -50:
+                exclusion_flags.append(f'利润大幅下滑({profit_yoy:.1f}%)')
+
+            # 3. 历史数据检查 - 连续跌停
+            if historical_data is not None and not historical_data.empty:
+                close = historical_data['close']
+                if len(close) >= 4:
+                    # 检查最近3日是否有跌停(跌幅接近10%)
+                    limit_down_count = 0
+                    for i in range(1, 4):
+                        change = (float(close.iloc[-i]) / float(close.iloc[-i-1]) - 1) * 100
+                        if change < -9.5:  # 接近跌停
+                            limit_down_count += 1
+
+                    if limit_down_count >= 2:
+                        exclusion_flags.append(f'近期连续跌停({limit_down_count}次)')
+
+            # 4. 量价背离检查
+            vol_details = result.get('details', {}).get('volume_health', {})
+            same_dir_rate = vol_details.get('same_direction_rate', 0.5)
+            if same_dir_rate < 0.2:
+                exclusion_flags.append('量价严重背离')
+
+            # 5. MACD顶背离检查（如果技术分析有此信息）
+            macd_status = tech_details.get('MACD')
+            momentum_details = result.get('details', {}).get('momentum', {})
+            # 如果价格新高但MACD死叉，可能是顶背离
+            if macd_status == '死叉' and momentum_details.get('change_10d', 0) > 15:
+                exclusion_flags.append('疑似MACD顶背离')
+
+        except Exception as e:
+            logger.error(f"一票否决检查失败: {e}")
+
+        return exclusion_flags
+
     def _score_investor_sentiment(self, stock_code: str) -> Tuple[float, Dict]:
         """
         股民情绪评分 (0-100分)
@@ -536,7 +971,7 @@ class OpportunityScorer:
             logger.error(f"板块情绪评分失败: {e}")
             return 50.0, {'error': str(e)}
 
-    def _score_fundamental(self, stock_code: str) -> Tuple[float, Dict]:
+    def _score_fundamental(self, stock_code: str, external_data: Optional[Dict] = None) -> Tuple[float, Dict]:
         """
         基本面评分 (0-100分)
 
@@ -547,16 +982,31 @@ class OpportunityScorer:
         - 现金流状况
         """
         try:
-            collector = FundamentalDataCollector(stock_code)
-            fundamental_data = collector.get_comprehensive_data()
+            if external_data:
+                # 使用外部传入的数据（快速模式）
+                indicators = {
+                    'pe_ratio': external_data.get('pe_ratio', 'N/A'),
+                    'pb_ratio': external_data.get('pb_ratio', 'N/A'),
+                    'total_market_cap': external_data.get('total_market_cap', 'N/A'),
+                    'circulation_market_cap': external_data.get('circulation_market_cap', 'N/A'),
+                }
+                reports = {
+                    'revenue_yoy': external_data.get('revenue_yoy', 'N/A'),
+                    'net_profit_yoy': external_data.get('net_profit_yoy', 'N/A'),
+                }
+            else:
+                # 传统模式：单独采集
+                collector = FundamentalDataCollector(stock_code)
+                fundamental_data = collector.get_comprehensive_data()
 
-            if not fundamental_data:
-                return 50.0, {'error': '无基本面数据'}
+                if not fundamental_data:
+                    return 50.0, {'error': '无基本面数据'}
 
-            indicators = fundamental_data.get('financial_indicators', {})
-            reports = fundamental_data.get('financial_reports', {})
+                indicators = fundamental_data.get('financial_indicators', {})
+                reports = fundamental_data.get('financial_reports', {})
 
             score = 50.0
+            market_cap_yi = 0.0
 
             pe = indicators.get('pe_ratio')
             if isinstance(pe, (int, float)):
@@ -566,6 +1016,29 @@ class OpportunityScorer:
                     score += 10
                 elif pe > 50:
                     score -= 20
+
+            # 小市值加分 (新增)
+            # 逻辑：市值越小越容易被资金推动
+            total_mv = indicators.get('total_market_cap')
+            if isinstance(total_mv, (int, float)) and total_mv > 0:
+                # 自动推断单位：如果是元(>1亿)，转换为亿；如果是万元(>1万)，转换为亿
+                mv_yi = total_mv
+                if total_mv > 100000000:  # 可能是元
+                    mv_yi = total_mv / 100000000.0
+                elif total_mv > 10000:    # 可能是万元
+                    mv_yi = total_mv / 10000.0
+                
+                market_cap_yi = round(mv_yi, 2)
+
+                # 仅当PE非亏损时才加分，避免炒作垃圾股
+                is_loss = isinstance(pe, str) and '亏损' in pe
+                if not is_loss:
+                    if mv_yi < 50:    # 50亿以下，核心加分区间
+                        score += 5    # 降低加分 (原15分)
+                    elif mv_yi < 100:  # 50-100亿，次级加分
+                        score += 2    # 降低加分 (原5分)
+                    elif mv_yi > 1000: # 千亿大盘，减分
+                        score -= 5
 
             revenue_yoy = reports.get('revenue_yoy')
             if isinstance(revenue_yoy, (int, float)):
@@ -592,7 +1065,8 @@ class OpportunityScorer:
                 'pb_ratio': indicators.get('pb_ratio'),
                 'revenue_yoy': revenue_yoy,
                 'net_profit_yoy': profit_yoy,
-                'total_market_cap': indicators.get('total_market_cap')
+                'total_market_cap': indicators.get('total_market_cap'),
+                'market_cap_yi': market_cap_yi
             }
 
             return round(score, 2), details

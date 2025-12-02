@@ -70,6 +70,43 @@ class InvestorSentimentAnalyzer:
             self.cache_dir = project_root
 
     # === 缓存与备用源工具方法 ===
+    def _get_data_via_curl(self, url, params):
+        """使用curl命令行工具获取数据（作为requests的fallback）"""
+        import subprocess
+        import time
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # 构建完整的URL参数
+                query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+                full_url = f"{url}?{query_string}"
+                
+                cmd = ['curl', '-s', full_url, '-H', 'User-Agent: curl/8.6.0']
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                
+                if result.returncode == 0:
+                    try:
+                        return json.loads(result.stdout)
+                    except json.JSONDecodeError:
+                        if attempt < max_retries - 1:
+                            time.sleep(1)
+                            continue
+                        return None
+                else:
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                        continue
+                    print(f"   ⚠️  Curl请求失败: {result.stderr}")
+                    return None
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                print(f"   ⚠️  Curl执行出错: {e}")
+                return None
+        return None
+
     def _cache_path(self, key: str) -> Path:
         try:
             return (self.cache_dir / f"{key}.json")
@@ -180,34 +217,65 @@ class InvestorSentimentAnalyzer:
         try:
             # 东方财富资金流向API
             url = "http://push2his.eastmoney.com/api/qt/stock/fflow/kline/get"
+            market_id = '1' if self.stock_code.startswith('6') or self.stock_code.startswith('900') else '0'
             params = {
                 'lmt': '0',
                 'klt': '101',
-                'secid': f"{'1' if self.stock_code.startswith('6') else '0'}.{self.stock_code}",
+                'secid': f"{market_id}.{self.stock_code}",
                 'fields1': 'f1,f2,f3,f7',
-                'fields2': 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63'
+                # f51:日期, f52:主力净流入, f53:小单净流入, f54:中单净流入, f55:超大单净流入, f56:大单净流入
+                'fields2': 'f51,f52,f53,f54,f55,f56'
             }
 
-            response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            data = response.json()
+            data = None
+            try:
+                response = requests.get(url, params=params, headers=self.headers, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                else:
+                    print(f"   ⚠️  API请求失败: HTTP {response.status_code}，尝试使用Curl...")
+                    data = self._get_data_via_curl(url, params)
+            except Exception as e:
+                print(f"   ⚠️  Requests请求出错: {e}，尝试使用Curl...")
+                data = self._get_data_via_curl(url, params)
 
-            if data.get('data') and data['data'].get('klines'):
+            if data and data.get('data') and data['data'].get('klines'):
                 latest_data = data['data']['klines'][-1].split(',')
+
+                # Mapping based on debug results:
+                # Index 0: Date
+                # Index 1: Main Net Inflow (f52)
+                # Index 2: Small Net Inflow (f53)
+                # Index 3: Medium Net Inflow (f54)
+                # Index 4: Super Large Net Inflow (f55)
+                # Index 5: Large Net Inflow (f56)
+                
+                main_inflow = float(latest_data[1]) if len(latest_data) > 1 else 0
+                small_inflow = float(latest_data[2]) if len(latest_data) > 2 else 0
+                medium_inflow = float(latest_data[3]) if len(latest_data) > 3 else 0
+                super_large_inflow = float(latest_data[4]) if len(latest_data) > 4 else 0
+                large_inflow = float(latest_data[5]) if len(latest_data) > 5 else 0
+                
+                retail_inflow = small_inflow + medium_inflow
+                
+                # Calculate approximate rate if possible, otherwise 0
+                # We don't have turnover, so set rate to 0
+                main_inflow_rate = 0.0
 
                 capital_flow = {
                     'date': latest_data[0] if len(latest_data) > 0 else 'N/A',
-                    'main_inflow': float(latest_data[1]) if len(latest_data) > 1 else 0,  # 主力净流入
-                    'retail_inflow': float(latest_data[2]) if len(latest_data) > 2 else 0,  # 散户净流入
-                    'main_inflow_rate': float(latest_data[3]) if len(latest_data) > 3 else 0,  # 主力净流入率
-                    'super_large_inflow': float(latest_data[4]) if len(latest_data) > 4 else 0,  # 超大单净流入
-                    'large_inflow': float(latest_data[5]) if len(latest_data) > 5 else 0,  # 大单净流入
-                    'medium_inflow': float(latest_data[6]) if len(latest_data) > 6 else 0,  # 中单净流入
-                    'small_inflow': float(latest_data[7]) if len(latest_data) > 7 else 0,  # 小单净流入
+                    'main_inflow': main_inflow,
+                    'retail_inflow': retail_inflow,
+                    'main_inflow_rate': main_inflow_rate,
+                    'super_large_inflow': super_large_inflow,
+                    'large_inflow': large_inflow,
+                    'medium_inflow': medium_inflow,
+                    'small_inflow': small_inflow,
                 }
 
                 # 判断资金流向趋势
                 capital_flow['trend'] = '流入' if capital_flow['main_inflow'] > 0 else '流出'
-                capital_flow['strength'] = self._classify_capital_strength(capital_flow['main_inflow_rate'])
+                capital_flow['strength'] = self._classify_capital_strength(capital_flow['main_inflow_rate'], capital_flow['main_inflow'])
 
                 # 2. 缓存到全局缓存
                 self.global_cache.set_capital_flow(self.stock_code, capital_flow)
@@ -309,11 +377,20 @@ class InvestorSentimentAnalyzer:
                 }
 
             # 请求主数据集
-            resp = requests.get(url, params=params_primary, headers=headers, timeout=10)
-            data = resp.json()
+            data = None
+            try:
+                resp = requests.get(url, params=params_primary, headers=headers, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                else:
+                    print(f"   ⚠️  API请求失败: HTTP {resp.status_code}，尝试使用Curl...")
+                    data = self._get_data_via_curl(url, params_primary)
+            except Exception as e:
+                print(f"   ⚠️  Requests请求出错: {e}，尝试使用Curl...")
+                data = self._get_data_via_curl(url, params_primary)
 
             records = []
-            if data.get('success') and data.get('result'):
+            if data and data.get('success') and data.get('result'):
                 raw = data['result'].get('data', []) or []
                 records = [_normalize_record(r) for r in raw]
 
@@ -349,22 +426,34 @@ class InvestorSentimentAnalyzer:
         """
         try:
             # 东方财富市场情绪数据
-            url = "http://push2.eastmoney.com/api/qt/stock/get"
+            # 使用 ulist.np 替代 stock/get (stock/get 已失效)
+            url = "http://push2.eastmoney.com/api/qt/ulist.np/get"
+            market_id = '1' if self.stock_code.startswith('6') or self.stock_code.startswith('900') else '0'
             params = {
-                'secid': f"{'1' if self.stock_code.startswith('6') else '0'}.{self.stock_code}",
-                'fields': 'f57,f58,f168,f169,f170,f46,f44,f45,f47,f260,f261,f262'
+                'secids': f"{market_id}.{self.stock_code}",
+                'fltt': '2',
+                'fields': 'f8,f10,f7'  # f8:换手率, f10:量比, f7:振幅
             }
 
-            response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            data = response.json()
+            data = None
+            try:
+                response = requests.get(url, params=params, headers=self.headers, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                else:
+                    print(f"   ⚠️  API请求失败: HTTP {response.status_code}，尝试使用Curl...")
+                    data = self._get_data_via_curl(url, params)
+            except Exception as e:
+                print(f"   ⚠️  Requests请求出错: {e}，尝试使用Curl...")
+                data = self._get_data_via_curl(url, params)
 
-            if data.get('data'):
-                stock_data = data['data']
+            if data and data.get('data') and data['data'].get('diff'):
+                stock_data = data['data']['diff'][0]
 
                 sentiment = {
-                    'turnover_rate': stock_data.get('f168', 'N/A'),  # 换手率
-                    'volume_ratio': stock_data.get('f169', 'N/A'),  # 量比
-                    'amplitude': stock_data.get('f170', 'N/A'),  # 振幅
+                    'turnover_rate': stock_data.get('f8', 'N/A'),  # 换手率
+                    'volume_ratio': stock_data.get('f10', 'N/A'),  # 量比
+                    'amplitude': stock_data.get('f7', 'N/A'),  # 振幅
                     'up_down_ratio': 'N/A',  # 涨跌家数比(需要板块数据)
                     'market_cap_rank': 'N/A',  # 市值排名
                 }
@@ -432,57 +521,37 @@ class InvestorSentimentAnalyzer:
 
             for code, info in indices.items():
                 try:
-                    url = "http://push2.eastmoney.com/api/qt/stock/get"
+                    # 使用 kline/get 替代 stock/get (stock/get 已失效)
+                    url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
                     params = {
                         'secid': info['secid'],
-                        # 价格、涨跌幅、量比等；增加 f3 以获取涨跌幅
-                        'fields': 'f43,f44,f45,f46,f47,f48,f49,f50,f51,f52,f169,f170,f3'
+                        'klt': '101',
+                        'fqt': '1',
+                        'lmt': '1',
+                        'fields1': 'f1,f2,f3,f4,f5,f6',
+                        'fields2': 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'
                     }
 
                     response = requests.get(url, params=params, headers=self.headers, timeout=10)
                     data = response.json()
 
-                    if data.get('data'):
-                        stock_data = data['data']
-
-                        # 当前价
-                        current = stock_data.get('f43', 0)
-                        if current:
-                            current = current / 1000  # 除以1000转换为正常值
-
-                        # 涨跌幅：优先使用 f3（东财通常为百分比数值），
-                        # 若异常则尝试兼容缩放（>50 视为可能需要 /100）
-                        change_pct = stock_data.get('f3')
-                        if isinstance(change_pct, (int, float)):
-                            try:
-                                change_pct = float(change_pct)
-                            except Exception:
-                                pass
-                            if abs(change_pct) > 50:
-                                change_pct = round(change_pct / 100, 2)
-                            else:
-                                change_pct = round(change_pct, 2)
-                        else:
-                            # 兜底：尝试从 f170（振幅/或其他字段）推断
-                            cp_alt = stock_data.get('f170')
-                            if isinstance(cp_alt, (int, float)):
-                                cp_alt = float(cp_alt)
-                                change_pct = round(cp_alt / 100, 2)
-
-                        # 量比（部分指数可能缺失，保持 N/A）
-                        volume_ratio = stock_data.get('f169', 0)
-                        if isinstance(volume_ratio, (int, float)):
-                            try:
-                                vr = float(volume_ratio)
-                                volume_ratio = round(vr / 100, 2) if abs(vr) > 50 else round(vr, 2)
-                            except Exception:
-                                pass
-
+                    if data.get('data') and data['data'].get('klines'):
+                        kline_str = data['data']['klines'][0]
+                        parts = kline_str.split(',')
+                        # f51(Date), f52(Open), f53(Close), f54(High), f55(Low), f56(Vol), f57(Amt), f58(Amp), f59(Chg%), f60(ChgAmt), f61(Turnover)
+                        
+                        try:
+                            current = float(parts[2]) # f53 Close
+                            change_pct = float(parts[8]) # f59 Change Pct
+                        except (IndexError, ValueError):
+                            current = 0
+                            change_pct = 0
+                        
                         market_data[code] = {
                             'name': info['name'],
-                            'current': round(current, 2) if current else 'N/A',
-                            'change_pct': change_pct if change_pct else 'N/A',
-                            'volume_ratio': volume_ratio if volume_ratio else 'N/A',
+                            'current': round(current, 2),
+                            'change_pct': round(change_pct, 2),
+                            'volume_ratio': 'N/A', # kline中无量比
                         }
 
                 except Exception as e:
@@ -791,7 +860,13 @@ class InvestorSentimentAnalyzer:
             print(f"   🔍 尝试腾讯财经API获取板块信息...")
             
             # 腾讯财经股票详情API，需要添加市场前缀
-            market_prefix = 'sh' if self.stock_code.startswith('6') or self.stock_code.startswith('688') else 'sz'
+            if self.stock_code.startswith('6') or self.stock_code.startswith('900'):
+                market_prefix = 'sh'
+            elif self.stock_code.startswith(('8', '4', '92')):
+                market_prefix = 'bj'
+            else:
+                market_prefix = 'sz'
+            
             tencent_code = f"{market_prefix}{self.stock_code}"
             tencent_url = f"http://qt.gtimg.cn/q={tencent_code}"
             
@@ -855,32 +930,35 @@ class InvestorSentimentAnalyzer:
             dict: 板块信息和情绪数据
         """
         try:
-            # 尝试多个API端点获取股票所属行业/板块
-            api_endpoints = [
-                "http://quote.eastmoney.com/api/qt/stock/get",
-                "https://push2.eastmoney.com/api/qt/stock/get",
-                "http://push2.eastmoney.com/api/qt/stock/get"
-            ]
-            
+            # 使用 ulist.np 替代 stock/get
+            url = "http://push2.eastmoney.com/api/qt/ulist.np/get"
+            market_id = '1' if self.stock_code.startswith('6') or self.stock_code.startswith('900') else '0'
             params = {
-                'secid': f"{'1' if self.stock_code.startswith('6') else '0'}.{self.stock_code}",
-                'fields': 'f127,f128'  # 行业相关字段
+                'secids': f"{market_id}.{self.stock_code}",
+                'fltt': '2',
+                'fields': 'f100'  # f100: 所属行业
             }
+            
+            print(f"   🔍 尝试API端点: {url}")
+            data = self._safe_request_with_retry(url, params, max_retries=2, timeout=10)
 
-            data = None
-            for url in api_endpoints:
-                print(f"   🔍 尝试API端点: {url}")
-                data = self._safe_request_with_retry(url, params, max_retries=2, timeout=10)
-                if data and data.get('data'):
-                    print(f"   ✅ 成功获取数据")
-                    break
-                else:
-                    print(f"   ❌ 端点无响应或数据为空")
-
-            if data and data.get('data'):
-                # f127: 所属行业名称；f128: 行业板块代码
-                sector_name = data['data'].get('f127', 'N/A')
-                sector_code = data['data'].get('f128')
+            if data and data.get('data') and data['data'].get('diff'):
+                print(f"   ✅ 成功获取数据")
+                stock_data = data['data']['diff'][0]
+                # f100: 所属行业名称
+                sector_name = stock_data.get('f100', 'N/A')
+                sector_code = '' # ulist.np 不直接返回板块代码
+                
+                if sector_name == 'N/A':
+                     sector_name = stock_data.get('f102', 'N/A')
+                
+                if sector_name != 'N/A':
+                    # 获取板块情绪
+                    sector_sentiment = self._get_sector_sentiment_score(sector_name, sector_code)
+                    return {
+                        'sector_name': sector_name,
+                        'sector_sentiment': sector_sentiment
+                    }
             else:
                 print(f"   ⚠️  所有API端点均失败，尝试备用方案")
                 # 尝试备用API获取基本股票信息
@@ -1739,14 +1817,28 @@ class InvestorSentimentAnalyzer:
         # 机构活动数据已移除
         return self._get_default_institutional_activity()
 
-    def _classify_capital_strength(self, inflow_rate):
+    def _classify_capital_strength(self, inflow_rate, inflow_amount=None):
         """分类资金流向强度"""
-        if abs(inflow_rate) > 10:
-            return '强'
-        elif abs(inflow_rate) > 5:
-            return '中'
-        else:
-            return '弱'
+        # 优先使用流入率判断
+        if inflow_rate and abs(inflow_rate) > 0.1: # 简单的非零检查
+            if abs(inflow_rate) > 10:
+                return '强'
+            elif abs(inflow_rate) > 5:
+                return '中'
+            else:
+                return '弱'
+        
+        # 如果流入率不可用，使用绝对金额判断 (单位: 元)
+        if inflow_amount is not None:
+            amount_abs = abs(inflow_amount)
+            if amount_abs > 100_000_000: # 1亿
+                return '强'
+            elif amount_abs > 30_000_000: # 3000万
+                return '中'
+            else:
+                return '弱'
+                
+        return '弱'
 
     def get_comprehensive_sentiment(self, verbose: bool = True):
         """

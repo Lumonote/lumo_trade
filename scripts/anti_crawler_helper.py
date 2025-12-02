@@ -119,12 +119,12 @@ class SmartRetryStrategy:
         Returns:
             延迟时间（秒）
         """
-        # 指数退避
-        exponential_delay = self.base_delay * (2 ** attempt)
-
-        # 添加随机抖动（±30%）
-        jitter = exponential_delay * random.uniform(-0.3, 0.3)
-        delay = exponential_delay + jitter
+        # Full Jitter：削弱节律（0..指数上限），并设置基础下限
+        exponential_cap = self.base_delay * (2 ** attempt)
+        temp = min(self.max_delay, exponential_cap)
+        delay = random.uniform(0, temp)
+        # 保证最小延迟不低于基础的一定比例
+        delay = max(delay, self.base_delay * 0.5)
 
         # 特殊错误类型的额外延迟
         if error_type == "ERR_EMPTY_RESPONSE":

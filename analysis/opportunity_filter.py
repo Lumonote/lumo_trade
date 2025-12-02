@@ -302,6 +302,25 @@ class OpportunityFilter:
                 stage_result['details'] = tech_details
                 return stage_result
 
+            # 0. 前置风险检查 (新增)
+            momentum_details = scoring_result.get('details', {}).get('momentum', {})
+            change_60d = momentum_details.get('change_60d', 0)
+            distance_from_high = momentum_details.get('distance_from_high', 100)
+
+            # 前置排除：60日涨幅超过80%的股票
+            if change_60d > 80:
+                 stage_result['reason'] = f"✗ 60日涨幅过大({change_60d}%)，风险较高"
+                 stage_result['passed'] = False
+                 stage_result['details'] = {'change_60d': change_60d}
+                 return stage_result
+
+            # 前置排除：距离年内高点小于5%
+            if distance_from_high < 5:
+                 stage_result['reason'] = f"✗ 接近历史高点(距高点{distance_from_high}%)，风险较高"
+                 stage_result['passed'] = False
+                 stage_result['details'] = {'distance_from_high': distance_from_high}
+                 return stage_result
+
             # 获取技术指标
             rsi = tech_details.get('RSI', 50)
             macd = tech_details.get('MACD', '')

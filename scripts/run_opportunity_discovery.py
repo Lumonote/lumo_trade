@@ -45,7 +45,8 @@ class OpportunityDiscovery:
         Args:
             max_workers: 并发处理的最大线程数
         """
-        self.hot_stocks_fetcher = HotStocksFetcher()
+        # 投资机会挖掘流程要求实时数据，禁用热门股票缓存，禁用备用数据源
+        self.hot_stocks_fetcher = HotStocksFetcher(disable_cache=True, allow_fallback=False)
         self.scorer = OpportunityScorer()
         self.filter = OpportunityFilter()
         # 尊重打包环境的结果目录设置
@@ -58,12 +59,13 @@ class OpportunityDiscovery:
         self.sector_hot_news = []
         self.max_workers = max_workers
 
-    def run(self, limit: int = 100) -> str:
+    def run(self, limit: int = 100, test_codes: List[str] = None) -> str:
         """
         运行完整的投资机会挖掘流程
 
         Args:
             limit: 获取热门股票的数量（默认100）
+            test_codes: 指定测试的股票代码列表
 
         Returns:
             生成的报表文件路径
@@ -75,13 +77,31 @@ class OpportunityDiscovery:
         start_time = datetime.now()
 
         # 步骤1: 获取热门股票 TOP 100 与全市场热门新闻TOP10
-        logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
-        # 强制直接采集，避免使用缓存或本地回退
-        hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
+        if test_codes:
+            logger.info(f"\n步骤1: 使用测试股票代码: {test_codes}")
+            hot_stocks = []
+            for code in test_codes:
+                # 简单构造股票信息
+                hot_stocks.append({
+                    'code': code,
+                    'name': '测试股票', # 名称稍后会在分析中更新
+                    'price': 0,
+                    'change_pct': 0
+                })
+        else:
+            logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
+            # 强制直接采集，避免使用缓存或本地回退
+            hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
 
         if not hot_stocks:
             logger.error("✗ 获取热门股票失败，程序终止")
             return ""
+
+        # 检查是否使用了 fallback 数据（静态备用数据，非实时热股）
+        fallback_count = sum(1 for s in hot_stocks if s.get('source') == 'fallback')
+        if fallback_count > 0:
+            logger.warning(f"⚠️ 警告: 有 {fallback_count}/{len(hot_stocks)} 只股票来自备用数据源（非实时热股）")
+            logger.warning("⚠️ 这表示所有实时数据源（东方财富/同花顺）获取失败，请检查网络连接")
 
         logger.info(f"✓ 成功获取 {len(hot_stocks)} 只热门股票")
 
@@ -221,62 +241,50 @@ class OpportunityDiscovery:
             hot_news_title = "🔥 热门话题精选（按热门板块）"
 
         # 步骤3.5: LLM深度分析 (B级及以上股票)
-        logger.info(f"\n步骤3.5: 对B级及以上股票进行LLM深度分析...")
+        logger.info(f"\n步骤3.5: 对优质股票进行LLM深度分析...")
 
         try:
             llm_config = LLMConfig()
             if llm_config.is_configured():
                 llm_analyzer = LLMAnalyzer(llm_config)
 
-                # 筛选B级及以上股票(评分≥45分)
-                high_grade_stocks = [
+                # 筛选A级及以上股票(评分≥60分)
+                passed_stocks = [
                     r for r in filter_results
                     if r.get('passed', False) and
-                    r.get('scoring_result', {}).get('total_score', 0) >= 45
+                    r.get('scoring_result', {}).get('total_score', 0) >= 60
                 ]
+                # 按分数降序排序
+                passed_stocks.sort(key=lambda x: x.get('scoring_result', {}).get('total_score', 0), reverse=True)
+                
+                # 取前20名
+                high_grade_stocks = passed_stocks[:20]
 
                 if high_grade_stocks:
-                    logger.info(f"发现 {len(high_grade_stocks)} 只B级及以上股票，准备进行LLM分析...")
+                    logger.info(f"发现 {len(high_grade_stocks)} 只高分股票(≥60分, Top20)，准备进行LLM并发分析...")
 
                     llm_analyzed_count = 0
-                    for stock_result in high_grade_stocks:
-                        stock_code = stock_result.get('stock_code', '')
-                        stock_name = stock_result.get('name', '')
-                        scoring_result = stock_result.get('scoring_result', {})
-
-                        try:
-                            logger.info(f"  正在分析 {stock_code} ({stock_name})...")
-
-                            # 准备LLM分析数据
-                            stock_data = self._prepare_llm_analysis_data(
-                                stock_code, stock_name, scoring_result
-                            )
-
-                            # 调用LLM分析
-                            success, llm_result = llm_analyzer.analyze_stock(stock_data)
-
-                            if success:
-                                # 保存LLM分析结果
-                                stock_result['llm_analysis'] = llm_result
-
-                                # 提取预测K线数据
-                                llm_predicted_kline = llm_analyzer.extract_predicted_kline(llm_result)
-                                if not llm_predicted_kline.empty:
-                                    stock_result['llm_predicted_kline'] = llm_predicted_kline
-                                    logger.info(f"    ✓ LLM分析完成，含{len(llm_predicted_kline)}天预测数据")
-                                else:
-                                    logger.info(f"    ✓ LLM分析完成")
-
-                                llm_analyzed_count += 1
-                            else:
-                                logger.warning(f"    ✗ LLM分析失败: {llm_result}")
-
-                        except Exception as e:
-                            logger.error(f"  LLM分析 {stock_code} 失败: {e}")
+                    # 使用线程池并发执行，限制并发数为5避免API限流
+                    with ThreadPoolExecutor(max_workers=5) as executor:
+                        future_to_stock = {
+                            executor.submit(self._process_single_llm_task, llm_analyzer, stock): stock 
+                            for stock in high_grade_stocks
+                        }
+                        
+                        for future in as_completed(future_to_stock):
+                            try:
+                                if future.result():
+                                    llm_analyzed_count += 1
+                            except Exception as e:
+                                logger.error(f"LLM并发任务异常: {e}")
 
                     logger.info(f"✓ LLM深度分析完成: {llm_analyzed_count}/{len(high_grade_stocks)} 只股票")
+
+                    # 输出LLM分析汇总表格
+                    if llm_analyzed_count > 0:
+                        self._print_llm_summary_table(high_grade_stocks)
                 else:
-                    logger.info("无B级及以上股票，跳过LLM分析")
+                    logger.info("无符合条件(≥60分)的股票，跳过LLM分析")
             else:
                 logger.info("⏭️ LLM未配置，跳过深度分析")
                 logger.info("💡 可在GUI中配置通义千问或DeepSeek API以启用AI智能分析")
@@ -330,10 +338,23 @@ class OpportunityDiscovery:
         stock_name = hot_stock.get('name', '未知')
 
         try:
+            # 提取基本面数据（如果HotStocksFetcher已批量获取）
+            fundamental_data = None
+            if 'pe_ratio' in hot_stock:
+                fundamental_data = {
+                    'pe_ratio': hot_stock.get('pe_ratio'),
+                    'pb_ratio': hot_stock.get('pb_ratio'),
+                    'total_market_cap': hot_stock.get('total_market_cap'),
+                    'circulation_market_cap': hot_stock.get('circulation_market_cap'),
+                    'revenue_yoy': hot_stock.get('revenue_yoy'),
+                    'net_profit_yoy': hot_stock.get('net_profit_yoy')
+                }
+
             # 多维度打分（注入全市场热门新闻以进行事件面加分）
             scoring_result = self.scorer.calculate_comprehensive_score(
                 stock_code,
-                global_hot_news=self.global_hot_news
+                global_hot_news=self.global_hot_news,
+                fundamental_data=fundamental_data
             )
 
             return {
@@ -347,6 +368,48 @@ class OpportunityDiscovery:
         except Exception as e:
             logger.error(f"分析 {stock_code} ({stock_name}) 失败: {e}")
             return None
+
+    def _process_single_llm_task(self, llm_analyzer: LLMAnalyzer, stock_result: Dict) -> bool:
+        """
+        处理单只股票的LLM分析任务（用于并发执行）
+        """
+        stock_code = stock_result.get('stock_code', '')
+        stock_name = stock_result.get('name', '')
+        scoring_result = stock_result.get('scoring_result', {})
+
+        try:
+            logger.info(f"  正在分析 {stock_code} ({stock_name})...")
+
+            # 准备LLM分析数据
+            stock_data = self._prepare_llm_analysis_data(
+                stock_code, stock_name, scoring_result
+            )
+
+            # 调用LLM分析
+            success, llm_result = llm_analyzer.analyze_stock(stock_data)
+
+            if success:
+                # 保存LLM分析结果
+                stock_result['llm_analysis'] = llm_result
+
+                # 提取预测K线数据
+                llm_predicted_kline = llm_analyzer.extract_predicted_kline(llm_result)
+                if not llm_predicted_kline.empty:
+                    stock_result['llm_predicted_kline'] = llm_predicted_kline
+                    logger.info(f"    ✓ {stock_code} LLM分析完成，含{len(llm_predicted_kline)}天预测数据")
+                else:
+                    logger.info(f"    ✓ {stock_code} LLM分析完成")
+
+                # 输出LLM分析结果摘要到控制台
+                self._print_llm_analysis_summary(stock_code, stock_name, llm_result)
+                return True
+            else:
+                logger.warning(f"    ✗ {stock_code} LLM分析失败: {llm_result}")
+                return False
+
+        except Exception as e:
+            logger.error(f"  LLM分析 {stock_code} 失败: {e}")
+            return False
 
     def _prepare_llm_analysis_data(self, stock_code: str, stock_name: str,
                                    scoring_result: Dict) -> Dict:
@@ -515,43 +578,159 @@ class OpportunityDiscovery:
 
         return stock_data
 
+    def _print_llm_analysis_summary(self, stock_code: str, stock_name: str, llm_result: Dict):
+        """
+        输出LLM分析结果摘要到控制台
+
+        Args:
+            stock_code: 股票代码
+            stock_name: 股票名称
+            llm_result: LLM分析结果
+        """
+        try:
+            # 支持多模型聚合结果格式
+            if isinstance(llm_result, dict):
+                # 检查是否为多模型聚合结果
+                if any(k in llm_result for k in ['qwen', 'deepseek']):
+                    for model_name, model_result in llm_result.items():
+                        if isinstance(model_result, dict) and 'error' not in model_result:
+                            self._print_single_llm_result(stock_code, stock_name, model_result, model_name)
+                else:
+                    # 单模型结果
+                    self._print_single_llm_result(stock_code, stock_name, llm_result)
+        except Exception as e:
+            logger.warning(f"输出LLM分析摘要失败: {e}")
+
+    def _print_single_llm_result(self, stock_code: str, stock_name: str, result: Dict, model_name: str = None):
+        """
+        输出单个LLM模型的分析结果
+
+        Args:
+            stock_code: 股票代码
+            stock_name: 股票名称
+            result: LLM分析结果
+            model_name: 模型名称（可选）
+        """
+        model_label = f"[{model_name.upper()}] " if model_name else ""
+
+        logger.info(f"\n{'='*60}")
+        logger.info(f"📊 {model_label}LLM智能分析 - {stock_name}({stock_code})")
+        logger.info(f"{'='*60}")
+
+        # 操作建议
+        operation = result.get('operation_advice', {})
+        if operation:
+            action = operation.get('action', '未知')
+            position = operation.get('position_control', '��知')
+            target = operation.get('target_price', '未知')
+            stop_loss = operation.get('stop_loss', '未知')
+            confidence = operation.get('confidence', 0)
+            logger.info(f"📈 操作建议: {action} | 仓位: {position} | 目标价: {target} | 止损: {stop_loss} | 置信度: {confidence*100:.0f}%")
+
+        # 风险评估
+        risk = result.get('risk_assessment', {})
+        if risk:
+            risk_level = risk.get('risk_level', '未知')
+            risk_score = risk.get('overall_score', 0)
+            risk_points = risk.get('risk_points', [])
+            logger.info(f"⚠️ 风险评估: {risk_level}风险 | 评分: {risk_score} | 风险点: {', '.join(risk_points[:3]) if risk_points else '无'}")
+
+        # K线预测摘要
+        kline_pred = result.get('kline_prediction', {})
+        if kline_pred:
+            trend = kline_pred.get('trend', '未知')
+            conf = kline_pred.get('confidence', 0)
+            support = kline_pred.get('support_levels', [])
+            resistance = kline_pred.get('resistance_levels', [])
+            logger.info(f"📉 趋势预测: {trend} | 置信度: {conf*100:.0f}% | 支撑位: {support[:2]} | 阻力位: {resistance[:2]}")
+
+        # 策略建议
+        strategy = result.get('strategy', {})
+        if strategy:
+            short_term = strategy.get('short_term', '')
+            mid_term = strategy.get('mid_term', '')
+            if short_term:
+                logger.info(f"🎯 短线策略: {short_term[:80]}{'...' if len(short_term) > 80 else ''}")
+            if mid_term:
+                logger.info(f"🎯 中线策略: {mid_term[:80]}{'...' if len(mid_term) > 80 else ''}")
+
+        # 总结
+        summary = result.get('summary', '')
+        if summary:
+            logger.info(f"💡 综合建议: {summary[:120]}{'...' if len(summary) > 120 else ''}")
+
+        logger.info(f"{'='*60}\n")
+
+    def _print_llm_summary_table(self, stocks: List[Dict]):
+        """
+        输出LLM分析结果汇总表格到控制台
+
+        Args:
+            stocks: 包含llm_analysis的股票列表
+        """
+        # 筛选有LLM分析结果的股票
+        llm_stocks = [s for s in stocks if s.get('llm_analysis')]
+        if not llm_stocks:
+            return
+
+        logger.info("\n" + "=" * 80)
+        logger.info("🤖 LLM智能分析汇总")
+        logger.info("=" * 80)
+        logger.info(f"{'股票':<12} {'评级':<4} {'操作':<6} {'仓位':<6} {'目标价':<12} {'止损':<10} {'风险':<6} {'趋势':<6}")
+        logger.info("-" * 80)
+
+        for stock in llm_stocks:
+            llm_result = stock.get('llm_analysis', {})
+            stock_name = stock.get('name', '未知')[:6]
+            stock_code = stock.get('stock_code', '')
+            rating = stock.get('rating', 'C')
+
+            # 处理多模型或单模型结果
+            results_to_show = []
+            if any(k in llm_result for k in ['qwen', 'deepseek']):
+                for model_name, model_result in llm_result.items():
+                    if isinstance(model_result, dict) and 'error' not in model_result:
+                        results_to_show.append((model_name, model_result))
+            else:
+                results_to_show.append((llm_result.get('llm_model', ''), llm_result))
+
+            for model_name, result in results_to_show:
+                operation = result.get('operation_advice', {})
+                action = operation.get('action', '-')
+                position = operation.get('position_control', '-')
+                target = str(operation.get('target_price', '-'))[:10]
+                stop_loss = str(operation.get('stop_loss', '-'))[:8]
+
+                risk = result.get('risk_assessment', {})
+                risk_level = risk.get('risk_level', '-')
+
+                kline = result.get('kline_prediction', {})
+                trend = kline.get('trend', '-')
+
+                model_tag = f"[{model_name[:2].upper()}]" if model_name else ""
+                stock_display = f"{stock_name}({stock_code}){model_tag}"
+
+                logger.info(f"{stock_display:<12} {rating:<4} {action:<6} {position:<6} {target:<12} {stop_loss:<10} {risk_level:<6} {trend:<6}")
+
+        logger.info("=" * 80)
+        logger.info("说明: 操作建议仅供参考，投资有风险，入市需谨慎")
+        logger.info("=" * 80 + "\n")
+
 
 def main():
-    """主函数"""
     parser = argparse.ArgumentParser(description='投资机会挖掘系统')
-    parser.add_argument(
-        '--limit',
-        type=int,
-        default=100,
-        help='获取热门股票的数量（默认100）'
-    )
-    parser.add_argument(
-        '--workers',
-        type=int,
-        default=10,
-        help='并发处理线程数（默认10）'
-    )
+    parser.add_argument('--limit', type=int, default=100, help='获取热门股票的数量（默认100）')
+    parser.add_argument('--workers', type=int, default=10, help='并发处理线程数（默认10）')
+    parser.add_argument('--test-codes', type=str, help='指定测试股票代码，逗号分隔')
 
     args = parser.parse_args()
+    
+    test_codes = None
+    if args.test_codes:
+        test_codes = args.test_codes.split(',')
 
-    # 创建并运行
     discovery = OpportunityDiscovery(max_workers=args.workers)
-    report_path = discovery.run(limit=args.limit)
-
-    if report_path and os.path.exists(report_path):
-        print(f"\n✓ 报表已生成: {report_path}")
-
-        # 尝试在浏览器中打开报表
-        try:
-            import webbrowser
-            abs_path = os.path.abspath(report_path)
-            webbrowser.open(f'file://{abs_path}')
-            print(f"✓ 报表已在浏览器中打开")
-        except Exception as e:
-            print(f"自动打开浏览器失败: {e}")
-            print(f"请手动打开: {os.path.abspath(report_path)}")
-    else:
-        print("\n✗ 报表生成失败")
+    discovery.run(limit=args.limit, test_codes=test_codes)
 
 
 if __name__ == "__main__":

@@ -261,14 +261,20 @@ class EventAnalyzer:
             return
         try:
             exchange_flag = '1' if self._market_prefix() == 'sh' else '0'
-            url = "http://push2.eastmoney.com/api/qt/stock/get"
+            # 使用 ulist.np 替代 stock/get
+            url = "http://push2.eastmoney.com/api/qt/ulist.np/get"
             params = {
-                'secid': f"{exchange_flag}.{self.stock_code}",
-                'fields': 'f58'
+                'secids': f"{exchange_flag}.{self.stock_code}",
+                'fltt': '2',
+                'fields': 'f14'
             }
             resp = requests.get(url, params=params, headers=self.headers, timeout=8)
             data = resp.json() if resp.content else {}
-            name = (data or {}).get('data', {}).get('f58')
+            
+            name = None
+            if data.get('data') and data['data'].get('diff'):
+                name = data['data']['diff'][0].get('f14')
+                
             if isinstance(name, str) and name.strip():
                 self.company_name = name.strip()
         except Exception:

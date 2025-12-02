@@ -16,11 +16,9 @@ async def test_crawler():
     print("🚀 开始测试爬虫功能...")
 
     try:
-        # 创建爬虫管理器
         crawler_manager = CrawlerManager()
         print("✅ 爬虫管理器创建成功")
 
-        # 获取可用数据源
         available_sources = crawler_manager.get_available_sources()
         print(f"📊 可用数据源: {available_sources}")
 
@@ -28,7 +26,12 @@ async def test_crawler():
             print("❌ 没有可用的数据源")
             return
 
-        # 测试获取股票数据
+        print("\n🔧 检查域映射配置:")
+        for src in ['eastmoney', 'tonghuashun', 'xueqiu']:
+            for act in ['realtime', 'kline', 'minute']:
+                dom = crawler_manager._get_domain_for_source(src, act)
+                print(f"- {src}:{act} -> {dom}")
+
         test_symbol = "000001"
         print(f"\n📈 测试获取股票 {test_symbol} 的K线数据...")
 
@@ -36,8 +39,7 @@ async def test_crawler():
 
         if kline_data:
             print(f"✅ 成功获取K线数据，数据量: {len(kline_data)}")
-            if kline_data:
-                print(f"📊 第一条数据: {kline_data[0]}")
+            print(f"📊 第一条数据: {kline_data[0]}")
         else:
             print("❌ 获取K线数据失败")
 

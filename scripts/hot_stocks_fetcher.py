@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class HotStocksFetcher:
     """热门股票获取器 - 从多个数据源获取市场热度TOP股票"""
 
-    def __init__(self, cache_dir: str = None):
+    def __init__(self, cache_dir: str = None, disable_cache: bool = None, allow_fallback: bool = None):
         """
         初始化热门股票获取器
 
@@ -30,6 +30,10 @@ class HotStocksFetcher:
             cache_dir: 缓存目录路径（可选）。
                       若未提供，将优先使用环境变量 KRONOS_DATA_DIR 下的 cache 目录，
                       否则回退到项目相对路径 data/cache。
+            disable_cache: 是否禁用缓存（可选）。
+                      若未提供，将读取环境变量 KRONOS_DISABLE_HOT_CACHE 为 '1'/'true' 视为禁用。
+            allow_fallback: 是否允许使用备用数据源（可选）。
+                      若未提供，将读取环境变量 KRONOS_ALLOW_FALLBACK 为 '1'/'true' 视为允许。
         """
         # 优先使用用户数据目录，适配打包环境的写权限
         if cache_dir is None:
@@ -55,6 +59,19 @@ class HotStocksFetcher:
         # 使用最终确定的缓存目录，避免在回退后仍指向不可写目录
         self.cache_file = os.path.join(self.cache_dir, "hot_stocks_cache.json")
         self.cache_ttl = 3600  # 缓存1小时
+
+        # 缓存禁用开关（环境变量优先）
+        if disable_cache is None:
+            env_disable = os.environ.get("KRONOS_DISABLE_HOT_CACHE", "0").strip().lower()
+            disable_cache = env_disable in {"1", "true", "yes"}
+        self.disable_cache = bool(disable_cache)
+
+        # 备用数据源开关（环境变量优先）
+        if allow_fallback is None:
+            # 默认为 True，除非显式禁用
+            env_fallback = os.environ.get("KRONOS_ALLOW_FALLBACK", "1").strip().lower()
+            allow_fallback = env_fallback in {"1", "true", "yes"}
+        self.allow_fallback = bool(allow_fallback)
 
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -98,13 +115,13 @@ class HotStocksFetcher:
         env_force = os.environ.get('KRONOS_FORCE_REFRESH') == '1'
 
         # 检查缓存（可被强制刷新禁用）
-        cached_data = None if (force_refresh or env_force) else self._load_cache()
+        cached_data = None if (force_refresh or env_force or self.disable_cache) else self._load_cache()
         if cached_data:
             stocks_from_cache = cached_data.get('stocks') or []
             # 若缓存来源为本地回退或未知来源，则忽略缓存
-            valid_sources = {'eastmoney', 'tonghuashun', 'xueqiu', 'tushare'}
+            valid_sources = {'eastmoney', 'eastmoney_vip', 'eastmoney_alt', 'tonghuashun', 'xueqiu', 'tushare'}
             all_sources = {str(s.get('source') or '').lower() for s in stocks_from_cache}
-            if all_sources and all_sources.issubset(valid_sources):
+            if all_sources and all_sources.issubset(valid_sources) and 'fallback' not in all_sources:
                 logger.info(f"使用缓存数据（缓存时间: {cached_data['timestamp']}）")
                 return stocks_from_cache[:limit]
             else:
@@ -113,27 +130,23 @@ class HotStocksFetcher:
         stocks = []
 
         try:
-            logger.info("正在从东方财富VIP接口获取热度榜...")
-            vip_stocks = self._fetch_from_eastmoney_vip(limit=limit)
-            if vip_stocks:
-                stocks = vip_stocks
-                logger.info(f"✓ 东方财富VIP获取成功: {len(vip_stocks)} 只股票")
-            else:
-                logger.info("VIP接口为空，尝试东方财富API...")
-                eastmoney_stocks = self._fetch_from_eastmoney()
-                if eastmoney_stocks:
-                    stocks = eastmoney_stocks
-                    logger.info(f"✓ 东方财富API获取成功: {len(eastmoney_stocks)} 只股票")
+            logger.info("尝试东方财富股吧人气榜(优先)...")
+            guba_stocks = self._fetch_from_guba_rank(limit=limit)
+            if guba_stocks:
+                stocks = guba_stocks
+                logger.info(f"✓ 东方财富股吧人气榜获取成功: {len(guba_stocks)} 只股票")
         except Exception as e:
-            logger.warning(f"东方财富获取失败: {e}")
+            logger.warning(f"东方财富股吧人气榜获取失败: {e}")
+
+        if not stocks:
             try:
-                logger.info("尝试东方财富备用入口...")
-                alt_stocks = self._fetch_from_eastmoney_alt(limit=limit)
-                if alt_stocks:
-                    stocks = alt_stocks
-                    logger.info(f"✓ 东方财富备用入口获取成功: {len(alt_stocks)} 只股票")
-            except Exception as e2:
-                logger.warning(f"东方财富备用入口获取失败: {e2}")
+                logger.info("尝试东方财富VIP接口...")
+                vip_stocks = self._fetch_from_eastmoney_vip(limit=limit)
+                if vip_stocks:
+                    stocks = vip_stocks
+                    logger.info(f"✓ 东方财富VIP获取成功: {len(vip_stocks)} 只股票")
+            except Exception as e:
+                logger.warning(f"东方财富VIP获取失败: {e}")
 
         if not stocks:
             try:
@@ -146,22 +159,184 @@ class HotStocksFetcher:
                 logger.warning(f"同花顺获取失败: {e}")
 
         if not stocks:
-            logger.error("所有数据源均获取失败，尝试使用备用数据源")
-            # 尝试使用备用数据源或生成示例数据
-            fallback_stocks = self._get_fallback_stocks(limit)
-            if fallback_stocks:
-                logger.warning(f"使用备用数据源，获取 {len(fallback_stocks)} 只股票")
-                stocks = fallback_stocks
+            try:
+                logger.info("正在从东方财富API接口获取热度榜(备用)...")
+                eastmoney_stocks = self._fetch_from_eastmoney()
+                if eastmoney_stocks:
+                    stocks = eastmoney_stocks
+                    logger.info(f"✓ 东方财富API获取成功: {len(eastmoney_stocks)} 只股票")
+            except Exception as e:
+                logger.warning(f"东方财富API获取失败: {e}")
+
+        if not stocks:
+            try:
+                logger.info("尝试东方财富备用入口...")
+                alt_stocks = self._fetch_from_eastmoney_alt(limit=limit)
+                if alt_stocks:
+                    stocks = alt_stocks
+                    logger.info(f"✓ 东方财富备用入口获取成功: {len(alt_stocks)} 只股票")
+            except Exception as e2:
+                logger.warning(f"东方财富备用入口获取失败: {e2}")
+
+        if not stocks:
+            if self.allow_fallback:
+                logger.error("所有数据源均获取失败，尝试使用备用数据源")
+                # 尝试使用备用数据源或生成示例数据
+                fallback_stocks = self._get_fallback_stocks(limit)
+                if fallback_stocks:
+                    logger.warning(f"使用备用数据源，获取 {len(fallback_stocks)} 只股票")
+                    stocks = fallback_stocks
+                else:
+                    logger.error("所有数据源均获取失败，返回空列表")
+                    return []
             else:
-                logger.error("所有数据源均获取失败，返回空列表")
+                logger.error("所有数据源均获取失败，且备用数据源已禁用")
                 return []
 
-        # 缓存数据
-        self._save_cache(stocks)
+        # 批量补充基本面数据 (PE, PB, 市值等)
+        if stocks:
+            # 检查是否已包含基本面数据（新版API直接获取）
+            has_fundamental = False
+            if len(stocks) > 0:
+                first_stock = stocks[0]
+                if 'pe_ratio' in first_stock and 'pb_ratio' in first_stock and 'total_market_cap' in first_stock:
+                    has_fundamental = True
+            
+            if not has_fundamental:
+                try:
+                    logger.info("正在批量补充基本面数据(PE/PB)...")
+                    stocks_with_fund = self._batch_enrich_fundamental_data(stocks[:limit])
+                    if stocks_with_fund:
+                        stocks = stocks_with_fund
+                        logger.info(f"✓ 基本面数据补充完成")
+                except Exception as e:
+                    logger.warning(f"批量补充基本面数据失败: {e}，后续将使用单独查询")
+            else:
+                logger.info("✓ 已在列表接口中直接获取基本面数据，跳过批量补充步骤")
+
+        # 缓存数据（仅在未禁用且来源有效时写入，排除fallback来源）
+        try:
+            valid_sources = {'eastmoney', 'eastmoney_vip', 'eastmoney_alt', 'tonghuashun', 'xueqiu', 'tushare'}
+            sources = {str(s.get('source') or '').lower() for s in stocks}
+            # 明确排除fallback来源的数据写入缓存
+            should_cache = (not self.disable_cache) and sources and sources.issubset(valid_sources) and 'fallback' not in sources
+            if should_cache:
+                self._save_cache(stocks)
+            else:
+                logger.info("跳过缓存写入（禁用缓存或来源为fallback/未知）")
+        except Exception:
+            # 严格避免因缓存失败影响主流程
+            pass
 
         logger.info(f"✓ 热门股票获取完成: {len(stocks)} 只股票")
         return stocks[:limit]
 
+    def _batch_enrich_fundamental_data(self, stocks: List[Dict]) -> List[Dict]:
+        """
+        批量补充基本面数据 (PE, PB, 市值)
+        使用东方财富 ulist.np 接口批量获取
+        """
+        if not stocks:
+            return stocks
+
+        # 提取 secids
+        # 东方财富 secid 格式: 1.600xxx (沪), 0.000xxx (深/创业), 0.300xxx (创业), 1.688xxx (科创)
+        # 简单规则: 6开头是1., 其他是0.
+        secids = []
+        code_map = {} # code -> stock_dict
+        
+        for stock in stocks:
+            code = stock.get('code')
+            if not code:
+                continue
+            market_prefix = '1' if str(code).startswith('6') else '0'
+            secid = f"{market_prefix}.{code}"
+            secids.append(secid)
+            code_map[code] = stock
+            
+        if not secids:
+            return stocks
+
+        # 东方财富接口一次最多支持约100个，安全起见分批处理
+        # 降低 batch_size 以提高稳定性
+        batch_size = 50
+        
+        for i in range(0, len(secids), batch_size):
+            batch_secids = secids[i:i+batch_size]
+            secids_str = ",".join(batch_secids)
+            
+            # 重试机制
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    # 使用 https
+                    url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+                    # f12: code, f14: name, f9: PE(动态), f23: PB, f20: 总市值, f21: 流通市值, f183: 营收同比, f184: 净利同比
+                    params = {
+                        'fltt': '2',
+                        'secids': secids_str,
+                        'fields': 'f12,f9,f23,f20,f21,f183,f184' 
+                    }
+                    
+                    response = requests.get(url, params=params, headers=self.headers, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data and data.get('data') and data['data'].get('diff'):
+                            for item in data['data']['diff']:
+                                code = item.get('f12')
+                                if code in code_map:
+                                    stock = code_map[code]
+                                    
+                                    # PE (动态)
+                                    pe = item.get('f9')
+                                    if isinstance(pe, (int, float)):
+                                        stock['pe_ratio'] = round(float(pe), 2) if pe > 0 else '亏损' if pe < 0 else 'N/A'
+                                    else:
+                                        stock['pe_ratio'] = 'N/A'
+                                        
+                                    # PB
+                                    pb = item.get('f23')
+                                    if isinstance(pb, (int, float)):
+                                        stock['pb_ratio'] = round(float(pb), 2)
+                                    else:
+                                        stock['pb_ratio'] = 'N/A'
+                                        
+                                    # 总市值 (转为亿)
+                                    tmc = item.get('f20')
+                                    if isinstance(tmc, (int, float)):
+                                        stock['total_market_cap'] = round(tmc / 100000000, 2)
+                                    else:
+                                        stock['total_market_cap'] = 'N/A'
+                                        
+                                    # 流通市值 (转为亿)
+                                    cmc = item.get('f21')
+                                    if isinstance(cmc, (int, float)):
+                                        stock['circulation_market_cap'] = round(cmc / 100000000, 2)
+                                    else:
+                                        stock['circulation_market_cap'] = 'N/A'
+                                        
+                                    # 营收同比
+                                    rev = item.get('f183')
+                                    if isinstance(rev, (int, float)):
+                                        stock['revenue_yoy'] = round(float(rev), 2)
+                                    else:
+                                        stock['revenue_yoy'] = 'N/A'
+                                        
+                                    # 净利同比
+                                    profit = item.get('f184')
+                                    if isinstance(profit, (int, float)):
+                                        stock['net_profit_yoy'] = round(float(profit), 2)
+                                    else:
+                                        stock['net_profit_yoy'] = 'N/A'
+                        # 成功后跳出重试循环
+                        break
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        logger.warning(f"批量获取基本面数据批次 {i} 失败(重试耗尽): {e}")
+                    else:
+                        time.sleep(1) # 稍作等待后重试
+                
+        return stocks
     
 
     def _fetch_from_eastmoney(self) -> List[Dict]:
@@ -194,7 +369,7 @@ class HotStocksFetcher:
                     'invt': '2',
                     'fid': field_id,  # 热度排序字段
                     'fs': 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23',  # A股市场（主板+创业板+科创板）
-                    'fields': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f22,f11,f62,f128,f136,f115,f152,f164',
+                    'fields': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f22,f11,f62,f128,f136,f115,f152,f164,f183,f184',
                     '_': str(int(time.time() * 1000))
                 }
 
@@ -232,12 +407,20 @@ class HotStocksFetcher:
                                     exchange = 'SZ'  # 默认深交所
 
                             # 获取各项指标
-                            change_pct = float(item.get('f3', 0)) if item.get('f3') else 0  # 涨跌幅
-                            turnover_rate = float(item.get('f8', 0)) if item.get('f8') else 0  # 换手率
-                            volume = float(item.get('f5', 0)) if item.get('f5') else 0  # 成交量（手）
-                            amount = float(item.get('f6', 0)) if item.get('f6') else 0  # 成交额（元）
-                            main_fund_flow = float(item.get('f62', 0)) if item.get('f62') else 0  # 主力资金净流入
-                            heat_index = float(item.get('f164', 0)) if item.get('f164') else 0  # 热度指数
+                            def safe_float(val, default=0.0):
+                                try:
+                                    if val == '-' or val is None:
+                                        return default
+                                    return float(val)
+                                except (ValueError, TypeError):
+                                    return default
+
+                            change_pct = safe_float(item.get('f3'))  # 涨跌幅
+                            turnover_rate = safe_float(item.get('f8'))  # 换手率
+                            volume = safe_float(item.get('f5'))  # 成交量（手）
+                            amount = safe_float(item.get('f6'))  # 成交额（元）
+                            main_fund_flow = safe_float(item.get('f62'))  # 主力资金净流入
+                            heat_index = safe_float(item.get('f164'))  # 热度指数
 
                             # 计算综合人气评分
                             if heat_index > 0:
@@ -262,14 +445,57 @@ class HotStocksFetcher:
                                 'turnover_rate': round(turnover_rate, 2),
                                 'volume': int(volume * 100),  # 手转换为股
                                 'amount': round(amount, 2),
-                                'latest_price': float(item.get('f2', 0)) if item.get('f2') else 0,  # 最新价
+                                'latest_price': safe_float(item.get('f2')),  # 最新价
                                 'source': 'eastmoney',
                                 'rank': idx
                             }
 
+                            # 提取基本面数据
+                            # PE (动态)
+                            pe = item.get('f9')
+                            if isinstance(pe, (int, float)):
+                                stock_info['pe_ratio'] = round(float(pe), 2) if pe > 0 else '亏损' if pe < 0 else 'N/A'
+                            else:
+                                stock_info['pe_ratio'] = 'N/A'
+                                
+                            # PB
+                            pb = item.get('f23')
+                            if isinstance(pb, (int, float)):
+                                stock_info['pb_ratio'] = round(float(pb), 2)
+                            else:
+                                stock_info['pb_ratio'] = 'N/A'
+                                
+                            # 总市值 (转为亿)
+                            tmc = item.get('f20')
+                            if isinstance(tmc, (int, float)):
+                                stock_info['total_market_cap'] = round(tmc / 100000000, 2)
+                            else:
+                                stock_info['total_market_cap'] = 'N/A'
+                                
+                            # 流通市值 (转为亿)
+                            cmc = item.get('f21')
+                            if isinstance(cmc, (int, float)):
+                                stock_info['circulation_market_cap'] = round(cmc / 100000000, 2)
+                            else:
+                                stock_info['circulation_market_cap'] = 'N/A'
+
+                            # 营收同比
+                            rev = item.get('f183')
+                            if isinstance(rev, (int, float)):
+                                stock_info['revenue_yoy'] = round(float(rev), 2)
+                            else:
+                                stock_info['revenue_yoy'] = 'N/A'
+                                
+                            # 净利同比
+                            profit = item.get('f184')
+                            if isinstance(profit, (int, float)):
+                                stock_info['net_profit_yoy'] = round(float(profit), 2)
+                            else:
+                                stock_info['net_profit_yoy'] = 'N/A'
+
                             stocks.append(stock_info)
                         except Exception as e:
-                            logger.debug(f"解析股票信息失败: {e}")
+                            logger.warning(f"解析股票信息失败: {e}, 数据: {item}")
                             continue
 
                     if len(stocks) >= 50:
@@ -285,6 +511,152 @@ class HotStocksFetcher:
             raise Exception("无法获取东方财富热榜数据")
 
         return stocks
+
+    def _fetch_from_guba_rank(self, limit: int = 100) -> List[Dict]:
+        """
+        从东方财富股吧人气榜获取热门股票 (作为备用/第二通道)
+        URL: https://guba.eastmoney.com/rank/
+        API: https://emappdata.eastmoney.com/stockrank/getAllCurrentList
+        """
+        logger.info("尝试从股吧人气榜API获取...")
+        stocks = []
+        try:
+            url = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList"
+            payload = {
+                "appId": "appId01",
+                "globalId": "786e4c21-70dc-435a-93bb-38",
+                "marketType": "",
+                "pageNo": 1,
+                "pageSize": limit
+            }
+            headers = {
+                "User-Agent": self.headers['User-Agent'],
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "Origin": "https://guba.eastmoney.com",
+                "Referer": "https://guba.eastmoney.com/rank/"
+            }
+
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            if response.status_code != 200:
+                logger.warning(f"股吧人气榜API请求失败: {response.status_code}")
+                return []
+
+            data = response.json()
+            if not data.get('data'):
+                logger.warning("股吧人气榜API返回数据为空")
+                return []
+
+            # 解析排名数据
+            rank_items = data['data']
+            secids = []
+            rank_map = {}  # code -> rank_item
+
+            for item in rank_items:
+                sc = item.get('sc', '')  # e.g. SZ000063
+                if not sc or len(sc) < 3:
+                    continue
+                
+                # 解析市场和代码
+                market_str = sc[:2].upper()
+                code = sc[2:]
+                
+                market_id = '1' if market_str == 'SH' else '0'
+                secid = f"{market_id}.{code}"
+                
+                secids.append(secid)
+                rank_map[code] = {
+                    'rank': item.get('rk'),
+                    'code': code,
+                    'exchange': market_str
+                }
+
+            if not secids:
+                return []
+
+            # 批量获取详细行情数据
+            logger.info(f"从股吧人气榜获取到 {len(secids)} 个代码，正在批量查询详情...")
+            
+            # 分批查询，每批50个
+            batch_size = 50
+            for i in range(0, len(secids), batch_size):
+                batch_secids = secids[i:i+batch_size]
+                secids_str = ",".join(batch_secids)
+                
+                try:
+                    details_url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+                    # f12: code, f14: name, f2: price, f3: change_pct, f5: volume, f6: amount, f8: turnover
+                    # f9: PE, f23: PB, f20: total_cap, f21: circ_cap, f183: rev_yoy, f184: profit_yoy
+                    params = {
+                        'fltt': '2',
+                        'secids': secids_str,
+                        'fields': 'f12,f14,f2,f3,f5,f6,f8,f9,f23,f20,f21,f183,f184,f13'
+                    }
+                    
+                    resp = requests.get(details_url, params=params, headers=self.headers, timeout=10)
+                    if resp.status_code == 200:
+                        det_data = resp.json()
+                        if det_data and det_data.get('data') and det_data['data'].get('diff'):
+                            for det in det_data['data']['diff']:
+                                code = det.get('f12')
+                                if code in rank_map:
+                                    rk_info = rank_map[code]
+                                    
+                                    # 辅助函数
+                                    def safe_float(val, default=0.0):
+                                        try:
+                                            if val == '-' or val is None:
+                                                return default
+                                            return float(val)
+                                        except (ValueError, TypeError):
+                                            return default
+
+                                    stock_info = {
+                                        'code': code,
+                                        'name': det.get('f14', ''),
+                                        'exchange': rk_info['exchange'],
+                                        'rank': rk_info['rank'],
+                                        'source': 'eastmoney_guba',
+                                        'latest_price': safe_float(det.get('f2')),
+                                        'change_pct': round(safe_float(det.get('f3')), 2),
+                                        'turnover_rate': round(safe_float(det.get('f8')), 2),
+                                        'volume': int(safe_float(det.get('f5'))),
+                                        'amount': safe_float(det.get('f6')),
+                                        # 简单的热度分转换：排名1->100分, 排名100->1分
+                                        'popularity_score': max(0, 100 - rk_info['rank'] + 1)
+                                    }
+                                    
+                                    # 基本面数据
+                                    pe = det.get('f9')
+                                    stock_info['pe_ratio'] = round(float(pe), 2) if isinstance(pe, (int, float)) and pe > 0 else 'N/A'
+                                    
+                                    pb = det.get('f23')
+                                    stock_info['pb_ratio'] = round(float(pb), 2) if isinstance(pb, (int, float)) else 'N/A'
+                                    
+                                    tmc = det.get('f20')
+                                    stock_info['total_market_cap'] = round(tmc / 100000000, 2) if isinstance(tmc, (int, float)) else 'N/A'
+                                    
+                                    cmc = det.get('f21')
+                                    stock_info['circulation_market_cap'] = round(cmc / 100000000, 2) if isinstance(cmc, (int, float)) else 'N/A'
+                                    
+                                    rev = det.get('f183')
+                                    stock_info['revenue_yoy'] = round(float(rev), 2) if isinstance(rev, (int, float)) else 'N/A'
+                                    
+                                    profit = det.get('f184')
+                                    stock_info['net_profit_yoy'] = round(float(profit), 2) if isinstance(profit, (int, float)) else 'N/A'
+                                    
+                                    stocks.append(stock_info)
+                                    
+                except Exception as e:
+                    logger.warning(f"获取详情批次失败: {e}")
+            
+            # 按排名排序
+            stocks.sort(key=lambda x: x['rank'])
+            return stocks[:limit]
+            
+        except Exception as e:
+            logger.error(f"股吧人气榜获取异常: {e}")
+            return []
 
     def _fetch_from_eastmoney_alt(self, limit: int = 100) -> List[Dict]:
         if self._BrowserManager is None:
@@ -407,7 +779,8 @@ class HotStocksFetcher:
                 'appId': 'appId01',
                 'globalId': gid_val,
                 'pageNo': '1',
-                'pageSize': str(limit)
+                'pageSize': str(limit),
+                '_': str(int(time.time() * 1000))
             }
             r2 = requests.post('https://emappdata.eastmoney.com/stockrank/getAllCurrentList', json=payload, headers=h2, timeout=10)
             r2.raise_for_status()
@@ -1020,6 +1393,9 @@ class HotStocksFetcher:
         Args:
             stocks: 股票列表
         """
+        if self.disable_cache:
+            # 明确禁用缓存时直接返回
+            return
         tmp_file = self.cache_file + ".tmp"
         try:
             cache_data = {
@@ -1052,7 +1428,8 @@ def main():
     print("热门股票获取器 - 测试")
     print("=" * 60)
 
-    fetcher = HotStocksFetcher()
+    # 根据当前需求，默认测试时禁用缓存和备用数据源
+    fetcher = HotStocksFetcher(disable_cache=True, allow_fallback=False)
 
     # 获取TOP 100热门股票
     hot_stocks = fetcher.get_hot_stocks(limit=100)
