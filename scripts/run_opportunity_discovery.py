@@ -21,6 +21,7 @@ from scripts.hot_stocks_fetcher import HotStocksFetcher
 from analysis.opportunity_scorer import OpportunityScorer
 from analysis.opportunity_filter import OpportunityFilter
 from scripts.opportunity_report_generator import OpportunityReportGenerator
+from analysis.news_sentiment_collector import NewsSentimentCollector
 from analysis.global_hot_news_collector import GlobalHotNewsCollector
 from analysis.sector_hot_news_collector import SectorNewsCollector
 from analysis.trending_topics_collector import TrendingTopicsCollector
@@ -291,6 +292,46 @@ class OpportunityDiscovery:
 
         except Exception as e:
             logger.warning(f"LLM深度分析流程失败: {e}")
+
+        # 额外步骤：为Top10股票补充具体新闻/入选原因
+        logger.info(f"\n步骤3.8: 为Top10股票补充具体新闻/入选原因...")
+        passed_stocks = [r for r in filter_results if r.get('passed', False)]
+        top_stocks = sorted(passed_stocks, key=lambda x: x.get('final_score', 0), reverse=True)[:10]
+
+        for stock in top_stocks:
+            try:
+                code = stock.get('stock_code') or stock.get('code')
+                if not code: continue
+
+                # 构造入选原因 (简单摘要)
+                reasons = []
+                score_details = stock.get('scoring_result', {}).get('details', {})
+                
+                # 1. 技术面
+                tech = score_details.get('technical', {})
+                if tech.get('trend') == 'up': reasons.append("趋势向上")
+                
+                # 2. 资金面
+                quant = score_details.get('quantitative', {})
+                buy_ratio = quant.get('buy_ratio')
+                if buy_ratio and float(buy_ratio) > 0.6: reasons.append("资金流入")
+                
+                # 3. 板块
+                sector = score_details.get('sector', {})
+                if sector.get('overall') == '看多': reasons.append(f"板块强势")
+                
+                stock['selection_reason'] = " ".join(reasons) if reasons else "综合评分优异"
+
+                # 采集个股新闻
+                logger.info(f"正在采集 {stock.get('name')} ({code}) 的最新新闻...")
+                # 复用 NewsSentimentCollector, 注意它初始化需要code
+                news_collector = NewsSentimentCollector(code)
+                # 获取3条最新新闻
+                latest_news = news_collector.get_latest_news(limit=3)
+                stock['latest_news'] = latest_news
+                
+            except Exception as e:
+                logger.warning(f"为 {stock.get('name')} 补充信息失败: {e}")
 
         # 步骤4: 生成报表
         logger.info(f"\n步骤4: 正在生成投资机会挖掘报表...")

@@ -1484,6 +1484,17 @@ class OpportunityReportGenerator:
                 f"【消息】{events_str}"
             ]
 
+            # 新增：入选原因与最新动态
+            reason = stock.get('selection_reason')
+            if reason:
+                parts.append(f"【入选原因】{reason}")
+            
+            latest_news = stock.get('latest_news')
+            if latest_news:
+                news_titles = [n.get('title', '') for n in latest_news[:2]]
+                news_str = "; ".join(news_titles)
+                parts.append(f"【最新动态】{news_str}")
+
             return '<br>'.join(parts)
         except Exception as e:
             total = stock.get('final_score') or (scoring.get('total_score') if 'scoring_result' in stock else 0)
@@ -1655,11 +1666,36 @@ class OpportunityReportGenerator:
                             </div>
 '''
 
+            # 新增：入选原因与最新动态
+            selection_reason = stock.get('selection_reason')
+            latest_news = stock.get('latest_news')
+            news_html = ''
+            
+            if selection_reason or latest_news:
+                news_html = '<div class="stock-news-section" style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed #e2e8f0;">'
+                
+                if selection_reason:
+                    news_html += f'<div class="selection-reason" style="margin-bottom: 8px;"><span style="font-weight: 600; color: #4a5568;">🔍 入选原因:</span> <span style="color: #2d3748;">{selection_reason}</span></div>'
+                    
+                if latest_news:
+                    news_html += '<div class="latest-news"><div style="font-weight: 600; color: #4a5568; margin-bottom: 4px;">📰 最新动态:</div>'
+                    for news in latest_news[:2]:
+                        title = news.get('title', '未知标题')
+                        url = news.get('url', '#')
+                        date = news.get('publish_time') or news.get('date') or ''
+                        if len(date) > 10: date = date[:10]
+                        
+                        news_html += f'<div style="font-size: 12px; margin-bottom: 4px;"><a href="{url}" target="_blank" style="color: #3182ce; text-decoration: none;">{title}</a> <span style="color: #a0aec0; margin-left: 4px;">{date}</span></div>'
+                    news_html += '</div>'
+                    
+                news_html += '</div>'
+
             # 在卡片底部添加AI分析结果（如果有）
             ai_analysis_html = self._build_ai_analysis_for_card(stock)
 
             html += f'''
                         </div>
+                        {news_html}
                         {ai_analysis_html}
                     </div>
 '''
