@@ -92,7 +92,8 @@ class KronosHTMLReportGenerator:
                                       sentiment_data: Optional[Dict] = None,
                                       event_data: Optional[Dict] = None,
                                       llm_analysis: Optional[Dict] = None,
-                                      llm_predicted_kline: Optional[pd.DataFrame] = None) -> str:
+                                      llm_predicted_kline: Optional[pd.DataFrame] = None,
+                                      scoring_result: Optional[Dict] = None) -> str:
         """
         生成综合分析报告 - 单页面结构
 
@@ -109,6 +110,7 @@ class KronosHTMLReportGenerator:
             event_data: 利好利空事件数据
             llm_analysis: LLM分析结果
             llm_predicted_kline: LLM预测K线数据
+            scoring_result: 评分结果
 
         Returns:
             生成的HTML报告文件路径
@@ -131,7 +133,8 @@ class KronosHTMLReportGenerator:
             predictions=predictions,
             historical_data=historical_data,
             llm_analysis=llm_analysis,
-            llm_predicted_kline=llm_predicted_kline
+            llm_predicted_kline=llm_predicted_kline,
+            scoring_result=scoring_result
         )
 
         # 写入文件
@@ -195,7 +198,8 @@ class KronosHTMLReportGenerator:
                                        predictions: Optional[pd.DataFrame] = None,
                                        historical_data: Optional[pd.DataFrame] = None,
                                        llm_analysis: Optional[Dict] = None,
-                                       llm_predicted_kline: Optional[pd.DataFrame] = None) -> str:
+                                       llm_predicted_kline: Optional[pd.DataFrame] = None,
+                                       scoring_result: Optional[Dict] = None) -> str:
         """生成单页面HTML模板"""
 
         # 提取数据
@@ -214,6 +218,7 @@ class KronosHTMLReportGenerator:
                                     **{k: v for k, v in risk_tech_indicators.items() if k not in technical_indicators}}
 
         # 生成各部分内容
+        scoring_html = self._generate_scoring_section(scoring_result)
         tech_indicators_html = self._generate_tech_indicators_section(technical_indicators_aug)
         signals_summary_html = self._generate_signals_summary_section(current_signals, model_summary)
         quant_models_html, total_models = self._generate_quant_models_section(quantitative_models, current_signals)
@@ -271,6 +276,8 @@ class KronosHTMLReportGenerator:
 </head>
 <body>
     <div class="container">
+        <!-- 评分概览 -->
+        {scoring_html}
     
         <!-- K线图表区域 -->
         <section class="chart-section">
@@ -375,6 +382,75 @@ class KronosHTMLReportGenerator:
 </html>
 '''
         return html_template
+
+    def _generate_scoring_section(self, scoring_result: Optional[Dict]) -> str:
+        """生成评分板块"""
+        if not scoring_result:
+            return ""
+            
+        total_score = scoring_result.get('total_score', 0)
+        rating = scoring_result.get('rating', 'C')
+        recommendation = scoring_result.get('recommendation', '')
+        scores = scoring_result.get('scores', {})
+        
+        # CSS for rating
+        rating_color = "#95a5a6" # C/Default
+        if rating == 'S': rating_color = "#f1c40f"
+        elif rating == 'A+': rating_color = "#e74c3c"
+        elif rating == 'A': rating_color = "#e67e22"
+        elif rating == 'B': rating_color = "#3498db"
+        
+        html = f"""
+        <div class="analysis-card scoring-card" style="background: linear-gradient(to right, #f8f9fa, #ffffff); border-left: 5px solid {rating_color}; margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <div style="display: flex; align-items: center;">
+                    <div style="background-color: {rating_color}; color: white; font-size: 24px; font-weight: bold; padding: 5px 15px; border-radius: 8px; margin-right: 15px;">
+                        {rating}
+                    </div>
+                    <div>
+                        <div style="font-size: 18px; font-weight: bold; color: #2c3e50;">综合评分: {total_score}</div>
+                        <div style="font-size: 14px; color: #7f8c8d;">{recommendation}</div>
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 12px; color: #bdc3c7;">Kronos 多维度打分系统</div>
+                </div>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px;">
+        """
+        
+        # Dimension scores
+        dimension_map = {
+            'quantitative': '量化模型',
+            'technical': '技术分析',
+            'momentum': '短期动量',
+            'volume_health': '量价健康',
+            'sentiment': '股民情绪',
+            'sector': '板块情绪',
+            'fundamental': '基本面',
+            'events': '消息面',
+            'dragon_tiger': '龙虎榜'
+        }
+        
+        for key, label in dimension_map.items():
+            score = scores.get(key, 0)
+            # Simple bar
+            bar_color = "#2ecc71" if score >= 80 else "#f1c40f" if score >= 60 else "#e74c3c"
+            html += f"""
+                <div style="background: #fff; padding: 8px; border-radius: 6px; border: 1px solid #ecf0f1;">
+                    <div style="font-size: 12px; color: #7f8c8d; margin-bottom: 4px;">{label}</div>
+                    <div style="display: flex; align-items: center;">
+                        <div style="font-size: 16px; font-weight: bold; color: #2c3e50; margin-right: 8px; min-width: 30px;">{score}</div>
+                        <div style="flex-grow: 1; height: 4px; background: #ecf0f1; border-radius: 2px;">
+                            <div style="width: {score}%; height: 100%; background: {bar_color}; border-radius: 2px;"></div>
+                        </div>
+                    </div>
+                </div>
+            """
+            
+        html += "</div></div>"
+        return html
 
     def _generate_tech_indicators_section(self, indicators: Dict) -> str:
         """生成技术指标部分"""
@@ -1146,16 +1222,27 @@ class KronosHTMLReportGenerator:
         def is_valid(value):
             return value not in ['N/A', None, '', 'nan', 'None', '亏损']
 
+        # 辅助函数：格式化市值 (转换为亿)
+        def format_market_cap(value):
+            try:
+                if isinstance(value, (int, float)):
+                    return f"{float(value) / 100000000:.2f}"
+                if isinstance(value, str) and value.replace('.', '', 1).isdigit():
+                     return f"{float(value) / 100000000:.2f}"
+                return str(value)
+            except:
+                return str(value)
+
         core_items = []
 
         # 市场估值指标 - 总市值、流通市值、市盈率、市净率
         if is_valid(indicators.get('total_market_cap')):
             core_items.append(
-                f"<div class='core-metric-item'><span class='metric-label'>总市值:</span><span class='metric-value'>{indicators.get('total_market_cap')} 亿</span></div>")
+                f"<div class='core-metric-item'><span class='metric-label'>总市值:</span><span class='metric-value'>{format_market_cap(indicators.get('total_market_cap'))} 亿</span></div>")
 
         if is_valid(indicators.get('circulation_market_cap')):
             core_items.append(
-                f"<div class='core-metric-item'><span class='metric-label'>流通市值:</span><span class='metric-value'>{indicators.get('circulation_market_cap')} 亿</span></div>")
+                f"<div class='core-metric-item'><span class='metric-label'>流通市值:</span><span class='metric-value'>{format_market_cap(indicators.get('circulation_market_cap'))} 亿</span></div>")
 
         pe_ratio = indicators.get('pe_ratio')
         if is_valid(pe_ratio):
@@ -4556,7 +4643,8 @@ def generate_comprehensive_report(stock_code: str, analysis_data: Dict,
                                   sentiment_data: Optional[Dict] = None,
                                   event_data: Optional[Dict] = None,
                                   llm_analysis: Optional[Dict] = None,
-                                  llm_predicted_kline: Optional[pd.DataFrame] = None) -> str:
+                                  llm_predicted_kline: Optional[pd.DataFrame] = None,
+                                  scoring_result: Optional[Dict] = None) -> str:
     """
     便捷函数: 生成综合分析报告
 
@@ -4573,6 +4661,7 @@ def generate_comprehensive_report(stock_code: str, analysis_data: Dict,
         event_data: 利好利空事件数据（可选）
         llm_analysis: LLM分析结果（可选）
         llm_predicted_kline: LLM预测K线数据（可选）
+        scoring_result: 评分结果（可选）
 
     Returns:
         生成的HTML报告文件路径
@@ -4602,5 +4691,6 @@ def generate_comprehensive_report(stock_code: str, analysis_data: Dict,
         event_data=event_data,
         llm_analysis=llm_analysis,
         llm_predicted_kline=llm_predicted_kline,
+        scoring_result=scoring_result,
         auto_open=auto_open
     )

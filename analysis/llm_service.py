@@ -252,7 +252,8 @@ class LLMAnalyzer:
                 "temperature": 0.7
             }
 
-            response = requests.post(url, headers=headers, json=data, timeout=30)
+            # 增加超时时间到60秒，避免批量分析时Read timed out
+            response = requests.post(url, headers=headers, json=data, timeout=60)
             response.raise_for_status()
 
             result = response.json()

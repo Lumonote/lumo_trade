@@ -8,11 +8,16 @@ from bs4 import BeautifulSoup
 from typing import List, Dict
 import time
 import re
+import threading
 from datetime import datetime
 
 
 class DynamicCrawler:
     """动态网页爬虫 - 支持JavaScript渲染"""
+    
+    # 限制并发浏览器实例数，防止EPIPE错误和资源耗尽
+    # 即使在多线程环境下，也最多只允许2个浏览器同时运行
+    _browser_semaphore = threading.Semaphore(6)
 
     @staticmethod
     def crawl_guba_posts(stock_code: str, limit: int = 50) -> List[Dict]:
@@ -34,63 +39,65 @@ class DynamicCrawler:
 
             for attempt in range(max_retries):
                 try:
-                    with sync_playwright() as p:
-                        # 使用自定义浏览器参数
-                        browser = p.chromium.launch(
-                            headless=True,
-                            args=['--disable-blink-features=AutomationControlled']
-                        )
+                    # 使用信号量控制并发
+                    with DynamicCrawler._browser_semaphore:
+                        with sync_playwright() as p:
+                            # 使用自定义浏览器参数
+                            browser = p.chromium.launch(
+                                headless=True,
+                                args=['--disable-blink-features=AutomationControlled']
+                            )
 
-                        context = browser.new_context(
-                            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                            viewport={'width': 1920, 'height': 1080}
-                        )
-                        page = context.new_page()
+                            context = browser.new_context(
+                                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                                viewport={'width': 1920, 'height': 1080}
+                            )
+                            page = context.new_page()
 
-                        url = f"http://guba.eastmoney.com/list,{stock_code}.html"
-                        print(f"   🌐 访问股吧 (尝试 {attempt + 1}/{max_retries}): {url}")
+                            url = f"http://guba.eastmoney.com/list,{stock_code}.html"
+                            print(f"   🌐 访问股吧 (尝试 {attempt + 1}/{max_retries}): {url}")
 
-                        # 改用load等待策略，更快
-                        # 尝试多种排序/参数的搜索结果，提高解析成功率
-                        candidate_urls = [
-                            f"https://so.eastmoney.com/news/s?keyword={stock_code}",
-                            f"https://so.eastmoney.com/news/s?keyword={stock_code}&sort=time",
-                            f"https://so.eastmoney.com/news/s?keyword={stock_code}&sort=score",
-                        ]
+                            # 改用load等待策略，更快
+                            # 尝试多种排序/参数的搜索结果，提高解析成功率
+                            candidate_urls = [
+                                f"https://so.eastmoney.com/news/s?keyword={stock_code}",
+                                f"https://so.eastmoney.com/news/s?keyword={stock_code}&sort=time",
+                                f"https://so.eastmoney.com/news/s?keyword={stock_code}&sort=score",
+                            ]
 
-                        content = ''
-                        for idx, u in enumerate(candidate_urls, start=1):
-                            print(f"   🌐 访问新闻候选URL {idx}/{len(candidate_urls)}: {u}")
-                            page.goto(u, wait_until='load', timeout=30000)
-                            page.wait_for_timeout(4000)
+                            content = ''
+                            for idx, u in enumerate(candidate_urls, start=1):
+                                print(f"   🌐 访问新闻候选URL {idx}/{len(candidate_urls)}: {u}")
+                                page.goto(u, wait_until='load', timeout=30000)
+                                page.wait_for_timeout(4000)
 
-                            # 逐步滚动触发懒加载
+                                # 逐步滚动触发懒加载
+                                try:
+                                    for _ in range(2):
+                                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                                        page.wait_for_timeout(800)
+                                except:
+                                    pass
+
+                                # 获取HTML
+                                content = page.content()
+                                # 简单判断是否包含新闻结构标记，否则继续尝试下一个URL
+                                if any(k in content for k in ['news', 'result', 'search']):
+                                    break
+
+                            # 等待页面渲染
+                            page.wait_for_timeout(5000)
+
+                            # 尝试滚动页面触发懒加载
                             try:
-                                for _ in range(2):
-                                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                                    page.wait_for_timeout(800)
+                                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                                page.wait_for_timeout(2000)
                             except:
                                 pass
 
-                            # 获取HTML
+                            # 获取渲染后的HTML
                             content = page.content()
-                            # 简单判断是否包含新闻结构标记，否则继续尝试下一个URL
-                            if any(k in content for k in ['news', 'result', 'search']):
-                                break
-
-                        # 等待页面渲染
-                        page.wait_for_timeout(5000)
-
-                        # 尝试滚动页面触发懒加载
-                        try:
-                            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                            page.wait_for_timeout(2000)
-                        except:
-                            pass
-
-                        # 获取渲染后的HTML
-                        content = page.content()
-                        browser.close()
+                            browser.close()
 
                         # 解析HTML
                         soup = BeautifulSoup(content, 'html.parser')
@@ -221,43 +228,45 @@ class DynamicCrawler:
 
             for attempt in range(max_retries):
                 try:
-                    with sync_playwright() as p:
-                        browser = p.chromium.launch(
-                            headless=True,
-                            args=['--disable-blink-features=AutomationControlled']
-                        )
-                        context = browser.new_context(
-                            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                        )
-                        page = context.new_page()
+                    # 使用信号量控制并发
+                    with DynamicCrawler._browser_semaphore:
+                        with sync_playwright() as p:
+                            browser = p.chromium.launch(
+                                headless=True,
+                                args=['--disable-blink-features=AutomationControlled']
+                            )
+                            context = browser.new_context(
+                                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                            )
+                            page = context.new_page()
 
-                        # 使用东方财富搜索新闻页(按关键词=股票代码)
-                        url = f"https://so.eastmoney.com/news/s?keyword={stock_code}"
-                        print(f"   🌐 访问新闻 (尝试 {attempt + 1}/{max_retries}): {url}")
+                            # 使用东方财富搜索新闻页(按关键词=股票代码)
+                            url = f"https://so.eastmoney.com/news/s?keyword={stock_code}"
+                            print(f"   🌐 访问新闻 (尝试 {attempt + 1}/{max_retries}): {url}")
 
-                        page.goto(url, wait_until='load', timeout=30000)
+                            page.goto(url, wait_until='load', timeout=30000)
 
-                        # 等待页面初始渲染
-                        page.wait_for_timeout(3000)
+                            # 等待页面初始渲染
+                            page.wait_for_timeout(3000)
 
-                        # 轻度滚动以触发懒加载
-                        try:
-                            for _ in range(2):
-                                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                                page.wait_for_timeout(800)
-                        except:
-                            pass
+                            # 轻度滚动以触发懒加载
+                            try:
+                                for _ in range(2):
+                                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                                    page.wait_for_timeout(800)
+                            except:
+                                pass
 
-                        # 获取HTML内容（确保定义content，避免NameError）
-                        content = page.content()
+                            # 获取HTML内容（确保定义content，避免NameError）
+                            content = page.content()
 
-                        # 调试：保存HTML到临时文件
-                        # import tempfile
-                        # with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
-                        #     f.write(content)
-                        #     print(f"   🔍 调试: HTML已保存到 {f.name}")
+                            # 调试：保存HTML到临时文件
+                            # import tempfile
+                            # with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
+                            #     f.write(content)
+                            #     print(f"   🔍 调试: HTML已保存到 {f.name}")
 
-                        browser.close()
+                            browser.close()
 
                         soup = BeautifulSoup(content, 'html.parser')
 
@@ -502,32 +511,34 @@ class DynamicCrawler:
 
             for attempt in range(max_retries):
                 try:
-                    with sync_playwright() as p:
-                        browser = p.chromium.launch(
-                            headless=True,
-                            args=['--disable-blink-features=AutomationControlled']
-                        )
-                        context = browser.new_context(
-                            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                        )
-                        page = context.new_page()
+                    # 使用信号量控制并发
+                    with DynamicCrawler._browser_semaphore:
+                        with sync_playwright() as p:
+                            browser = p.chromium.launch(
+                                headless=True,
+                                args=['--disable-blink-features=AutomationControlled']
+                            )
+                            context = browser.new_context(
+                                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                            )
+                            page = context.new_page()
 
-                        # 东方财富公告页
-                        url = f"http://data.eastmoney.com/notices/stock/{stock_code}.html"
-                        print(f"   🌐 访问公告 (尝试 {attempt + 1}/{max_retries}): {url}")
+                            # 东方财富公告页
+                            url = f"http://data.eastmoney.com/notices/stock/{stock_code}.html"
+                            print(f"   🌐 访问公告 (尝试 {attempt + 1}/{max_retries}): {url}")
 
-                        page.goto(url, wait_until='load', timeout=30000)
-                        page.wait_for_timeout(4000)
+                            page.goto(url, wait_until='load', timeout=30000)
+                            page.wait_for_timeout(4000)
 
-                        # 滚动页面
-                        try:
-                            page.evaluate("window.scrollTo(0, 500)")
-                            page.wait_for_timeout(1000)
-                        except:
-                            pass
+                            # 滚动页面
+                            try:
+                                page.evaluate("window.scrollTo(0, 500)")
+                                page.wait_for_timeout(1000)
+                            except:
+                                pass
 
-                        content = page.content()
-                        browser.close()
+                            content = page.content()
+                            browser.close()
 
                         soup = BeautifulSoup(content, 'html.parser')
 

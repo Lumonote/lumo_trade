@@ -57,6 +57,146 @@ except ImportError as e:
 TECHNICAL_ANALYZER_AVAILABLE = False
 
 
+class TushareDataFetcher:
+    """Tushare数据获取器"""
+
+    def __init__(self, config: Dict[str, Any]):
+        """初始化Tushare API"""
+        self.config = config
+        self.token = config.get('tushare', {}).get('token', '')
+        
+        # 尝试从环境变量获取
+        if not self.token or self.token == "your_tushare_token_here":
+            self.token = os.environ.get('TUSHARE_TOKEN', '')
+            
+        self.pro = None
+        if self.token and TUSHARE_AVAILABLE:
+            try:
+                ts.set_token(self.token)
+                self.pro = ts.pro_api()
+                print("✅ Tushare API已连接")
+            except Exception as e:
+                print(f"⚠️  Tushare连接失败: {e}")
+        else:
+            if not TUSHARE_AVAILABLE:
+                print("⚠️  Tushare模块未安装")
+            else:
+                print("⚠️  未找到Tushare Token，请配置config/tushare_config.json或设置TUSHARE_TOKEN环境变量")
+
+    def _convert_symbol_format(self, symbol: str) -> str:
+        """转换股票代码为Tushare格式"""
+        if not symbol:
+            return ""
+        if symbol.endswith(('.SZ', '.SH', '.BJ')):
+            return symbol
+            
+        # 简单的交易所推断
+        if symbol.startswith(('60', '68')):
+            return f"{symbol}.SH"
+        elif symbol.startswith(('00', '30')):
+            return f"{symbol}.SZ"
+        elif symbol.startswith(('4', '8')):
+            return f"{symbol}.BJ"
+        return symbol
+
+    def fetch_stock_data(self, symbol: str, start_date: str = None, end_date: str = None, 
+                         freq: str = '5min', adj: str = 'qfq') -> Optional[pd.DataFrame]:
+        """从Tushare获取股票数据"""
+        if not self.pro:
+            print("❌ Tushare未初始化，无法获取数据")
+            return None
+
+        ts_code = self._convert_symbol_format(symbol)
+        if not ts_code:
+            print(f"❌ 无效的股票代码: {symbol}")
+            return None
+
+        try:
+            # 处理日期格式
+            start_dt = start_date.replace('-', '') if start_date else ''
+            end_dt = end_date.replace('-', '') if end_date else ''
+            
+            # Tushare freq映射
+            ts_freq = freq
+            if freq == '5min': ts_freq = '5min'
+            elif freq == '1min': ts_freq = '1min'
+            elif freq == 'daily': ts_freq = 'D'
+            
+            print(f"📡 Tushare正在获取 {ts_code} ({freq}) 数据...")
+            
+            # 使用pro_bar通用接口
+            try:
+                df = ts.pro_bar(
+                    ts_code=ts_code,
+                    api=self.pro,
+                    start_date=start_dt,
+                    end_date=end_dt,
+                    freq=ts_freq,
+                    adj=adj,
+                    asset='E'
+                )
+            except UnboundLocalError:
+                # 特别处理Tushare内部可能的UnboundLocalError
+                print(f"⚠️  Tushare pro_bar 内部错误 (UnboundLocalError)，尝试不复权获取...")
+                df = ts.pro_bar(
+                    ts_code=ts_code,
+                    api=self.pro,
+                    start_date=start_dt,
+                    end_date=end_dt,
+                    freq=ts_freq,
+                    adj=None,
+                    asset='E'
+                )
+
+            if df is None or df.empty:
+                print(f"⚠️  Tushare返回空数据: {ts_code}")
+                return None
+                
+            # 转换列名以匹配系统标准
+            # Tushare返回: trade_date, open, high, low, close, vol, amount, ...
+            # 对于分钟数据: trade_time
+            
+            rename_map = {
+                'trade_date': 'timestamp',
+                'trade_time': 'timestamp',
+                'vol': 'volume'
+            }
+            df = df.rename(columns=rename_map)
+            
+            # 确保timestamp格式
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                # 格式化为标准字符串
+                df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # 按时间正序排列
+            df = df.sort_values('timestamp').reset_index(drop=True)
+            
+            return df
+            
+        except Exception as e:
+            print(f"❌ Tushare获取失败: {e}")
+            return None
+
+    def get_stock_info(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """获取股票基本信息"""
+        if not self.pro:
+            return None
+            
+        ts_code = self._convert_symbol_format(symbol)
+        try:
+            df = self.pro.stock_basic(
+                ts_code=ts_code,
+                fields='ts_code,symbol,name,area,industry,market,list_date'
+            )
+            if not df.empty:
+                return df.iloc[0].to_dict()
+            return None
+        except Exception as e:
+            print(f"⚠️  获取股票信息失败: {e}")
+            return None
+
+
 class MultiSourceDataFetcher:
     """多数据源数据获取器"""
 
@@ -522,21 +662,20 @@ class MultiSourceDataFetcher:
             output_dir = Path(self.config.get('data_settings', {}).get('output_dir', './data/'))
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # 转换交易所代码格式 (SZ -> XSHE, SH -> XSHG)
+        # 提取股票代码
         if '.' in symbol:
-            code, exchange = symbol.split('.')
-            if exchange == 'SZ':
-                exchange_code = 'XSHE'
-            elif exchange == 'SH':
-                exchange_code = 'XSHG'
-            else:
-                exchange_code = exchange
+            code = symbol.split('.')[0]
         else:
-            exchange_code = 'XSHG'  # 默认
             code = symbol
 
-        # 生成文件名 (格式: XSHG_5min_600977.csv)
-        filename = f"{exchange_code}_{freq}_{code}.csv"
+        # 统一频率标识
+        if freq in ['5min', '5m']:
+            freq_str = '5m'
+        else:
+            freq_str = freq
+
+        # 生成文件名 (格式: 5m_600977.csv)
+        filename = f"{freq_str}_{code}.csv"
         filepath = output_dir / filename
 
         # 保存数据
@@ -552,335 +691,9 @@ class MultiSourceDataFetcher:
         """获取股票基本信息"""
         if self.tushare_fetcher:
             return self.tushare_fetcher.get_stock_info(symbol)
-        elif self.crawler_manager:
-            # 从爬虫获取基本信息
-            try:
-                crawler_symbol = self._convert_symbol_for_crawler(symbol)
-                # 这里可以扩展爬虫的股票信息获取功能
-                return {'symbol': crawler_symbol, 'name': 'N/A', 'source': 'crawler'}
-            except Exception as e:
-                print(f"⚠️  获取股票信息失败: {e}")
-                return None
+        
+        print("⚠️  Tushare不可用，无法获取详细股票信息")
         return None
-
-
-class TushareDataFetcher:
-    """Tushare数据获取器"""
-
-    def __init__(self, config: Dict[str, Any]):
-        """初始化数据获取器"""
-        self.config = config
-        self.pro = None
-        self._init_tushare()
-
-    def _load_config_legacy(self, config_path: str) -> Dict[str, Any]:
-        """加载配置文件"""
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            return config
-        except FileNotFoundError:
-            print(f"❌ 配置文件不存在: {config_path}")
-            print("请先运行安装脚本创建配置文件")
-            sys.exit(1)
-        except json.JSONDecodeError as e:
-            print(f"❌ 配置文件格式错误: {e}")
-            sys.exit(1)
-
-    def _init_tushare(self):
-        """初始化Tushare连接"""
-        if not TUSHARE_AVAILABLE:
-            raise ImportError("Tushare模块不可用，请安装tushare包")
-
-        token = self.config.get('tushare', {}).get('token', '')
-
-        if not token or token == "请在此处填入您的Tushare Token":
-            raise ValueError(
-                "Tushare Token未配置，请编辑 config/tushare_config.json 文件，填入您的Token。获取Token: https://tushare.pro/register")
-
-        try:
-            ts.set_token(token)
-            self.pro = ts.pro_api()
-            print("✅ Tushare连接成功")
-        except Exception as e:
-            raise ConnectionError(f"Tushare连接失败: {e}，请检查Token是否正确")
-
-    def _convert_symbol_format(self, symbol: str) -> str:
-        """转换股票代码格式"""
-        if not symbol or not isinstance(symbol, str):
-            raise ValueError(f"无效的股票代码: {symbol}")
-
-        # 处理不同的输入格式
-        symbol = symbol.upper().strip()
-
-        # 如果已经是Tushare格式 (000001.SZ)
-        if '.' in symbol and len(symbol.split('.')) == 2:
-            code, exchange = symbol.split('.')
-            if exchange in ['SZ', 'SH']:
-                return symbol
-
-        # 如果只有数字代码
-        if symbol.isdigit():
-            code = symbol.zfill(6)  # 补齐到6位
-            # 检查是否为有效的股票代码格式
-            if code == '000000':
-                raise ValueError(f"无效的股票代码: {symbol} (转换后为000000)")
-            # 根据代码判断交易所
-            if code.startswith(('000', '001', '002', '003', '300')):
-                return f"{code}.SZ"  # 深交所
-            elif code.startswith(('600', '601', '603', '605', '688')):
-                return f"{code}.SH"  # 上交所
-            else:
-                # 默认深交所
-                return f"{code}.SZ"
-
-        # 其他格式尝试直接使用
-        return symbol
-
-    def _get_trading_calendar(self, start_date: str, end_date: str) -> pd.DataFrame:
-        """获取交易日历"""
-        try:
-            cal = self.pro.trade_cal(
-                exchange='SSE',
-                start_date=start_date.replace('-', ''),
-                end_date=end_date.replace('-', ''),
-                is_open='1'
-            )
-            return cal
-        except Exception as e:
-            print(f"⚠️  获取交易日历失败: {e}")
-            return pd.DataFrame()
-
-    def fetch_stock_data(self,
-                         symbol: str,
-                         start_date: str = None,
-                         end_date: str = None,
-                         freq: str = '5min',
-                         adj: str = 'qfq') -> Optional[pd.DataFrame]:
-        """获取股票数据"""
-
-        # 转换股票代码格式
-        ts_symbol = self._convert_symbol_format(symbol)
-        print(f"📊 获取股票数据: {ts_symbol}")
-
-        # 使用传入的时间范围，如果没有则设置合理的动态默认值
-        if not start_date and not end_date:
-            end_date = datetime.now().strftime('%Y%m%d')
-            start_date = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
-            print(f"📅 使用默认一年时间范围")
-        elif not start_date:
-            # 当只提供了结束日期时，动态回溯一年作为开始日期
-            try:
-                end_dt_tmp = datetime.strptime(end_date,
-                                               '%Y%m%d') if end_date and '-' not in end_date else datetime.strptime(
-                    end_date, '%Y-%m-%d')
-                start_date = (end_dt_tmp - timedelta(days=365)).strftime('%Y%m%d')
-                print(f"📅 动态计算开始日期: {start_date}")
-            except Exception:
-                # 解析失败则回退到当前日期减一年
-                start_date = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
-                print(f"📅 回退到默认开始日期: {start_date}")
-        elif not end_date:
-            end_date = datetime.now().strftime('%Y%m%d')
-
-        # 转换日期格式
-        if '-' in start_date:
-            start_date = start_date.replace('-', '')
-        if '-' in end_date:
-            end_date = end_date.replace('-', '')
-
-        print(f"📅 时间范围: {start_date} - {end_date}")
-        print(f"⏱️  频率: {freq}, 复权: {adj}")
-
-        try:
-            # 根据频率选择API
-            if freq in ['1min', '5min', '15min', '30min', '60min']:
-                # 分钟级数据
-                df = self._fetch_intraday_data(ts_symbol, start_date, end_date, freq, adj)
-            else:
-                # 日级数据
-                df = self._fetch_daily_data(ts_symbol, start_date, end_date, adj)
-
-            if df is None or df.empty:
-                print(f"❌ 未获取到数据: {ts_symbol}")
-                return None
-
-            # 数据预处理
-            df = self._preprocess_data(df, freq)
-
-            print(f"✅ 成功获取 {len(df)} 条数据")
-            return df
-
-        except Exception as e:
-            print(f"❌ 获取数据失败: {e}")
-            return None
-
-    def _fetch_intraday_data(self, symbol: str, start_date: str, end_date: str,
-                             freq: str, adj: str) -> Optional[pd.DataFrame]:
-        """获取分钟级数据"""
-        all_data = []
-
-        # 将日期范围分割为小块，避免单次请求数据过多
-        start_dt = datetime.strptime(start_date, '%Y%m%d')
-        end_dt = datetime.strptime(end_date, '%Y%m%d')
-
-        current_dt = start_dt
-        while current_dt <= end_dt:
-            # 每次请求30天的数据
-            chunk_end = min(current_dt + timedelta(days=30), end_dt)
-
-            chunk_start_str = current_dt.strftime('%Y%m%d')
-            chunk_end_str = chunk_end.strftime('%Y%m%d')
-
-            print(f"  获取数据块: {chunk_start_str} - {chunk_end_str}")
-
-            try:
-                df_chunk = ts.pro_bar(
-                    ts_code=symbol,
-                    adj=adj,
-                    start_date=chunk_start_str,
-                    end_date=chunk_end_str,
-                    freq=freq
-                )
-
-                if df_chunk is not None and not df_chunk.empty:
-                    all_data.append(df_chunk)
-
-                # 避免请求过于频繁
-                time.sleep(0.2)
-
-            except Exception as e:
-                print(f"  ⚠️  获取数据块失败: {e}")
-
-            current_dt = chunk_end + timedelta(days=1)
-
-        if not all_data:
-            return None
-
-        # 合并所有数据
-        df = pd.concat(all_data, ignore_index=True)
-        return df
-
-    def _fetch_daily_data(self, symbol: str, start_date: str, end_date: str,
-                          adj: str) -> Optional[pd.DataFrame]:
-        """获取日级数据"""
-        try:
-            df = ts.pro_bar(
-                ts_code=symbol,
-                adj=adj,
-                start_date=start_date,
-                end_date=end_date,
-                freq='D'
-            )
-            return df
-        except Exception as e:
-            print(f"获取日级数据失败: {e}")
-            return None
-
-    def _preprocess_data(self, df: pd.DataFrame, freq: str) -> pd.DataFrame:
-        """数据预处理"""
-        # 重命名列以匹配Kronos格式
-        column_mapping = {
-            'trade_time': 'timestamp',
-            'ts_code': 'symbol',
-            'open': 'open',
-            'high': 'high',
-            'low': 'low',
-            'close': 'close',
-            'vol': 'volume',
-            'amount': 'amount'
-        }
-
-        # 检查并重命名存在的列
-        for old_col, new_col in column_mapping.items():
-            if old_col in df.columns:
-                df = df.rename(columns={old_col: new_col})
-
-        # 处理时间戳
-        if 'timestamp' not in df.columns and 'trade_time' in df.columns:
-            df['timestamp'] = df['trade_time']
-        elif 'timestamp' not in df.columns and 'trade_date' in df.columns:
-            df['timestamp'] = df['trade_date']
-
-        # 删除原始时间列，避免后续处理时产生重复列名
-        for col in ['trade_time', 'trade_date']:
-            if col in df.columns and 'timestamp' in df.columns:
-                df = df.drop(columns=[col])
-
-        # 确保必需的列存在
-        required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-        missing_cols = [col for col in required_cols if col not in df.columns]
-
-        if missing_cols:
-            print(f"⚠️  缺少列: {missing_cols}")
-            # 尝试从其他列推导
-            if 'vol' in df.columns and 'volume' not in df.columns:
-                df['volume'] = df['vol']
-
-        # 按时间排序
-        df = df.sort_values('timestamp').reset_index(drop=True)
-
-        # 去重
-        df = df.drop_duplicates(subset=['timestamp']).reset_index(drop=True)
-
-        return df
-
-    def save_data(self, df: Any, symbol: str, freq: str = '5min') -> str:
-        """保存数据为Kronos兼容格式"""
-        # 优先使用环境变量中的数据目录，适配打包应用
-        data_dir_env = os.environ.get('KRONOS_DATA_DIR')
-        if data_dir_env:
-            output_dir = Path(data_dir_env)
-        else:
-            output_dir = Path(self.config.get('data_settings', {}).get('output_dir', './data/'))
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # 转换交易所代码格式 (SZ -> XSHE, SH -> XSHG)
-        if '.' in symbol:
-            code, exchange = symbol.split('.')
-            if exchange == 'SZ':
-                exchange_code = 'XSHE'
-            elif exchange == 'SH':
-                exchange_code = 'XSHG'
-            else:
-                exchange_code = exchange
-        else:
-            exchange_code = 'XSHG'  # 默认
-            code = symbol
-
-        # 生成文件名 (格式: XSHG_5min_600977.csv)
-        filename = f"{exchange_code}_{freq}_{code}.csv"
-        filepath = output_dir / filename
-
-        # 保存数据
-        try:
-            df.to_csv(filepath, index=False, encoding='utf-8')
-            print(f"✅ 数据已保存: {filepath}")
-            return str(filepath)
-        except Exception as e:
-            print(f"❌ 保存数据失败: {e}")
-            return ""
-
-    def get_stock_info(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """获取股票基本信息"""
-        ts_symbol = self._convert_symbol_format(symbol)
-
-        try:
-            # 获取股票基本信息
-            basic_info = self.pro.stock_basic(
-                ts_code=ts_symbol,
-                fields='ts_code,symbol,name,area,industry,market,list_date'
-            )
-
-            if basic_info.empty:
-                return None
-
-            info = basic_info.iloc[0].to_dict()
-            return info
-
-        except Exception as e:
-            print(f"⚠️  获取股票信息失败: {e}")
-            return None
 
 
 async def main():

@@ -51,6 +51,7 @@ from analysis.data_processor import DataProcessor
 from analysis.fundamental_data_collector import FundamentalDataCollector
 from analysis.news_sentiment_collector import NewsSentimentCollector
 from analysis.investor_sentiment import InvestorSentimentAnalyzer
+from analysis.opportunity_scorer import OpportunityScorer
 # 已移除动态调参模块：from analysis.sampling_tuner import tune_sampling_params
 from analysis.event_analyzer import EventAnalyzer
 from analysis.llm_service import LLMConfig, LLMAnalyzer
@@ -85,7 +86,7 @@ def find_data_file_by_code(stock_code, min5_files):
     for f in min5_files:
         # 提取文件名中的股票代码
         parts = f.name.replace('.csv', '').split('_')
-        file_stock_code = parts[-1] if len(parts) >= 3 else "未知"
+        file_stock_code = parts[-1]
         if file_stock_code == stock_code:
             return f
     return None
@@ -524,35 +525,43 @@ def plot_prediction_enhanced(historical_df, pred_df, stock_code, save_path=None,
         pred_overlap = pred_df[pred_df['timestamps'].dt.date == overlap_date].copy()
         pred_future = pred_df[pred_df['timestamps'].dt.date > overlap_date].copy()
 
-        # 🔧 关键修正：确保重叠日预测和未来预测之间价格连续
-        if not pred_overlap.empty and not pred_future.empty:
-            overlap_last_close = pred_overlap['close'].iloc[-1]
-            future_first_close = pred_future['close'].iloc[0]
-            price_gap = future_first_close - overlap_last_close
-            gap_pct = abs(price_gap / overlap_last_close) * 100
-
-            if gap_pct > 0.5:  # 如果gap超过0.5%，应用修正
-                print(f"  🔧 检测到重叠日→未来日价格断层: {gap_pct:.2f}%，应用修正")
-                print(f"     重叠日终点: ¥{overlap_last_close:.2f} -> 未来日起点: ¥{future_first_close:.2f}")
+        # 🔧 关键修正：确保未来预测从真实历史收盘价开始 (修正"预测起点不对"的问题)
+        if not pred_future.empty:
+            # 确定锚点价格：优先使用真实历史数据的最后收盘价
+            anchor_price = None
+            anchor_source = "未知"
+            
+            if not hist_overlap.empty:
+                anchor_price = hist_overlap['close'].iloc[-1]
+                anchor_source = "真实历史收盘价(重叠日)"
+            elif not hist_non_overlap.empty:
+                anchor_price = hist_non_overlap['close'].iloc[-1]
+                anchor_source = "真实历史收盘价(非重叠日)"
+            elif not pred_overlap.empty:
+                anchor_price = pred_overlap['close'].iloc[-1]
+                anchor_source = "预测重叠日收盘价(无历史数据)"
+            
+            if anchor_price is not None:
+                future_first_close = pred_future['close'].iloc[0]
+                price_gap = future_first_close - anchor_price
+                gap_pct = abs(price_gap / anchor_price) * 100
+                
+                # 总是修正，确保连接平滑
+                print(f"  🔧 优化预测起点 ({anchor_source}):")
+                print(f"     锚点价格: ¥{anchor_price:.2f} -> 原预测起点: ¥{future_first_close:.2f}")
+                print(f"     修正幅度: {gap_pct:.2f}% (平移预测曲线以匹配真实走势)")
 
                 # 🔧 修正原始pred_df，确保修改持久化
                 future_mask = pred_df['timestamps'].dt.date > overlap_date
                 for col in ['open', 'high', 'low', 'close']:
                     pred_df.loc[future_mask, col] = pred_df.loc[future_mask, col] - price_gap
-
-                # ⚠️ 关键：修正后必须重新创建pred_overlap和pred_future，确保使用最新数据！
-                # 因为之前的副本是在修正前创建的，包含旧数据
-                pred_overlap = pred_df[pred_df['timestamps'].dt.date == overlap_date].copy()
+                
+                # ⚠️ 关键：修正后必须重新创建pred_future，确保使用最新数据！
                 pred_future = pred_df[pred_df['timestamps'].dt.date > overlap_date].copy()
-
+                
                 # 验证修正效果
-                new_overlap_last = pred_overlap['close'].iloc[-1]
                 new_future_first = pred_future['close'].iloc[0]
-                new_gap = abs(new_future_first - new_overlap_last)
-                print(f"  ✅ 修正后:")
-                print(f"     重叠日终点: ¥{new_overlap_last:.2f}")
-                print(f"     未来日起点: ¥{new_future_first:.2f}")
-                print(f"     价格差异: ¥{new_gap:.3f} ({abs(new_gap / new_overlap_last) * 100:.2f}%)")
+                print(f"  ✅ 修正后未来日起点: ¥{new_future_first:.2f}")
 
         print(f"📊 数据分离结果:")
         print(f"  - 历史数据(前14天): {len(hist_non_overlap)} 个点")
@@ -1242,7 +1251,7 @@ if not csv_files:
     sys.exit(1)
 
 # 过滤出5分钟数据文件
-min5_files = [f for f in csv_files if "_5min_" in f.name]
+min5_files = [f for f in csv_files if "5m_" in f.name or "_5min_" in f.name]
 
 if not min5_files:
     print("❌ 未找到5分钟数据文件")
@@ -1253,7 +1262,7 @@ if args.list_stocks:
     print("🔍 可用的股票数据文件:")
     for i, f in enumerate(min5_files):
         parts = f.name.replace('.csv', '').split('_')
-        stock_code = parts[-1] if len(parts) >= 3 else "未知"
+        stock_code = parts[-1]
         print(f"  {i + 1}. {stock_code} - {f.name}")
     sys.exit(0)
 
@@ -1267,7 +1276,7 @@ if args.stock_code:
         print("🔍 可用的股票代码:")
         for f in min5_files:
             parts = f.name.replace('.csv', '').split('_')
-            stock_code = parts[-1] if len(parts) >= 3 else "未知"
+            stock_code = parts[-1]
             print(f"  - {stock_code}")
         sys.exit(1)
     else:
@@ -1278,7 +1287,7 @@ else:
     for i, f in enumerate(min5_files):
         # 提取股票代码
         parts = f.name.replace('.csv', '').split('_')
-        stock_code = parts[-1] if len(parts) >= 3 else "未知"
+        stock_code = parts[-1]
         print(f"  {i + 1}. {stock_code} - {f.name}")
 
     # 让用户选择股票或使用第一个
@@ -1296,10 +1305,7 @@ print(f"使用数据文件: {data_file}")
 file_name = data_file.name
 stock_code = "UNKNOWN"
 parts = file_name.replace('.csv', '').split('_')
-if len(parts) >= 3:
-    stock_code = parts[-1]  # 取最后一部分作为股票代码
-elif len(parts) >= 2:
-    stock_code = parts[-1]
+stock_code = parts[-1]
 print(f"🎯 股票代码: {stock_code}")
 
 # 读取现有数据并分析
@@ -1628,7 +1634,21 @@ try:
         primary_name = (m.get('primary_index') or {}).get('name', '所属大盘')
         primary_chg = m.get('primary_change_pct','N/A')
         print(f"    - 大盘情绪: {m.get('overall','未知')} 所属大盘: {primary_name} 涨跌: {primary_chg}%")
-        print(f"    - 板块情绪: {s.get('overall','未知')} ({s.get('sector_name','板块')}) 涨跌: {s.get('change_pct','N/A')}%")
+        
+        # 处理板块情绪数据结构（可能是扁平的默认值，也可能是嵌套的成功值）
+        if 'sector_sentiment' in s and isinstance(s['sector_sentiment'], dict):
+            # 成功获取的嵌套结构
+            s_inner = s['sector_sentiment']
+            s_overall = s_inner.get('overall', '未知')
+            s_change = s_inner.get('change_pct', 'N/A')
+            s_name = s.get('sector_name', '板块')
+        else:
+            # 默认或扁平结构
+            s_overall = s.get('overall', '未知')
+            s_change = s.get('change_pct', 'N/A')
+            s_name = s.get('sector_name', '板块')
+            
+        print(f"    - 板块情绪: {s_overall} ({s_name}) 涨跌: {s_change}%")
         summary = event_data.get("summary", {})
         print("✅ 事件分析完成")
         print(f"    - 综合评级: {summary.get('rating','未知')} (得分: {summary.get('comprehensive_score',0)})")
@@ -1676,7 +1696,7 @@ try:
         top_p=tuned["top_p"],
         sample_count=tuned["sample_count"],
         verbose=True,  # 显示进度
-        global_norm_stats=(global_mean, global_std),  # 传入全局归一化统计
+        # global_norm_stats=(global_mean, global_std),  # 移除全局归一化，使用局部归一化以避免分布偏移
     )
     print("✅ 批量预测完成!")
 
@@ -1702,8 +1722,8 @@ try:
                     print(
                         f"  批次{batch_idx}: warmup结束价格¥{warmup_last_close:.2f}, 预测起点¥{pred_first_close:.2f}, 偏移{offset_pct:+.2f}%")
 
-                    # 如果偏移超过3%，应用修正
-                    if abs(offset_pct) > 3:
+                    # 如果偏移超过0.5%，应用修正
+                    if abs(offset_pct) > 0.5:
                         print(f"  ⚠️ 检测到{abs(offset_pct):.2f}%价格断层，应用锚定修正")
 
                         # 修正所有价格列 - 使用.loc确保原地修改
@@ -2204,8 +2224,24 @@ try:
                         # 提取预测K线数据
                         llm_predicted_kline = llm_analyzer.extract_predicted_kline(result)
 
-                        if not llm_predicted_kline.empty:
+                        # 确保是DataFrame且不为空 - 修复 AttributeError: 'dict' object has no attribute 'empty'
+                        has_llm_prediction = False
+                        if isinstance(llm_predicted_kline, pd.DataFrame) and not llm_predicted_kline.empty:
                             print(f"  📈 提取到 {len(llm_predicted_kline)} 天的AI预测数据")
+                            has_llm_prediction = True
+                        elif isinstance(llm_predicted_kline, dict):
+                             # 尝试从dict中恢复
+                             try:
+                                 if 'predictions' in llm_predicted_kline:
+                                     llm_predicted_kline = pd.DataFrame(llm_predicted_kline['predictions'])
+                                     if not llm_predicted_kline.empty:
+                                         has_llm_prediction = True
+                                         print(f"  ✅ 从字典中恢复了AI预测数据")
+                             except:
+                                 pass
+                        
+                        if not has_llm_prediction:
+                             llm_predicted_kline = pd.DataFrame()
 
                         # 显示分析摘要
                         if 'operation_advice' in result:
@@ -2220,13 +2256,16 @@ try:
                             print(f"\n  📋 AI综合总结：")
                             print(f"     {result['summary']}")
 
-                    # 🎨 重新生成包含LLM预测的图表
-                    if not llm_predicted_kline.empty:
-                        print(f"\n  🎨 重新生成包含AI预测的K线图...")
-                        plot_prediction_enhanced(display_df, pred_df, stock_code, chart_path,
-                                                 training_end_marker, overlap_start_marker,
-                                                 llm_predicted_kline)
-                        print(f"  ✅ 已更新图表,包含Kronos预测和AI预测对比")
+                        # 🎨 重新生成包含LLM预测的图表
+                        if has_llm_prediction and isinstance(llm_predicted_kline, pd.DataFrame) and not llm_predicted_kline.empty:
+                            print(f"\n  🎨 重新生成包含AI预测的K线图...")
+                            try:
+                                plot_prediction_enhanced(display_df, pred_df, stock_code, chart_path,
+                                                         training_end_marker, overlap_start_marker,
+                                                         llm_predicted_kline)
+                                print(f"  ✅ 已更新图表,包含Kronos预测和AI预测对比")
+                            except Exception as e:
+                                print(f"  ⚠️ 更新图表失败: {e}")
                 else:
                     print(f"  ⚠️ LLM分析失败：{result}")
                     print(f"  💡 提示：请检查API配置或网络连接")
@@ -2272,6 +2311,21 @@ try:
 
             print("✅ 综合面数据采集完成\n")
 
+            # 🆕 计算多维度综合评分
+            print("  ⭐ 计算多维度综合评分...")
+            try:
+                scorer = OpportunityScorer()
+                # 注意：prediction_batch_example 通常是针对单只股票或少量股票，这里暂时不传入 global_hot_news
+                scoring_result = scorer.calculate_comprehensive_score(
+                    stock_code=stock_code,
+                    historical_data=df,  # 使用已获取的历史数据
+                    fundamental_data=fundamental_data
+                )
+                print(f"  ✅ 综合得分: {scoring_result.get('total_score', 'N/A')} ({scoring_result.get('rating', 'N/A')})")
+            except Exception as e:
+                print(f"  ⚠️ 评分计算失败: {e}")
+                scoring_result = None
+
             # 从HTML报告生成器导入新的生成函数
             from scripts.html_report_generator import KronosHTMLReportGenerator
 
@@ -2300,6 +2354,7 @@ try:
                 event_data=event_data,  # 利好利空事件数据
                 llm_analysis=llm_analysis_result,  # LLM分析结果
                 llm_predicted_kline=llm_predicted_kline,  # LLM预测K线数据
+                scoring_result=scoring_result,  # 评分结果
                 auto_open=True  # 自动打开浏览器
             )
 

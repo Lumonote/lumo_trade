@@ -46,8 +46,8 @@ class OpportunityDiscovery:
         Args:
             max_workers: 并发处理的最大线程数
         """
-        # 投资机会挖掘流程要求实时数据，禁用热门股票缓存，禁用备用数据源
-        self.hot_stocks_fetcher = HotStocksFetcher(disable_cache=True, allow_fallback=False)
+        # 投资机会挖掘流程要求实时数据，禁用热门股票缓存
+        self.hot_stocks_fetcher = HotStocksFetcher(disable_cache=True)
         self.scorer = OpportunityScorer()
         self.filter = OpportunityFilter()
         # 尊重打包环境的结果目录设置
@@ -162,7 +162,7 @@ class OpportunityDiscovery:
         passed_count = sum(1 for r in filter_results if r.get('passed', False))
         logger.info(f"✓ 筛选完成: {passed_count}/{len(filter_results)} 只股票通过")
 
-        # 额外步骤：采集板块相关新闻（按通过股票的板块频次选取Top板块）
+        # 额外步骤：采集板块相关新闻（按通过股票的板块的板块频次选取Top板块）
         try:
             logger.info("\n附加: 正在采集板块相关新闻（基于通过股票的板块Top）...")
             sector_freq = {}
@@ -303,31 +303,77 @@ class OpportunityDiscovery:
                 code = stock.get('stock_code') or stock.get('code')
                 if not code: continue
 
-                # 构造入选原因 (简单摘要)
+                # 构造入选原因 (优化版：优先热点与强信号)
                 reasons = []
                 score_details = stock.get('scoring_result', {}).get('details', {})
                 
-                # 1. 技术面
-                tech = score_details.get('technical', {})
-                if tech.get('trend') == 'up': reasons.append("趋势向上")
-                
-                # 2. 资金面
-                quant = score_details.get('quantitative', {})
-                buy_ratio = quant.get('buy_ratio')
-                if buy_ratio and float(buy_ratio) > 0.6: reasons.append("资金流入")
-                
-                # 3. 板块
-                sector = score_details.get('sector', {})
-                if sector.get('overall') == '看多': reasons.append(f"板块强势")
-                
-                stock['selection_reason'] = " ".join(reasons) if reasons else "综合评分优异"
+                # 1. 优先使用热门事件/新闻 (热度关联)
+                events = score_details.get('events', {})
+                hot_matches = events.get('hot_news_matches', [])
+                if hot_matches:
+                    # 取热度最高的一条
+                    top_news = hot_matches[0]
+                    title = top_news.get('title', '')
+                    if title:
+                        # 截取适中长度
+                        short_title = title[:20] + '...' if len(title) > 20 else title
+                        reasons.append(f"热点关联: {short_title}")
 
-                # 采集个股新闻
-                logger.info(f"正在采集 {stock.get('name')} ({code}) 的最新新闻...")
-                # 复用 NewsSentimentCollector, 注意它初始化需要code
-                news_collector = NewsSentimentCollector(code)
-                # 获取3条最新新闻
-                latest_news = news_collector.get_latest_news(limit=3)
+                # 2. 龙虎榜大额净买入 (资金强信号)
+                dt = score_details.get('dragon_tiger', {})
+                net_buy = dt.get('net_buy_amount', 0)
+                if net_buy and isinstance(net_buy, (int, float)):
+                    if net_buy > 100000000: # 1亿
+                        reasons.append("龙虎榜净买入超1亿")
+                    elif net_buy > 30000000: # 3000万
+                        reasons.append("龙虎榜大额净买入")
+                
+                # 3. 底部启动/突破 (形态强信号)
+                low_pos = score_details.get('low_position_start', {})
+                if low_pos:
+                    reasons.append("底部放量启动")
+                
+                # 4. 量化信号质量 (模型强信号)
+                quant = score_details.get('quantitative', {})
+                signal_quality = quant.get('signal_quality', '')
+                # 过滤掉普通的描述，只保留强信号描述
+                if signal_quality and any(k in signal_quality for k in ['共振', '启动', '强势', '稀缺']):
+                    reasons.append(signal_quality)
+
+                # 5. 如果以上强理由都没有，才使用通用补救逻辑
+                if not reasons:
+                    # 技术面
+                    tech = score_details.get('technical', {})
+                    if tech.get('trend') == 'up': reasons.append("趋势向上")
+                    
+                    # 资金面
+                    buy_ratio = quant.get('buy_ratio')
+                    if buy_ratio and float(buy_ratio) > 0.6: reasons.append("资金共振")
+                    
+                    # 板块
+                    sector = score_details.get('sector', {})
+                    if sector.get('overall') in ['强势上涨', '偏强', 'bullish', 'slightly_bullish']: 
+                        reasons.append(f"板块强势")
+                
+                stock['selection_reason'] = " + ".join(reasons[:2]) if reasons else "综合评分优异"
+
+                # 采集个股新闻 - 优化：优先使用已有数据，避免重复采集
+                # 从 scoring_result 中提取 events 数据
+                events_data = score_details.get('events', {})
+                latest_news = events_data.get('news_list', [])
+                
+                # 如果 events 中没有新闻，才尝试重新采集
+                if not latest_news:
+                    logger.info(f"正在补充采集 {stock.get('name')} ({code}) 的最新新闻...")
+                    # 复用 NewsSentimentCollector, 注意它初始化需要code
+                    news_collector = NewsSentimentCollector(code)
+                    # 获取3条最新新闻
+                    latest_news = news_collector.get_latest_news(limit=3)
+                else:
+                     # 确保新闻数据格式一致 (只需 title)
+                     # events.news_list 通常是 [{'title':..., 'date':...}, ...]
+                     pass
+
                 stock['latest_news'] = latest_news
                 
             except Exception as e:

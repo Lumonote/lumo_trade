@@ -353,7 +353,21 @@ class KronosStockPredictor:
                 primary_name = (m.get('primary_index') or {}).get('name', '所属大盘')
                 primary_chg = m.get('primary_change_pct','N/A')
                 print(f"    - 大盘情绪: {m.get('overall','未知')} 所属大盘: {primary_name} 涨跌: {primary_chg}%")
-                print(f"    - 板块情绪: {s.get('overall','未知')} ({s.get('sector_name','板块')}) 涨跌: {s.get('change_pct','N/A')}%")
+                
+                # 处理板块情绪数据结构（可能是扁平的默认值，也可能是嵌套的成功值）
+                if 'sector_sentiment' in s and isinstance(s['sector_sentiment'], dict):
+                    # 成功获取的嵌套结构
+                    s_inner = s['sector_sentiment']
+                    s_overall = s_inner.get('overall', '未知')
+                    s_change = s_inner.get('change_pct', 'N/A')
+                    s_name = s.get('sector_name', '板块')
+                else:
+                    # 默认或扁平结构
+                    s_overall = s.get('overall', '未知')
+                    s_change = s.get('change_pct', 'N/A')
+                    s_name = s.get('sector_name', '板块')
+                
+                print(f"    - 板块情绪: {s_overall} ({s_name}) 涨跌: {s_change}%")
                 summary = event_data.get("summary", {})
                 print("✅ 事件分析完成")
                 print(f"    - 综合评级: {summary.get('rating','未知')} (得分: {summary.get('comprehensive_score',0)})")
@@ -831,31 +845,29 @@ class KronosStockPredictor:
                 overlap_timestamps = pred_timestamp[overlap_mask]
                 future_timestamps = pred_timestamp[future_mask]
 
-                # 🔧 关键修正：检查并修复重叠日→未来日的价格断层
-                if not overlap_pred.empty and not future_pred.empty:
-                    overlap_last_close = overlap_pred['close'].iloc[-1]
+                # 🔧 关键修正：确保未来预测从真实历史收盘价开始 (修正"预测起点不对"的问题)
+                if not future_pred.empty:
+                    # 优先使用真实历史收盘价作为锚点
+                    anchor_price = last_hist_price
+                    
                     future_first_close = future_pred['close'].iloc[0]
-                    price_gap = future_first_close - overlap_last_close
-                    gap_pct = abs(price_gap / overlap_last_close) * 100
+                    price_gap = future_first_close - anchor_price
+                    gap_pct = abs(price_gap / anchor_price) * 100
 
-                    if gap_pct > 0.5:  # 如果gap超过0.5%，应用修正
-                        print(f"  🔧 检测到重叠日→未来日价格断层: {gap_pct:.2f}%，应用修正")
-                        print(f"     重叠日终点: ¥{overlap_last_close:.2f} -> 未来日起点: ¥{future_first_close:.2f}")
+                    # 总是修正，确保连接平滑
+                    print(f"  🔧 优化预测起点 (真实历史收盘价):")
+                    print(f"     锚点价格: ¥{anchor_price:.2f} -> 原预测起点: ¥{future_first_close:.2f}")
+                    print(f"     修正幅度: {gap_pct:.2f}% (平移预测曲线以匹配真实走势)")
 
-                        # 修正未来预测数据，确保价格连续性
-                        for col in ['open', 'high', 'low', 'close']:
-                            pred_df.loc[future_mask, col] = pred_df.loc[future_mask, col] - price_gap
+                    # 修正未来预测数据，确保价格连续性
+                    for col in ['open', 'high', 'low', 'close']:
+                        pred_df.loc[future_mask, col] = pred_df.loc[future_mask, col] - price_gap
 
-                        # 重新创建修正后的数据
-                        future_pred = pred_df[future_mask].copy()
+                    # 重新创建修正后的数据
+                    future_pred = pred_df[future_mask].copy()
+                    print(f"  ✅ 修正后未来日起点: ¥{future_pred['close'].iloc[0]:.2f}")
 
-                        # 验证修正效果
-                        new_future_first = future_pred['close'].iloc[0]
-                        new_gap = abs(new_future_first - overlap_last_close)
-                        print(f"  ✅ 修正后:")
-                        print(f"     重叠日终点: ¥{overlap_last_close:.2f}")
-                        print(f"     未来日起点: ¥{new_future_first:.2f}")
-                        print(f"     价格差异: ¥{new_gap:.3f} ({abs(new_gap / overlap_last_close) * 100:.2f}%)")
+
 
                 # 绘制重叠日的预测数据（用虚线表示对比）
                 if not overlap_pred.empty:

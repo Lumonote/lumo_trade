@@ -52,7 +52,7 @@ def build_dummy_analysis_results():
                     'comprehensive_sentiment': '偏乐观',
                     'guba_sentiment': {'bullish_ratio': 64.5, 'bearish_ratio': 18.2, 'neutral_ratio': 17.3},
                     'overall_market_sentiment': {'turnover_emotion': '活跃'},
-                    'capital_flow': {'trend': '净流入', 'strength': '强', 'main_inflow_rate': 3.25},
+                    'capital_flow': {'trend': '净流入', 'strength': '强', 'main_inflow_rate': 3.25, 'main_inflow': 123456789},
                     'dragon_tiger': {'has_records': True, 'last_date': now_date, 'last_signal': '正面', 'last_reason': '机构净买入'},
                     'bonus_reasons': ['主力资金强力净流入 +3', '近期龙虎榜净买入 +3']
                 },

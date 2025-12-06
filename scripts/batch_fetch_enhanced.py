@@ -51,8 +51,8 @@ def get_standard_filename(symbol: str, period: str) -> str:
             exchange_code = 'XSHG'  # 默认上交所
 
     # 转换周期格式
-    if period == '5m':
-        period_str = '5min'
+    if period in ['5m', '5min']:
+        period_str = '5m'
     elif period == '1m':
         period_str = '1min'
     elif period == '15m':
@@ -66,8 +66,8 @@ def get_standard_filename(symbol: str, period: str) -> str:
     else:
         period_str = period
 
-    # 生成标准格式文件名: XSHG_5min_300555.csv
-    return f"{exchange_code}_{period_str}_{code}.csv"
+    # 生成标准格式文件名: 5m_300555.csv
+    return f"{period_str}_{code}.csv"
 
 
 async def batch_fetch_stocks(symbols: List[str], source: str = 'auto',

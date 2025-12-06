@@ -250,10 +250,13 @@ def get_stock_sector_info(stock_code: str) -> Dict:
             current_price = stock_data.get('f43', 0)  # 最新价
 
             # 优先使用 f127 (更可靠)，其次 f100
-            sector_name = stock_data.get('f127') or stock_data.get('f100') or '未知'
+            raw_sector_name = stock_data.get('f127') or stock_data.get('f100')
+            if isinstance(raw_sector_name, str):
+                sector_name = raw_sector_name.strip()
+            else:
+                sector_name = '未知'
 
-            # 过滤无效值
-            if sector_name in [None, '', '-', '--']:
+            if sector_name in ['', '-', '--', 'N/A', 'nan', 'NaN']:
                 sector_name = '未知'
 
             # 获取概念板块（简化版，只返回主要板块）
@@ -336,6 +339,57 @@ def get_stock_sector_info(stock_code: str) -> Dict:
             'industry': '未知',
             'concept_sectors': []
         }
+
+
+# 全局缓存板块列表，避免重复请求
+_SECTOR_LIST_CACHE = None
+_SECTOR_LIST_CACHE_TIME = 0
+_SECTOR_LIST_CACHE_TTL = 3600  # 1小时缓存
+
+def _get_all_sectors() -> list:
+    """
+    获取所有行业板块列表（带缓存和重试）
+    """
+    global _SECTOR_LIST_CACHE, _SECTOR_LIST_CACHE_TIME
+    
+    current_time = time.time()
+    if _SECTOR_LIST_CACHE and (current_time - _SECTOR_LIST_CACHE_TIME < _SECTOR_LIST_CACHE_TTL):
+        return _SECTOR_LIST_CACHE
+
+    url = "http://push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        'pn': '1',
+        'pz': '500',  # 扩大获取数量，确保包含所有行业
+        'po': '1',
+        'np': '1',
+        'fltt': '2',
+        'invt': '2',
+        'fid': 'f3',
+        'fs': 'm:90 t:2',
+        'fields': 'f12,f14,f2,f3,f8'
+    }
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+
+    # 重试3次
+    for attempt in range(3):
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            data = response.json()
+            
+            if data and data.get('data') and data['data'].get('diff'):
+                sectors = data['data']['diff']
+                _SECTOR_LIST_CACHE = sectors
+                _SECTOR_LIST_CACHE_TIME = current_time
+                # print(f"   ✅ 成功获取全市场板块列表: {len(sectors)}个") # Reduce log noise
+                return sectors
+        except Exception as e:
+            print(f"   ⚠️ 获取板块列表失败 (尝试 {attempt+1}/3): {e}")
+            time.sleep(1)
+    
+    return []
 
 
 def get_sector_sentiment(stock_code: str) -> Dict:
@@ -428,25 +482,10 @@ def get_sector_sentiment(stock_code: str) -> Dict:
                 print(f"   ⚠️  通过板块代码获取数据失败: {str(e)}")
 
         # 方法2: 通过行业板块列表匹配（作为备选）
-        sector_url = "http://push2.eastmoney.com/api/qt/clist/get"
-        sector_params = {
-            'pn': '1',
-            'pz': '200',
-            'po': '1',
-            'np': '1',
-            'fltt': '2',
-            'invt': '2',
-            'fid': 'f3',  # 按涨跌幅排序
-            'fs': 'm:90 t:2',  # 行业板块
-            'fields': 'f12,f14,f2,f3,f8'  # 代码、名称、价格、涨跌幅、换手率
-        }
+        # 优化: 使用全局缓存的板块列表，避免重复请求
+        sectors = _get_all_sectors()
 
-        response = requests.get(sector_url, params=sector_params, headers=headers, timeout=10)
-        sector_data = response.json()
-
-        if sector_data.get('data') and sector_data['data'].get('diff'):
-            sectors = sector_data['data']['diff']
-
+        if sectors:
             # 先尝试精确匹配
             for sector in sectors:
                 if sector.get('f14', '') == sector_name or sector.get('f12', '') == sector_code:
@@ -454,10 +493,10 @@ def get_sector_sentiment(stock_code: str) -> Dict:
 
             # 如果精确匹配失败，尝试模糊匹配（去除"行业"、"板块"等后缀）
             import re
-            normalized_name = re.sub(r'(行业|板块|指数|概念|产业|Ⅱ|Ⅰ)', '', sector_name or '')
+            normalized_name = re.sub(r'(行业|板块|指数|概念|产业|Ⅱ|Ⅰ)', '', str(sector_name or ''))
             for sector in sectors:
                 sector_title = sector.get('f14', '')
-                normalized_title = re.sub(r'(行业|板块|指数|概念|产业|Ⅱ|Ⅰ)', '', sector_title)
+                normalized_title = re.sub(r'(行业|板块|指数|概念|产业|Ⅱ|Ⅰ)', '', str(sector_title or ''))
                 if normalized_name and normalized_title and (
                     normalized_name in normalized_title or normalized_title in normalized_name
                 ):
@@ -644,7 +683,7 @@ def _get_default_sector_sentiment(sector_name: str = '未知') -> Dict:
         dict: 默认板块情绪数据
     """
     return {
-        'sector_name': sector_name,
+        'sector_name': str(sector_name) if sector_name else '未知',
         'sentiment_score': 50,
         'overall': '数据不足',
         'change_pct': 0,

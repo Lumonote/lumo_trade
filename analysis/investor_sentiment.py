@@ -215,15 +215,17 @@ class InvestorSentimentAnalyzer:
             return cached
 
         try:
-            # 东方财富资金流向API
+            # 使用历史K线流向接口 (debug_capital_flow.py 验证可用)
+            # 之前使用的实时接口 (push2.eastmoney.com/api/qt/stock/get) 不稳定
             url = "http://push2his.eastmoney.com/api/qt/stock/fflow/kline/get"
             market_id = '1' if self.stock_code.startswith('6') or self.stock_code.startswith('900') else '0'
+            
+            # f51:日期, f52:主力净流入, f53:小单净流入, f54:中单净流入, f55:超大单净流入, f56:大单净流入
             params = {
                 'lmt': '0',
                 'klt': '101',
                 'secid': f"{market_id}.{self.stock_code}",
                 'fields1': 'f1,f2,f3,f7',
-                # f51:日期, f52:主力净流入, f53:小单净流入, f54:中单净流入, f55:超大单净流入, f56:大单净流入
                 'fields2': 'f51,f52,f53,f54,f55,f56'
             }
 
@@ -233,40 +235,32 @@ class InvestorSentimentAnalyzer:
                 if response.status_code == 200:
                     data = response.json()
                 else:
-                    print(f"   ⚠️  API请求失败: HTTP {response.status_code}，尝试使用Curl...")
                     data = self._get_data_via_curl(url, params)
-            except Exception as e:
-                print(f"   ⚠️  Requests请求出错: {e}，尝试使用Curl...")
+            except Exception:
                 data = self._get_data_via_curl(url, params)
 
             if data and data.get('data') and data['data'].get('klines'):
-                latest_data = data['data']['klines'][-1].split(',')
-
-                # Mapping based on debug results:
-                # Index 0: Date
-                # Index 1: Main Net Inflow (f52)
-                # Index 2: Small Net Inflow (f53)
-                # Index 3: Medium Net Inflow (f54)
-                # Index 4: Super Large Net Inflow (f55)
-                # Index 5: Large Net Inflow (f56)
+                klines = data['data']['klines']
+                if not klines:
+                    return self._get_default_capital_flow()
+                    
+                latest_data = klines[-1].split(',')
                 
-                main_inflow = float(latest_data[1]) if len(latest_data) > 1 else 0
-                small_inflow = float(latest_data[2]) if len(latest_data) > 2 else 0
-                medium_inflow = float(latest_data[3]) if len(latest_data) > 3 else 0
-                super_large_inflow = float(latest_data[4]) if len(latest_data) > 4 else 0
-                large_inflow = float(latest_data[5]) if len(latest_data) > 5 else 0
+                # f51,f52,f53,f54,f55,f56 -> Date, Main, Small, Medium, Super, Large
+                date_str = latest_data[0]
+                main_inflow = float(latest_data[1]) if len(latest_data) > 1 else 0.0
+                small_inflow = float(latest_data[2]) if len(latest_data) > 2 else 0.0
+                medium_inflow = float(latest_data[3]) if len(latest_data) > 3 else 0.0
+                super_large_inflow = float(latest_data[4]) if len(latest_data) > 4 else 0.0
+                large_inflow = float(latest_data[5]) if len(latest_data) > 5 else 0.0
                 
                 retail_inflow = small_inflow + medium_inflow
                 
-                # Calculate approximate rate if possible, otherwise 0
-                # We don't have turnover, so set rate to 0
-                main_inflow_rate = 0.0
-
                 capital_flow = {
-                    'date': latest_data[0] if len(latest_data) > 0 else 'N/A',
+                    'date': date_str,
                     'main_inflow': main_inflow,
                     'retail_inflow': retail_inflow,
-                    'main_inflow_rate': main_inflow_rate,
+                    'main_inflow_rate': 0.0, # 暂无法从该接口获取，依靠金额判断强度
                     'super_large_inflow': super_large_inflow,
                     'large_inflow': large_inflow,
                     'medium_inflow': medium_inflow,
@@ -275,17 +269,18 @@ class InvestorSentimentAnalyzer:
 
                 # 判断资金流向趋势
                 capital_flow['trend'] = '流入' if capital_flow['main_inflow'] > 0 else '流出'
-                capital_flow['strength'] = self._classify_capital_strength(capital_flow['main_inflow_rate'], capital_flow['main_inflow'])
+                capital_flow['strength'] = self._classify_capital_strength(0, capital_flow['main_inflow'])
 
                 # 2. 缓存到全局缓存
                 self.global_cache.set_capital_flow(self.stock_code, capital_flow)
 
                 return capital_flow
+            
+            return self._get_default_capital_flow()
 
         except Exception as e:
-            print(f"⚠️ 获取资金流向失败: {str(e)}")
-
-        return self._get_default_capital_flow()
+            print(f"   ⚠️  获取资金流向出错: {e}")
+            return self._get_default_capital_flow()
 
     def get_dragon_tiger_list(self, limit: int = 10, days: int = 1):
         """
@@ -2107,10 +2102,27 @@ class InvestorSentimentAnalyzer:
             print(f"   ⚠️  备用方案也失败: {str(e)}")
         
         # 最终回退到默认值
-        print(f"   ⚠️  获取股票板块信息失败，使用默认值")
+        print(f"   ⚠️  获取股票板块信息失败，使用大盘情绪兜底")
+        
+        # 尝试获取大盘情绪作为参考
+        market_sentiment = self.get_overall_market_sentiment()
+        
         return {
-            'sector_name': 'N/A',
-            'sector_sentiment': self._get_default_sector_sentiment()
+            'sector_name': '综合行业',
+            'sector_sentiment': {
+                'sector_name': '综合行业',
+                'sector_code': '000000',
+                'change_pct': market_sentiment.get('avg_change_pct', 0),
+                'turnover_rate': 'N/A',
+                'sentiment_score': market_sentiment.get('sentiment_score', 50),
+                'overall': market_sentiment.get('overall', '中性'),
+                'emotion': market_sentiment.get('emotion', 'neutral')
+            },
+            'stock_name': '未知',
+            'current_price': 0,
+            'industry': '综合',
+            'concept_sectors': [],
+            'data_source': 'market_fallback'
         }
     
     def _infer_sector_from_name(self, stock_name):

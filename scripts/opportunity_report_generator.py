@@ -77,6 +77,17 @@ class OpportunityReportGenerator:
         # TOP 推荐（完整排序，前端默认显示10行并可滚动）
         top_10 = sorted(passed_stocks, key=lambda x: x.get('final_score', 0), reverse=True)
 
+        # 量化优先排名（量化模型数量优先 + 分数排名）
+        def quant_sort_key(stock):
+            score = stock.get('final_score', 0)
+            details = (stock.get('scoring_result') or {}).get('details') or {}
+            quant = details.get('quantitative') or {}
+            models = quant.get('top_buy_models') or []
+            model_count = len(models)
+            return (model_count, score)
+
+        quant_top_10 = sorted(passed_stocks, key=quant_sort_key, reverse=True)
+
         # 按淘汰阶段分组
         grouped_stocks = self._group_by_elimination_stage(analysis_results)
 
@@ -88,6 +99,7 @@ class OpportunityReportGenerator:
             stage_stats=stage_stats,
             funnel_data=funnel_data,
             top_10=top_10,
+            quant_top_10=quant_top_10,
             grouped_stocks=grouped_stocks,
             global_hot_news=global_hot_news or [],
             sector_hot_news=sector_hot_news or [],
@@ -108,17 +120,38 @@ class OpportunityReportGenerator:
             md_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             md_filename = f"opportunity_top10_{md_timestamp}.md"
             md_path = os.path.join(self.output_dir, md_filename)
+
+            MODEL_DISPLAY_MAP = {
+                'balance_dual_moving': '均衡双均线', 'multi_breakthrough': '多重突破', 'support_resistance': '支撑阻力',
+                'trend_pullback': '趋势回踩', 'ma_resonance': '均线共振', 'super_reversal': '超级反转',
+                'capital_trend': '资金趋势', 'volume_breakthrough': '量能突破', 'three_sisters': '三姐妹形态',
+                'macd_axis_golden_cross': '轴心MACD金叉', 'six_dimension_resonance': '六维共振',
+                'statistical_quantitative': '统计量化', 'super_profit_limit_up': '超额涨停',
+                'turtle_trading_system': '海龟交易', 'atr_momentum': 'ATR动量', 'cta_trend_strategy': 'CTA趋势',
+                'machine_learning_rf': '机器学习RF', 'multi_factor_alpha': '多因子Alpha',
+                'pairs_trading_arbitrage': '配对交易套利', 'hft_microstructure': '高频微结构',
+                'ichimoku_cloud': '一目均衡云', 'bollinger_squeeze': '布林收敛', 'rsi_divergence': 'RSI背离',
+                'stochastic_momentum': '随机动量', 'volume_price_trend': '量价趋势', 'parabolic_sar': '抛物转向SAR',
+                'chaikin_money_flow': '切金资金流', 'elder_ray': 'Elder射线', 'vwap_deviation': 'VWAP偏离',
+                'fractal_adaptive_ma': '分形自适应均线'
+            }
+
             lines = []
             lines.append("# 投资机会挖掘 TOP10 报告")
             lines.append(f"\n生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            lines.append(" | 排名 | 代码 | 股票名称   | 综合得分 | 所有指标信息 | ")
-            lines.append(" |------|------|------------|----------|--------------| ")
+
+            # 综合排名 TOP10
+            lines.append("## 🏆 综合排名 TOP10")
+            lines.append(" | 排名 | 代码 | 股票名称 | 综合得分 | 所有指标信息 | ")
+            lines.append(" |------|------|----------|----------|--------------| ")
+
             for i, stock in enumerate(top_10[:10], 1):
                 code = stock.get('stock_code') or stock.get('code') or '未知'
                 name_txt = stock.get('name', '未知')
                 score = float(stock.get('final_score', 0) or 0)
+
                 summary_txt = self._build_full_indicator_summary(stock)
-                lines.append(f" | {i}    | {code} | {name_txt}   | {score:.2f}    | {summary_txt} | ")
+                lines.append(f" | {i} | {code} | {name_txt} | {score:.2f} | {summary_txt} | ")
 
             # 添加LLM智能分析结果
             llm_stocks = [s for s in top_10[:10] if s.get('llm_analysis')]
@@ -309,7 +342,7 @@ class OpportunityReportGenerator:
         return grouped
 
     def _generate_html(self, report_title: str, total_count: int, passed_count: int,
-                      stage_stats: Dict, funnel_data: List[Dict], top_10: List[Dict],
+                      stage_stats: Dict, funnel_data: List[Dict], top_10: List[Dict], quant_top_10: List[Dict],
                       grouped_stocks: Dict, global_hot_news: List[Dict], sector_hot_news: List[Dict], hot_news_title: str = None) -> str:
         """生成HTML内容"""
 
@@ -888,7 +921,7 @@ class OpportunityReportGenerator:
 
         /* TOP列表容器，默认显示约10行并允许滚动 */
         .top-table-container {{
-            max-height: 540px; /* 约10行 */
+            max-height: 540px;
             overflow-y: auto;
             border-radius: 12px;
             box-shadow: 0 5px 20px rgba(0,0,0,0.25);
@@ -1387,6 +1420,7 @@ class OpportunityReportGenerator:
             # 2. 量化
             qd = details.get('quantitative') or {}
             buy_count = qd.get('buy_count') or 0
+            sell_count = qd.get('sell_count') or 0
             total_count = qd.get('total_count') or 0
             buy_ratio = qd.get('buy_ratio')
             buy_pct = f"{int(round(float(buy_ratio)*100))}%" if buy_ratio is not None else '—'
@@ -1426,7 +1460,7 @@ class OpportunityReportGenerator:
                 'fractal_adaptive_ma': '分形自适应均线'
             }
             model_names = '、'.join([MODEL_DISPLAY_MAP.get(m, m) for m in models[:3]]) if models else '无'
-            quant_str = f"买{buy_count}/总{total_count}({buy_pct})，{_fmt_score(quant_score)}分，模型[{model_names}]"
+            quant_str = f"买{buy_count}/卖{sell_count}/总{total_count}({buy_pct})，{_fmt_score(quant_score)}分，模型[{model_names}]"
 
             # 3. 技术
             tech = details.get('technical') or {}
@@ -1458,7 +1492,8 @@ class OpportunityReportGenerator:
             dt = sd.get('dragon_tiger') or {}
             dt_signal = dt.get('last_signal') or '—'
             dt_date = dt.get('last_date')
-            dt_info = f"龙虎榜:{dt_signal}" + (f"({dt_date})" if dt_date else "")
+            dt_net = _fmt_money(dt.get('net_buy_amount'))
+            dt_info = f"龙虎榜:{dt_signal}(净额{dt_net})" + (f"({dt_date})" if dt_date else "")
             
             sent_str = f"情绪:{inv_sent}，资金:{cf_trend}({cf_str}, 净额{cf_amt})，{dt_info}，{_fmt_score(sent_score)}分"
 
@@ -1649,7 +1684,7 @@ class OpportunityReportGenerator:
                         f"股民 {scores.get('sentiment', 0):.1f}分 · 权重 {wpct('sentiment')} · 综情 {inv_score_str} · {inv_sent or '中性'}"
                         f" · 资金 {cf_trend or '未知'}({cf_strength or '未知'}) · 净额 {cf_amt_str}；"
                         f"板块 {scores.get('sector', 0):.1f}分 · 权重 {wpct('sector')} · {sec_name or '所属板块'} {sec_chg_str} · 换手 {sec_turn_str} · {sec_overall or '中性'}"
-                        f" · 龙虎榜 {dt_signal or '中性'}{'' if not dt_date else f'({dt_date})'}"
+                        f" · 龙虎榜 {dt_signal or '中性'}(净额{_fmt_money(dt.get('net_buy_amount'))}){'' if not dt_date else f'({dt_date})'}"
                     )
                 elif stage_num == 4:
                     meta = f"维度得分 {scores.get('fundamental', 0):.1f}分 · 权重 {wpct('fundamental')} · PE {pe_str} · 营收 {rev_str} · 利润 {prof_str}"
@@ -1714,51 +1749,60 @@ class OpportunityReportGenerator:
             return ''
 
         try:
-            # 处理多模型或单模型结果
-            result = None
-            model_name = ''
-            if any(k in llm_result for k in ['qwen', 'deepseek']):
-                for mn, mr in llm_result.items():
-                    if isinstance(mr, dict) and 'error' not in mr:
-                        result = mr
-                        model_name = mn
-                        break
-            else:
-                result = llm_result
-                model_name = llm_result.get('llm_model', '')
+            # 收集所有有效的模型结果
+            valid_results = []
+            
+            # 1. 尝试作为多模型结果处理：优先按固定顺序检查已知模型
+            if isinstance(llm_result, dict):
+                for known_model in ['qwen', 'deepseek']:
+                    if known_model in llm_result:
+                        mr = llm_result[known_model]
+                        if isinstance(mr, dict) and 'error' not in mr:
+                            valid_results.append((known_model, mr))
 
-            if not result:
+            # 2. 如果未找到多模型结果，尝试作为单模型结果处理
+            if not valid_results and isinstance(llm_result, dict) and 'operation_advice' in llm_result:
+                model_name = llm_result.get('llm_model', 'AI')
+                valid_results.append((model_name, llm_result))
+
+            if not valid_results:
                 return ''
 
-            # 提取关键信息
-            operation = result.get('operation_advice', {})
-            action = operation.get('action', '')
-            position = operation.get('position_control', '')
-            confidence = operation.get('confidence', 0)
+            html_output = []
+            
+            # 对每个有效结果生成简短分析 HTML
+            for model_name, result in valid_results:
+                # 提取关键信息
+                operation = result.get('operation_advice', {})
+                action = operation.get('action', '')
+                position = operation.get('position_control', '')
+                confidence = operation.get('confidence', 0)
 
-            risk = result.get('risk_assessment', {})
-            risk_level = risk.get('risk_level', '')
+                risk = result.get('risk_assessment', {})
+                risk_level = risk.get('risk_level', '')
 
-            kline = result.get('kline_prediction', {})
-            trend = kline.get('trend', '')
+                kline = result.get('kline_prediction', {})
+                trend = kline.get('trend', '')
 
-            # 构建简短AI分析
-            parts = []
-            if action:
-                action_icon = '🟢' if action == '买入' else ('🔴' if action == '卖出' else '🟡')
-                parts.append(f"{action_icon}{action}")
-            if position:
-                parts.append(f"仓位{position}")
-            if trend:
-                parts.append(f"趋势{trend}")
-            if risk_level:
-                parts.append(f"{risk_level}风险")
-            if confidence:
-                parts.append(f"置信{confidence*100:.0f}%")
+                # 构建简短AI分析
+                parts = []
+                if action:
+                    action_icon = '🟢' if action == '买入' else ('🔴' if action == '卖出' else '🟡')
+                    parts.append(f"{action_icon}{action}")
+                if position:
+                    parts.append(f"仓位{position}")
+                if trend:
+                    parts.append(f"趋势{trend}")
+                if risk_level:
+                    parts.append(f"{risk_level}风险")
+                if confidence:
+                    parts.append(f"置信{confidence*100:.0f}%")
 
-            if parts:
-                model_tag = {'qwen': '千问', 'deepseek': 'DS'}.get(model_name, 'AI')
-                return f'<div class="ai-brief"><span class="ai-tag">{model_tag}</span>{" · ".join(parts)}</div>'
+                if parts:
+                    model_tag = {'qwen': '千问', 'deepseek': 'DS'}.get(model_name, model_name.upper() if len(model_name) <= 3 else 'AI')
+                    html_output.append(f'<div class="ai-brief"><span class="ai-tag">{model_tag}</span>{" · ".join(parts)}</div>')
+
+            return "".join(html_output)
 
         except Exception as e:
             pass
