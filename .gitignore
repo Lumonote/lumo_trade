@@ -10,6 +10,7 @@ dist/
 cache/
 downloads/
 results/
+webui/prediction_results/
 models/
 packaging/builds/
 data/
@@ -38,7 +39,7 @@ CLAUDE.md
 
 .trae/
 .cache/
-
+results/
 # macOS
 .DS_Store
 .AppleDouble
