@@ -1310,6 +1310,26 @@ print(f"🎯 股票代码: {stock_code}")
 
 # 读取现有数据并分析
 df = pd.read_csv(str(data_file))
+
+# 处理列名不一致问题
+if 'timestamp' in df.columns and 'timestamps' not in df.columns:
+    df.rename(columns={'timestamp': 'timestamps'}, inplace=True)
+elif 'date' in df.columns and 'timestamps' not in df.columns:
+    df.rename(columns={'date': 'timestamps'}, inplace=True)
+
+# 再次检查，如果还是没有timestamps，打印所有列名以便调试
+if 'timestamps' not in df.columns:
+    print(f"❌ 列名错误: 找不到时间戳列，现有列: {list(df.columns)}")
+    # 尝试模糊匹配
+    for col in df.columns:
+        if 'time' in col.lower() or 'date' in col.lower():
+            print(f"⚠️  尝试使用列 '{col}' 作为时间戳")
+            df.rename(columns={col: 'timestamps'}, inplace=True)
+            break
+    
+    if 'timestamps' not in df.columns:
+        sys.exit(1)
+
 df['timestamps'] = pd.to_datetime(df['timestamps'])
 
 # 验证数据

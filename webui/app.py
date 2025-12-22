@@ -9,6 +9,11 @@ from flask_cors import CORS
 import sys
 import warnings
 import datetime
+import threading
+import time
+import random
+import math
+import urllib.request
 
 warnings.filterwarnings('ignore')
 
@@ -58,6 +63,265 @@ AVAILABLE_MODELS = {
         'description': 'Base model, provides better prediction quality'
     }
 }
+
+
+# --- Market Data Configuration & Logic ---
+
+# Real Stock Mapping (A-Share Codes)
+REAL_CODES_MAP = {
+    'ai': ['sz002230', 'sh688256', 'sh601360', 'sz000977', 'sh603019', 'sh601138', 'sh688111', 'sz300418'],
+    'robot': ['sz300124', 'sz002747', 'sh603728', 'sh688017', 'sz002050', 'sh601689'],
+    'quantum': ['sh688027', 'sz000555', 'sz300520', 'sh600120'],
+    'fusion': ['sz000969', 'sh600105', 'sh688122', 'sh600363'],
+    'space': ['sh600118', 'sh600879', 'sh601698', 'sh688568']
+}
+
+SECTORS = [
+    { "id": 0, "key": 'ai', "name": 'AGI', "color": '#ff0055', "angle": 0, "count": 800, "hot": True },
+    { "id": 1, "key": 'robot', "name": 'Humanoid Robots', "color": '#00ff88', "angle": 1.2, "count": 600, "hot": True },
+    { "id": 2, "key": 'quantum', "name": 'Quantum Computing', "color": '#00ccff', "angle": 2.4, "count": 500, "hot": False },
+    { "id": 3, "key": 'fusion', "name": 'Nuclear Fusion', "color": '#ffff00', "angle": 3.6, "count": 400, "hot": True },
+    { "id": 4, "key": 'space', "name": 'Deep Space', "color": '#ff8800', "angle": 4.8, "count": 450, "hot": False },
+]
+
+# Flatten codes for API fetching
+ALL_REAL_CODES = []
+for k, v in REAL_CODES_MAP.items():
+    ALL_REAL_CODES.extend(v)
+
+# Market Global State
+market_state = {
+    "stocks": [],
+    "index": 3824.56,
+    "index_change": 2.15,
+    "trades": [],
+    "news": [],
+    "sectors": SECTORS,
+    "last_update": time.time(),
+    "real_data_cache": {} # code -> {price, change, name}
+}
+
+# Initial News Data
+INITIAL_NEWS = [
+    { "tag": "Breaking", "title": "Dec 7, 2025: A-Share stands at 3800, AI sector explodes" },
+    { "tag": "Policy", "title": "AGI Development Plan (2025-2030) released, trillion-dollar market opens" },
+    { "tag": "Flash", "title": "First consumer humanoid robot 'Optimus-C' sold out in seconds" },
+    { "tag": "Tech", "title": "CAS announces major breakthrough in quantum computer 'Jiuzhang 4'" },
+    { "tag": "Market", "title": "Northbound capital net inflow exceeds 15B, focusing on hard tech" },
+    { "tag": "Company", "title": "Huawei releases 6G prototype, communication industry sees new revolution" },
+    { "tag": "Warning", "title": "Abnormal capital inflow detected in 'Nuclear Fusion' sector, beware of chasing highs" }
+]
+
+def generate_market_news():
+    """Generate dynamic market news based on current market state"""
+    try:
+        # Find top performing sector
+        top_sector = None
+        max_change = -100
+        
+        for stock in market_state["stocks"]:
+            if stock.get("real_api_code") and stock["change"] > max_change:
+                max_change = stock["change"]
+                # Find sector name
+                for s in SECTORS:
+                    if s["id"] == stock["sectorId"]:
+                        top_sector = s["name"]
+                        break
+        
+        if top_sector and max_change > 3.0:
+            return {
+                "tag": "Market",
+                "title": f"Sector Alert: {top_sector} leads the rally with top gainers up {max_change:.1f}%"
+            }
+            
+        # Random generic news
+        templates = [
+            ("Tech", "Global AI computing power demand surges, semiconductor sector benefits"),
+            ("Policy", "Central Bank: Maintain reasonable and sufficient liquidity"),
+            ("Market", "Main board turnover exceeds 1 trillion in morning session"),
+            ("Flash", "New battery technology achieves energy density breakthrough")
+        ]
+        t = random.choice(templates)
+        return { "tag": t[0], "title": t[1] }
+        
+    except Exception:
+        return None
+
+def init_market():
+    global_index = 0
+    # Clear existing stocks to prevent duplication on re-init
+    market_state["stocks"] = []
+    market_state["news"] = list(INITIAL_NEWS)
+    market_state["sectors"] = SECTORS
+    
+    for sector in SECTORS:
+        real_codes = REAL_CODES_MAP.get(sector["key"], [])
+        
+        for i in range(sector["count"]):
+            # Position (Spiral Galaxy Logic)
+            arm_offset = sector["angle"]
+            distance = random.random() * 40 + 10
+            angle = distance * 0.1 + arm_offset
+            x = math.cos(angle) * distance + (random.random() - 0.5) * 5
+            y = (random.random() - 0.5) * (distance * 0.2)
+            z = math.sin(angle) * distance + (random.random() - 0.5) * 5
+
+            # Determine if this is a "Real" monitored stock or a "Background" particle
+            is_real_monitored = i < len(real_codes)
+            
+            stock_code = "UNKNOWN"
+            stock_name = "Unknown"
+            
+            if is_real_monitored:
+                # Map to a real stock code
+                full_code = real_codes[i] # e.g. sz002230
+                stock_code = full_code[2:] # 002230
+                stock_name = "Loading..." 
+            else:
+                # Background particle
+                stock_code = ('60' if random.random() > 0.5 else '00') + str(random.randint(0, 9999)).zfill(4)
+                stock_name = sector["name"] + " Stock"
+
+            stock = {
+                "index": global_index,
+                "id": f"{sector['key']}-{i}",
+                "sectorId": sector["id"],
+                "real_api_code": real_codes[i] if is_real_monitored else None,
+                "name": stock_name,
+                "code": stock_code,
+                "price": 0.0,
+                "change": 0.0,
+                "volume": 0,
+                "isLimitUp": False,
+                "position": [x, y, z],
+                "tags": [sector["name"]]
+            }
+            market_state["stocks"].append(stock)
+            global_index += 1
+            
+    print(f"Market initialized with {len(market_state['stocks'])} stocks.")
+
+def fetch_real_market_data():
+    try:
+        url = f"http://qt.gtimg.cn/q={','.join(ALL_REAL_CODES)}"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as f:
+            content = f.read().decode('gbk')
+        
+        lines = content.strip().split(';')
+        total_change = 0
+        count = 0
+        
+        for line in lines:
+            if '="' in line:
+                parts = line.split('="')
+                if len(parts) < 2: continue
+                
+                api_code = parts[0].strip().replace('v_', '')
+                data_str = parts[1].strip('"')
+                fields = data_str.split('~')
+                
+                if len(fields) > 30:
+                    name = fields[1]
+                    current_price = float(fields[3])
+                    prev_close = float(fields[4])
+                    
+                    change_pct = 0.0
+                    if prev_close > 0:
+                        change_pct = (current_price - prev_close) / prev_close * 100
+                    
+                    volume = float(fields[6]) # Hand/Lot
+                    
+                    market_state["real_data_cache"][api_code] = {
+                        "name": name,
+                        "price": current_price,
+                        "change": change_pct,
+                        "volume": volume
+                    }
+                    
+                    total_change += change_pct
+                    count += 1
+        
+        if count > 0:
+            avg_change = total_change / count
+            market_state["index_change"] = avg_change
+            market_state["index"] = 3800 * (1 + avg_change / 100)
+            
+    except Exception as e:
+        print(f"Error fetching real data: {e}")
+
+def monitor_loop():
+    print("Market data monitor started...")
+    while True:
+        try:
+            # 1. Fetch Real Data
+            fetch_real_market_data()
+            
+            # 2. Update Stocks
+            for stock in market_state["stocks"]:
+                if stock["real_api_code"]:
+                    # Update Real Stocks
+                    data = market_state["real_data_cache"].get(stock["real_api_code"])
+                    if data:
+                        stock["name"] = data["name"] 
+                        stock["price"] = data["price"]
+                        stock["change"] = data["change"]
+                        stock["volume"] = data["volume"]
+                        stock["isLimitUp"] = data["change"] > 9.5
+                        
+                        # Update tags
+                        stock["tags"] = [SECTORS[stock["sectorId"]]["name"]]
+                        if data["change"] > 5: stock["tags"].append("Inflow")
+                else:
+                    # Update Background Particles
+                    sector_key = SECTORS[stock["sectorId"]]["key"]
+                    leaders = REAL_CODES_MAP.get(sector_key, [])
+                    
+                    base_change = 0
+                    if leaders:
+                        leader_code = leaders[0]
+                        leader_data = market_state["real_data_cache"].get(leader_code)
+                        if leader_data:
+                            base_change = leader_data["change"]
+                    
+                    noise = (random.random() - 0.5) * 2
+                    stock["change"] = base_change + noise
+                    stock["price"] = max(2.0, stock["price"] * (1 + stock["change"]/1000))
+                    
+            # 3. Generate "Real" Trades
+            current_time = time.time()
+            if len(market_state["trades"]) < 15:
+                for stock in market_state["stocks"]:
+                    if stock["real_api_code"] and abs(stock["change"]) > 2.0:
+                        if random.random() < 0.1:
+                            amount = round(random.random() * 10 + 1, 1)
+                            trade = {
+                                "targetId": stock["id"],
+                                "targetName": stock["name"],
+                                "targetPos": stock["position"],
+                                "amount": amount,
+                                "timestamp": current_time
+                            }
+                            if not any(t["targetId"] == stock["id"] for t in market_state["trades"]):
+                                market_state["trades"].append(trade)
+
+            # Cleanup trades
+            market_state["trades"] = [t for t in market_state["trades"] if current_time - t["timestamp"] < 5]
+            
+            # 4. Update Dynamic News
+            if random.random() < 0.1: # 10% chance per loop (approx every 20s)
+                new_news = generate_market_news()
+                if new_news:
+                    # Check duplication
+                    if not market_state["news"] or market_state["news"][0]["title"] != new_news["title"]:
+                        market_state["news"].insert(0, new_news)
+                        if len(market_state["news"]) > 20:
+                            market_state["news"] = market_state["news"][:20]
+
+        except Exception as e:
+            print(f"Error in monitor loop: {e}")
+            
+        time.sleep(2.0)
 
 
 def load_data_files():
@@ -764,8 +1028,30 @@ def get_model_status():
         })
 
 
+@app.route('/particles')
+def particles():
+    """Render market particles visualization"""
+    return render_template('market_particles.html')
+
+
+@app.route('/api/snapshot')
+def get_snapshot():
+    """Get real-time market snapshot"""
+    return jsonify(market_state)
+
+
+# Initialize Market Data on startup
+print("Initializing market data...")
+init_market()
+
+# Start Monitor Thread
+monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
+monitor_thread.start()
+
+
 if __name__ == '__main__':
     print("Starting Kronos Web UI...")
+    
     print(f"Model availability: {MODEL_AVAILABLE}")
     if MODEL_AVAILABLE:
         print("Tip: You can load Kronos model through /api/load-model endpoint")

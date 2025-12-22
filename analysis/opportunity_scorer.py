@@ -60,16 +60,16 @@ class OpportunityScorer:
     # 维度权重配置 (v4.1 游资思维重构版)
     # 核心理念：位置时机+量价结构是决策核心，情绪是反指标，龙虎榜是机构动向参考
     DIMENSION_WEIGHTS = {
-        'position_timing': 0.18, # 【核心】位置与时机（低吸高抛核心）
-        'volume_health': 0.16, # 【核心】量价结构（资金验证）
-        'technical': 0.16, # 技术分析（形态+指标共振）
-        'quantitative': 0.22,# 量化模型（信号质量评估）
+        'position_timing': 0.16, # 【核心】位置与时机（低吸高抛核心）
+        'volume_health': 0.14, # 【核心】量价结构（资金验证）
+        'technical': 0.12, # 技术分析（形态+指标共振）
+        'quantitative': 0.35,# 【核心增强】量化模型（信号质量评估，用户要求大幅加权）
         'liquidity': 0.08,# 流动性（门槛检查）
-        'sector': 0.08, # 板块强度
-        'dragon_tiger': 0.06,# 龙虎榜（机构/游资动向）- v4.1新增权重
-        'fundamental': 0.04,# 基本面（降权，短线弱相关）
-        'events': 0.03, # 消息催化
-        'sentiment': 0.01,# 情绪面（极低权重，反指标）
+        'sector': 0.06, # 板块强度
+        'dragon_tiger': 0.04,# 龙虎榜（机构/游资动向）- v4.1新增权重
+        'fundamental': 0.03,# 基本面（降权，短线弱相关）
+        'events': 0.02, # 消息催化
+        'sentiment': 0.00,# 情绪面（反指标，暂忽略）
     }
 
     # 一票否决阈值 (v4.0 强化风控)
@@ -87,51 +87,51 @@ class OpportunityScorer:
     DYNAMIC_WEIGHT_PROFILES = {
         # 基础模板：均衡配置
         'base': {
-            'position_timing': 0.22,
-            'volume_health': 0.20,
-            'technical': 0.16,
-            'quantitative': 0.18,
+            'position_timing': 0.18,
+            'volume_health': 0.14,
+            'technical': 0.12,
+            'quantitative': 0.35,
             'liquidity': 0.08,
-            'sector': 0.08,
-            'fundamental': 0.04,
-            'events': 0.03,
+            'sector': 0.06,
+            'fundamental': 0.03,
+            'events': 0.02,
             'sentiment': 0.01,
         },
         # 底部启动模板：强调位置和量价
         'bottom_start': {
-            'position_timing': 0.28,
-            'volume_health': 0.25,
-            'technical': 0.13,
-            'quantitative': 0.16,
+            'position_timing': 0.22,
+            'volume_health': 0.18,
+            'technical': 0.10,
+            'quantitative': 0.35,
             'liquidity': 0.08,
-            'sector': 0.05,
-            'fundamental': 0.03,
+            'sector': 0.04,
+            'fundamental': 0.02,
             'events': 0.01,
-            'sentiment': 0.01,
+            'sentiment': 0.00,
         },
         # 趋势接力模板：强调技术和量价
         'trend_continuation': {
-            'position_timing': 0.18,
-            'volume_health': 0.22,
-            'technical': 0.21,
-            'quantitative': 0.18,
+            'position_timing': 0.16,
+            'volume_health': 0.16,
+            'technical': 0.16,
+            'quantitative': 0.35,
             'liquidity': 0.08,
-            'sector': 0.08,
-            'fundamental': 0.03,
+            'sector': 0.05,
+            'fundamental': 0.02,
             'events': 0.01,
             'sentiment': 0.01,
         },
         # 消息驱动模板：强调事件催化
         'news_driven': {
-            'position_timing': 0.16,
-            'volume_health': 0.18,
-            'technical': 0.12,
-            'quantitative': 0.16,
+            'position_timing': 0.14,
+            'volume_health': 0.14,
+            'technical': 0.10,
+            'quantitative': 0.30,
             'liquidity': 0.08,
-            'sector': 0.10,
-            'fundamental': 0.06,
-            'events': 0.10,
-            'sentiment': 0.04,
+            'sector': 0.06,
+            'fundamental': 0.04,
+            'events': 0.08,
+            'sentiment': 0.06,
         },
     }
 
@@ -291,11 +291,66 @@ class OpportunityScorer:
                 dragon_tiger_score * weights_used.get('dragon_tiger', 0.06) +
                 liquidity_score * weights_used.get('liquidity', 0.08)
             )
+
+            # [新增] 卖出信号一票否决/降权机制
+            # 如果量化评分过低(<45)或卖出信号多于买入信号，强制压低总分
+            # 这里的目的是防止其他维度（如消息面/技术面）掩盖了模型给出的卖出信号
+            quant_sell_count = quant_details.get('sell_count', 0)
+            quant_buy_count = quant_details.get('buy_count', 0)
+            
+            if quant_score < 45:
+                # 量化评分不及格，总分上限封顶60（不能评为A级）
+                logger.info(f"{stock_code} 量化评分过低({quant_score})，触发总分封顶限制")
+                total_score = min(total_score, 60.0)
+            
+            if quant_sell_count >= quant_buy_count and quant_sell_count > 0:
+                penalty = 15
+                if quant_sell_count > 3:
+                    penalty += 15
+                total_score -= penalty
+                logger.info(f"{stock_code} 卖出信号({quant_sell_count}) >= 买入信号({quant_buy_count})，总分扣除 {penalty} 分")
+
+            # [新增] 量化买入信号额外加权
+            # 如果买入信号占主导，额外奖励总分，确保好股票能被选出
+            if quant_buy_count > quant_sell_count and quant_score > 60:
+                bonus = 0
+                if quant_buy_count >= 5:
+                    bonus = 8
+                elif quant_buy_count >= 3:
+                    bonus = 5
+                
+                if bonus > 0:
+                    total_score += bonus
+                    logger.info(f"{stock_code} 量化买入信号主导({quant_buy_count} > {quant_sell_count})，总分额外奖励 {bonus} 分")
             
             # 应用低位启动加分 (直接加在总分上，因为这是强信号)
             if low_pos_bonus > 0:
-                total_score += low_pos_bonus
-                logger.info(f"{stock_code} 触发低位启动加分: +{low_pos_bonus}")
+                # 增加左侧交易保护：如果技术面和量化评分过低，屏蔽或减少加分
+                is_left_side_risky = False
+                
+                # 检查1：基础评分过低 (量化和技术面都偏弱)
+                if quant_score < 40 and tech_score < 40:
+                    is_left_side_risky = True
+                
+                # 检查2：严重趋势卖出信号
+                tech_signals = result['details']['technical'].get('signals', [])
+                if any('处于年线下方' in s or '处于60日线下方' in s for s in tech_signals):
+                     # 如果处于长期均线下方，且量化评分很低(<45)，视为接飞刀风险大
+                     if quant_score < 45:
+                         is_left_side_risky = True
+                
+                # 检查3：MACD死叉 (如果技术面有死叉信号)
+                if any('死叉' in s for s in tech_signals):
+                    # 死叉状态下，要求量化评分较高(>50)才允许抄底
+                    if quant_score < 50:
+                        is_left_side_risky = True
+
+                if is_left_side_risky:
+                    logger.info(f"{stock_code} 屏蔽低位启动加分(原+{low_pos_bonus}): 技术({tech_score})/量化({quant_score})评分过低或趋势向下，避免左侧接飞刀")
+                    low_pos_bonus = 0
+                else:
+                    total_score += low_pos_bonus
+                    logger.info(f"{stock_code} 触发低位启动加分: +{low_pos_bonus}")
 
             # 一票否决：如果有严重风险信号，大幅降低评分
             # v4.0 启用一票否决机制（游资思维：宁可错过，不可套牢）
@@ -580,24 +635,24 @@ class OpportunityScorer:
                     score -= 15
 
             # ========== 分组信号评分（去相关处理）==========
-            # 趋势类：最多加15分（避免重复计分）
+            # 趋势类：最多加25分（避免重复计分）
             if trend_buy >= 3:
-                score += 15
+                score += 25
             elif trend_buy >= 2:
-                score += 10
+                score += 18
             elif trend_buy >= 1:
-                score += 5
+                score += 8
 
-            # 量价类：最多加15分
+            # 量价类：最多加25分
             if volume_buy >= 3:
-                score += 15
+                score += 25
             elif volume_buy >= 2:
-                score += 10
+                score += 18
             elif volume_buy >= 1:
-                score += 5
+                score += 8
 
             # 高级量化模型：每个独立加分
-            score += advanced_buy * 5  # 最多20分
+            score += advanced_buy * 6  # 最多24分
 
             # 经典模型：适度加分
             if classic_buy >= 3:
@@ -608,29 +663,41 @@ class OpportunityScorer:
             # ========== 卖出信号惩罚 ==========
             # 趋势类卖出信号权重高
             if trend_sell >= 3:
-                score -= 20
+                score -= 40
             elif trend_sell >= 2:
-                score -= 12
+                score -= 25
             elif trend_sell >= 1:
-                score -= 5
+                score -= 12
 
             # 量价类卖出信号
             if volume_sell >= 3:
-                score -= 15
+                score -= 30
             elif volume_sell >= 2:
-                score -= 8
+                score -= 18
+            elif volume_sell >= 1:
+                score -= 10
 
             # 高级模型卖出信号
-            score -= advanced_sell * 5
+            score -= advanced_sell * 8
 
-            # 总体卖出信号惩罚（轻微）
+            # 总体卖出信号惩罚（加重）
             if sell_count > 15:
-                score -= 10
+                score -= 25
             elif sell_count > 10:
+                score -= 15
+            elif sell_count > 5:
+                score -= 10
+            elif sell_count > 2:
                 score -= 5
+            
+            # 买卖力量对比惩罚（核心修改：如果卖出多于买入，大幅扣分）
+            if sell_count >= buy_count and sell_count > 0:
+                score -= 20
+                if sell_count > 3:
+                    score -= 10
 
-            score += buy_ratio * 30
-            score -= sell_ratio * 25
+            score += buy_ratio * 60  # 提高买入信号占比权重
+            score -= sell_ratio * 60 # 提高卖出信号惩罚权重
             # 确保分数在0-100范围内
             score = max(0, min(100, score))
 
@@ -1001,6 +1068,7 @@ class OpportunityScorer:
             score = max(0, min(100, score))
 
             details = {
+                'current_price': current_price,
                 'RSI': rsi,
                 'RSI_status': rsi_status,
                 'KDJ_K': kdj_k,
@@ -1077,7 +1145,7 @@ class OpportunityScorer:
             vol_ratio = current_vol / avg_vol_5 if avg_vol_5 > 0 else 0
             
             if change_pct > 3.0 and vol_ratio > 1.5:
-                bonus += 10.0
+                bonus += 5.0
                 signals.append('低位放量大涨')
 
             # 2.2 均线突破 (站上20日线)
@@ -1087,13 +1155,13 @@ class OpportunityScorer:
             if current_price > ma20 and ma20 >= ma20_prev:
                 # 且之前在均线下方
                 if prev_close < ma20:
-                    bonus += 5.0
+                    bonus += 3.0
                     signals.append('底部突破20日线')
 
             # 2.3 筹码集中 (简单模拟: 波动率收窄)
             volatility = close.iloc[-20:].std() / close.iloc[-20:].mean()
             if volatility < 0.02: # 波动率很低，横盘整理
-                bonus += 5.0
+                bonus += 2.0
                 signals.append('底部横盘缩量')
 
             return bonus, {
@@ -1201,6 +1269,36 @@ class OpportunityScorer:
             # ========== 2. 近期涨幅惩罚 (游资反追涨核心) ==========
             # 近5日涨幅 - 已涨股票要扣分！
             change_5d = (current_price / float(close.iloc[-6]) - 1) * 100 if len(close) >= 6 else 0
+
+            # 长期横盘检测 (新增)
+            # 如果长期波动率极低，且位置不高，视为“长期横盘吸筹”，不应视为下跌趋势或无动量
+            is_long_consolidation = False
+            if len(close) >= 120:
+                # 计算120日价格区间
+                hist_120 = close.iloc[-120:]
+                high_120 = float(hist_120.max())
+                low_120 = float(hist_120.min())
+                # 如果120日振幅小于30%，视为长期横盘
+                amplitude_120 = (high_120 - low_120) / low_120 if low_120 > 0 else 1.0
+                
+                # 计算120日均线斜率（简单的线性回归或首尾比较）
+                # 这里简单比较首尾
+                price_start = float(hist_120.iloc[0])
+                trend_change = abs(current_price - price_start) / price_start
+
+                if amplitude_120 < 0.30 and trend_change < 0.15:
+                    is_long_consolidation = True
+                    score += 20
+                    signals.append('📉 长期底部横盘(120日振幅<30%)，筹码集中')
+                    
+                    # 如果横盘期间有放量，更加分
+                    vol_120 = volume.iloc[-120:]
+                    avg_vol_120 = float(vol_120.mean())
+                    recent_vol_20 = float(volume.iloc[-20:].mean())
+                    if recent_vol_20 > avg_vol_120 * 1.2:
+                        score += 10
+                        signals.append('横盘期间近期温和放量')
+
             if change_5d > 20:
                 score -= 30  # 5日涨幅超20%，严重高位风险
                 signals.append('🚨 5日涨幅超20%，高位接盘风险')
@@ -1473,6 +1571,7 @@ class OpportunityScorer:
                 return 50.0, {'error': '数据不足'}
 
             score = 50.0  # 基准分
+            signals = []
 
             # 1. 量价同向评分 (-20 ~ +25)
             price_changes = []
@@ -1620,6 +1719,7 @@ class OpportunityScorer:
                 'consecutive_vol_up_days': consecutive_vol_up,
                 'last_price_up': last_price_up,
                 'last_vol_up': last_vol_up,
+                'signals': signals,
                 'volume_health': volume_health
             }
 
@@ -2179,9 +2279,13 @@ class OpportunityScorer:
                         score += 5    # 降低加分 (原15分)
                     elif mv_yi < 100:  # 50-100亿，次级加分
                         score += 2    # 降低加分 (原5分)
+                    elif mv_yi > 2000: # 2万亿以上，超级巨头，游资回避
+                        score -= 40
                     elif mv_yi > 1000: # 千亿大盘，大幅减分
-                        score -= 15
+                        score -= 25
                     elif mv_yi > 500: # 500亿以上，减分
+                        score -= 10
+                    elif mv_yi > 200: # 200亿以上，微量减分
                         score -= 5
 
             revenue_yoy = reports.get('revenue_yoy')

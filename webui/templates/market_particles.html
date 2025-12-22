@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kronos Market Particles</title>
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+            user-select: none;
+        }
+
+        #root {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* UI Overlay */
+        .hud-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .pointer-events-auto {
+            pointer-events: auto;
+        }
+
+        /* Glassmorphism Panels */
+        .glass-panel {
+            background: rgba(10, 15, 20, 0.85);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            color: #fff;
+            padding: 15px;
+            transition: all 0.3s ease;
+            border-radius: 8px;
+        }
+
+        /* Top Bar */
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            padding: 20px;
+        }
+
+        .title-box {
+            border-left: 4px solid #ff3333;
+        }
+
+        .title-main {
+            font-size: 24px;
+            font-weight: 800;
+            letter-spacing: 2px;
+            background: linear-gradient(90deg, #fff, #ff3333);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin: 0;
+        }
+
+        .title-sub {
+            font-size: 12px;
+            color: #88c;
+            margin-top: 5px;
+            opacity: 0.8;
+        }
+
+        .market-status {
+            text-align: right;
+            min-width: 200px;
+        }
+
+        .index-value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #ff3333;
+            text-shadow: 0 0 10px rgba(255, 51, 51, 0.3);
+        }
+
+        .index-change {
+            font-size: 16px;
+            color: #ff3333;
+        }
+
+        /* Side Bar (Hot Sectors) */
+        .side-bar {
+            position: absolute;
+            right: 20px;
+            top: 150px;
+            width: 200px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .sector-btn {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: rgba(30, 30, 30, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.2s;
+            color: #ddd;
+        }
+
+        .sector-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .sector-btn.active {
+            background: rgba(255, 51, 51, 0.2);
+            border-color: #ff3333;
+            box-shadow: 0 0 15px rgba(255, 51, 51, 0.2);
+            transform: scale(1.05);
+            transform-origin: right center;
+        }
+
+        .sector-btn.inactive {
+            opacity: 0.5;
+        }
+
+        .sector-name {
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .sector-change {
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        .change-up {
+            color: #ff3333;
+        }
+
+        .change-down {
+            color: #00ff88;
+        }
+
+        /* Bottom Bar (News) */
+        .bottom-bar {
+            padding: 0;
+            background: rgba(0, 0, 0, 0.9);
+            border-top: 1px solid #333;
+            overflow: hidden;
+            white-space: nowrap;
+            height: 40px;
+            display: flex;
+            align-items: center;
+        }
+
+        .news-ticker {
+            display: inline-block;
+            padding-left: 100%;
+            animation: ticker 60s linear infinite;
+            font-size: 14px;
+            color: #00ffff;
+        }
+
+        .news-item {
+            display: inline-block;
+            margin-right: 50px;
+        }
+
+        .news-tag {
+            background: #ff3333;
+            color: #000;
+            padding: 2px 6px;
+            font-size: 10px;
+            border-radius: 2px;
+            margin-right: 5px;
+            font-weight: bold;
+        }
+
+        @keyframes ticker {
+            0% {
+                transform: translate3d(0, 0, 0);
+            }
+
+            100% {
+                transform: translate3d(-100%, 0, 0);
+            }
+        }
+
+        /* Stock Info Popup */
+        .stock-popup {
+            position: absolute;
+            pointer-events: none;
+            background: rgba(15, 20, 25, 0.95);
+            border: 1px solid #444;
+            padding: 0;
+            /* Inner layout handles padding */
+            border-radius: 8px;
+            transform: translate(20px, -50%);
+            /* To the right of cursor */
+            display: none;
+            z-index: 100;
+            min-width: 220px;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.8);
+            overflow: hidden;
+        }
+
+        .stock-popup.active {
+            display: block;
+        }
+
+        .popup-header {
+            padding: 12px;
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .popup-title {
+            font-size: 16px;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .popup-code {
+            font-size: 12px;
+            color: #888;
+            font-family: monospace;
+        }
+
+        .popup-body {
+            padding: 15px;
+        }
+
+        .popup-price-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 10px;
+        }
+
+        .popup-price {
+            font-size: 28px;
+            font-weight: bold;
+        }
+
+        .popup-change {
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        .popup-tags {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .popup-tag {
+            font-size: 10px;
+            padding: 2px 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            color: #ccc;
+        }
+
+        .kline-chart {
+            width: 100%;
+            height: 60px;
+            margin-top: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
+            position: relative;
+        }
+
+        /* Loader */
+        #loader {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            z-index: 999;
+            transition: opacity 0.8s;
+        }
+
+        .loader-text {
+            color: #ff3333;
+            font-size: 14px;
+            letter-spacing: 4px;
+            margin-bottom: 20px;
+        }
+
+        .loader-bar {
+            width: 200px;
+            height: 2px;
+            background: #333;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .loader-progress {
+            position: absolute;
+            left: 0;
+            top: 0;
+            height: 100%;
+            background: #ff3333;
+            width: 0%;
+            animation: load 2s ease-out forwards;
+            box-shadow: 0 0 10px #ff3333;
+        }
+
+        @keyframes load {
+            0% {
+                width: 0%;
+            }
+
+            100% {
+                width: 100%;
+            }
+        }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "react": "https://esm.sh/react@18.2.0",
+                "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+                "three": "https://esm.sh/three@0.160.0",
+                "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.15.12?external=react,react-dom,three",
+                "@react-three/drei": "https://esm.sh/@react-three/drei@9.96.1?external=react,react-dom,three,@react-three/fiber"
+            }
+        }
+    </script>
+    <script src="https://cdn.staticfile.net/babel-standalone/7.23.5/babel.min.js"></script>
+</head>
+
+<body>
+    <div id="loader">
+        <div class="loader-text">System Initializing...</div>
+        <div class="loader-bar">
+            <div class="loader-progress"></div>
+        </div>
+    </div>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import * as THREE from 'three';
+        import { Canvas, useFrame, useThree } from '@react-three/fiber';
+        import { OrbitControls, Stars, Float } from '@react-three/drei';
+
+        // --- 1. Data Simulation ---
+        // NOTE: Data is now dynamically fetched from backend
+
+        // --- 2. Shaders ---
+        const vertexShader = `
+            attribute float size;
+            attribute vec3 customColor;
+            attribute float sectorId;
+            
+            varying vec3 vColor;
+            varying float vSectorId;
+            
+            void main() {
+                vColor = customColor;
+                vSectorId = sectorId;
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                gl_PointSize = size * (300.0 / -mvPosition.z);
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `;
+
+        const fragmentShader = `
+            uniform vec3 color;
+            uniform float uSelectedSectorId;
+            
+            varying vec3 vColor;
+            varying float vSectorId;
+            
+            void main() {
+                // Filter logic
+                if (uSelectedSectorId > -0.5) {
+                    if (abs(vSectorId - uSelectedSectorId) > 0.1) {
+                         // Dim non-selected sectors significantly or hide them
+                         // Make them extremely faint gray, almost invisible but keeping context
+                         gl_FragColor = vec4(0.1, 0.1, 0.1, 0.02);
+                         return;
+                    }
+                }
+
+                // Circular particle
+                vec2 circCoord = 2.0 * gl_PointCoord - 1.0;
+                if (dot(circCoord, circCoord) > 1.0) {
+                    discard;
+                }
+                
+                // Soft glow
+                float r = distance(gl_PointCoord, vec2(0.5));
+                float glow = 1.0 - (r * 2.0);
+                glow = pow(glow, 1.5);
+
+                gl_FragColor = vec4(vColor * 1.5, glow); 
+            }
+        `;
+
+        // --- 3. 3D Components ---
+
+        const Universe = ({ stocks, sectors, onHover, selectedSectorId }) => {
+            const pointsRef = useRef();
+
+            // Stable uniforms object
+            const uniforms = useMemo(() => ({
+                uSelectedSectorId: { value: -1.0 }
+            }), []);
+
+            const { positions, colors, sizes, sectorIds } = useMemo(() => {
+                if (!stocks || stocks.length === 0 || !sectors) return { positions: new Float32Array(0), colors: new Float32Array(0), sizes: new Float32Array(0), sectorIds: new Float32Array(0) };
+
+                const positions = new Float32Array(stocks.length * 3);
+                const colors = new Float32Array(stocks.length * 3);
+                const sizes = new Float32Array(stocks.length);
+                const sectorIds = new Float32Array(stocks.length);
+
+                const colorUp = new THREE.Color('#ff3333');
+                const colorDown = new THREE.Color('#00ff88');
+                const colorFlat = new THREE.Color('#ffffff');
+
+                stocks.forEach((stock, i) => {
+                    const sector = sectors.find(s => s.id === stock.sectorId) || { angle: 0 };
+
+                    let x, y, z;
+
+                    if (stock.position && stock.position.length === 3) {
+                        x = stock.position[0];
+                        y = stock.position[1];
+                        z = stock.position[2];
+                    } else {
+                        // Spiral Galaxy Math (Fallback)
+                        const armOffset = sector.angle;
+                        const distance = Math.random() * 40 + 10;
+                        const angle = distance * 0.1 + armOffset;
+
+                        x = Math.cos(angle) * distance + (Math.random() - 0.5) * 5;
+                        y = (Math.random() - 0.5) * (distance * 0.2);
+                        z = Math.sin(angle) * distance + (Math.random() - 0.5) * 5;
+
+                        // Save back to stock object to avoid jitter on next render
+                        stock.position = [x, y, z];
+                    }
+
+                    positions[i * 3] = x;
+                    positions[i * 3 + 1] = y;
+                    positions[i * 3 + 2] = z;
+
+                    const c = stock.change > 0 ? colorUp : (stock.change < 0 ? colorDown : colorFlat);
+
+                    colors[i * 3] = c.r;
+                    colors[i * 3 + 1] = c.g;
+                    colors[i * 3 + 2] = c.b;
+
+                    let size = Math.random() * 1.5 + 0.5;
+                    if (stock.isLimitUp) size = 5.0;
+                    else if (stock.change > 5) size = 3.0;
+
+                    sizes[i] = size;
+                    sectorIds[i] = stock.sectorId;
+                });
+
+                return { positions, colors, sizes, sectorIds };
+            }, [stocks]);
+
+            useFrame((state) => {
+                const time = state.clock.getElapsedTime();
+                // Only rotate if no specific sector is selected to allow easier inspection
+                if (selectedSectorId === null) {
+                    pointsRef.current.rotation.y = time * 0.05;
+                }
+            });
+
+            // Update uniform
+            useEffect(() => {
+                if (pointsRef.current) {
+                    pointsRef.current.material.uniforms.uSelectedSectorId.value = selectedSectorId === null ? -1.0 : selectedSectorId;
+                    pointsRef.current.material.uniformsNeedUpdate = true;
+                }
+            }, [selectedSectorId]);
+
+            const handlePointerMove = (e) => {
+                const index = e.index;
+                if (index !== undefined && index !== null && stocks && stocks[index]) {
+                    // If a sector is selected, only allow hovering stocks in that sector
+                    const stock = stocks[index];
+                    if (selectedSectorId !== null && stock.sectorId !== selectedSectorId) {
+                        onHover(null, null);
+                        return;
+                    }
+                    onHover(stock, e);
+                } else {
+                    onHover(null, null);
+                }
+            };
+
+            return (
+                <points ref={pointsRef} onPointerOver={handlePointerMove} onPointerOut={() => onHover(null)}>
+                    <bufferGeometry>
+                        <bufferAttribute attach="attributes-position" count={positions.length / 3} array={positions} itemSize={3} />
+                        <bufferAttribute attach="attributes-customColor" count={colors.length / 3} array={colors} itemSize={3} />
+                        <bufferAttribute attach="attributes-size" count={sizes.length} array={sizes} itemSize={1} />
+                        <bufferAttribute attach="attributes-sectorId" count={sectorIds.length} array={sectorIds} itemSize={1} />
+                    </bufferGeometry>
+                    <shaderMaterial
+                        blending={THREE.AdditiveBlending}
+                        depthWrite={false}
+                        transparent={true}
+                        vertexShader={vertexShader}
+                        fragmentShader={fragmentShader}
+                        uniforms={uniforms}
+                    />
+                </points>
+            );
+        };
+
+        const MeteorShower = ({ stocks, sectors, selectedSectorId, setHudMessage }) => {
+            const meteorsRef = useRef([]);
+            const MAX_METEORS = 10;
+
+            // Create meteor instances
+            const meteorGeo = useMemo(() => {
+                const geometry = new THREE.BufferGeometry();
+                const points = new Float32Array(6 * 3); // Head + 5 tail points
+                geometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
+                return geometry;
+            }, []);
+
+            const [meteors, setMeteors] = useState(() => {
+                return new Array(MAX_METEORS).fill(0).map(() => ({
+                    active: false,
+                    pos: new THREE.Vector3(),
+                    velocity: new THREE.Vector3(),
+                    trail: [], // Array of previous positions
+                    targetPos: new THREE.Vector3(),
+                    life: 0
+                }));
+            });
+
+            useFrame((state) => {
+                // Spawn logic
+                if (Math.random() < 0.02) { // 2% chance per frame to spawn
+                    const inactiveMeteor = meteors.find(m => !m.active);
+                    if (inactiveMeteor && stocks && stocks.length > 0) {
+
+                        // 1. Select Target First to ensure validity
+                        let availableStocks = stocks;
+                        if (selectedSectorId !== null) {
+                            availableStocks = stocks.filter(s => s.sectorId === selectedSectorId);
+                        } else {
+                            // Default to hot sectors if sectors are available
+                            if (sectors) {
+                                const hotSectorIds = sectors.filter(s => s.hot).map(s => s.id);
+                                if (hotSectorIds.length > 0 && Math.random() < 0.7) {
+                                    availableStocks = stocks.filter(s => hotSectorIds.includes(s.sectorId));
+                                }
+                            }
+                        }
+
+                        // CRITICAL: Ensure we only pick stocks that have valid positions calculated by Universe
+                        const validStocks = availableStocks.filter(s => s.position && s.position.length === 3);
+
+                        if (validStocks.length > 0) {
+                            const targetStock = validStocks[Math.floor(Math.random() * validStocks.length)];
+
+                            // Activate Meteor
+                            inactiveMeteor.active = true;
+                            inactiveMeteor.life = 1.0;
+
+                            // Set Target
+                            inactiveMeteor.targetPos.set(...targetStock.position);
+                            const targetName = targetStock.name;
+                            const amount = (Math.random() * 5 + 0.5).toFixed(1);
+
+                            // Start Position (Random point on a large sphere)
+                            const theta = Math.random() * Math.PI * 2;
+                            const phi = Math.random() * Math.PI;
+                            const r = 100;
+                            inactiveMeteor.pos.set(
+                                r * Math.sin(phi) * Math.cos(theta),
+                                r * Math.cos(phi),
+                                r * Math.sin(phi) * Math.sin(theta)
+                            );
+
+                            // Velocity vector
+                            inactiveMeteor.velocity.subVectors(inactiveMeteor.targetPos, inactiveMeteor.pos).normalize().multiplyScalar(2.5); // Speed
+
+                            // Reset trail
+                            inactiveMeteor.trail = [];
+
+                            // Log event (occasionally)
+                            if (Math.random() < 0.4 && setHudMessage && targetName !== "未知") {
+                                setHudMessage(`⚡ Major Capital Inflow [${targetName}]: ${amount}B`);
+                            }
+                        }
+                    }
+                }
+
+                // Update meteors
+                meteors.forEach((m, i) => {
+                    if (m.active) {
+                        // Move
+                        m.pos.add(m.velocity);
+                        m.life -= 0.015;
+
+                        // Update trail
+                        m.trail.unshift(m.pos.clone());
+                        if (m.trail.length > 8) m.trail.pop();
+
+                        // Kill if close to target (not just center) or dead
+                        const distToTarget = m.pos.distanceTo(m.targetPos || new THREE.Vector3(0, 0, 0));
+
+                        if (distToTarget < 2 || m.life <= 0) {
+                            m.active = false;
+                        }
+                    }
+                });
+
+                // Force re-render of this component isn't automatic with just variable changes
+                // We need to update the refs of the line meshes directly
+                if (meteorsRef.current) {
+                    meteorsRef.current.forEach((mesh, i) => {
+                        const m = meteors[i];
+                        if (mesh && m.active) {
+                            mesh.visible = true;
+                            const positions = mesh.geometry.attributes.position.array;
+
+                            // Head
+                            positions[0] = m.pos.x;
+                            positions[1] = m.pos.y;
+                            positions[2] = m.pos.z;
+
+                            // Tail
+                            for (let j = 0; j < 5; j++) {
+                                const p = m.trail[j] || m.pos;
+                                positions[(j + 1) * 3] = p.x;
+                                positions[(j + 1) * 3 + 1] = p.y;
+                                positions[(j + 1) * 3 + 2] = p.z;
+                            }
+                            mesh.geometry.attributes.position.needsUpdate = true;
+                            mesh.material.opacity = m.life;
+                        } else if (mesh) {
+                            mesh.visible = false;
+                        }
+                    });
+                }
+            });
+
+            return (
+                <group>
+                    {meteors.map((_, i) => (
+                        <line key={i} ref={el => meteorsRef.current[i] = el}>
+                            <bufferGeometry>
+                                <bufferAttribute attach="attributes-position" count={6} array={new Float32Array(6 * 3)} itemSize={3} />
+                            </bufferGeometry>
+                            <lineBasicMaterial color="#ffd700" transparent opacity={1} linewidth={2} />
+                        </line>
+                    ))}
+                </group>
+            )
+        }
+
+        const Scene = ({ stocks, sectors, setHoveredStock, setMousePos, selectedSectorId, setHudMessage }) => {
+            return (
+                <Canvas camera={{ position: [0, 40, 60], fov: 60 }} style={{ background: '#050505' }}>
+                    <OrbitControls autoRotate={selectedSectorId === null} autoRotateSpeed={0.2} maxDistance={120} minDistance={10} />
+                    <Stars radius={150} depth={50} count={5000} factor={4} saturation={0} fade />
+
+                    <Universe
+                        stocks={stocks}
+                        sectors={sectors}
+                        selectedSectorId={selectedSectorId}
+                        onHover={(stock, e) => {
+                            setHoveredStock(stock);
+                            if (e) setMousePos({ x: e.clientX, y: e.clientY });
+                        }}
+                    />
+
+                    <MeteorShower stocks={stocks} sectors={sectors} selectedSectorId={selectedSectorId} setHudMessage={setHudMessage} />
+
+                    {/* Gravity Center */}
+                    <mesh>
+                        <sphereGeometry args={[2, 32, 32]} />
+                        <meshBasicMaterial color="#000" />
+                    </mesh>
+                    <pointLight position={[0, 0, 0]} intensity={2} color="#ff3333" distance={50} />
+
+                    <Float speed={2} rotationIntensity={0.5} floatIntensity={0.5}>
+                        <group position={[0, -10, 0]}>
+                            {/* Decorative Rings removed */}
+                        </group>
+                    </Float>
+
+                </Canvas>
+            );
+        };
+
+        // --- 4. UI Components ---
+
+        // Mini Chart Component (SVG)
+        const MiniKLine = ({ change }) => {
+            const isUp = change > 0;
+            const color = isUp ? '#ff3333' : '#00ff88';
+
+            // Generate fake data path
+            const points = [];
+            let y = 30;
+            for (let i = 0; i < 50; i++) {
+                y += (Math.random() - 0.5) * 10 + (isUp ? 0.5 : -0.5);
+                y = Math.max(5, Math.min(55, y)); // clamp
+                points.push(`${i * (220 / 50)},${60 - y}`);
+            }
+            const pathD = `M ${points.join(' L ')}`;
+
+            return (
+                <div className="kline-chart">
+                    <svg width="100%" height="100%">
+                        <path d={pathD} fill="none" stroke={color} strokeWidth="2" />
+                        {/* Area fill */}
+                        <path d={`${pathD} L 220,60 L 0,60 Z`} fill={color} fillOpacity="0.2" stroke="none" />
+                    </svg>
+                </div>
+            );
+        }
+
+        const HUD = ({ hoveredStock, mousePos, selectedSectorId, setSelectedSectorId, hudMessage, marketData }) => {
+            const popupRef = useRef();
+
+            useEffect(() => {
+                if (hoveredStock && popupRef.current) {
+                    // Adjust position to not go off screen
+                    let left = mousePos.x + 20;
+                    let top = mousePos.y;
+
+                    if (left + 220 > window.innerWidth) {
+                        left = mousePos.x - 240;
+                    }
+
+                    popupRef.current.style.left = left + 'px';
+                    popupRef.current.style.top = top + 'px';
+                }
+            }, [hoveredStock, mousePos]);
+
+            return (
+                <div className="hud-layer">
+                    <div className="top-bar pointer-events-auto">
+                        <div className="glass-panel title-box">
+                            <h1 className="title-main">Kronos Market Particles</h1>
+                            <div className="title-sub">Real-time Market Particle Visualization</div>
+                        </div>
+                        <div className="market-status glass-panel">
+                            <div style={{ color: '#aaa', fontSize: '12px' }}>Market Index</div>
+                            <div className="index-value">{marketData ? marketData.index.toFixed(2) : '----.--'}</div>
+                            <div className="index-change" style={{ color: marketData && marketData.index_change > 0 ? '#ff3333' : '#00ff88' }}>
+                                {marketData ? (marketData.index_change > 0 ? '▲ +' : '▼ ') + marketData.index_change.toFixed(2) + '%' : '--%'}
+                            </div>
+                        </div>
+                        {hudMessage && (
+                            <div className="glass-panel" style={{ marginLeft: '20px', color: '#ffd700', fontSize: '14px', animation: 'fadeIn 0.5s' }}>
+                                {hudMessage}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="side-bar pointer-events-auto">
+                        <div className="glass-panel" style={{ padding: '10px' }}>
+                            <div style={{ marginBottom: '10px', color: '#888', fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
+                                <span>Hot Sectors</span>
+                                {selectedSectorId !== null && (
+                                    <span
+                                        style={{ cursor: 'pointer', color: '#fff' }}
+                                        onClick={() => setSelectedSectorId(null)}
+                                    >
+                                        [Reset]
+                                    </span>
+                                )}
+                            </div>
+                            {(marketData?.sectors || []).map(sector => (
+                                <div
+                                    key={sector.id}
+                                    className={`sector-btn ${selectedSectorId === sector.id ? 'active' : ''} ${selectedSectorId !== null && selectedSectorId !== sector.id ? 'inactive' : ''}`}
+                                    onClick={() => setSelectedSectorId(selectedSectorId === sector.id ? null : sector.id)}
+                                >
+                                    <span className="sector-name" style={{ color: sector.hot ? '#fff' : '#aaa' }}>
+                                        {sector.hot ? '🔥 ' : ''}{sector.name}
+                                    </span>
+                                    <span className={`sector-change ${sector.hot ? 'change-up' : 'change-down'}`}>
+                                        {sector.hot ? '+' + (Math.random() * 5 + 2).toFixed(1) + '%' : '-' + (Math.random() * 2).toFixed(1) + '%'}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="bottom-bar">
+                        <div className="news-ticker">
+                            {marketData && marketData.trades && marketData.trades.map((trade, i) => (
+                                <div key={`trade-${i}`} className="news-item">
+                                    <span className="news-tag" style={{ background: '#00ff88', color: '#000' }}>BIG BUY</span>
+                                    {trade.targetName}: +{trade.amount}B
+                                </div>
+                            ))}
+                            {(marketData?.news || []).map((news, i) => (
+                                <div key={`news-${i}`} className="news-item">
+                                    <span className="news-tag">{news.tag}</span>
+                                    {news.title}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Stock Popup */}
+                    <div
+                        ref={popupRef}
+                        className={`stock-popup ${hoveredStock ? 'active' : ''}`}
+                    >
+                        {hoveredStock && (
+                            <>
+                                <div className="popup-header">
+                                    <div className="popup-title">{hoveredStock.name}</div>
+                                    <div className="popup-code">{hoveredStock.code}</div>
+                                </div>
+                                <div className="popup-body">
+                                    <div className="popup-price-row">
+                                        <div className="popup-price" style={{ color: hoveredStock.change > 0 ? '#ff3333' : '#00ff88' }}>
+                                            {hoveredStock.price}
+                                        </div>
+                                        <div className="popup-change" style={{ color: hoveredStock.change > 0 ? '#ff3333' : '#00ff88' }}>
+                                            {hoveredStock.change > 0 ? '+' : ''}{hoveredStock.change.toFixed(2)}%
+                                        </div>
+                                    </div>
+
+                                    <MiniKLine change={hoveredStock.change} />
+
+                                    <div className="popup-tags">
+                                        {hoveredStock.tags.map((tag, i) => (
+                                            tag && <span key={i} className="popup-tag">{tag}</span>
+                                        ))}
+                                        <span className="popup-tag">Vol: {Math.floor(hoveredStock.volume)}</span>
+                                    </div>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [hoveredStock, setHoveredStock] = useState(null);
+            const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+            const [selectedSectorId, setSelectedSectorId] = useState(null);
+            const [hudMessage, setHudMessage] = useState("");
+            const [marketData, setMarketData] = useState(null);
+
+            // Fetch Market Data
+            useEffect(() => {
+                const fetchData = async () => {
+                    try {
+                        const res = await fetch('/api/snapshot');
+                        const data = await res.json();
+                        if (data && data.stocks) {
+                            setMarketData(data);
+                        }
+                    } catch (e) {
+                        console.error("Fetch error:", e);
+                    }
+                };
+
+                fetchData();
+                const interval = setInterval(fetchData, 2000); // Poll every 2s
+                return () => clearInterval(interval);
+            }, []);
+
+            // Auto clear HUD message
+            useEffect(() => {
+                if (hudMessage) {
+                    const t = setTimeout(() => setHudMessage(""), 4000);
+                    return () => clearTimeout(t);
+                }
+            }, [hudMessage]);
+
+            useEffect(() => {
+                if (marketData) {
+                    const loader = document.getElementById('loader');
+                    if (loader) {
+                        loader.style.opacity = 0;
+                        setTimeout(() => {
+                            loader.style.display = 'none';
+                        }, 800);
+                    }
+                }
+            }, [marketData]);
+
+            return (
+                <>
+                    <HUD
+                        hoveredStock={hoveredStock}
+                        mousePos={mousePos}
+                        selectedSectorId={selectedSectorId}
+                        setSelectedSectorId={setSelectedSectorId}
+                        hudMessage={hudMessage}
+                        marketData={marketData}
+                    />
+                    <Scene
+                        stocks={marketData ? marketData.stocks : []}
+                        sectors={marketData ? marketData.sectors : []}
+                        setHoveredStock={setHoveredStock}
+                        setMousePos={setMousePos}
+                        selectedSectorId={selectedSectorId}
+                        setHudMessage={setHudMessage}
+                    />
+                </>
+            );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+
+</html>

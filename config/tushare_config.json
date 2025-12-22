@@ -1,6 +1,6 @@
 {
   "tushare": {
-    "token": "请在此处填入您的Tushare Token",
+    "token": "74b69fdf58215229fb19bf8eda6a1bbe33042ea1e163f76d04e2b460",
     "timeout": 30,
     "retry_count": 3
   },
@@ -12,7 +12,8 @@
   "default_params": {
     "freq": "5min",
     "adj": "qfq",
-    "start_date": "20240101",
-    "end_date": "20241231"
+    "start_date": "",
+    "end_date": "",
+    "data_dir": "./data/tushare_data"
   }
 }

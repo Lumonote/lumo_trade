@@ -248,9 +248,71 @@ class NewsSentimentCollector:
                 news_list = self._fallback_news_tonghuashun(limit)
             return news_list[:limit]
 
-    def _scrape_news(self, limit=20):
-        """网页爬取新闻数据：按股票代码、公司名与关联关键词多次检索并合并"""
+    def _scrape_sina_news(self, limit=20):
+        """爬取新浪财经个股资讯（高相关性）"""
         try:
+            # 交易所前缀适配
+            market_prefix = 'sh' if str(self.stock_code).startswith(('600', '601', '603', '605', '688')) else 'sz'
+            symbol = f"{market_prefix}{self.stock_code}"
+            url = f"https://vip.stock.finance.sina.com.cn/corp/go.php/vCB_AllNewsStock/symbol/{symbol}.phtml"
+            
+            response = requests.get(url, headers=self.headers, timeout=10)
+            response.encoding = 'gb2312' # 新浪财经通常使用GB2312
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            news_list = []
+            # 新浪个股资讯列表通常在 .datelist ul a 中
+            items = soup.select('.datelist ul a')
+            
+            for item in items[:limit]:
+                title = item.get_text(strip=True)
+                if not title or len(title) < 6:
+                    continue
+                    
+                # 过滤非股票类代码（如基金of、期权so）
+                if re.search(r'\[(of|so)\d+\]', title, re.IGNORECASE):
+                    continue
+
+                href = item.get('href', '')
+                if not href:
+                    continue
+                    
+                # 尝试提取日期 (新浪列表页通常没有直接日期，需从详情页或推断，这里暂空或从链接尝试提取)
+                # 链接示例: .../2023-01-01/doc-xxxxx.shtml
+                date_text = ''
+                date_match = re.search(r'(\d{4}-\d{1,2}-\d{1,2})', href)
+                if date_match:
+                    date_text = date_match.group(1)
+                else:
+                    date_match = re.search(r'(\d{8})', href)
+                    if date_match:
+                        d = date_match.group(1)
+                        date_text = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+
+                news_list.append({
+                    'title': title,
+                    'date': self._normalize_date_str(date_text),
+                    'source': '新浪财经',
+                    'url': href,
+                    'summary': self._extract_summary(title),
+                    'sentiment': self._analyze_sentiment(title)
+                })
+                
+            return news_list
+        except Exception as e:
+            print(f"   ⚠️ 新浪财经爬取失败: {str(e)}")
+            return []
+
+    def _scrape_news(self, limit=20):
+        """网页爬取新闻数据：优先使用新浪财经个股资讯，兜底使用东财搜索"""
+        try:
+            # 1. 优先尝试新浪财经个股资讯（相关性极高）
+            sina_news = self._scrape_sina_news(limit)
+            if sina_news:
+                print(f"   ✅ 新浪财经获取到 {len(sina_news)} 条相关资讯")
+                return sina_news
+
+            # 2. 兜底：原有逻辑（东财搜索）
             # 预加载公司名与关联词
             if not self.company_name:
                 self._load_company_name()
@@ -289,6 +351,10 @@ class NewsSentimentCollector:
                     # 过滤明显广告或推广链接（尽量保守，避免过度过滤）
                     bad_hosts = ['acttg.eastmoney.com', 'tg.eastmoney.com']
                     if any(b in href for b in bad_hosts):
+                        continue
+
+                    # 过滤非股票类代码（如基金of、期权so）
+                    if re.search(r'\[(of|so)\d+\]', title, re.IGNORECASE):
                         continue
 
                     # 日期提取，支持更多常见结构
@@ -335,6 +401,11 @@ class NewsSentimentCollector:
                             continue
                         if any(b in href for b in ['acttg.eastmoney.com', 'tg.eastmoney.com']):
                             continue
+                        
+                        # 过滤非股票类代码（如基金of、期权so）
+                        if re.search(r'\[(of|so)\d+\]', text, re.IGNORECASE):
+                            continue
+
                         # 仅采集疑似新闻详情页
                         if not (href.endswith('.html') or 'news' in href or 'finance' in href):
                             continue
@@ -554,6 +625,11 @@ class NewsSentimentCollector:
                 title = a.get_text(strip=True)
                 if not title or len(title) < 8:
                     continue
+                
+                # 过滤非股票类代码（如基金of、期权so）
+                if re.search(r'\[(of|so)\d+\]', title, re.IGNORECASE):
+                    continue
+
                 href = a.get('href', '')
                 # 粗略筛选疑似研报内容
                 if not any(k in title for k in ['研报', '评级', '上调', '下调', '目标价', '买入', '增持', '中性', '减持']):

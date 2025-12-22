@@ -176,17 +176,16 @@ class OpportunityFilter:
 
         #========== 阶段1: 流动性筛选（v4.1 前置，游资核心门槛）==========
         stage1_result = self.stage1_liquidity_check(scoring_result)
-        result['filter_history'].append(stage1_result)
+        
+        # 仅在启用淘汰机制时添加到筛选历史，否则隐藏（避免显示无意义的警告）
+        # 用户要求移除流动性筛选报告 (2025-12-08)
+        if self.enable_liquidity_elimination:
+             result['filter_history'].append(stage1_result)
 
-        if not stage1_result['passed']:
-            if self.enable_liquidity_elimination:
-                result['eliminated_at_stage'] = 1
-                logger.info(f"✗ {result['stock_code']} 在阶段1(流动性)被淘汰: {stage1_result['reason']}")
-                return result
-            else:
-                # 淘汰机制禁用，记录警告但继续
-                if stage1_result.get('reason', '').startswith('✗ '):
-                    stage1_result['reason'] = stage1_result['reason'].replace('✗ ', '⚠️ 流动性不足（淘汰禁用）: ')
+             if not stage1_result['passed']:
+                 result['eliminated_at_stage'] = 1
+                 logger.info(f"✗ {result['stock_code']} 在阶段1(流动性)被淘汰: {stage1_result['reason']}")
+                 return result
 
         # ========== 阶段2: 位置与时机筛选（反追涨核心）==========
         stage2_result = self.stage2_position_timing(scoring_result)
@@ -271,8 +270,23 @@ class OpportunityFilter:
 
             # 检查距离年内高点
             distance_from_high = momentum_details.get('distance_from_high', 100)
+            
+            # 豁免逻辑：如果是强势突破（涨停或龙虎榜大额净买入），则不视作追高风险
+            is_limit_up = scoring_result.get('details', {}).get('technical', {}).get('is_limit_up', False)
+            dragon_tiger = scoring_result.get('details', {}).get('sentiment', {}).get('dragon_tiger', {})
+            net_buy = 0
+            if dragon_tiger and dragon_tiger.get('has_records'):
+                 records = dragon_tiger.get('records', [])
+                 if records:
+                     net_buy = records[0].get('net_buy_amount', 0) or 0
+            
+            is_strong_breakthrough = is_limit_up or (net_buy > 10000000)
+
             if distance_from_high is not None and distance_from_high < config['max_distance_from_high']:
-                veto_reasons.append(f"距年内高点仅{distance_from_high:.1f}%")
+                if is_strong_breakthrough:
+                    warning_reasons.append(f"接近年内高点({distance_from_high:.1f}%)但强势突破")
+                else:
+                    veto_reasons.append(f"距年内高点仅{distance_from_high:.1f}%")
 
             # 检查连涨天数
             consecutive_up = momentum_details.get('consecutive_up_days', 0)
@@ -473,7 +487,7 @@ class OpportunityFilter:
             momentum_details = scoring_result.get('details', {}).get('momentum', {})
 
             if 'error' in momentum_details:
-                stage_result['reason'] = f"✗ 无法获取���置数据: {momentum_details['error']}"
+                stage_result['reason'] = f"✗ 无法获取位置数据: {momentum_details['error']}"
                 stage_result['details'] = momentum_details
                 return stage_result
 

@@ -240,9 +240,45 @@ class DynamicCrawler:
                             )
                             page = context.new_page()
 
+                            # --- 策略升级：优先尝试股吧资讯 (Guba News) ---
+                            guba_success = False
+                            guba_news = []
+                            try:
+                                guba_url = f"http://guba.eastmoney.com/list,{stock_code},1,f.html"
+                                print(f"   🌐 尝试股吧资讯: {guba_url}")
+                                page.goto(guba_url, wait_until='domcontentloaded', timeout=15000)
+                                page.wait_for_timeout(2000)
+                                g_content = page.content()
+                                g_soup = BeautifulSoup(g_content, 'html.parser')
+                                
+                                # 解析股吧
+                                g_items = g_soup.find_all('div', class_='articleh') or g_soup.find_all('div', class_='list-item')
+                                for item in g_items[:limit]:
+                                    title_elem = item.find('span', class_='l3') 
+                                    a = title_elem.find('a') if title_elem else (item.find('a', class_='title') or item.find('a'))
+                                    if a:
+                                        t = a.get_text(strip=True)
+                                        if t and len(t) > 6 and not re.search(r'\[(of|so)\d+\]', t, re.IGNORECASE):
+                                            u = a.get('href', '')
+                                            if not u.startswith('http'): u = f"http://guba.eastmoney.com{u}"
+                                            dt = item.find('span', class_='l5')
+                                            d = dt.get_text(strip=True) if dt else ''
+                                            guba_news.append({'title': t, 'url': u, 'publish_time': d, 'source': '东财股吧', 'summary': t})
+                                
+                                if guba_news:
+                                    guba_success = True
+                            except Exception as e:
+                                print(f"   ⚠️ 股吧尝试失败: {e}")
+
+                            if guba_success:
+                                print(f"   ✅ 股吧获取成功: {len(guba_news)}条")
+                                browser.close()
+                                return guba_news
+
+                            # --- 回退：原有搜索逻辑 ---
                             # 使用东方财富搜索新闻页(按关键词=股票代码)
                             url = f"https://so.eastmoney.com/news/s?keyword={stock_code}"
-                            print(f"   🌐 访问新闻 (尝试 {attempt + 1}/{max_retries}): {url}")
+                            print(f"   🌐 访问新闻搜索 (尝试 {attempt + 1}/{max_retries}): {url}")
 
                             page.goto(url, wait_until='load', timeout=30000)
 
@@ -347,6 +383,12 @@ class DynamicCrawler:
                             if any(skip.lower() in title_lower for skip in skip_keywords):
                                 continue
 
+                            # 过滤非股票类代码（如基金of、期权so）
+                            # 用户反馈: 长盛同裕...[of002285]; 50ETF购3...[so10002285]
+                            import re
+                            if re.search(r'\[(of|so)\d+\]', title_lower):
+                                continue
+
                             link = title_elem.get('href', '')
                             if not link:
                                 continue
@@ -444,6 +486,11 @@ class DynamicCrawler:
                                 # 要求包含中文或字母，避免纯符号
                                 if not re.search(r'[\u4e00-\u9fffA-Za-z]', text):
                                     continue
+
+                                # 过滤非股票类代码（如基金of、期权so）
+                                if re.search(r'\[(of|so)\d+\]', text, re.IGNORECASE):
+                                    continue
+
                                 # 仅保留东方财富及常见新闻详情结构
                                 if (
                                     'eastmoney.com' in href and (

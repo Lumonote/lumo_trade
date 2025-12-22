@@ -336,11 +336,40 @@ class OpportunityDiscovery:
                 # 4. 量化信号质量 (模型强信号)
                 quant = score_details.get('quantitative', {})
                 signal_quality = quant.get('signal_quality', '')
-                # 过滤掉普通的描述，只保留强信号描述
-                if signal_quality and any(k in signal_quality for k in ['共振', '启动', '强势', '稀缺']):
+                
+                # 优先使用具体的强模型名称
+                top_models = quant.get('top_buy_models', [])
+                model_added = False
+                if top_models:
+                     # Map model names to readable short reasons
+                     MODEL_REASONS = {
+                        'super_reversal': '超级反转',
+                        'three_sisters': '三姐妹形态',
+                        'volume_breakthrough': '量能突破',
+                        'ma_resonance': '均线共振',
+                        'super_profit_limit_up': '超额涨停',
+                        'dragon_return': '龙回头',
+                        'platform_breakthrough': '平台突破'
+                     }
+                     for m in top_models:
+                         if m in MODEL_REASONS:
+                             reasons.append(MODEL_REASONS[m])
+                             model_added = True
+                             break
+                
+                # 只有未添加具体模型时，才使用通用信号描述
+                if not model_added and signal_quality and any(k in signal_quality for k in ['共振', '启动', '强势', '稀缺']):
                     reasons.append(signal_quality)
+                
+                # 5. 基本面高增长
+                fund = score_details.get('fundamental', {})
+                rev_yoy = fund.get('revenue_yoy')
+                prof_yoy = fund.get('net_profit_yoy')
+                if (rev_yoy and isinstance(rev_yoy, (int, float)) and rev_yoy > 30) or \
+                   (prof_yoy and isinstance(prof_yoy, (int, float)) and prof_yoy > 30):
+                    reasons.append("业绩高增长")
 
-                # 5. 如果以上强理由都没有，才使用通用补救逻辑
+                # 6. 如果以上强理由都没有，才使用通用补救逻辑
                 if not reasons:
                     # 技术面
                     tech = score_details.get('technical', {})
@@ -373,6 +402,20 @@ class OpportunityDiscovery:
                      # 确保新闻数据格式一致 (只需 title)
                      # events.news_list 通常是 [{'title':..., 'date':...}, ...]
                      pass
+
+                if latest_news:
+                    def _valid_title(t: str) -> bool:
+                        if not t:
+                            return False
+                        ts = t.strip()
+                        if len(ts) < 8:
+                            return False
+                        bad_keywords = ['上交所', '深交所', '证券交易所']
+                        if any(b in ts for b in bad_keywords) and len(ts) < 20:
+                            return False
+                        return True
+
+                    latest_news = [n for n in latest_news if _valid_title(n.get('title', ''))]
 
                 stock['latest_news'] = latest_news
                 
@@ -637,7 +680,7 @@ class OpportunityDiscovery:
         stock_data = {
             'code': stock_code,
             'name': stock_name,
-            'current_price': 0,  # 需要从details中获取实时价格
+            'current_price': details.get('technical', {}).get('current_price', 0),
             'kline_data': "K线数据已通过技术分析模块计算",
             'technical_analysis': format_technical_for_llm(details.get('technical', {})) + "\n" +
                                   format_quantitative_for_llm(details.get('quantitative', {})),

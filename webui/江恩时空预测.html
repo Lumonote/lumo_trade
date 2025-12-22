@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>江恩四方八卦图 (2025新周期推演版)</title>
+    <script src="https://cdn.staticfile.net/vue/3.3.4/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        /* 全局字体与排版 */
+        body {
+            background-color: #ffffff;
+            color: #1f2937;
+            font-family: "Songti SC", "SimSun", "Times New Roman", Serif;
+            /* 更加严肃的衬线体 */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 40px;
+            min-height: 100vh;
+        }
+
+        /* 顶部研报文字区域 */
+        .header-box {
+            max-width: 900px;
+            margin-bottom: 50px;
+            border-bottom: 3px double #333;
+            padding-bottom: 20px;
+        }
+
+        .header-title {
+            font-size: 32px;
+            font-weight: 900;
+            text-align: center;
+            margin-bottom: 20px;
+            letter-spacing: 2px;
+            color: #111;
+        }
+
+        .header-desc {
+            font-size: 16px;
+            line-height: 1.8;
+            color: #374151;
+            text-align: justify;
+            text-indent: 2em;
+        }
+
+        .highlight-red {
+            color: #b91c1c;
+            font-weight: bold;
+        }
+
+        .highlight-blue {
+            color: #1e40af;
+            font-weight: bold;
+        }
+
+        /* 图表主容器 */
+        .chart-wrapper {
+            position: relative;
+            padding: 80px;
+        }
+
+        /* 八卦方位文字 */
+        .bagua-label {
+            position: absolute;
+            font-size: 26px;
+            font-weight: bold;
+            color: #333;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: "Songti SC", serif;
+            z-index: 5;
+        }
+
+        .trigram-icon {
+            font-size: 36px;
+            margin: 0 8px;
+            line-height: 1;
+        }
+
+        /* 装饰线 */
+        .decor-line {
+            position: absolute;
+            height: 4px;
+            border-top: 1px solid #666;
+            border-bottom: 1px solid #666;
+            width: 400px;
+            z-index: 0;
+        }
+
+        /* 八卦定位 */
+        .pos-top {
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            flex-direction: column;
+        }
+
+        .line-top {
+            top: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 750px;
+        }
+
+        .pos-bottom {
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            flex-direction: column;
+        }
+
+        .line-bottom {
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 750px;
+        }
+
+        .pos-left {
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            flex-direction: column;
+            writing-mode: vertical-rl;
+        }
+
+        .line-left {
+            left: 30px;
+            top: 50%;
+            transform: translateY(-50%) rotate(90deg);
+            width: 750px;
+        }
+
+        .pos-right {
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            flex-direction: column;
+            writing-mode: vertical-rl;
+        }
+
+        .line-right {
+            right: 30px;
+            top: 50%;
+            transform: translateY(-50%) rotate(90deg);
+            width: 750px;
+        }
+
+        /* 四隅 */
+        .pos-tl {
+            top: 0;
+            left: 0;
+            transform: rotate(-45deg) translate(30px, 30px);
+            font-size: 28px;
+            color: #666;
+        }
+
+        .pos-tr {
+            top: 0;
+            right: 0;
+            transform: rotate(45deg) translate(-30px, 30px);
+            font-size: 28px;
+            color: #666;
+        }
+
+        .pos-bl {
+            bottom: 0;
+            left: 0;
+            transform: rotate(45deg) translate(30px, -30px);
+            font-size: 28px;
+            color: #666;
+        }
+
+        .pos-br {
+            bottom: 0;
+            right: 0;
+            transform: rotate(-45deg) translate(-30px, -30px);
+            font-size: 28px;
+            color: #666;
+        }
+
+        /* 核心网格 */
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(9, 85px);
+            grid-template-rows: repeat(9, 85px);
+            border: 3px solid #111;
+            background: #fff;
+            position: relative;
+            z-index: 10;
+            box-shadow: 0 0 40px rgba(0, 0, 0, 0.1);
+        }
+
+        .cell {
+            border: 1px solid #d1d5db;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: center;
+            position: relative;
+            padding-top: 10px;
+        }
+
+        .cell.center {
+            background-color: #fcd34d;
+            border: 2px solid #000;
+            font-weight: bold;
+        }
+
+        .year-num {
+            font-size: 22px;
+            font-weight: 800;
+            color: #111;
+            margin-bottom: 6px;
+            line-height: 1;
+            font-family: "Helvetica Neue", Arial, sans-serif;
+        }
+
+        .note-box {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+        }
+
+        .note-text {
+            font-size: 12px;
+            line-height: 1.3;
+            font-weight: 600;
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        /* 颜色定义 */
+        .text-price {
+            color: #111;
+            font-weight: 900;
+        }
+
+        .text-date {
+            color: #dc2626;
+            font-size: 11px;
+        }
+
+        .text-desc {
+            color: #4b5563;
+            border-top: 1px solid #e5e7eb;
+            margin-top: 2px;
+            padding-top: 1px;
+            width: 80%;
+        }
+
+        /* 2025 当前高亮 */
+        .highlight-current {
+            position: absolute;
+            inset: -2px;
+            border: 3px solid #b91c1c;
+            /* Red border */
+            z-index: 20;
+            pointer-events: none;
+            box-shadow: 0 0 15px rgba(185, 28, 28, 0.4);
+        }
+
+        /* SVG 覆盖层 */
+        .overlay-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 30;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="app">
+
+        <!-- 1. 顶部解读：基于2025视角的最新推演 -->
+        <div class="header-box">
+            <h1 class="header-title">江恩螺旋四方图：新一轮康波周期的时空密码</h1>
+            <div class="header-desc">
+                <p>
+                    本图以1991年（A股开市元年）为太极原点，按顺时针螺旋展开。依据江恩“历史重演”法则，我们发现A股存在显著的<span
+                        class="highlight-red">19年轮回周期</span>（对应月亮交点周期）：
+                    <br><br>
+                    1. <strong>底部共振：</strong>2005年（998历史大底）与2024年（2635微盘股底）相隔19年，在四方图中处于同一相位区间，确立了<span
+                        class="highlight-red">2024年为新一轮大牛市的起点</span>。
+                    <br>
+                    2. <strong>时空映射：</strong>请观察图表右上角的【乾位对角线】。历史最高点<span
+                        class="highlight-blue">2007年（6124点）</span>位于此轴线上，而螺旋向外延伸的<span
+                        class="highlight-red">2027年</span>恰好落于同一对角线。这预示着本轮始于2024年的行情，将在<strong>2027年迎来类似2007年的情绪巅峰与周期大顶</strong>。
+                    <br>
+                    3.
+                    <strong>当前策略：</strong>2025年正处于从“坎位（底）”向“离位（顶）”攀升的<strong>趋势加速期</strong>。震荡即是机会，逢低布局，直至2027年时间之窗开启。
+                </p>
+            </div>
+        </div>
+
+        <!-- 2. 图表区 -->
+        <div class="chart-wrapper">
+
+            <!-- 八卦装饰层 -->
+            <div class="line-top decor-line"></div>
+            <div class="bagua-label pos-top">
+                <span class="trigram-icon">☲</span>
+                <span>离 (火/中天悬顶)</span>
+            </div>
+
+            <div class="line-bottom decor-line"></div>
+            <div class="bagua-label pos-bottom">
+                <span>坎 (水/雪球冰底)</span>
+                <span class="trigram-icon">☵</span>
+            </div>
+
+            <div class="line-left decor-line"></div>
+            <div class="bagua-label pos-left">
+                <span class="trigram-icon">☳</span>
+                <span>震 (雷/春雷乍动)</span>
+            </div>
+
+            <div class="line-right decor-line"></div>
+            <div class="bagua-label pos-right">
+                <span>兑 (泽/震荡蓄势)</span>
+                <span class="trigram-icon">☱</span>
+            </div>
+
+            <!-- 四隅 -->
+            <div class="bagua-label pos-tl">巽</div> <!-- 风 -->
+            <div class="bagua-label pos-tr">坤</div> <!-- 地 -->
+            <div class="bagua-label pos-bl">艮</div> <!-- 山 -->
+            <div class="bagua-label pos-br">乾</div> <!-- 天 -->
+
+            <!-- 3. 核心网格 (9x9) -->
+            <div class="grid-container">
+                <div v-for="cell in gridCells" :key="cell.year" :class="['cell', {'center': cell.isCenter}]">
+
+                    <!-- 年份 -->
+                    <span class="year-num">{{ cell.year }}</span>
+
+                    <!-- 备注 (上下分离，清晰化) -->
+                    <div v-if="cell.note" class="note-box">
+                        <span class="note-text text-price">{{ cell.note.price }}</span>
+                        <span class="note-text text-date">{{ cell.note.date }}</span>
+                        <span class="note-text text-desc">{{ cell.note.desc }}</span>
+                    </div>
+
+                    <!-- 2025 当前高亮 (因为现在是2025年11月) -->
+                    <div v-if="cell.year === 2025" class="highlight-current"></div>
+                    <!-- 2024 底部标记 -->
+                    <div v-if="cell.year === 2024"
+                        class="absolute inset-0 border-2 border-blue-400 opacity-50 pointer-events-none"></div>
+                </div>
+
+                <!-- 4. SVG 绘图层 -->
+                <svg class="overlay-layer" viewBox="0 0 765 765">
+                    <!-- 对角线 (乾坤线 - 牛熊分界) -->
+                    <line x1="0" y1="0" x2="765" y2="765" stroke="#999" stroke-width="1" opacity="0.5" />
+                    <line x1="765" y1="0" x2="0" y2="765" stroke="#999" stroke-width="1" opacity="0.5" />
+
+                    <!-- 十字线 (虚线) -->
+                    <line x1="382.5" y1="0" x2="382.5" y2="765" stroke="#999" stroke-width="1" stroke-dasharray="5,3"
+                        opacity="0.3" />
+                    <line x1="0" y1="382.5" x2="765" y2="382.5" stroke="#999" stroke-width="1" stroke-dasharray="5,3"
+                        opacity="0.3" />
+
+                    <!-- 红色时间周期圆 -->
+                    <!-- 2005/2024 底部共振圈 -->
+                    <circle cx="382.5" cy="382.5" r="128" fill="none" stroke="#dc2626" stroke-width="1.5"
+                        stroke-opacity="0.6" />
+                    <!-- 2007/2027 顶部映射圈 -->
+                    <circle cx="382.5" cy="382.5" r="378" fill="none" stroke="#dc2626" stroke-width="2"
+                        stroke-opacity="0.8" />
+                    <!-- 中间震荡圈 -->
+                    <circle cx="382.5" cy="382.5" r="255" fill="none" stroke="#dc2626" stroke-width="1"
+                        stroke-dasharray="8,4" stroke-opacity="0.4" />
+                </svg>
+            </div>
+
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp, computed } = Vue;
+
+        // 数据更新：基于2025年视角的最正确解读
+        const NOTES = {
+            1991: { price: '96.05', date: '12/19', desc: '开天辟地' },
+            1994: { price: '325', date: '7/29', desc: '历史底' },
+            2001: { price: '2245', date: '6/14', desc: '国有顶' },
+            2005: { price: '998', date: '6/6', desc: '超级底' }, // 关键周期点
+            2007: { price: '6124', date: '10/16', desc: '巅峰' }, // 对角线关键点
+            2008: { price: '1664', date: '10/28', desc: '海啸' },
+            2014: { price: '起涨', date: '7月', desc: '杠杆牛' },
+            2015: { price: '5178', date: '6/12', desc: '杠杆顶' },
+            2019: { price: '2440', date: '1/4', desc: '商誉底' },
+            2021: { price: '3731', date: '2/18', desc: '核心顶' },
+            2024: { price: '2635', date: '2/5', desc: '新周期底' }, // 2024确立为底
+            2025: { price: '主升浪', date: '运行中', desc: '趋势向上' }, // 当前状态
+            2027: { price: '???', date: '预测', desc: '周期大顶' }  // 预测目标
+        };
+
+        createApp({
+            setup() {
+                const size = 9;
+                const center = 4;
+                const startYear = 1991;
+
+                // 算法保持不变：1991中心 -> 1992左 -> 1993上
+                // 确保 2007 和 2027 在同一条对角线(右上)
+                const gridCells = computed(() => {
+                    let grid = Array(size * size).fill(null);
+                    let x = 0;
+                    let y = 0;
+                    let dx = -1;
+                    let dy = 0;
+
+                    let year = startYear;
+                    let step = 1;
+                    let passed = 0;
+                    let turn = 0;
+
+                    for (let i = 0; i < size * size; i++) {
+                        let row = center + y;
+                        let col = center + x;
+
+                        if (row >= 0 && row < size && col >= 0 && col < size) {
+                            grid[row * size + col] = {
+                                year: year,
+                                note: NOTES[year] || null,
+                                isCenter: year === startYear,
+                                row, col
+                            };
+                        }
+
+                        year++;
+                        x += dx;
+                        y += dy;
+                        passed++;
+
+                        if (passed === step) {
+                            passed = 0;
+                            if (dx === -1 && dy === 0) { dx = 0; dy = -1; }
+                            else if (dx === 0 && dy === -1) { dx = 1; dy = 0; }
+                            else if (dx === 1 && dy === 0) { dx = 0; dy = 1; }
+                            else if (dx === 0 && dy === 1) { dx = -1; dy = 0; }
+
+                            turn++;
+                            if (turn % 2 === 0) step++;
+                        }
+                    }
+                    return grid;
+                });
+
+                return { gridCells };
+            }
+        }).mount('#app');
+    </script>
+</body>
+
+</html>

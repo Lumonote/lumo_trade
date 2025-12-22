@@ -822,7 +822,16 @@ class InvestorSentimentAnalyzer:
                         'emotion': sector_sentiment.get('emotion', '中性'),
                         'data_source': sector_sentiment.get('data_source', 'api')
                     }
-                    self.global_cache.set_sector(sector_name, sentiment_data)
+                    
+                    # 检查数据有效性：如果涨跌幅和换手率都为0，且来源不是mock，可能是无效数据
+                    # 只有数据有效才缓存，避免缓存无效的0值数据
+                    is_valid = (sentiment_data['change_pct'] != 0 or sentiment_data['turnover_rate'] != 0)
+                    
+                    if is_valid:
+                        self.global_cache.set_sector(sector_name, sentiment_data)
+                    else:
+                        print(f"   ⚠️ 板块数据疑似无效(全0)，跳过缓存: {sector_name}")
+                        
                     sector_sentiment = sentiment_data
 
                 return {

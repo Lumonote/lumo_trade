@@ -1415,6 +1415,12 @@ class OpportunityReportGenerator:
             sec_turn = _fmt_pct(sec.get('turnover_rate'))
             sec_overall = sec.get('overall') or '中性'
             sec_score = scores.get('sector')
+            
+            # 判断板块数据是否有效：如果板块未知，或者涨跌和换手都是0.0%且分数为50，则认为无效
+            is_valid_sector = True
+            if sector_name == '未知' or (sec.get('change_pct') == 0 and sec.get('turnover_rate') == 0 and sec_score == 50):
+                is_valid_sector = False
+                
             sec_str = f"{sector_name}({sec_chg}, 换手{sec_turn}, {sec_overall}, {_fmt_score(sec_score)}分)"
 
             # 2. 量化
@@ -1493,9 +1499,35 @@ class OpportunityReportGenerator:
             dt_signal = dt.get('last_signal') or '—'
             dt_date = dt.get('last_date')
             dt_net = _fmt_money(dt.get('net_buy_amount'))
-            dt_info = f"龙虎榜:{dt_signal}(净额{dt_net})" + (f"({dt_date})" if dt_date else "")
-            
-            sent_str = f"情绪:{inv_sent}，资金:{cf_trend}({cf_str}, 净额{cf_amt})，{dt_info}，{_fmt_score(sent_score)}分"
+
+            cf_parts = []
+            has_cf_trend = cf_trend not in ('—', '未知', None)
+            has_cf_strength = cf_str not in ('—', '未知', None)
+            has_cf_amt = cf_amt not in ('—', '+0.00')
+            if has_cf_trend or has_cf_strength or has_cf_amt:
+                amt_str = f", 净额{cf_amt}" if has_cf_amt else ""
+                strength_str = cf_str if has_cf_strength else "—"
+                cf_parts.append(f"资金:{cf_trend}({strength_str}{amt_str})")
+
+            dt_parts = []
+            valid_dt_date = bool(dt_date) and str(dt_date) != 'N/A'
+            valid_dt_net = dt_net not in ('—', None)
+            valid_dt_signal = dt_signal not in ('—', '中性', None)
+            if valid_dt_date or valid_dt_net or valid_dt_signal:
+                date_str = f"({dt_date})" if valid_dt_date else ""
+                net_str = f"(净额{dt_net})" if valid_dt_net else ""
+                signal_str = dt_signal if dt_signal else '—'
+                dt_parts.append(f"龙虎榜:{signal_str}{net_str}{date_str}")
+
+            sent_subparts = []
+            if cf_parts:
+                sent_subparts.append(cf_parts[0])
+            if dt_parts:
+                sent_subparts.append(dt_parts[0])
+            if sent_subparts:
+                sent_str = f"情绪:{inv_sent}，" + "，".join(sent_subparts) + f"，{_fmt_score(sent_score)}分"
+            else:
+                sent_str = f"情绪:{inv_sent}，{_fmt_score(sent_score)}分"
 
             # 6. 事件
             ed = details.get('events') or {}
@@ -1506,18 +1538,25 @@ class OpportunityReportGenerator:
             events_str = f"评级:{ev_rating}，利好{pos}/利空{neg}，{_fmt_score(ev_score)}分"
 
             suggestion = self._get_recommendation_text(rating)
-            filter_res = '全部通过' if passed or eliminated in (0, None) else f'阶段{eliminated}淘汰'
+            filter_res = '' if eliminated in (0, None) else f'阶段{eliminated}淘汰'
 
-            # 组合长字符串
-            parts = [
-                f"【概览】评级{rating}，{filter_res}，建议：{suggestion}",
-                f"【板块】{sec_str}",
+            overview = f"【概览】评级{rating}，建议：{suggestion}"
+            if filter_res:
+                overview = f"【概览】评级{rating}，{filter_res}，建议：{suggestion}"
+
+            parts = [overview]
+            
+            # 仅在数据有效时展示板块信息
+            if is_valid_sector:
+                parts.append(f"【板块】{sec_str}")
+                
+            parts.extend([
                 f"【量化】{quant_str}",
                 f"【技术】{tech_str}",
                 f"【基本面】{fund_str}",
                 f"【情绪资金】{sent_str}",
                 f"【消息】{events_str}"
-            ]
+            ])
 
             # 新增：入选原因与最新动态
             reason = stock.get('selection_reason')
@@ -1526,9 +1565,28 @@ class OpportunityReportGenerator:
             
             latest_news = stock.get('latest_news')
             if latest_news:
-                news_titles = [n.get('title', '') for n in latest_news[:2]]
-                news_str = "; ".join(news_titles)
-                parts.append(f"【最新动态】{news_str}")
+                def _valid_title(t: str) -> bool:
+                    if not t:
+                        return False
+                    ts = t.strip()
+                    if len(ts) < 8:
+                        return False
+                    bad_keywords = ['上交所', '深交所', '证券交易所']
+                    if any(bk in ts for bk in bad_keywords) and len(ts) < 20:
+                        return False
+                    return True
+
+                titles = []
+                for n in latest_news:
+                    t = n.get('title', '')
+                    if _valid_title(t):
+                        titles.append(t)
+                    if len(titles) >= 2:
+                        break
+
+                if titles:
+                    news_str = "; ".join(titles)
+                    parts.append(f"【最新动态】{news_str}")
 
             return '<br>'.join(parts)
         except Exception as e:
