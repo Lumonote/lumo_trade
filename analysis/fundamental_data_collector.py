@@ -20,6 +20,16 @@ import sys
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from utils.retry_utils import (
+    exponential_backoff_with_jitter,
+    retry_with_fallback,
+    validate_data_quality,
+    handle_missing_fields
+)
+
+import logging
+logger = logging.getLogger(__name__)
+
 
 class FundamentalDataCollector:
     """基本面财务数据采集器"""
@@ -94,9 +104,10 @@ class FundamentalDataCollector:
         else:
             return '0'
 
+    @exponential_backoff_with_jitter(max_retries=3, base_delay=1.0)
     def get_financial_indicators(self):
         """
-        获取主要财务指标 (PE, PB, 市值等)
+        获取主要财务指标 (PE, PB, 市值等) - 带重试机制
         
         Returns:
             dict: 财务指标数据
@@ -637,24 +648,68 @@ class FundamentalDataCollector:
 
     def get_comprehensive_data(self):
         """
-        获取综合基本面数据
+        获取综合基本面数据 - 新增重试机制和数据验证
 
         Returns:
             dict: 综合基本面数据
         """
-        print(f"📊 正在采集 {self.stock_code} 的基本面数据...")
+        logger.info(f"📊 正在采集 {self.stock_code} 的基本面数据...")
 
-        data = {
-            'stock_code': self.stock_code,
-            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'financial_indicators': self.get_financial_indicators(),
-            'financial_reports': self.get_financial_reports(),
-            'shareholder_info': self.get_shareholder_info(),
-            'industry_comparison': self.get_industry_comparison(),
-        }
+        try:
+            # 采集各维度数据（带重试机制）
+            data = {
+                'stock_code': self.stock_code,
+                'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            }
 
-        print(f"✅ 基本面数据采集完成")
-        return data
+            # 财务指标（已添加@exponential_backoff_with_jitter装饰器）
+            try:
+                indicators = self.get_financial_indicators()
+                # 验证数据质量
+                is_valid, error_msg = validate_data_quality(
+                    indicators,
+                    required_fields=['pe_ratio', 'pb_ratio'],
+                    min_rows=0,  # 字典类型检查
+                    data_type="财务指标"
+                )
+                if not is_valid:
+                    logger.warning(f"财务指标验证失败: {error_msg}，使用默认值")
+                    indicators = self._get_default_indicators()
+                data['financial_indicators'] = indicators
+            except Exception as e:
+                logger.warning(f"财务指标采集失败: {e}，使用默认值")
+                data['financial_indicators'] = self._get_default_indicators()
+
+            # 财务报告
+            try:
+                reports = self.get_financial_reports()
+                data['financial_reports'] = reports
+            except Exception as e:
+                logger.warning(f"财务报告采集失败: {e}")
+                data['financial_reports'] = {}
+
+            # 股东信息
+            try:
+                shareholder = self.get_shareholder_info()
+                data['shareholder_info'] = shareholder
+            except Exception as e:
+                logger.warning(f"股东信息采集失败: {e}")
+                data['shareholder_info'] = {}
+
+            # 行业对比
+            try:
+                industry = self.get_industry_comparison()
+                data['industry_comparison'] = industry
+            except Exception as e:
+                logger.warning(f"行业对比采集失败: {e}")
+                data['industry_comparison'] = {}
+
+            logger.info(f"✅ 基本面数据采集完成")
+            return data
+
+        except Exception as e:
+            logger.error(f"基本面数据采集异常: {e}")
+            raise
 
     def _get_default_indicators(self):
         """返回默认财务指标"""

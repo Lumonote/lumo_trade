@@ -22,6 +22,15 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from analysis.dynamic_crawler import DynamicCrawler
+from utils.retry_utils import (
+    exponential_backoff_with_jitter,
+    retry_with_fallback,
+    validate_data_quality,
+    handle_missing_fields
+)
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 class NewsSentimentCollector:
@@ -39,9 +48,11 @@ class NewsSentimentCollector:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': 'http://quote.eastmoney.com/'
         }
-        # 用于更强关联检索
+    # 用于更强关联检索
         self.company_name = None
         self.related_keywords = []
+
+
 
     def get_latest_announcements(self, limit=10):
         """
