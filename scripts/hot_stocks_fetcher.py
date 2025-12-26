@@ -146,7 +146,7 @@ class HotStocksFetcher:
         if not stocks:
             try:
                 logger.info("正在从同花顺获取热度榜...")
-                tonghuashun_stocks = self._fetch_from_tonghuashun()
+                tonghuashun_stocks = self._fetch_from_tonghuashun(limit=limit)
                 if tonghuashun_stocks:
                     stocks = tonghuashun_stocks[:limit]
                     logger.info(f"✓ 同花顺获取成功: {len(tonghuashun_stocks)} 只股票")
@@ -155,8 +155,18 @@ class HotStocksFetcher:
 
         if not stocks:
             try:
+                logger.info("尝试东方财富增强热榜接口（支持>100只股票）...")
+                enhanced_stocks = self._fetch_from_eastmoney_enhanced(limit=limit)
+                if enhanced_stocks:
+                    stocks = enhanced_stocks
+                    logger.info(f"✓ 东方财富增强热榜获取成功: {len(enhanced_stocks)} 只股票")
+            except Exception as e:
+                logger.warning(f"东方财富增强热榜获取失败: {e}")
+
+        if not stocks:
+            try:
                 logger.info("正在从东方财富API接口获取热度榜(备用)...")
-                eastmoney_stocks = self._fetch_from_eastmoney()
+                eastmoney_stocks = self._fetch_from_eastmoney(limit=limit)
                 if eastmoney_stocks:
                     stocks = eastmoney_stocks
                     logger.info(f"✓ 东方财富API获取成功: {len(eastmoney_stocks)} 只股票")
@@ -170,8 +180,8 @@ class HotStocksFetcher:
                 if alt_stocks:
                     stocks = alt_stocks
                     logger.info(f"✓ 东方财富备用入口获取成功: {len(alt_stocks)} 只股票")
-            except Exception as e2:
-                logger.warning(f"东方财富备用入口获取失败: {e2}")
+            except Exception as e:
+                logger.warning(f"东方财富备用入口获取失败: {e}")
 
         if not stocks:
             # v4.0: 移除fallback备用数据源，确保只使用实时数据
@@ -335,10 +345,10 @@ class HotStocksFetcher:
         return stocks
     
 
-    def _fetch_from_eastmoney(self) -> List[Dict]:
+    def _fetch_from_eastmoney(self, limit: int = 100) -> List[Dict]:
         """
         从东方财富获取热榜-热股100
-
+        
         API说明:
         - 使用东方财富热榜（基于用户关注度、搜索量、讨论热度等综合人气）
         - f164: 热度指数/人气值
@@ -354,30 +364,40 @@ class HotStocksFetcher:
         ]
 
         for field_id, field_name in heat_fields:
+            current_field_stocks = []
+            page = 1
+            page_size = 100 # 东方财富API通常每页最多100条
+            
             try:
-                popularity_params = {
-                    'pn': '1',
-                    'pz': '100',
-                    'po': '1',
-                    'np': '1',
-                    'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
-                    'fltt': '2',
-                    'invt': '2',
-                    'fid': field_id,  # 热度排序字段
-                    'fs': 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23',  # A股市场（主板+创业板+科创板）
-                    'fields': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f22,f11,f62,f128,f136,f115,f152,f164,f183,f184',
-                    '_': str(int(time.time() * 1000))
-                }
+                while len(current_field_stocks) < limit:
+                    popularity_params = {
+                        'pn': str(page),
+                        'pz': str(page_size),
+                        'po': '1',
+                        'np': '1',
+                        'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+                        'fltt': '2',
+                        'invt': '2',
+                        'fid': field_id,  # 热度排序字段
+                        'fs': 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23',  # A股市场（主板+创业板+科创板）
+                        'fields': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f22,f11,f62,f128,f136,f115,f152,f164,f183,f184',
+                        '_': str(int(time.time() * 1000))
+                    }
 
-                logger.info(f"尝试获取热榜（按{field_name}排序）...")
-                response = requests.get(popularity_url, params=popularity_params, headers=self.headers, timeout=10)
-                response.raise_for_status()
-                data = response.json()
+                    logger.info(f"尝试获取热榜（按{field_name}排序, 第{page}页）...")
+                    response = requests.get(popularity_url, params=popularity_params, headers=self.headers, timeout=10)
+                    response.raise_for_status()
+                    data = response.json()
 
-                if data.get('data') and data['data'].get('diff') and len(data['data']['diff']) > 0:
-                    logger.info(f"✓ 热榜API返回 {len(data['data']['diff'])} 只股票（使用{field_name}）")
+                    if not (data.get('data') and data['data'].get('diff') and len(data['data']['diff']) > 0):
+                        if page == 1:
+                            logger.warning(f"热榜API第{page}页无数据")
+                        break
 
-                    for idx, item in enumerate(data['data']['diff'], start=1):
+                    items = data['data']['diff']
+                    logger.info(f"✓ 热榜API第{page}页返回 {len(items)} 只股票")
+
+                    for idx, item in enumerate(items, start=1):
                         try:
                             # 解析股票信息
                             code = item.get('f12', '')  # 股票代码
@@ -443,7 +463,7 @@ class HotStocksFetcher:
                                 'amount': round(amount, 2),
                                 'latest_price': safe_float(item.get('f2')),  # 最新价
                                 'source': 'eastmoney',
-                                'rank': idx
+                                'rank': len(current_field_stocks) + 1
                             }
 
                             # 提取基本面数据
@@ -474,7 +494,7 @@ class HotStocksFetcher:
                                 stock_info['circulation_market_cap'] = round(cmc / 100000000, 2)
                             else:
                                 stock_info['circulation_market_cap'] = 'N/A'
-
+                            
                             # 营收同比
                             rev = item.get('f183')
                             if isinstance(rev, (int, float)):
@@ -489,13 +509,22 @@ class HotStocksFetcher:
                             else:
                                 stock_info['net_profit_yoy'] = 'N/A'
 
-                            stocks.append(stock_info)
+                            current_field_stocks.append(stock_info)
                         except Exception as e:
                             logger.warning(f"解析股票信息失败: {e}, 数据: {item}")
                             continue
 
-                    if len(stocks) >= 50:
-                        return stocks[:100]
+                    # Check if we have enough stocks or if the page returned less than page_size (meaning last page)
+                    if len(current_field_stocks) >= limit:
+                        break
+                    
+                    if len(items) < page_size:
+                        break
+                        
+                    page += 1
+
+                if current_field_stocks:
+                    return current_field_stocks[:limit]
 
             except Exception as e:
                 logger.warning(f"使用{field_name}获取失败: {e}，尝试下一个字段...")
@@ -654,6 +683,99 @@ class HotStocksFetcher:
             logger.error(f"股吧人气榜获取异常: {e}")
             return []
 
+    def _fetch_from_eastmoney_stockpicker(self, limit: int = 100) -> List[Dict]:
+        """
+        从东方财富选股器获取热门股票（基于股吧人气排名）
+        URL: https://emrnweb.eastmoney.com/stockpicker/result
+        可以获取前500名人气股票
+        """
+        logger.info(f"尝试从东方财富选股器获取前{limit}名人气股票...")
+        stocks = []
+        try:
+            # 构造选股器接口URL
+            # nF参数: [["005001",{"sdc":"005001004"}]] 表示股吧人气排名前500
+            base_url = "https://emrnweb.eastmoney.com/stockpicker/result"
+            params = {
+                'nF': '[["005001",{"sdc":"005001004"}]]',  # 股吧人气排名前500
+                'nN': '',
+                'appfenxiang': '1'
+            }
+            
+            headers = {
+                **self.headers,
+                'Referer': 'https://emrnweb.eastmoney.com/stockpicker/',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+            
+            response = requests.get(base_url, params=params, headers=headers, timeout=15)
+            response.raise_for_status()
+            
+            # 解析返回的HTML内容
+            html_content = response.text
+            
+            # 使用正则表达式提取股票数据
+            import re
+            
+            # 匹配股票代码、名称和排名信息
+            pattern = r'<tr[^>]*>.*?<td[^>]*>(\d+)</td>.*?<td[^>]*><a[^>]*>([\d\w]+)</a></td>.*?<td[^>]*><a[^>]*>([^<]+)</a></td>.*?<td[^>]*>([^<]*)</td>.*?</tr>'
+            matches = re.findall(pattern, html_content, re.DOTALL)
+            
+            if not matches:
+                # 尝试另一种匹配模式
+                pattern2 = r'data-code="([\d\w]+)"[^>]*data-name="([^"]+)"[^>]*>.*?<td[^>]*>(\d+)</td>'
+                matches2 = re.findall(pattern2, html_content, re.DOTALL)
+                if matches2:
+                    for code, name, rank in matches2[:limit]:
+                        # 确定交易所
+                        if code.startswith(('600', '601', '603', '605', '688')):
+                            exchange = 'SH'
+                        else:
+                            exchange = 'SZ'
+                            
+                        stock_info = {
+                            'code': code,
+                            'name': name,
+                            'exchange': exchange,
+                            'rank': int(rank) if rank.isdigit() else 999,
+                            'source': 'eastmoney_stockpicker',
+                            'popularity_score': max(0, 100 - int(rank) + 1) if rank.isdigit() else 50
+                        }
+                        stocks.append(stock_info)
+            else:
+                # 使用第一种匹配结果
+                for rank, code, name, _ in matches[:limit]:
+                    # 确定交易所
+                    if code.startswith(('600', '601', '603', '605', '688')):
+                        exchange = 'SH'
+                    else:
+                        exchange = 'SZ'
+                        
+                    stock_info = {
+                        'code': code,
+                        'name': name,
+                        'exchange': exchange,
+                        'rank': int(rank) if rank.isdigit() else 999,
+                        'source': 'eastmoney_stockpicker',
+                        'popularity_score': max(0, 100 - int(rank) + 1) if rank.isdigit() else 50
+                    }
+                    stocks.append(stock_info)
+            
+            if stocks:
+                logger.info(f"✓ 选股器接口获取成功: {len(stocks)} 只股票")
+                
+                # 补充基本面数据
+                stock_codes = [s['code'] for s in stocks]
+                self._supplement_fundamentals_batch(stock_codes, stocks)
+                
+                # 按排名排序
+                stocks.sort(key=lambda x: x['rank'])
+                return stocks[:limit]
+                
+        except Exception as e:
+            logger.error(f"选股器接口获取失败: {e}")
+            
+        return []
+
     def _fetch_from_eastmoney_alt(self, limit: int = 100) -> List[Dict]:
         if self._BrowserManager is None:
             return []
@@ -745,6 +867,220 @@ class HotStocksFetcher:
                     except Exception:
                         continue
         return stocks
+
+    def _fetch_from_eastmoney_enhanced(self, limit: int = 100) -> List[Dict]:
+        """
+        增强版东方财富热榜获取（支持>100只股票）
+        
+        策略:
+        1. 使用多个热度排序字段
+        2. 支持分页获取
+        3. 合并多个数据源
+        """
+        all_stocks = []
+        
+        # 多个热度排序字段，获取不同维度的热门股票
+        heat_fields = [
+            ('f164', '热度指数'),
+            ('f62', '主力资金净流入'),
+            ('f8', '换手率'),
+            ('f6', '成交额'),
+            ('f5', '成交量')
+        ]
+        
+        logger.info(f"开始增强热榜获取，目标: {limit} 只股票")
+        
+        for field_id, field_name in heat_fields:
+            if len(all_stocks) >= limit:
+                break
+                
+            field_stocks = []
+            page = 1
+            page_size = min(100, limit)  # 每页最多100条
+            
+            try:
+                # 为每个字段获取多页数据
+                while len(field_stocks) < limit // len(heat_fields) + 20:  # 每个字段获取一部分
+                    if len(all_stocks) + len(field_stocks) >= limit:
+                        break
+                        
+                    popularity_params = {
+                        'pn': str(page),
+                        'pz': str(page_size),
+                        'po': '1',
+                        'np': '1',
+                        'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+                        'fltt': '2',
+                        'invt': '2',
+                        'fid': field_id,
+                        'fs': 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23',
+                        'fields': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f22,f11,f62,f128,f136,f115,f152,f164,f183,f184',
+                        '_': str(int(time.time() * 1000))
+                    }
+
+                    logger.info(f"获取热榜（按{field_name}排序, 第{page}页）...")
+                    response = requests.get(
+                        "https://push2.eastmoney.com/api/qt/clist/get",
+                        params=popularity_params,
+                        headers=self.headers,
+                        timeout=10
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+
+                    if not (data.get('data') and data['data'].get('diff') and len(data['data']['diff']) > 0):
+                        if page == 1:
+                            logger.warning(f"热榜API（{field_name}）第{page}页无数据")
+                        break
+
+                    items = data['data']['diff']
+                    logger.info(f"✓ 热榜API（{field_name}）第{page}页返回 {len(items)} 只股票")
+
+                    # 解析股票数据
+                    for item in items:
+                        try:
+                            code = item.get('f12', '')
+                            name = item.get('f14', '')
+                            market = item.get('f13', '')
+
+                            if not code or not name:
+                                continue
+
+                            # 确定交易所
+                            if market == '0':
+                                exchange = 'SZ'
+                            elif market == '1':
+                                exchange = 'SH'
+                            else:
+                                if code.startswith(('000', '001', '002', '003', '300')):
+                                    exchange = 'SZ'
+                                elif code.startswith(('600', '601', '603', '605', '688', '689')):
+                                    exchange = 'SH'
+                                else:
+                                    exchange = 'SZ'
+
+                            # 获取各项指标
+                            def safe_float(val, default=0.0):
+                                try:
+                                    if val == '-' or val is None:
+                                        return default
+                                    return float(val)
+                                except (ValueError, TypeError):
+                                    return default
+
+                            change_pct = safe_float(item.get('f3'))
+                            turnover_rate = safe_float(item.get('f8'))
+                            volume = safe_float(item.get('f5'))
+                            amount = safe_float(item.get('f6'))
+                            main_fund_flow = safe_float(item.get('f62'))
+                            heat_index = safe_float(item.get('f164'))
+
+                            # 计算综合人气评分
+                            if heat_index > 0:
+                                popularity_score = min(100, heat_index)
+                            else:
+                                popularity_score = self._calculate_popularity_score_v2(
+                                    main_fund_flow=main_fund_flow,
+                                    amount=amount,
+                                    turnover_rate=turnover_rate,
+                                    change_pct=change_pct,
+                                    volume=volume
+                                )
+
+                            stock_info = {
+                                'code': code,
+                                'name': name,
+                                'exchange': exchange,
+                                'popularity_score': round(popularity_score, 2),
+                                'change_pct': round(change_pct, 2),
+                                'turnover_rate': round(turnover_rate, 2),
+                                'volume': int(volume * 100),
+                                'amount': round(amount, 2),
+                                'latest_price': safe_float(item.get('f2')),
+                                'source': 'eastmoney_enhanced',
+                                'rank': len(field_stocks) + 1,
+                                'sort_field': field_id,
+                                'sort_field_name': field_name
+                            }
+
+                            # 提取基本面数据
+                            self._extract_fundamental_data(item, stock_info)
+                            
+                            field_stocks.append(stock_info)
+                            
+                        except Exception as e:
+                            logger.warning(f"解析股票信息失败: {e}, 数据: {item}")
+                            continue
+
+                    # 检查是否继续分页
+                    if len(items) < page_size:
+                        break
+                    
+                    page += 1
+                    
+                    # 限制每个字段获取的页数，避免过多请求
+                    if page > 3:  # 每个字段最多3页
+                        break
+
+                # 合并当前字段的股票到总列表
+                all_stocks.extend(field_stocks)
+                logger.info(f"✓ 字段 {field_name} 获取完成，共 {len(field_stocks)} 只股票")
+                
+            except Exception as e:
+                logger.warning(f"字段 {field_name} 获取失败: {e}")
+                continue
+
+        # 去重并排序
+        if all_stocks:
+            unique_stocks = self._deduplicate_and_sort(all_stocks)
+            logger.info(f"✓ 增强热榜获取完成，去重后共 {len(unique_stocks)} 只股票")
+            return unique_stocks[:limit]
+        
+        return []
+
+    def _extract_fundamental_data(self, item: dict, stock_info: dict):
+        """从API响应中提取基本面数据"""
+        # PE (动态)
+        pe = item.get('f9')
+        if isinstance(pe, (int, float)):
+            stock_info['pe_ratio'] = round(float(pe), 2) if pe > 0 else '亏损' if pe < 0 else 'N/A'
+        else:
+            stock_info['pe_ratio'] = 'N/A'
+            
+        # PB
+        pb = item.get('f23')
+        if isinstance(pb, (int, float)):
+            stock_info['pb_ratio'] = round(float(pb), 2)
+        else:
+            stock_info['pb_ratio'] = 'N/A'
+            
+        # 总市值 (转为亿)
+        tmc = item.get('f20')
+        if isinstance(tmc, (int, float)):
+            stock_info['total_market_cap'] = round(tmc / 100000000, 2)
+        else:
+            stock_info['total_market_cap'] = 'N/A'
+            
+        # 流通市值 (转为亿)
+        cmc = item.get('f21')
+        if isinstance(cmc, (int, float)):
+            stock_info['circulation_market_cap'] = round(cmc / 100000000, 2)
+        else:
+            stock_info['circulation_market_cap'] = 'N/A'
+            
+        # 营收同比
+        rev = item.get('f183')
+        if isinstance(rev, (int, float)):
+            stock_info['revenue_yoy'] = round(float(rev), 2)
+        else:
+            stock_info['revenue_yoy'] = 'N/A'
+            
+        # 净利同比
+        profit = item.get('f184')
+        if isinstance(profit, (int, float)):
+            stock_info['net_profit_yoy'] = round(float(profit), 2)
+        else:
+            stock_info['net_profit_yoy'] = 'N/A'
 
     def _fetch_from_eastmoney_vip(self, limit: int = 100) -> List[Dict]:
         stocks: List[Dict] = []
@@ -896,7 +1232,7 @@ class HotStocksFetcher:
 
         return total_score
 
-    def _fetch_from_tonghuashun(self) -> List[Dict]:
+    def _fetch_from_tonghuashun(self, limit: int = 100) -> List[Dict]:
         """
         从同花顺获取热度榜/人气榜
 
