@@ -55,7 +55,7 @@ class DynamicCrawler:
                             page = context.new_page()
 
                             url = f"http://guba.eastmoney.com/list,{stock_code}.html"
-                            print(f"   🌐 访问股吧 (尝试 {attempt + 1}/{max_retries}): {url}")
+                            # 【优化】减少日志输出，避免日志噪音
 
                             # 改用load等待策略，更快
                             # 尝试多种排序/参数的搜索结果，提高解析成功率
@@ -67,7 +67,7 @@ class DynamicCrawler:
 
                             content = ''
                             for idx, u in enumerate(candidate_urls, start=1):
-                                print(f"   🌐 访问新闻候选URL {idx}/{len(candidate_urls)}: {u}")
+                                # 【优化】减少日志输出
                                 page.goto(u, wait_until='load', timeout=30000)
                                 page.wait_for_timeout(4000)
 
@@ -245,7 +245,7 @@ class DynamicCrawler:
                             guba_news = []
                             try:
                                 guba_url = f"http://guba.eastmoney.com/list,{stock_code},1,f.html"
-                                print(f"   🌐 尝试股吧资讯: {guba_url}")
+                                # 【优化】减少日志输出
                                 page.goto(guba_url, wait_until='domcontentloaded', timeout=15000)
                                 page.wait_for_timeout(2000)
                                 g_content = page.content()
@@ -278,7 +278,7 @@ class DynamicCrawler:
                             # --- 回退：原有搜索逻辑 ---
                             # 使用东方财富搜索新闻页(按关键词=股票代码)
                             url = f"https://so.eastmoney.com/news/s?keyword={stock_code}"
-                            print(f"   🌐 访问新闻搜索 (尝试 {attempt + 1}/{max_retries}): {url}")
+                            # 【优化】减少日志输出，避免日志噪音
 
                             page.goto(url, wait_until='load', timeout=30000)
 
@@ -572,7 +572,9 @@ class DynamicCrawler:
 
                             # 东方财富公告页
                             url = f"http://data.eastmoney.com/notices/stock/{stock_code}.html"
-                            print(f"   🌐 访问公告 (尝试 {attempt + 1}/{max_retries}): {url}")
+                            # 【优化】减少日志输出，只在第一次尝试时输出
+                            if attempt == 0:
+                                pass  # 静默访问，减少日志噪音
 
                             page.goto(url, wait_until='load', timeout=30000)
                             page.wait_for_timeout(4000)
@@ -598,7 +600,7 @@ class DynamicCrawler:
                                 soup.find('ul', class_='announcement-list')
 
                         if not table:
-                            print(f"   ⚠️  未找到公告表格 (尝试 {attempt + 1}/{max_retries})")
+                            # 【优化】减少日志输出
                             if attempt < max_retries - 1:
                                 time.sleep(retry_delay)
                                 continue
@@ -622,15 +624,14 @@ class DynamicCrawler:
                                     direct_items.append(a)
 
                             if not direct_items:
-                                print(f"   ⚠️  未找到公告行 (尝试 {attempt + 1}/{max_retries})")
                                 if attempt < max_retries - 1:
                                     time.sleep(retry_delay)
                                     continue
                                 return []
                             rows = direct_items
 
-                        print(f"   ✅ 找到{len(rows)}条公告候选")
-
+                        # 【优化】只在找到有效公告时输出日志
+                        valid_count = 0
                         for row in rows[:limit]:
                             # 提取公告标题和链接
                             title_elem = row.find('a') if hasattr(row, 'find') else row
@@ -688,12 +689,13 @@ class DynamicCrawler:
                                 'type': ann_type,
                                 'importance': 'medium'
                             })
+                            valid_count += 1
 
                         if announcements:
-                            print(f"   ✅ 成功解析{len(announcements)}条公告")
+                            # 只在成功时输出一次日志
                             return announcements
 
-                        print(f"   ⚠️  未解析到有效公告 (尝试 {attempt + 1}/{max_retries})")
+                        # 【优化】减少失败日志输出，避免日志噪音
                         if attempt < max_retries - 1:
                             time.sleep(retry_delay)
                             continue

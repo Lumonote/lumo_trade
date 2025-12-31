@@ -30,6 +30,11 @@ from analysis.sector_api import (
     get_sector_sentiment_multi_source    # 多数据源版本
 )
 from analysis.sentiment_cache_manager import get_sentiment_cache
+import threading
+
+# 【优化】全局请求锁字典，避免并发重复查询同一股票
+_request_locks = {}
+_locks_lock = threading.Lock()
 
 
 class InvestorSentimentAnalyzer:
@@ -790,68 +795,102 @@ class InvestorSentimentAnalyzer:
         Returns:
             dict: 板块信息和情绪数据
         """
-        print(f"   🔍 获取股票 {self.stock_code} 的板块情绪...")
-
-        try:
-            # 使用多数据源API获取真实数据(自动切换)
-            sector_info = get_stock_sector_info_multi_source(self.stock_code)
-            sector_sentiment = get_sector_sentiment_multi_source(self.stock_code)
-
-            # 调试日志
-            print(f"   🔍 sector_info: sector_name={sector_info.get('sector_name')}, success={sector_info.get('success')}")
-            print(f"   🔍 sector_sentiment: overall={sector_sentiment.get('overall')}, change_pct={sector_sentiment.get('change_pct')}, data_source={sector_sentiment.get('data_source')}")
-
-            if sector_info.get('success'):
-                print(f"   ✅ 通过{sector_info.get('data_source', 'API')}获取板块信息成功")
-
-                # 先尝试从全局缓存获取板块情绪(按板块名称缓存,多只股票可共享)
-                sector_name = sector_info.get('sector_name', '未知')
-                cached_sentiment = self.global_cache.get_sector(sector_name)
-
+        # 【优化】使用线程锁避免并发重复查询
+        lock_key = f"sector_{self.stock_code}"
+        with _locks_lock:
+            if lock_key not in _request_locks:
+                _request_locks[lock_key] = threading.Lock()
+        lock = _request_locks[lock_key]
+        
+        with lock:
+            # 先检查缓存（避免重复查询）
+            sector_name_cache_key = f"sector_name_{self.stock_code}"
+            cached_sector_name = self.global_cache.get(sector_name_cache_key) if hasattr(self.global_cache, 'get') else None
+            
+            if cached_sector_name:
+                cached_sentiment = self.global_cache.get_sector(cached_sector_name)
                 if cached_sentiment:
-                    print(f"   ✓ 板块情绪缓存命中: {sector_name}")
-                    sector_sentiment = cached_sentiment
-                else:
-                    # 无缓存,使用API获取的情绪数据并缓存
-                    sentiment_data = {
-                        'sector_name': sector_sentiment.get('sector_name', '未知'),
-                        'sentiment_score': sector_sentiment.get('sentiment_score', 50),
-                        'overall': sector_sentiment.get('overall', '市场情绪中性'),
-                        'change_pct': sector_sentiment.get('change_pct', 0),
-                        'turnover_rate': sector_sentiment.get('turnover_rate', 0),
-                        'emotion': sector_sentiment.get('emotion', '中性'),
-                        'data_source': sector_sentiment.get('data_source', 'api')
+                    # 缓存命中，直接返回
+                    return {
+                        'sector_name': cached_sector_name,
+                        'sector_sentiment': cached_sentiment,
+                        'stock_name': '',
+                        'current_price': 0,
+                        'industry': cached_sector_name,
+                        'concept_sectors': [],
+                        'data_source': 'cache'
                     }
-                    
-                    # 检查数据有效性：如果涨跌幅和换手率都为0，且来源不是mock，可能是无效数据
-                    # 只有数据有效才缓存，避免缓存无效的0值数据
-                    is_valid = (sentiment_data['change_pct'] != 0 or sentiment_data['turnover_rate'] != 0)
-                    
-                    if is_valid:
-                        self.global_cache.set_sector(sector_name, sentiment_data)
+        
+        # 未命中缓存，执行查询（锁保护下）
+        with lock:
+            # 双重检查：可能其他线程已经查询并缓存了
+            if cached_sector_name:
+                cached_sentiment = self.global_cache.get_sector(cached_sector_name)
+                if cached_sentiment:
+                    return {
+                        'sector_name': cached_sector_name,
+                        'sector_sentiment': cached_sentiment,
+                        'stock_name': '',
+                        'current_price': 0,
+                        'industry': cached_sector_name,
+                        'concept_sectors': [],
+                        'data_source': 'cache'
+                    }
+            
+            try:
+                # 使用多数据源API获取真实数据(自动切换)
+                sector_info = get_stock_sector_info_multi_source(self.stock_code)
+                sector_sentiment = get_sector_sentiment_multi_source(self.stock_code)
+
+                if sector_info.get('success'):
+                    # 先尝试从全局缓存获取板块情绪(按板块名称缓存,多只股票可共享)
+                    sector_name = sector_info.get('sector_name', '未知')
+                    cached_sentiment = self.global_cache.get_sector(sector_name)
+
+                    if cached_sentiment:
+                        # 缓存命中，直接使用
+                        sector_sentiment = cached_sentiment
                     else:
-                        print(f"   ⚠️ 板块数据疑似无效(全0)，跳过缓存: {sector_name}")
+                        # 无缓存,使用API获取的情绪数据并缓存
+                        sentiment_data = {
+                            'sector_name': sector_sentiment.get('sector_name', '未知'),
+                            'sentiment_score': sector_sentiment.get('sentiment_score', 50),
+                            'overall': sector_sentiment.get('overall', '市场情绪中性'),
+                            'change_pct': sector_sentiment.get('change_pct', 0),
+                            'turnover_rate': sector_sentiment.get('turnover_rate', 0),
+                            'emotion': sector_sentiment.get('emotion', '中性'),
+                            'data_source': sector_sentiment.get('data_source', 'api')
+                        }
                         
-                    sector_sentiment = sentiment_data
+                        # 检查数据有效性：如果涨跌幅和换手率都为0，且来源不是mock，可能是无效数据
+                        # 只有数据有效才缓存，避免缓存无效的0值数据
+                        is_valid = (sentiment_data['change_pct'] != 0 or sentiment_data['turnover_rate'] != 0)
+                        
+                        if is_valid:
+                            # 使用set_sector方法缓存板块情绪（按板块名称缓存，多只股票可共享）
+                            self.global_cache.set_sector(sector_name, sentiment_data)
+                        # 静默跳过无效数据
+                            
+                        sector_sentiment = sentiment_data
 
-                return {
-                    'sector_name': sector_name,
-                    'sector_sentiment': sector_sentiment,
-                    'stock_name': sector_info.get('stock_name', ''),
-                    'current_price': sector_info.get('current_price', 0),
-                    'industry': sector_info.get('industry', '未知'),
-                    'concept_sectors': sector_info.get('concept_sectors', []),
-                    'data_source': sector_info.get('data_source', 'api')
-                }
-            else:
-                print(f"   ⚠️ API获取失败，使用备用方案")
+                    return {
+                        'sector_name': sector_name,
+                        'sector_sentiment': sector_sentiment,
+                        'stock_name': sector_info.get('stock_name', ''),
+                        'current_price': sector_info.get('current_price', 0),
+                        'industry': sector_info.get('industry', '未知'),
+                        'concept_sectors': sector_info.get('concept_sectors', []),
+                        'data_source': sector_info.get('data_source', 'api')
+                    }
+                else:
+                    print(f"   ⚠️ API获取失败，使用备用方案")
+                    return self._get_sector_info_fallback()
+
+            except Exception as e:
+                print(f"   ❌ 板块API调用失败: {e}")
+                import traceback
+                traceback.print_exc()
                 return self._get_sector_info_fallback()
-
-        except Exception as e:
-            print(f"   ❌ 板块API调用失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return self._get_sector_info_fallback()
     
     def _get_sector_from_tencent(self):
         """

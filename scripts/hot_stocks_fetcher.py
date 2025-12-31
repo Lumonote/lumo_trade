@@ -81,6 +81,10 @@ class HotStocksFetcher:
             self._BrowserManager = BrowserManager
         except Exception:
             self._BrowserManager = None
+        
+        # 【优化5】数据源健康状态缓存（避免重复检查）
+        self._source_health_cache = {}
+        self._health_check_timeout = 3  # 健康检查超时时间（秒）
 
     def get_hot_stocks(self, limit: int = 100, force_refresh: bool = False) -> List[Dict]:
         """
@@ -123,6 +127,15 @@ class HotStocksFetcher:
                 logger.info("检测到缓存来源非直接采集（可能为fallback/未知），忽略缓存，改为直接采集")
 
         stocks = []
+
+        # 【优化5】数据源健康检查：优先使用健康的数据源
+        logger.info("正在检查数据源健康状态...")
+        source_health = self._check_data_source_health()
+        healthy_sources = [name for name, status in source_health.items() if status.get('healthy', False)]
+        if healthy_sources:
+            logger.info(f"✓ 发现 {len(healthy_sources)} 个健康数据源: {', '.join(healthy_sources)}")
+        else:
+            logger.warning("⚠️ 所有数据源健康检查失败，将尝试所有数据源")
 
         try:
             logger.info("尝试东方财富股吧人气榜(优先)...")
@@ -890,18 +903,26 @@ class HotStocksFetcher:
         
         logger.info(f"开始增强热榜获取，目标: {limit} 只股票")
         
+        # 计算每个字段需要获取的数量（考虑去重，多获取一些）
+        stocks_per_field = max(limit // len(heat_fields) + 50, 100)  # 每个字段至少获取100只，确保去重后有足够数量
+        
         for field_id, field_name in heat_fields:
-            if len(all_stocks) >= limit:
+            # 如果已经获取足够的唯一股票，停止
+            unique_stocks_so_far = len(set(s.get('code') for s in all_stocks))
+            if unique_stocks_so_far >= limit:
                 break
                 
             field_stocks = []
             page = 1
-            page_size = min(100, limit)  # 每页最多100条
+            page_size = 100  # 每页最多100条
             
             try:
-                # 为每个字段获取多页数据
-                while len(field_stocks) < limit // len(heat_fields) + 20:  # 每个字段获取一部分
-                    if len(all_stocks) + len(field_stocks) >= limit:
+                # 为每个字段获取多页数据，直到达到目标数量
+                while len(field_stocks) < stocks_per_field:
+                    # 检查去重后的总数是否已足够
+                    temp_all = all_stocks + field_stocks
+                    unique_count = len(set(s.get('code') for s in temp_all))
+                    if unique_count >= limit:
                         break
                         
                     popularity_params = {
@@ -1018,8 +1039,9 @@ class HotStocksFetcher:
                     
                     page += 1
                     
-                    # 限制每个字段获取的页数，避免过多请求
-                    if page > 3:  # 每个字段最多3页
+                    # 动态限制页数：根据目标数量调整，确保能获取足够股票
+                    max_pages = max(3, (limit // 100) + 1)  # 至少3页，根据目标数量动态调整
+                    if page > max_pages:
                         break
 
                 # 合并当前字段的股票到总列表
@@ -1034,6 +1056,140 @@ class HotStocksFetcher:
         if all_stocks:
             unique_stocks = self._deduplicate_and_sort(all_stocks)
             logger.info(f"✓ 增强热榜获取完成，去重后共 {len(unique_stocks)} 只股票")
+            
+            # 如果去重后数量不足，尝试从其他字段获取更多数据
+            if len(unique_stocks) < limit:
+                logger.info(f"去重后仅 {len(unique_stocks)} 只股票，不足目标 {limit} 只，尝试获取更多...")
+                existing_codes = set(s.get('code') for s in unique_stocks)
+                
+                # 继续从剩余字段获取，直到达到目标数量
+                for field_id, field_name in heat_fields:
+                    if len(unique_stocks) >= limit:
+                        break
+                    
+                    field_stocks = []
+                    page = 1
+                    page_size = 100
+                    
+                    try:
+                        while len(unique_stocks) < limit and page <= 5:  # 最多5页
+                            popularity_params = {
+                                'pn': str(page),
+                                'pz': str(page_size),
+                                'po': '1',
+                                'np': '1',
+                                'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+                                'fltt': '2',
+                                'invt': '2',
+                                'fid': field_id,
+                                'fs': 'm:0+t:6,m:0+t:13,m:0+t:80,m:1+t:2,m:1+t:23',
+                                'fields': 'f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f22,f11,f62,f128,f136,f115,f152,f164,f183,f184',
+                                '_': str(int(time.time() * 1000))
+                            }
+                            
+                            response = requests.get(
+                                "https://push2.eastmoney.com/api/qt/clist/get",
+                                params=popularity_params,
+                                headers=self.headers,
+                                timeout=10
+                            )
+                            response.raise_for_status()
+                            data = response.json()
+                            
+                            if not (data.get('data') and data['data'].get('diff') and len(data['data']['diff']) > 0):
+                                break
+                            
+                            items = data['data']['diff']
+                            
+                            # 解析并过滤已存在的股票
+                            for item in items:
+                                code = item.get('f12', '')
+                                if code and code not in existing_codes:
+                                    try:
+                                        name = item.get('f14', '')
+                                        market = item.get('f13', '')
+                                        
+                                        if not name:
+                                            continue
+                                        
+                                        if market == '0':
+                                            exchange = 'SZ'
+                                        elif market == '1':
+                                            exchange = 'SH'
+                                        else:
+                                            if code.startswith(('000', '001', '002', '003', '300')):
+                                                exchange = 'SZ'
+                                            elif code.startswith(('600', '601', '603', '605', '688', '689')):
+                                                exchange = 'SH'
+                                            else:
+                                                exchange = 'SZ'
+                                        
+                                        def safe_float(val, default=0.0):
+                                            try:
+                                                if val == '-' or val is None:
+                                                    return default
+                                                return float(val)
+                                            except (ValueError, TypeError):
+                                                return default
+                                        
+                                        change_pct = safe_float(item.get('f3'))
+                                        turnover_rate = safe_float(item.get('f8'))
+                                        volume = safe_float(item.get('f5'))
+                                        amount = safe_float(item.get('f6'))
+                                        main_fund_flow = safe_float(item.get('f62'))
+                                        heat_index = safe_float(item.get('f164'))
+                                        
+                                        if heat_index > 0:
+                                            popularity_score = min(100, heat_index)
+                                        else:
+                                            popularity_score = self._calculate_popularity_score_v2(
+                                                main_fund_flow=main_fund_flow,
+                                                amount=amount,
+                                                turnover_rate=turnover_rate,
+                                                change_pct=change_pct,
+                                                volume=volume
+                                            )
+                                        
+                                        stock_info = {
+                                            'code': code,
+                                            'name': name,
+                                            'exchange': exchange,
+                                            'popularity_score': round(popularity_score, 2),
+                                            'change_pct': round(change_pct, 2),
+                                            'turnover_rate': round(turnover_rate, 2),
+                                            'volume': int(volume * 100),
+                                            'amount': round(amount, 2),
+                                            'latest_price': safe_float(item.get('f2')),
+                                            'source': 'eastmoney_enhanced',
+                                            'rank': len(unique_stocks) + 1,
+                                            'sort_field': field_id,
+                                            'sort_field_name': field_name
+                                        }
+                                        
+                                        self._extract_fundamental_data(item, stock_info)
+                                        unique_stocks.append(stock_info)
+                                        existing_codes.add(code)
+                                        
+                                        if len(unique_stocks) >= limit:
+                                            break
+                                    except Exception as e:
+                                        logger.warning(f"补充获取股票信息失败: {e}")
+                                        continue
+                            
+                            if len(items) < page_size or len(unique_stocks) >= limit:
+                                break
+                            
+                            page += 1
+                            time.sleep(0.2)  # 避免请求过快
+                            
+                    except Exception as e:
+                        logger.warning(f"补充获取字段 {field_name} 失败: {e}")
+                        continue
+                
+                # 重新排序
+                unique_stocks = self._deduplicate_and_sort(unique_stocks)
+                logger.info(f"✓ 补充获取完成，最终共 {len(unique_stocks)} 只股票")
+            
             return unique_stocks[:limit]
         
         return []
@@ -1625,6 +1781,150 @@ class HotStocksFetcher:
                     os.remove(tmp_file)
             except Exception:
                 pass
+
+    def _check_data_source_health(self) -> Dict[str, Dict]:
+        """
+        【优化5】检查各数据源的健康状态
+        
+        Returns:
+            dict: {数据源名称: {'healthy': bool, 'latency': float, 'error': str}}
+        """
+        health_status = {}
+        
+        # 检查缓存（避免重复检查）
+        cache_key = 'source_health'
+        if cache_key in self._source_health_cache:
+            cached_time = self._source_health_cache[cache_key].get('timestamp', 0)
+            if time.time() - cached_time < 300:  # 5分钟内使用缓存
+                return self._source_health_cache[cache_key]['data']
+        
+        # 定义数据源检查方法
+        sources_to_check = {
+            'eastmoney_guba': {
+                'check': lambda: self._quick_check_eastmoney_guba(),
+                'name': '东方财富股吧'
+            },
+            'eastmoney_vip': {
+                'check': lambda: self._quick_check_eastmoney_vip(),
+                'name': '东方财富VIP'
+            },
+            'tonghuashun': {
+                'check': lambda: self._quick_check_tonghuashun(),
+                'name': '同花顺'
+            },
+            'eastmoney_api': {
+                'check': lambda: self._quick_check_eastmoney_api(),
+                'name': '东方财富API'
+            }
+        }
+        
+        # 并发检查各数据源（快速检查）
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_source = {
+                executor.submit(source_info['check']): source_name
+                for source_name, source_info in sources_to_check.items()
+            }
+            
+            for future in as_completed(future_to_source):
+                source_name = future_to_source[future]
+                try:
+                    result = future.result(timeout=self._health_check_timeout)
+                    health_status[source_name] = {
+                        'healthy': result.get('healthy', False),
+                        'latency': result.get('latency', 999),
+                        'error': result.get('error', ''),
+                        'name': sources_to_check[source_name]['name']
+                    }
+                except Exception as e:
+                    health_status[source_name] = {
+                        'healthy': False,
+                        'latency': 999,
+                        'error': str(e),
+                        'name': sources_to_check[source_name]['name']
+                    }
+        
+        # 缓存结果
+        self._source_health_cache[cache_key] = {
+            'data': health_status,
+            'timestamp': time.time()
+        }
+        
+        return health_status
+    
+    def _quick_check_eastmoney_guba(self) -> Dict:
+        """快速检查东方财富股吧接口"""
+        try:
+            import time as time_module
+            start = time_module.time()
+            response = requests.get(
+                "http://guba.eastmoney.com/rank",
+                headers=self.headers,
+                timeout=self._health_check_timeout
+            )
+            latency = time_module.time() - start
+            return {
+                'healthy': response.status_code == 200,
+                'latency': latency,
+                'error': '' if response.status_code == 200 else f'HTTP {response.status_code}'
+            }
+        except Exception as e:
+            return {'healthy': False, 'latency': 999, 'error': str(e)}
+    
+    def _quick_check_eastmoney_vip(self) -> Dict:
+        """快速检查东方财富VIP接口"""
+        try:
+            import time as time_module
+            start = time_module.time()
+            url = "http://push2.eastmoney.com/api/qt/clist/get"
+            params = {'pn': '1', 'pz': '5', 'po': '1', 'np': '1'}
+            response = requests.get(url, params=params, headers=self.headers, timeout=self._health_check_timeout)
+            latency = time_module.time() - start
+            return {
+                'healthy': response.status_code == 200,
+                'latency': latency,
+                'error': '' if response.status_code == 200 else f'HTTP {response.status_code}'
+            }
+        except Exception as e:
+            return {'healthy': False, 'latency': 999, 'error': str(e)}
+    
+    def _quick_check_tonghuashun(self) -> Dict:
+        """快速检查同花顺接口"""
+        try:
+            import time as time_module
+            start = time_module.time()
+            # 简单的连接测试
+            response = requests.get(
+                "http://q.10jqka.com.cn",
+                headers=self.headers,
+                timeout=self._health_check_timeout
+            )
+            latency = time_module.time() - start
+            return {
+                'healthy': response.status_code in [200, 301, 302],
+                'latency': latency,
+                'error': '' if response.status_code in [200, 301, 302] else f'HTTP {response.status_code}'
+            }
+        except Exception as e:
+            return {'healthy': False, 'latency': 999, 'error': str(e)}
+    
+    def _quick_check_eastmoney_api(self) -> Dict:
+        """快速检查东方财富API接口"""
+        try:
+            import time as time_module
+            start = time_module.time()
+            url = "http://push2.eastmoney.com/api/qt/ulist.np/get"
+            params = {'secids': '1.000001', 'fltt': '2', 'fields': 'f2'}
+            response = requests.get(url, params=params, headers=self.headers, timeout=self._health_check_timeout)
+            latency = time_module.time() - start
+            return {
+                'healthy': response.status_code == 200,
+                'latency': latency,
+                'error': '' if response.status_code == 200 else f'HTTP {response.status_code}'
+            }
+        except Exception as e:
+            return {'healthy': False, 'latency': 999, 'error': str(e)}
 
 
 def main():

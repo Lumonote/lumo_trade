@@ -57,81 +57,86 @@ class OpportunityScorer:
         'C': 0     # C级：48分以下，较差/高风险
     }
 
-    # 维度权重配置 (v4.1 游资思维重构版)
-    # 核心理念：位置时机+量价结构是决策核心，情绪是反指标，龙虎榜是机构动向参考
+    # 维度权重配置 (v4.3 底部启动+防高位接盘特化版)
+    # 核心理念：大幅提高位置与时机权重，严防高位接盘，寻找底部启动
+    # 权重总和=1.0
     DIMENSION_WEIGHTS = {
-        'position_timing': 0.16, # 【核心】位置与时机（低吸高抛核心）
-        'volume_health': 0.14, # 【核心】量价结构（资金验证）
-        'technical': 0.12, # 技术分析（形态+指标共振）
-        'quantitative': 0.35,# 【核心增强】量化模型（信号质量评估，用户要求大幅加权）
-        'liquidity': 0.08,# 流动性（门槛检查）
-        'sector': 0.06, # 板块强度
-        'dragon_tiger': 0.04,# 龙虎榜（机构/游资动向）- v4.1新增权重
-        'fundamental': 0.03,# 基本面（降权，短线弱相关）
-        'events': 0.02, # 消息催化
-        'sentiment': 0.00,# 情绪面（反指标，暂忽略）
+        'position_timing': 0.25, # 【核心大幅提升】位置与时机（低位启动核心，从0.18提升到0.25）
+        'volume_health': 0.20,   # 【核心提升】量价结构（主力吸筹验证，从0.16提升到0.20）
+        'technical': 0.05,       # 技术分析（降权，从0.09降到0.05）
+        'quantitative': 0.30,    # 量化模型（降权，从0.36降到0.30，平衡权重）
+        'liquidity': 0.04,       # 流动性
+        'sector': 0.10,          # 【提升】板块强度（从0.09提升到0.10）
+        'dragon_tiger': 0.05,    # 龙虎榜
+        'fundamental': 0.01,     # 基本面（降权）
+        'events': 0.00,          # 消息催化（降权，忽略）
+        'sentiment': 0.00,       # 情绪面
     }
 
     # 一票否决阈值 (v4.0 强化风控)
     EXCLUSION_RULES = {
-        'max_change_60d': 80,          # 60日涨幅超80%一票否决
-        'max_change_20d': 50,          # 20日涨幅超50%一票否决
+        'max_change_60d': 60,          # 【收紧】60日涨幅超60%一票否决（原80%）
+        'max_change_20d': 40,          # 【收紧】20日涨幅超40%一票否决（原50%）
         'max_distance_from_high': 5,   # 距离年内高点<5%一票否决
         # 'min_avg_amount_20d': 3000,    # 20日均成交额<3000万一票否决（已移除）
         # 'min_turnover_rate': 0.5,      # 换手率<0.5%一票否决（已移除）
-        'max_consecutive_up': 7,       # 连涨超7天一票否决
+        'max_consecutive_up': 6,       # 【收紧】连涨超6天一票否决（原7天）
         'min_profit_yoy': -70,         # 利润同比下滑超70%一票否决
     }
 
-    # 动态权重模板（总和均为1.0）- v4.0优化版
+    # 动态权重模板（总和均为1.0）- v4.3 底部启动特化版
     DYNAMIC_WEIGHT_PROFILES = {
-        # 基础模板：均衡配置
+        # 基础模板
         'base': {
-            'position_timing': 0.18,
-            'volume_health': 0.14,
-            'technical': 0.12,
-            'quantitative': 0.35,
-            'liquidity': 0.08,
-            'sector': 0.06,
-            'fundamental': 0.03,
-            'events': 0.02,
-            'sentiment': 0.01,
-        },
-        # 底部启动模板：强调位置和量价
-        'bottom_start': {
-            'position_timing': 0.22,
-            'volume_health': 0.18,
-            'technical': 0.10,
-            'quantitative': 0.35,
-            'liquidity': 0.08,
-            'sector': 0.04,
-            'fundamental': 0.02,
-            'events': 0.01,
+            'position_timing': 0.25,
+            'volume_health': 0.20,
+            'technical': 0.05,
+            'quantitative': 0.30,
+            'liquidity': 0.04,
+            'sector': 0.10,
+            'dragon_tiger': 0.05,
+            'fundamental': 0.01,
+            'events': 0.00,
             'sentiment': 0.00,
         },
-        # 趋势接力模板：强调技术和量价
-        'trend_continuation': {
-            'position_timing': 0.16,
-            'volume_health': 0.16,
-            'technical': 0.16,
-            'quantitative': 0.35,
-            'liquidity': 0.08,
-            'sector': 0.05,
-            'fundamental': 0.02,
-            'events': 0.01,
-            'sentiment': 0.01,
+        # 底部启动模板：极致强化低位+量价
+        'bottom_start': {
+            'position_timing': 0.35,  # 【极致提升】位置时机
+            'volume_health': 0.25,    # 【大幅提升】量价结构
+            'technical': 0.05,
+            'quantitative': 0.20,     # 【降权】量化模型
+            'liquidity': 0.03,
+            'sector': 0.08,
+            'dragon_tiger': 0.04,
+            'fundamental': 0.00,
+            'events': 0.00,
+            'sentiment': 0.00,
         },
-        # 消息驱动模板：强调事件催化
+        # 趋势接力模板：强调量化+量价+热点（总和=1.0）
+        'trend_continuation': {
+            'position_timing': 0.16,  # 位置时机
+            'volume_health': 0.18,    # 【提升】量价结构（主力吸筹）
+            'technical': 0.11,        # 技术分析
+            'quantitative': 0.35,     # 【提升】量化模型
+            'liquidity': 0.04,        # 流动性
+            'sector': 0.09,           # 【大幅提升】热点板块
+            'dragon_tiger': 0.05,     # 【提升】龙虎榜（主力吸筹）
+            'fundamental': 0.02,      # 基本面
+            'events': 0.01,           # 消息催化
+            'sentiment': 0.00,        # 情绪面
+        },
+        # 消息驱动模板：强调量化+热点+量价+主力（总和=1.0）
         'news_driven': {
-            'position_timing': 0.14,
-            'volume_health': 0.14,
-            'technical': 0.10,
-            'quantitative': 0.30,
-            'liquidity': 0.08,
-            'sector': 0.06,
-            'fundamental': 0.04,
-            'events': 0.08,
-            'sentiment': 0.06,
+            'position_timing': 0.14,  # 位置时机
+            'volume_health': 0.16,    # 【提升】量价结构（主力吸筹）
+            'technical': 0.07,        # 技术分析
+            'quantitative': 0.33,     # 【提升】量化模型
+            'liquidity': 0.04,        # 流动性
+            'sector': 0.11,           # 【大幅提升】热点板块（消息驱动需要热点）
+            'dragon_tiger': 0.05,     # 【提升】龙虎榜（主力吸筹）
+            'fundamental': 0.02,      # 基本面
+            'events': 0.05,           # 消息催化（降权，因为已有热点板块）
+            'sentiment': 0.00,        # 情绪面
         },
     }
 
@@ -247,7 +252,29 @@ class OpportunityScorer:
             result['details']['volume_health'] = volume_health_details
 
             # 6. 股民情绪评分 (8%)
-            sentiment_score, sentiment_details = self._score_investor_sentiment(stock_code)
+            # 【优化】检查权重：如果所有权重模板中sentiment权重都很小(<=0.01)，跳过完整分析
+            max_sentiment_weight = max(
+                self.DIMENSION_WEIGHTS.get('sentiment', 0),
+                max(profile.get('sentiment', 0) for profile in self.DYNAMIC_WEIGHT_PROFILES.values())
+            )
+            
+            if max_sentiment_weight <= 0.01:
+                # 权重太小，跳过完整分析，返回默认值
+                sentiment_score = 50.0
+                sentiment_details = {
+                    'skipped': True,
+                    'reason': f'情绪权重过小({max_sentiment_weight:.3f})，跳过完整分析以提升性能',
+                    'raw_sentiment_score': 50,
+                    'raw_sentiment_label': '中性',
+                    'contrarian_score': 50.0,
+                    'contrarian_signal': '中性（已跳过）',
+                    'scoring_method': 'v4.2_skip_low_weight'
+                }
+                logger.debug(f"{stock_code} 情绪分析已跳过（权重={max_sentiment_weight:.3f}）")
+            else:
+                # 权重足够大，执行完整分析
+                sentiment_score, sentiment_details = self._score_investor_sentiment(stock_code, momentum_details)
+            
             result['scores']['sentiment'] = sentiment_score
             result['details']['sentiment'] = sentiment_details
 
@@ -1145,7 +1172,7 @@ class OpportunityScorer:
             vol_ratio = current_vol / avg_vol_5 if avg_vol_5 > 0 else 0
             
             if change_pct > 3.0 and vol_ratio > 1.5:
-                bonus += 5.0
+                bonus += 15.0 # 【大幅提升】低位放量大涨加分（原5.0）
                 signals.append('低位放量大涨')
 
             # 2.2 均线突破 (站上20日线)
@@ -1155,13 +1182,13 @@ class OpportunityScorer:
             if current_price > ma20 and ma20 >= ma20_prev:
                 # 且之前在均线下方
                 if prev_close < ma20:
-                    bonus += 3.0
+                    bonus += 10.0 # 【大幅提升】底部突破20日线加分（原3.0）
                     signals.append('底部突破20日线')
 
             # 2.3 筹码集中 (简单模拟: 波动率收窄)
             volatility = close.iloc[-20:].std() / close.iloc[-20:].mean()
             if volatility < 0.02: # 波动率很低，横盘整理
-                bonus += 2.0
+                bonus += 5.0 # 【提升】底部横盘缩量加分（原2.0）
                 signals.append('底部横盘缩量')
 
             return bonus, {
@@ -1257,13 +1284,13 @@ class OpportunityScorer:
                 score += 10  # 中部区间，一般
                 signals.append('处于年内中部区间')
             elif position_pct <= 0.70:
-                score -= 10  # 中高位区间，风险增加
+                score -= 15  # 中高位区间，风险增加（原-10）
                 signals.append('处于年内中高位区间')
             elif position_pct <= 0.85:
-                score -= 20  # 高位区间，追高风险
+                score -= 40  # 【大幅严惩】高位区间，追高风险（原-20）
                 signals.append('⚠️ 处于年内高位区间')
             else:
-                score -= 30  # 接近年内最高，极高风险
+                score -= 60  # 【极度严惩】接近年内最高，极高风险（原-30）
                 signals.append('🚨 接近年内最高点，追高风险极大')
 
             # ========== 2. 近期涨幅惩罚 (游资反追涨核心) ==========
@@ -1300,13 +1327,13 @@ class OpportunityScorer:
                         signals.append('横盘期间近期温和放量')
 
             if change_5d > 20:
-                score -= 30  # 5日涨幅超20%，严重高位风险
+                score -= 50  # 【严惩】5日涨幅超20%，严重高位风险（原-30）
                 signals.append('🚨 5日涨幅超20%，高位接盘风险')
             elif change_5d > 15:
-                score -= 20  # 5日涨幅15-20%，追涨风险
+                score -= 30  # 【严惩】5日涨幅15-20%，追涨风险（原-20）
                 signals.append('⚠️ 5日涨幅超15%，追涨风险')
             elif change_5d > 10:
-                score -= 10  # 5日涨幅10-15%，需谨慎
+                score -= 15  # 5日涨幅10-15%，需谨慎（原-10）
                 signals.append('5日涨幅较大，注意回调风险')
             elif change_5d > 5:
                 score -= 5   # 5日涨幅5-10%，轻微风险
@@ -1335,13 +1362,13 @@ class OpportunityScorer:
             # 近60日涨幅 - 长期涨幅惩罚（游资核心：60日涨幅大意味着主力已完成拉升）
             change_60d = (current_price / float(close.iloc[-61]) - 1) * 100 if len(close) >= 61 else 0
             if change_60d > 80:
-                score -= 40  # 60日涨幅超80%，严重追高
+                score -= 60  # 【严惩】60日涨幅超80%，严重追高（原-40）
                 signals.append('🚨 60日涨幅超80%，主力可能出货')
             elif change_60d > 50:
-                score -= 25  # 60日涨幅超50%
+                score -= 35  # 【严惩】60日涨幅超50%（原-25）
                 signals.append('⚠️ 60日涨幅超50%')
             elif change_60d > 30:
-                score -= 10  # 60日涨幅超30%
+                score -= 15  # 60日涨幅超30%（原-10）
 
             # ========== 3. 调整到位评分 v4.1 (买点判断增强) ==========
             # v4.1改进：增加支撑位有效性和调整时间考量
@@ -1614,14 +1641,14 @@ class OpportunityScorer:
             is_low_pos = position_pct < 0.3
 
             if 1.5 <= volume_ratio <= 3.0:
-                score += 20  # 温和放量，资金流入
+                score += 25  # 【提升】温和放量，资金流入（从20提升到25）
             elif 1.2 <= volume_ratio < 1.5:
-                score += 10  # 略微放量
+                score += 15  # 【提升】略微放量（从10提升到15）
             elif 0.8 <= volume_ratio < 1.2:
                 score += 0   # 量能平稳
             elif volume_ratio > 3.0:
                 if is_low_pos:
-                    score += 25  # 底部巨量，往往是主力建仓或强启动
+                    score += 35  # 【大幅提升】底部巨量，往往是主力建仓或强启动（从25提升到35）
                     signals.append('🔥 底部巨量(量比>3)，强启动信号')
                 else:
                     score -= 5   # 高位/中位异常放量，需警惕出货
@@ -1629,7 +1656,7 @@ class OpportunityScorer:
             else:
                 score -= 15  # 缩量严重
 
-            # 3. 连续放量天数评分 (+5 ~ +15)
+            # 3. 连续放量天数评分（主力吸筹强化）
             consecutive_vol_up = 0
             for i in range(1, min(6, len(volume))):
                 if float(volume.iloc[-i]) > float(volume.iloc[-i-1]):
@@ -1638,11 +1665,11 @@ class OpportunityScorer:
                     break
 
             if 2 <= consecutive_vol_up <= 4:
-                score += 15  # 连续放量，资金持续流入
+                score += 20  # 【提升】连续放量，资金持续流入（主力吸筹，从15提升到20）
             elif consecutive_vol_up >= 5:
-                score += 10  # 放量过久需注意
+                score += 15  # 【提升】放量过久需注意（从10提升到15）
             elif consecutive_vol_up == 1:
-                score += 5
+                score += 8   # 【提升】单日放量（从5提升到8）
 
             # 4. 伸缩倍量柱检测 (v4.2)
             # 逻辑：前天缩量，昨天倍量，今天缩量/放量均可，关键是中间的倍量柱确立资金介入
@@ -1657,7 +1684,7 @@ class OpportunityScorer:
                         break
             
             if double_vol_signal:
-                score += 15
+                score += 25  # 【大幅提升】底部倍量柱(主力吸筹)加分从15提升到25
                 signals.append('🔥 底部倍量柱(主力吸筹)')
 
             # 5. MACD底部反转检测 (v4.2)

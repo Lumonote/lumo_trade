@@ -168,11 +168,12 @@ class OpportunityFilter:
         # 将评分结果透传到最终输出，供报表展示维度分数与权重
         result['scoring_result'] = scoring_result
 
-        # ========== 阶段0: 一票否决前置筛选（最先执行，含基础流动性）==========
+        # ========== 阶段0: 一票否决前置筛选（仅记录，不淘汰）==========
         stage0_result = self.stage0_veto_check(scoring_result)
         result['filter_history'].append(stage0_result)
-        # 按需禁用一票否决淘汰：其它功能只做加减分，不做筛选
-        # 即使未通过，也不在此阶段淘汰
+        # 已移除淘汰机制：一票否决条件仅记录，不影响最终筛选结果
+        if not stage0_result['passed']:
+            logger.info(f"⚠ {result['stock_code']} 阶段0(一票否决)未通过: {stage0_result['reason']} (仅记录，不淘汰)")
 
         #========== 阶段1: 流动性筛选（v4.1 前置，游资核心门槛）==========
         stage1_result = self.stage1_liquidity_check(scoring_result)
@@ -187,15 +188,19 @@ class OpportunityFilter:
                  logger.info(f"✗ {result['stock_code']} 在阶段1(流动性)被淘汰: {stage1_result['reason']}")
                  return result
 
-        # ========== 阶段2: 位置与时机筛选（反追涨核心）==========
+        # ========== 阶段2: 位置与时机筛选（仅记录，不淘汰）==========
         stage2_result = self.stage2_position_timing(scoring_result)
         result['filter_history'].append(stage2_result)
-        # 位置时机仅作参考加减分，不做筛选
+        # 已移除淘汰机制：位置时机不符合要求仅记录，不影响最终筛选结果
+        if not stage2_result['passed']:
+            logger.info(f"⚠ {result['stock_code']} 阶段2(位置时机)未通过: {stage2_result['reason']} (仅记录，不淘汰)")
 
-        # ========== 阶段3: 量化模型初筛（信号质量评估）==========
+        # ========== 阶段3: 量化模型初筛（仅记录，不淘汰）==========
         stage3_result = self.stage3_quantitative_models(scoring_result)
         result['filter_history'].append(stage3_result)
-        # 量化模型仅作参考加减分，不做筛选
+        # 已移除淘汰机制：量化信号不足仅记录，不影响最终筛选结果
+        if not stage3_result['passed']:
+            logger.info(f"⚠ {result['stock_code']} 阶段3(量化模型)未通过: {stage3_result['reason']} (仅记录，不淘汰)")
 
         # ========== 阶段4-7: 评分阶段（仅评分，不筛选）==========
         # 阶段4: 技术面评分

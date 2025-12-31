@@ -12,6 +12,15 @@ import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict
+import time
+
+# 【优化6】Rich进度条支持（可选，未安装时降级到文本输出）
+try:
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+    from rich.console import Console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
 
 # 添加项目根目录到路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -115,6 +124,11 @@ class OpportunityDiscovery:
             logger.warning(f"热门新闻采集失败: {e}")
             self.global_hot_news = []
 
+        # 【优化2】步骤1.5: 预加载全局数据（大盘情绪、板块数据）
+        logger.info(f"\n步骤1.5: 正在预加载全局数据（大盘情绪、板块数据）...")
+        self._preload_global_data(hot_stocks)
+        logger.info(f"✓ 全局数据预加载完成")
+
         # 步骤2: 多维度打分分析（并发处理）
         logger.info(f"\n步骤2: 正在进行多维度打分分析...")
         logger.info(f"并发线程数: {self.max_workers}")
@@ -122,31 +136,138 @@ class OpportunityDiscovery:
         scored_stocks = []
         completed_count = 0
         total_count = len(hot_stocks)
+        # 【修复】使用不同的变量名，避免覆盖全局start_time
+        progress_start_time = time.time()
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # 提交所有分析任务
-            future_to_stock = {
-                executor.submit(self._analyze_single_stock, stock): stock
-                for stock in hot_stocks
-            }
+        # 【优化6】使用Rich进度条（如果可用）
+        if RICH_AVAILABLE:
+            console = Console()
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TextColumn("({task.completed}/{task.total})"),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+                expand=True
+            ) as progress:
+                task = progress.add_task(
+                    "[cyan]分析股票中...",
+                    total=total_count
+                )
 
-            # 收集结果
-            for future in as_completed(future_to_stock):
-                stock = future_to_stock[future]
-                try:
-                    result = future.result()
-                    if result:
-                        scored_stocks.append(result)
+                with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                    # 提交所有分析任务
+                    future_to_stock = {
+                        executor.submit(self._analyze_single_stock, stock): stock
+                        for stock in hot_stocks
+                    }
 
-                    completed_count += 1
+                    # 收集结果
+                    for future in as_completed(future_to_stock):
+                        stock = future_to_stock[future]
+                        try:
+                            result = future.result()
+                            if result:
+                                scored_stocks.append(result)
+                            else:
+                                # 分析失败时创建默认结果，确保所有股票都进入最终报表
+                                scored_stocks.append({
+                                    'stock_code': stock.get('code', ''),
+                                    'name': stock.get('name', '未知'),
+                                    'exchange': stock.get('exchange', 'UNKNOWN'),
+                                    'popularity_score': stock.get('popularity_score', 0),
+                                    'scoring_result': {
+                                        'total_score': 0,
+                                        'rating': 'C',
+                                        'error': '分析失败'
+                                    }
+                                })
+                            completed_count += 1
+                            
+                            # 更新进度条
+                            progress.update(
+                                task,
+                                advance=1,
+                                description=f"[cyan]分析: {stock.get('name', stock.get('code'))}"
+                            )
 
-                    # 显示进度
-                    progress = (completed_count / total_count) * 100
-                    logger.info(f"进度: {completed_count}/{total_count} ({progress:.1f}%) - {stock.get('name', stock.get('code'))}")
+                        except Exception as e:
+                            logger.error(f"分析 {stock.get('code')} 失败: {e}")
+                            # 异常时也创建默认结果
+                            scored_stocks.append({
+                                'stock_code': stock.get('code', ''),
+                                'name': stock.get('name', '未知'),
+                                'exchange': stock.get('exchange', 'UNKNOWN'),
+                                'popularity_score': stock.get('popularity_score', 0),
+                                'scoring_result': {
+                                    'total_score': 0,
+                                    'rating': 'C',
+                                    'error': f'分析异常: {str(e)}'
+                                }
+                            })
+                            completed_count += 1
+                            progress.update(task, advance=1)
+        else:
+            # 降级到文本输出
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # 提交所有分析任务
+                future_to_stock = {
+                    executor.submit(self._analyze_single_stock, stock): stock
+                    for stock in hot_stocks
+                }
 
-                except Exception as e:
-                    logger.error(f"分析 {stock.get('code')} 失败: {e}")
-                    completed_count += 1
+                # 收集结果
+                for future in as_completed(future_to_stock):
+                    stock = future_to_stock[future]
+                    try:
+                        result = future.result()
+                        if result:
+                            scored_stocks.append(result)
+                        else:
+                            # 分析失败时创建默认结果，确保所有股票都进入最终报表
+                            scored_stocks.append({
+                                'stock_code': stock.get('code', ''),
+                                'name': stock.get('name', '未知'),
+                                'exchange': stock.get('exchange', 'UNKNOWN'),
+                                'popularity_score': stock.get('popularity_score', 0),
+                                'scoring_result': {
+                                    'total_score': 0,
+                                    'rating': 'C',
+                                    'error': '分析失败'
+                                }
+                            })
+
+                        completed_count += 1
+
+                        # 显示进度
+                        progress = (completed_count / total_count) * 100
+                        elapsed = time.time() - progress_start_time
+                        avg_time = elapsed / completed_count if completed_count > 0 else 0
+                        remaining = avg_time * (total_count - completed_count)
+                        logger.info(
+                            f"进度: {completed_count}/{total_count} ({progress:.1f}%) - "
+                            f"{stock.get('name', stock.get('code'))} | "
+                            f"已用: {elapsed:.1f}s | 预计剩余: {remaining:.1f}s"
+                        )
+
+                    except Exception as e:
+                        logger.error(f"分析 {stock.get('code')} 失败: {e}")
+                        # 异常时也创建默认结果
+                        scored_stocks.append({
+                            'stock_code': stock.get('code', ''),
+                            'name': stock.get('name', '未知'),
+                            'exchange': stock.get('exchange', 'UNKNOWN'),
+                            'popularity_score': stock.get('popularity_score', 0),
+                            'scoring_result': {
+                                'total_score': 0,
+                                'rating': 'C',
+                                'error': f'分析异常: {str(e)}'
+                            }
+                        })
+                        completed_count += 1
 
         logger.info(f"✓ 完成 {len(scored_stocks)}/{total_count} 只股票的分析")
 
@@ -258,15 +379,19 @@ class OpportunityDiscovery:
                 # 按分数降序排序
                 passed_stocks.sort(key=lambda x: x.get('scoring_result', {}).get('total_score', 0), reverse=True)
                 
-                # 取前20名
-                high_grade_stocks = passed_stocks[:20]
+                # 【优化3】取前10名（从Top20改为Top10，降低成本和耗时）
+                high_grade_stocks = passed_stocks[:10]
 
                 if high_grade_stocks:
-                    logger.info(f"发现 {len(high_grade_stocks)} 只高分股票(≥60分, Top20)，准备进行LLM并发分析...")
+                    logger.info(f"发现 {len(high_grade_stocks)} 只高分股票(≥60分, Top10)，准备进行LLM并发分析...")
 
                     llm_analyzed_count = 0
-                    # 使用线程池并发执行，限制并发数为5避免API限流
-                    with ThreadPoolExecutor(max_workers=5) as executor:
+                    # 【优化3】动态调整并发数：股票数量少时降低并发，避免资源浪费
+                    max_workers = min(5, max(2, len(high_grade_stocks) // 2))  # 2-5之间动态调整
+                    logger.info(f"  LLM并发数: {max_workers} (根据股票数量动态调整)")
+                    
+                    # 使用线程池并发执行，限制并发数避免API限流
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         future_to_stock = {
                             executor.submit(self._process_single_llm_task, llm_analyzer, stock): stock 
                             for stock in high_grade_stocks
@@ -447,6 +572,86 @@ class OpportunityDiscovery:
         logger.info("=" * 60)
 
         return report_path
+
+    def _preload_global_data(self, hot_stocks: List[Dict]):
+        """
+        【优化2】预加载全局数据（大盘情绪、板块数据）
+        在批量分析前预先获取，避免每只股票重复请求
+        
+        Args:
+            hot_stocks: 热门股票列表
+        """
+        try:
+            from analysis.investor_sentiment import InvestorSentimentAnalyzer
+            from analysis.sector_api import get_stock_sector_info_multi_source, get_sector_sentiment_multi_source
+            from analysis.sentiment_cache_manager import get_sentiment_cache
+            
+            cache = get_sentiment_cache()
+            
+            # 1. 预加载大盘情绪（只需1次，所有股票共享）
+            try:
+                logger.info("  正在预加载大盘情绪数据...")
+                analyzer = InvestorSentimentAnalyzer('000001')  # 使用任意股票代码初始化
+                market_sentiment = analyzer.get_overall_market_sentiment()
+                # 缓存会自动保存，后续调用会直接使用缓存
+                logger.info(f"  ✓ 大盘情绪数据已预加载")
+            except Exception as e:
+                logger.warning(f"  大盘情绪预加载失败: {e}")
+            
+            # 2. 预加载板块数据（按板块去重）
+            try:
+                logger.info("  正在预加载板块数据（按板块去重）...")
+                sector_codes = set()  # 用于去重的股票代码集合
+                sector_names = {}  # {股票代码: 板块名称}
+                
+                # 先批量获取板块信息（限制并发避免限流）
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                sector_info_results = {}
+                
+                # 使用小并发数避免限流
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    future_to_code = {
+                        executor.submit(get_stock_sector_info_multi_source, stock.get('code', '')): stock.get('code', '')
+                        for stock in hot_stocks[:50]  # 只预加载前50只，避免耗时过长
+                    }
+                    
+                    for future in as_completed(future_to_code):
+                        stock_code = future_to_code[future]
+                        try:
+                            sector_info = future.result(timeout=5)
+                            if sector_info.get('success'):
+                                sector_name = sector_info.get('sector_name', '未知')
+                                if sector_name and sector_name != '未知':
+                                    sector_info_results[stock_code] = sector_name
+                        except Exception as e:
+                            logger.debug(f"  获取 {stock_code} 板块信息失败: {e}")
+                
+                # 按板块名称去重，预加载板块情绪
+                unique_sectors = set(sector_info_results.values())
+                logger.info(f"  识别到 {len(unique_sectors)} 个不同板块，开始预加载板块情绪...")
+                
+                preloaded_count = 0
+                for sector_name in unique_sectors:
+                    try:
+                        # 找到该板块的任意一只股票代码
+                        sample_code = next((code for code, name in sector_info_results.items() if name == sector_name), None)
+                        if sample_code:
+                            # 获取板块情绪（会自动缓存）
+                            sector_sentiment = get_sector_sentiment_multi_source(sample_code)
+                            if sector_sentiment.get('success'):
+                                # 缓存到全局缓存（按板块名称）
+                                cache.set_sector(sector_name, sector_sentiment)
+                                preloaded_count += 1
+                    except Exception as e:
+                        logger.debug(f"  预加载板块 {sector_name} 情绪失败: {e}")
+                
+                logger.info(f"  ✓ 成功预加载 {preloaded_count}/{len(unique_sectors)} 个板块的情绪数据")
+                
+            except Exception as e:
+                logger.warning(f"  板块数据预加载失败: {e}")
+                
+        except Exception as e:
+            logger.warning(f"全局数据预加载异常: {e}")
 
     def _analyze_single_stock(self, hot_stock: Dict) -> Dict:
         """

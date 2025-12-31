@@ -108,7 +108,9 @@ class NewsSentimentCollector:
                     'client_source': 'web',
                     'stock_list': code_variant
                 }
-                print(f"   🔁 尝试公告API代码格式({idx}/{len(variants)}): stock_list={code_variant}")
+                # 【优化】减少日志输出，只在第一次尝试时输出
+                if idx == 1:
+                    pass  # 静默尝试，减少日志噪音
                 response = requests.get(url, params=params, headers=self.headers, timeout=10)
                 data = response.json()
 
@@ -123,17 +125,17 @@ class NewsSentimentCollector:
                             'importance': self._classify_importance(item.get('title', ''))
                         }
                         announcements.append(announcement)
-                    break  # 成功则不再尝试更多格式
+                    # 成功获取到数据，静默返回
+                    return announcements[:limit]
 
-            # 如果API返回空数据,尝试网页爬取
+            # 如果API返回空数据,尝试网页爬取（静默尝试）
             if not announcements:
-                print(f"   ⚠️  API未返回公告数据,尝试网页爬取")
                 announcements = self._scrape_announcements(limit)
 
             return announcements[:limit]
 
         except Exception as e:
-            print(f"⚠️ 获取公告失败: {str(e)},尝试网页爬取")
+            # 【优化】减少错误日志输出
             ann = self._scrape_announcements(limit)
             return ann
 
