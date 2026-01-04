@@ -33,32 +33,36 @@ echo.
 echo PREDICT: 预测功能
 echo 8. 运行预测示例
 echo.
+echo DISCOVERY: 机会挖掘
+echo 9. 🔥 投资机会挖掘 (TOP100热门股票)
+echo 10. 🔥🔥 重大利好消息挖掘 (从资讯流挖掘)
+echo.
 echo CRAWLER: 爬虫设置
-echo 9. 安装 Playwright 浏览器
-echo 10. 测试爬虫功能
+echo 11. 安装 Playwright 浏览器
+echo 12. 测试爬虫功能
 echo.
 echo WEB: Web界面
-echo 11. 启动Web界面
+echo 13. 启动Web界面
 echo.
 echo INFO:  帮助与信息
-echo 12. 显示使用帮助
-echo 13. 查看系统状态
+echo 14. 显示使用帮助
+echo 15. 查看系统状态
 echo.
-echo 14. 退出
+echo 16. 退出
 echo.
 echo TIP: 提示: 首次使用请先选择选项1进行一键安装
 echo.
 
 REM 输入验证循环
 :input_validation
-set /p choice=请选择操作 (1-14):
+set /p choice=请选择操作 (1-16):
 if "%choice%"=="" goto invalid_input
 echo %choice%| findstr /r "^[0-9][0-9]*$" >nul
 if errorlevel 1 goto invalid_input
-if %choice% geq 1 if %choice% leq 14 goto valid_input
+if %choice% geq 1 if %choice% leq 16 goto valid_input
 
 :invalid_input
-echo ERROR: 无效输入，请输入 1-14 之间的数字
+echo ERROR: 无效输入，请输入 1-16 之间的数字
 goto input_validation
 
 :valid_input
@@ -68,14 +72,16 @@ if "%choice%"=="3" goto check_env
 if "%choice%"=="4" goto fetch_tushare
 if "%choice%"=="5" goto fetch_crawler
 if "%choice%"=="6" goto batch_fetch
-if "%choice%"=="7" goto opportunity_discovery
+if "%choice%"=="7" goto run_prediction
 if "%choice%"=="8" goto run_prediction
-if "%choice%"=="9" goto install_playwright
-if "%choice%"=="10" goto test_crawler
-if "%choice%"=="11" goto start_webui
-if "%choice%"=="12" goto show_help
-if "%choice%"=="13" goto show_system_status
-if "%choice%"=="14" goto exit_script
+if "%choice%"=="9" goto opportunity_discovery
+if "%choice%"=="10" goto major_positive_news_discovery
+if "%choice%"=="11" goto install_playwright
+if "%choice%"=="12" goto test_crawler
+if "%choice%"=="13" goto start_webui
+if "%choice%"=="14" goto show_help
+if "%choice%"=="15" goto show_system_status
+if "%choice%"=="16" goto exit_script
 
 :install_all_deps
 echo PACKAGE: 开始一键安装所有依赖和模型...
@@ -368,6 +374,91 @@ if errorlevel 1 (
     echo ERROR: 投资机会挖掘执行失败
 ) else (
     echo OK: 投资机会挖掘完成！报表已生成到results目录
+)
+pause
+goto main_menu
+
+:major_positive_news_discovery
+echo 🔥🔥 重大利好消息挖掘 - 智能挖掘投资机会
+echo.
+echo 请选择挖掘模式：
+echo   1. 关键词优先模式 (🚀🚀推荐) - 根据利好关键词反向搜索股票
+echo   2. 论坛情绪模式 - 从热门股票论坛中分析利好信号
+echo   3. 新闻资讯模式 - 从财经新闻中挖掘利好消息
+echo.
+echo 关键词优先模式特点：
+echo   • 🎯 精准定位：直接搜索包含重大利好关键词的讨论
+echo   • 🔍 全面覆盖：不受热门股票列表限制，发现小众机会
+echo   • ⚡ 及时发现：第一时间捕获利好信号
+echo   • 📊 智能筛选：多维度置信度评分
+echo   • 搜索关键词：重组、并购、大订单、政策利好等
+echo.
+echo 论坛情绪模式特点：
+echo   • 基于热门股票的论坛情绪变化
+echo   • 监测异常情绪变化和讨论热点
+echo.
+echo 新闻资讯模式特点：
+echo   • 从全市场热门新闻中提取股票代码
+echo   • 分析已公布的重大利好消息
+echo.
+
+:mode_selection
+set /p mode_choice=请选择模式 (1=关键词模式, 2=论坛模式, 3=新闻模式, 默认1): 
+if "%mode_choice%"=="" set mode_choice=1
+
+if "%mode_choice%"=="1" (
+    set mode=keyword
+    echo.
+    echo 🎯 关键词优先挖掘模式
+    echo 本功能将自动完成以下流程：
+    echo   1. 按优先级选择重大利好关键词
+    echo   2. 在论坛中搜索包含关键词的帖子
+    echo   3. 从帖子中提取相关股票代码
+    echo   4. 分析讨论热度和情绪倾向
+    echo   5. 多维度置信度评分
+    echo   6. 生成HTML和Excel投资机会报告
+    echo.
+    echo 注意：此过程可能需要8-12分钟，请耐心等待...
+) else if "%mode_choice%"=="2" (
+    set mode=forum
+    echo.
+    echo 📈 论坛情绪挖掘模式
+    echo 本功能将自动完成以下流程：
+    echo   1. 获取TOP100热门股票
+    echo   2. 分析每只股票的论坛情绪变化
+    echo   3. 识别重大利好关键词
+    echo   4. 监测讨论量异常增长
+    echo   5. 多维度置信度评分
+    echo   6. 生成HTML和Excel投资机会报告
+    echo.
+    echo 注意：此过程可能需要10-15分钟，请耐心等待...
+) else if "%mode_choice%"=="3" (
+    set mode=news
+    echo.
+    echo 📰 新闻资讯挖掘模式
+    echo 本功能将自动完成以下流程：
+    echo   1. 获取全市场热门新闻（东方财富、同花顺、雪球）
+    echo   2. 从新闻中提取股票代码
+    echo   3. 识别利好消息类型（重组、并购、大单等）
+    echo   4. 多维度置信度分析
+    echo   5. 生成HTML和Excel投资机会报告
+    echo.
+    echo 注意：此过程可能需要5-10分钟，请耐心等待...
+) else (
+    echo 无效选择，使用默认关键词模式
+    set mode=keyword
+)
+
+echo.
+set /p confirm=是否开始重大利好消息挖掘？(Y/n):
+if /i "%confirm%"=="n" goto main_menu
+
+echo 正在启动重大利好消息挖掘系统...
+python scripts/run_major_positive_news_discovery.py --limit 50 --mode %mode%
+if errorlevel 1 (
+    echo ERROR: 重大利好消息挖掘执行失败
+) else (
+    echo OK: 重大利好消息挖掘完成！报表已生成到results目录
 )
 pause
 goto main_menu

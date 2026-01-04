@@ -40,25 +40,29 @@ while true; do
     echo "7. 🔥 投资机会挖掘 (TOP100热门股票)"
     echo ""
     echo "PREDICT: 预测功能"
-    echo "8. 运行预测示例"
-    echo ""
-    echo "CRAWLER: 爬虫设置"
-    echo "9. 安装 Playwright 浏览器"
-    echo "10. 测试爬虫功能"
-    echo ""
-    echo "WEB: Web界面"
-    echo "11. 启动Web界面"
-    echo ""
-    echo "INFO:  帮助与信息"
-    echo "12. 显示使用帮助"
-    echo "13. 查看系统状态"
-    echo ""
-    echo "14. 退出"
+echo "8. 运行预测示例"
+echo ""
+echo "DISCOVERY: 机会挖掘"
+echo "9. 🔥 投资机会挖掘 (TOP100热门股票)"
+echo "10. 🔥🔥 重大利好消息挖掘 (从资讯流挖掘)"
+echo ""
+echo "CRAWLER: 爬虫设置"
+echo "11. 安装 Playwright 浏览器"
+echo "12. 测试爬虫功能"
+echo ""
+echo "WEB: Web界面"
+echo "13. 启动Web界面"
+echo ""
+echo "INFO:  帮助与信息"
+echo "14. 显示使用帮助"
+echo "15. 查看系统状态"
+echo ""
+echo "16. 退出"
     echo ""
     echo "TIP: 提示: 首次使用请先选择选项1进行一键安装"
     echo ""
     
-    read -p "请选择操作 (1-14): " choice
+    read -p "请选择操作 (1-16): " choice
     
     case $choice in
         1)
@@ -109,12 +113,8 @@ while true; do
             pause
             ;;
         7)
-            echo "🔥 投资机会挖掘 - 分析TOP100热门股票"
-            read -p "是否开始投资机会挖掘？(Y/n): " confirm
-            if [[ "$confirm" != "n" && "$confirm" != "N" ]]; then
-                echo "正在启动投资机会挖掘系统..."
-                $PYTHON_CMD scripts/run_opportunity_discovery.py --limit 100 --workers 10
-            fi
+            echo "PREDICT: 运行预测示例"
+            $PYTHON_CMD examples/prediction_example.py
             pause
             ;;
         8)
@@ -123,32 +123,73 @@ while true; do
             pause
             ;;
         9)
+            echo "🔥 投资机会挖掘 - 分析TOP100热门股票"
+            read -p "是否开始投资机会挖掘？(Y/n): " confirm
+            if [[ "$confirm" != "n" && "$confirm" != "N" ]]; then
+                echo "正在启动投资机会挖掘系统..."
+                $PYTHON_CMD scripts/run_opportunity_discovery.py --limit 100 --workers 10
+            fi
+            pause
+            ;;
+        10)
+            echo "🔥🔥 一体化深度发现系统 - 质量优先的智能投资机会挖掘"
+            echo ""
+            echo "✨ 全新升级特点："
+            echo "  🎯 三模式融合：关键词+论坛+新闻三重验证"
+            echo "  🔬 深度钻取：多轮深度分析确保质量"
+            echo "  📊 质量优先：重点关注分析质量而非速度"
+            echo "  🔗 交叉验证：多源信息交叉确认"
+            echo "  🏆 并购分析：专门的并购重组全方位分析"
+            echo ""
+            echo "分析模式："
+            echo "  1. 关键词深度模式 (推荐) - 基于权重关键词体系的深度挖掘"
+            echo "  2. 论坛深度模式 - 基于多平台论坛的深度舆情分析"
+            echo "  3. 新闻深度模式 - 基于新闻媒体的深度事件分析"
+            echo ""
+            echo "钻取深度选项："
+            echo "  • 表层分析 (快速, 1-2分钟)"
+            echo "  • 中等深度 (平衡, 3-5分钟)"
+            echo "  • 深度分析 (推荐, 5-8分钟)"
+            echo "  • 全面深度 (最详细, 10-15分钟)"
+            echo ""
+            echo "⚠️  注意：本系统注重分析质量，分析时间较长但结果更准确可靠"
+            echo ""
+            
+            read -p "是否开始一体化深度发现？(Y/n): " confirm
+            if [[ "$confirm" != "n" && "$confirm" != "N" ]]; then
+                echo "正在启动一体化深度发现系统..."
+                echo "系统将引导您选择具体参数..."
+                $PYTHON_CMD scripts/run_integrated_discovery.py
+            fi
+            pause
+            ;;
+        11)
             echo "CRAWLER: 正在安装 Playwright 浏览器..."
             $PYTHON_CMD -m pip install playwright
             $PYTHON_CMD -m playwright install chromium
             pause
             ;;
-        10)
+        12)
             echo "TEST: 测试爬虫功能..."
             $PYTHON_CMD -c "import asyncio; from scripts.crawler import CrawlerManager; asyncio.run(CrawlerManager().test_connection())"
             pause
             ;;
-        11)
+        13)
             echo "WEB: 启动Web界面..."
             cd webui && $PYTHON_CMD app.py
             cd ..
             pause
             ;;
-        12)
+        14)
             echo "================================"
             echo "      Kronos 使用帮助 HELP:"
             echo "================================"
             echo ""
             echo "START: 快速开始："
             echo "  1. 运行 quick_start.sh"
-            echo "  2. 选择“1”进行一键安装"
-            echo "  3. 选择“2”配置数据源（需要Tushare Token）"
-            echo "  4. 选择“7”运行预测示例"
+            echo "  2. 选择"1"进行一键安装"
+            echo "  3. 选择"2"配置数据源（需要Tushare Token）"
+            echo "  4. 选择"9"或"10"运行投资机会挖掘"
             echo ""
             echo "DATA: 数据源配置："
             echo "  - Tushare: 需要注册账号获取Token (https://tushare.pro/)"
@@ -163,13 +204,17 @@ while true; do
             echo "  - 可调节预测长度和采样参数"
             echo "  - 支持批量预测多只股票"
             echo ""
+            echo "DISCOVERY: 机会挖掘："
+            echo "  - 投资机会挖掘: 分析TOP100热门股票的多维度指标"
+            echo "  - 重大利好消息挖掘: 从资讯流中挖掘潜在投资机会"
+            echo ""
             echo "WEB: Web界面："
             echo "  - 运行: cd webui && python app.py"
             echo "  - 访问: http://localhost:7070"
             echo ""
             pause
             ;;
-        13)
+        15)
             echo "系统状态检查 STATUS:"
             $PYTHON_CMD --version
             pip --version
@@ -179,12 +224,12 @@ while true; do
             done
             pause
             ;;
-        14)
+        16)
             echo "BYE: 感谢使用 Kronos！再见！"
             exit 0
             ;;
         *)
-            echo "无效输入，请输入 1-14 之间的数字"
+            echo "无效输入，请输入 1-16 之间的数字"
             sleep 1
             ;;
     esac

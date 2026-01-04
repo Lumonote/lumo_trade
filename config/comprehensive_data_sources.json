@@ -1,0 +1,815 @@
+{
+  "comprehensive_data_sources": {
+    "unofficial_priority_channels": {
+      "description": "非官方高价值提前捕捉渠道 - 核心优势",
+      "priority": 1,
+      "sites": {
+        "weibo_insiders": {
+          "name": "微博内幕人士网络",
+          "url": "https://weibo.com",
+          "api_endpoints": {
+            "search": "/ajax/search/",
+            "timeline": "/ajax/timeline/",
+            "user_posts": "/ajax/feed/"
+          },
+          "target_users": [
+            "财经记者", "PE/VC从业者", "投行人士", "券商分析师",
+            "上市公司员工", "政府相关人员", "行业专家", "投资大V"
+          ],
+          "insider_keywords": [
+            "听说", "据悉", "内部消息", "小道消息", "传言",
+            "即将", "计划", "准备", "正在谈", "可能", "独家"
+          ],
+          "data_types": ["内幕消息", "提前预告", "行业传言", "政策风向"],
+          "reliability": 0.65,
+          "advance_capture_days": "1-15",
+          "update_frequency": "实时",
+          "access_method": "web_scraping + api",
+          "rate_limit": "30/小时",
+          "credibility_weight": 0.7
+        },
+        "stock_forum_insiders": {
+          "name": "股票论坛内幕挖掘",
+          "url": "https://guba.eastmoney.com",
+          "api_endpoints": {
+            "posts": "/api/post/",
+            "user_timeline": "/api/timeline/",
+            "hot_stocks": "/api/hot/"
+          },
+          "target_users": [
+            "公司内部员工", "供应商代表", "合作伙伴",
+            "行业分析师", "机构研究员", "资深股民"
+          ],
+          "insider_indicators": [
+            "内部人士爆料", "公司员工", "供应商消息",
+            "合作伙伴透露", "政府部门消息", "实地调研"
+          ],
+          "data_types": ["内幕爆料", "业绩预告", "重组传言", "订单信息"],
+          "reliability": 0.75,
+          "advance_capture_days": "1-30",
+          "update_frequency": "实时",
+          "access_method": "web_scraping",
+          "rate_limit": "20/分钟",
+          "credibility_weight": 0.8
+        },
+        "supply_chain_intelligence": {
+          "name": "供应链情报网络",
+          "url": "https://multiple-sources.com",
+          "api_endpoints": {
+            "supplier_data": "/api/suppliers/",
+            "order_tracking": "/api/orders/",
+            "logistics_data": "/api/logistics/"
+          },
+          "monitoring_targets": [
+            "原材料供应商", "设备制造商", "物流服务商",
+            "下游客户", "渠道商", "终端用户"
+          ],
+          "early_indicators": [
+            "订单激增", "价格上涨", "供不应求",
+            "新产线投产", "扩产计划", "战略合作"
+          ],
+          "data_types": ["订单变化", "价格波动", "产能信息", "合同签署"],
+          "reliability": 0.80,
+          "advance_capture_days": "10-60",
+          "update_frequency": "每日",
+          "access_method": "api + web_scraping",
+          "rate_limit": "50/小时",
+          "credibility_weight": 0.85
+        },
+        
+        "recruitment_signals": {
+          "name": "招聘信号监控系统",
+          "url": "https://job-platforms.com",
+          "api_endpoints": {
+            "job_postings": "/api/jobs/",
+            "company_hiring": "/api/hiring/",
+            "salary_trends": "/api/salary/"
+          },
+          "monitoring_platforms": [
+            "前程无忧", "智联招聘", "猎聘", "BOSS直聘", "拉勾网"
+          ],
+          "expansion_signals": [
+            "大量招聘", "高级职位", "紧急招聘",
+            "异地扩张", "新部门组建", "技能要求变化"
+          ],
+          "data_types": ["招聘需求", "职位变化", "薪资趋势", "团队扩张"],
+          "reliability": 0.85,
+          "advance_capture_days": "15-90",
+          "update_frequency": "每日",
+          "access_method": "web_scraping",
+          "rate_limit": "100/小时",
+          "credibility_weight": 0.9
+        }
+      }
+    },
+
+    "social_intelligence_networks": {
+      "description": "社交智能情报网络 - 主要信息源",
+      "priority": 1,
+      "sites": {
+        "zhihu_professionals": {
+          "name": "知乎专业人士分析",
+          "url": "https://www.zhihu.com",
+          "api_endpoints": {
+            "search": "/api/v4/search/",
+            "questions": "/api/v4/questions/",
+            "answers": "/api/v4/answers/"
+          },
+          "target_professionals": [
+            "投资从业者", "行业分析师", "公司内部员工",
+            "供应商代表", "合作伙伴", "技术专家"
+          ],
+          "professional_keywords": [
+            "内部知情", "业内传闻", "据我了解", "消息人士",
+            "可靠消息", "独家消息", "从业经验", "内部分析"
+          ],
+          "data_types": ["专业分析", "行业内幕", "技本解读", "投资逻辑"],
+          "reliability": 0.78,
+          "advance_capture_days": "5-45",
+          "update_frequency": "实时",
+          "access_method": "api + web_scraping",
+          "rate_limit": "200/小时",
+          "credibility_weight": 0.85
+        },
+        
+        "linkedin_executive_network": {
+          "name": "LinkedIn高管动态网络",
+          "url": "https://www.linkedin.com",
+          "api_endpoints": {
+            "profile_updates": "/api/profile/",
+            "job_changes": "/api/jobs/",
+            "company_updates": "/api/companies/"
+          },
+          "monitoring_targets": [
+            "高管动态", "人事变动", "项目经理", 
+            "业务负责人", "技术总监", "CFO/CEO动向"
+          ],
+          "signal_keywords": [
+            "新项目", "业务合作", "战略调整", "组织架构",
+            "人员招聘", "业务扩张", "市场入局", "投资布局"
+          ],
+          "data_types": ["职业变动", "项目信息", "合作伙伴", "战略方向"],
+          "reliability": 0.90,
+          "advance_capture_days": "7-30",
+          "update_frequency": "每日",
+          "access_method": "web_scraping",
+          "rate_limit": "50/小时",
+          "credibility_weight": 0.95
+        },
+        
+        "xiaohongshu_kol_insights": {
+          "name": "小红书KOL行业内幕",
+          "url": "https://www.xiaohongshu.com",
+          "target_kols": [
+            "金融博主", "投资老师", "行业内幕人",
+            "财经编辑", "分析师", "投行人士"
+          ],
+          "insider_content_types": [
+            "公司探访", "行业内幕", "投资逻辑",
+            "政策解读", "市场预测", "热点挖掘"
+          ],
+          "data_types": ["内幕爆料", "投资逻辑", "政策解读", "市场预测"],
+          "reliability": 0.70,
+          "advance_capture_days": "3-20",
+          "update_frequency": "实时",
+          "access_method": "web_scraping",
+          "rate_limit": "100/小时",
+          "credibility_weight": 0.75
+        }
+      }
+    },
+    "market_intelligence_platforms": {
+      "description": "市场情报平台 - 资金和交易信号",
+      "priority": 1,
+      "sites": {
+        "unusual_fund_flows": {
+          "name": "异常资金流向监控",
+          "monitoring_indicators": [
+            "大宗交易", "机构调研", "股东增持",
+            "回购计划", "定增方案", "债券发行"
+          ],
+          "unusual_patterns": [
+            "突然放量", "大单涌现", "主力建仓",
+            "外资流入", "融资增加", "质押减少"
+          ],
+          "timing_signals": [
+            "财报前夕", "重大事件前", "政策发布前",
+            "行业大会前", "产品发布前", "合作签署前"
+          ],
+          "data_types": ["资金流向", "交易异常", "持仓变化", "机构动向"],
+          "reliability": 0.85,
+          "advance_capture_days": "1-10",
+          "update_frequency": "实时",
+          "credibility_weight": 0.90
+        },
+        
+        "insider_trading_signals": {
+          "name": "内幕交易信号监控",
+          "monitoring_targets": [
+            "高管交易", "大股东变动", "关联方交易",
+            "员工持股", "期权行权", "限售解禁"
+          ],
+          "anomaly_detection": [
+            "交易时机", "交易规模", "价格偏离",
+            "交易频率", "持仓变化", "关联性"
+          ],
+          "data_types": ["高管交易", "股东变动", "关联交易", "异常交易"],
+          "reliability": 0.90,
+          "advance_capture_days": "1-15",
+          "update_frequency": "实时",
+          "credibility_weight": 0.95
+        },
+        
+        "dark_pool_activity": {
+          "name": "暗池交易活动监控",
+          "monitoring_aspects": [
+            "大宗程序化交易", "机构间交易", "跨市场套利",
+            "高频交易信号", "算法交易模式"
+          ],
+          "signal_types": [
+            "交易量异常", "价格发现", "流动性变化",
+            "波动率异常", "关联品种联动"
+          ],
+          "data_types": ["程序化交易", "机构交易", "市场微结构", "价格发现"],
+          "reliability": 0.80,
+          "advance_capture_days": "0.1-5",
+          "update_frequency": "毫秒级",
+          "credibility_weight": 0.85
+        }
+      }
+    },
+    "regulatory_intelligence_network": {
+      "description": "监管情报网络 - 政策内幕和监管动向",
+      "priority": 2,
+      "sites": {
+        "policy_insiders": {
+          "name": "政策内幕监控系统",
+          "information_sources": [
+            "政府内参", "部门通知", "会议纪要",
+            "调研报告", "征求意见稿", "内部文件"
+          ],
+          "leak_channels": [
+            "行业协会", "专家咨询", "企业座谈",
+            "媒体记者", "智库研究", "学术会议"
+          ],
+          "advance_signals": [
+            "政策风向", "监管重点", "扶持方向",
+            "限制领域", "准入标准", "资金投向"
+          ],
+          "data_types": ["政策预告", "监管风向", "行业规划", "投资导向"],
+          "reliability": 0.85,
+          "advance_capture_days": "30-120",
+          "update_frequency": "每日",
+          "credibility_weight": 0.90
+        },
+        
+        "tender_intelligence": {
+          "name": "招投标情报系统",
+          "monitoring_platforms": [
+            "中国招标投标公共服务平台",
+            "政府采购网", "各省市招标网",
+            "中央企业采购平台"
+          ],
+          "early_stages": [
+            "需求调研", "预算申请", "方案征集",
+            "供应商摸底", "技术交流", "资格预审"
+          ],
+          "value_indicators": [
+            "项目规模", "技术要求", "时间节点",
+            "资金来源", "实施主体", "战略意义"
+          ],
+          "data_types": ["招标预告", "项目信息", "技术规格", "合同金额"],
+          "reliability": 0.90,
+          "advance_capture_days": "60-180",
+          "update_frequency": "每日",
+          "credibility_weight": 0.85
+        },
+        
+        "regulatory_meeting_intelligence": {
+          "name": "监管会议情报监控",
+          "meeting_types": [
+            "政策制定会议", "部门协调会", "专家评审会",
+            "行业座谈会", "调研交流会", "政策宣讲会"
+          ],
+          "intelligence_sources": [
+            "会议参与者", "政府工作人员", "行业专家",
+            "企业代表", "学者研究员", "媒体记者"
+          ],
+          "data_types": ["会议议题", "参会人员", "讨论内容", "政策倾向"],
+          "reliability": 0.75,
+          "advance_capture_days": "15-60",
+          "update_frequency": "每日",
+          "credibility_weight": 0.80
+        }
+      }
+    },
+    "technology_intelligence_network": {
+      "description": "技术情报网络 - 技术突破和竞品情报",
+      "priority": 2,
+      "sites": {
+        "patent_monitoring": {
+          "name": "专利技术监控系统",
+          "monitoring_sources": [
+            "专利申请", "技术论文", "会议报告",
+            "产品发布", "技术展示", "合作研发"
+          ],
+          "breakthrough_indicators": [
+            "关键专利", "核心技术", "突破性创新",
+            "产业化进展", "商业化应用", "标准制定"
+          ],
+          "data_types": ["专利信息", "技术突破", "研发进展", "应用前景"],
+          "reliability": 0.85,
+          "advance_capture_days": "90-365",
+          "update_frequency": "每日",
+          "credibility_weight": 0.90
+        },
+        
+        "competitor_intelligence": {
+          "name": "竞争对手情报监控",
+          "monitoring_aspects": [
+            "产品动态", "技术路线", "市场策略",
+            "人员变动", "资金投入", "合作关系"
+          ],
+          "competitive_signals": [
+            "技术领先", "成本优势", "渠道优势",
+            "品牌影响", "规模效应", "资源整合"
+          ],
+          "data_types": ["竞品动态", "市场策略", "技术路线", "竞争优势"],
+          "reliability": 0.75,
+          "advance_capture_days": "30-180",
+          "update_frequency": "每日",
+          "credibility_weight": 0.80
+        },
+        
+        "research_collaboration_network": {
+          "name": "研发合作网络监控",
+          "monitoring_targets": [
+            "高校合作", "科研院所合作", "企业联盟",
+            "国际合作", "政产学研合作", "跨界合作"
+          ],
+          "collaboration_signals": [
+            "新合作协议", "研发中心成立", "联合实验室",
+            "人才交流", "技术转移", "知识产权共享"
+          ],
+          "data_types": ["合作协议", "研发项目", "人才交流", "技术成果"],
+          "reliability": 0.80,
+          "advance_capture_days": "60-365",
+          "update_frequency": "每周",
+          "credibility_weight": 0.85
+        }
+      }
+    }
+      }
+    "official_channels": {
+      "description": "官方权威渠道 - 信息验证用途",
+      "priority": 5,
+      "sites": {
+        "xueqiu": {
+          "name": "雪球",
+          "url": "https://xueqiu.com",
+          "api_endpoints": {
+            "timeline": "/v4/statuses/public_timeline_by_category.json",
+            "stock_info": "/v5/stock/",
+            "user_posts": "/query/v1/timeline/"
+          },
+          "data_types": ["用户讨论", "投资观点", "实时行情", "组合跟踪"],
+          "reliability": 0.75,
+          "update_frequency": "实时",
+          "access_method": "api + web_scraping",
+          "rate_limit": "100/小时",
+          "anti_crawler": {
+            "headers_required": true,
+            "session_management": true,
+            "token_refresh": true
+          }
+        },
+        "tonghuashun": {
+          "name": "同花顺",
+          "url": "http://www.10jqka.com.cn",
+          "api_endpoints": {
+            "stock_data": "/api/stock/",
+            "news": "/api/news/",
+            "research": "/api/report/"
+          },
+          "data_types": ["行情数据", "研究报告", "股吧讨论", "技术分析"],
+          "reliability": 0.83,
+          "update_frequency": "实时",
+          "access_method": "api + web_scraping",
+          "rate_limit": "50/小时"
+        },
+        "taoguba": {
+          "name": "淘股吧",
+          "url": "https://www.taoguba.com.cn",
+          "api_endpoints": {
+            "posts": "/api/post/",
+            "user_timeline": "/api/timeline/",
+            "hot_stocks": "/api/hot/"
+          },
+          "data_types": ["短线讨论", "题材挖掘", "用户观点", "热门股票"],
+          "reliability": 0.70,
+          "update_frequency": "实时",
+          "access_method": "web_scraping",
+          "rate_limit": "30/小时"
+        },
+        "jrj": {
+          "name": "金融界",
+          "url": "http://www.jrj.com.cn",
+          "api_endpoints": {
+            "news": "/api/news/",
+            "stock": "/api/stock/",
+            "fund": "/api/fund/"
+          },
+          "data_types": ["财经新闻", "股票分析", "基金信息", "理财产品"],
+          "reliability": 0.78,
+          "update_frequency": "每小时",
+          "access_method": "web_scraping",
+          "rate_limit": "20/小时"
+        }
+      }
+    },
+
+    "research_institutions": {
+      "description": "专业研究机构",
+      "priority": 1,
+      "sites": {
+        "choice": {
+          "name": "东方财富Choice",
+          "url": "http://choice.eastmoney.com",
+          "api_endpoints": {
+            "research": "/api/research/",
+            "data": "/api/data/",
+            "macro": "/api/macro/"
+          },
+          "data_types": ["专业数据", "研究报告", "宏观数据", "行业分析"],
+          "reliability": 0.95,
+          "update_frequency": "每日",
+          "access_method": "api",
+          "rate_limit": "1000/日",
+          "subscription_required": true
+        },
+        "wind": {
+          "name": "万得资讯",
+          "url": "https://www.wind.com.cn",
+          "api_endpoints": {
+            "data": "/api/data/",
+            "reports": "/api/reports/",
+            "indices": "/api/indices/"
+          },
+          "data_types": ["金融数据", "研究报告", "指数数据", "宏观统计"],
+          "reliability": 0.96,
+          "update_frequency": "实时",
+          "access_method": "api",
+          "rate_limit": "5000/日",
+          "subscription_required": true
+        },
+        "ifind": {
+          "name": "同花顺iFind",
+          "url": "http://www.51ifind.com",
+          "api_endpoints": {
+            "terminal": "/api/terminal/",
+            "reports": "/api/reports/",
+            "data": "/api/data/"
+          },
+          "data_types": ["金融终端", "研报数据", "实时数据"],
+          "reliability": 0.90,
+          "update_frequency": "实时",
+          "access_method": "api",
+          "rate_limit": "2000/日",
+          "subscription_required": true
+        }
+      }
+    },
+
+    "social_media": {
+      "description": "社交媒体平台",
+      "priority": 4,
+      "sites": {
+        "weibo": {
+          "name": "微博",
+          "url": "https://weibo.com",
+          "api_endpoints": {
+            "search": "/ajax/search/",
+            "timeline": "/ajax/timeline/",
+            "hot": "/ajax/hot/"
+          },
+          "data_types": ["热点话题", "用户讨论", "舆情监控"],
+          "reliability": 0.60,
+          "update_frequency": "实时",
+          "access_method": "web_scraping",
+          "rate_limit": "100/小时",
+          "anti_crawler": {
+            "login_required": true,
+            "captcha_frequent": true,
+            "ip_blocking": true
+          }
+        },
+        "zhihu": {
+          "name": "知乎",
+          "url": "https://www.zhihu.com",
+          "api_endpoints": {
+            "search": "/api/v4/search/",
+            "questions": "/api/v4/questions/",
+            "answers": "/api/v4/answers/"
+          },
+          "data_types": ["专业讨论", "投资观点", "行业分析", "问答内容"],
+          "reliability": 0.72,
+          "update_frequency": "实时",
+          "access_method": "api + web_scraping",
+          "rate_limit": "200/小时"
+        },
+        "toutiao": {
+          "name": "今日头条",
+          "url": "https://www.toutiao.com",
+          "api_endpoints": {
+            "search": "/api/search/",
+            "news": "/api/news/",
+            "finance": "/api/finance/"
+          },
+          "data_types": ["财经新闻", "热点资讯", "用户评论"],
+          "reliability": 0.65,
+          "update_frequency": "实时",
+          "access_method": "web_scraping",
+          "rate_limit": "50/小时"
+        }
+      }
+    },
+
+    "international_sources": {
+      "description": "国际数据源",
+      "priority": 2,
+      "sites": {
+        "bloomberg": {
+          "name": "Bloomberg",
+          "url": "https://www.bloomberg.com",
+          "api_endpoints": {
+            "markets": "/api/markets/",
+            "news": "/api/news/",
+            "data": "/api/data/"
+          },
+          "data_types": ["国际财经", "市场数据", "分析报告", "宏观经济"],
+          "reliability": 0.92,
+          "update_frequency": "实时",
+          "access_method": "api",
+          "rate_limit": "1000/日",
+          "subscription_required": true
+        },
+        "reuters": {
+          "name": "Reuters",
+          "url": "https://www.reuters.com",
+          "api_endpoints": {
+            "news": "/api/news/",
+            "markets": "/api/markets/",
+            "analysis": "/api/analysis/"
+          },
+          "data_types": ["国际新闻", "市场分析", "突发事件"],
+          "reliability": 0.90,
+          "update_frequency": "实时",
+          "access_method": "api + web_scraping",
+          "rate_limit": "500/日"
+        },
+        "yahoo_finance": {
+          "name": "Yahoo Finance",
+          "url": "https://finance.yahoo.com",
+          "api_endpoints": {
+            "quotes": "/v1/finance/quote/",
+            "news": "/v1/finance/news/",
+            "analysis": "/v1/finance/analysis/"
+          },
+          "data_types": ["全球行情", "财务数据", "新闻资讯"],
+          "reliability": 0.85,
+          "update_frequency": "实时",
+          "access_method": "api",
+          "rate_limit": "2000/日",
+          "free_tier": true
+        }
+      }
+    },
+
+    "government_regulatory": {
+      "description": "政府监管机构",
+      "priority": 1,
+      "sites": {
+        "ndrc": {
+          "name": "国家发改委",
+          "url": "https://www.ndrc.gov.cn",
+          "api_endpoints": {
+            "policies": "/fzggw/jgsj/",
+            "projects": "/fzggw/tzgg/",
+            "statistics": "/fzggw/jgsj/"
+          },
+          "data_types": ["政策法规", "发展规划", "项目审批", "统计数据"],
+          "reliability": 0.99,
+          "update_frequency": "每日",
+          "access_method": "web_scraping",
+          "rate_limit": "20/小时"
+        },
+        "mof": {
+          "name": "财政部",
+          "url": "http://www.mof.gov.cn",
+          "api_endpoints": {
+            "policies": "/zhengwuxinxi/",
+            "budget": "/zhengwuxinxi/caizhengshuju/",
+            "bonds": "/zhengwuxinxi/guozhaiguanli/"
+          },
+          "data_types": ["财税政策", "预算信息", "国债管理", "财政数据"],
+          "reliability": 0.99,
+          "update_frequency": "每日",
+          "access_method": "web_scraping",
+          "rate_limit": "15/小时"
+        },
+        "pboc": {
+          "name": "中国人民银行",
+          "url": "http://www.pbc.gov.cn",
+          "api_endpoints": {
+            "monetary_policy": "/goutongjiaoliu/",
+            "statistics": "/diaochatongjisi/",
+            "regulations": "/zhengcehuobisi/"
+          },
+          "data_types": ["货币政策", "金融统计", "银行监管", "利率数据"],
+          "reliability": 0.99,
+          "update_frequency": "每日",
+          "access_method": "web_scraping",
+          "rate_limit": "10/小时"
+        }
+      }
+    },
+
+    "industry_associations": {
+      "description": "行业组织协会",
+      "priority": 2,
+      "sites": {
+        "sac": {
+          "name": "中国证券业协会",
+          "url": "http://www.sac.net.cn",
+          "api_endpoints": {
+            "industry_info": "/hyzx/",
+            "self_regulation": "/zlgz/",
+            "training": "/pxkh/"
+          },
+          "data_types": ["行业信息", "自律管理", "培训信息", "统计数据"],
+          "reliability": 0.90,
+          "update_frequency": "每周",
+          "access_method": "web_scraping",
+          "rate_limit": "30/小时"
+        },
+        "amac": {
+          "name": "中国证券投资基金业协会",
+          "url": "http://www.amac.org.cn",
+          "api_endpoints": {
+            "fund_info": "/jjhyfw/",
+            "private_equity": "/simujiujin/",
+            "statistics": "/tjbg/"
+          },
+          "data_types": ["基金信息", "私募数据", "行业统计", "监管信息"],
+          "reliability": 0.92,
+          "update_frequency": "每月",
+          "access_method": "web_scraping",
+          "rate_limit": "25/小时"
+        }
+      }
+    },
+
+    "alternative_data": {
+      "description": "另类数据源",
+      "priority": 3,
+      "sites": {
+        "satellite_data": {
+          "name": "卫星数据",
+          "url": "https://www.planet.com",
+          "api_endpoints": {
+            "imagery": "/data/v1/",
+            "analytics": "/analytics/v2/"
+          },
+          "data_types": ["卫星图像", "经济活动", "基础设施"],
+          "reliability": 0.85,
+          "update_frequency": "每日",
+          "access_method": "api",
+          "subscription_required": true
+        },
+        "patent_data": {
+          "name": "专利数据",
+          "url": "http://www.cnipa.gov.cn",
+          "api_endpoints": {
+            "patents": "/zljs/",
+            "applications": "/zlsq/"
+          },
+          "data_types": ["专利申请", "技术创新", "研发活动"],
+          "reliability": 0.90,
+          "update_frequency": "每周",
+          "access_method": "web_scraping",
+          "rate_limit": "100/日"
+        },
+        "supply_chain": {
+          "name": "供应链数据",
+          "url": "https://www.importgenius.com",
+          "api_endpoints": {
+            "imports": "/api/imports/",
+            "exports": "/api/exports/"
+          },
+          "data_types": ["进出口数据", "供应链关系", "贸易流"],
+          "reliability": 0.80,
+          "update_frequency": "每月",
+          "access_method": "api",
+          "subscription_required": true
+        }
+      }
+    }
+  },
+
+  "data_collection_strategies": {
+    "high_frequency": {
+      "description": "高频实时数据收集",
+      "target_sites": ["eastmoney", "xueqiu", "sina_finance"],
+      "collection_interval": "5分钟",
+      "data_types": ["股价", "成交量", "讨论热度"],
+      "priority": 1
+    },
+    "daily_comprehensive": {
+      "description": "每日综合数据收集",
+      "target_sites": ["sse", "szse", "choice", "wind"],
+      "collection_interval": "每日",
+      "data_types": ["公告", "财务数据", "研报"],
+      "priority": 1
+    },
+    "weekly_analysis": {
+      "description": "每周深度分析",
+      "target_sites": ["bloomberg", "reuters", "sac", "amac"],
+      "collection_interval": "每周",
+      "data_types": ["行业分析", "政策解读", "国际动态"],
+      "priority": 2
+    },
+    "event_driven": {
+      "description": "事件驱动收集",
+      "target_sites": ["csrc", "ndrc", "pboc"],
+      "collection_interval": "触发式",
+      "data_types": ["重大政策", "监管公告", "突发事件"],
+      "priority": 1
+    }
+  },
+
+  "data_quality_control": {
+    "source_reliability_weights": {
+      "official_channels": 0.35,
+      "research_institutions": 0.25,
+      "financial_media": 0.20,
+      "investment_platforms": 0.15,
+      "social_media": 0.05
+    },
+    "data_verification_rules": {
+      "cross_source_validation": {
+        "min_sources": 2,
+        "agreement_threshold": 0.7
+      },
+      "temporal_consistency": {
+        "max_time_gap": "24小时",
+        "consistency_check": true
+      },
+      "content_quality_filters": {
+        "min_content_length": 20,
+        "spam_detection": true,
+        "duplicate_removal": true
+      }
+    },
+    "reliability_scoring": {
+      "factors": {
+        "source_authority": 0.3,
+        "content_quality": 0.25,
+        "temporal_relevance": 0.2,
+        "cross_validation": 0.15,
+        "user_engagement": 0.1
+      },
+      "thresholds": {
+        "high_quality": 0.8,
+        "medium_quality": 0.6,
+        "low_quality": 0.4
+      }
+    }
+  },
+
+  "anti_crawler_strategies": {
+    "user_agent_pool": [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+    ],
+    "request_strategies": {
+      "random_delay": {
+        "min": 1,
+        "max": 5
+      },
+      "session_rotation": {
+        "interval": "100请求",
+        "pool_size": 10
+      },
+      "proxy_rotation": {
+        "enabled": false,
+        "pool_size": 5
+      }
+    },
+    "captcha_handling": {
+      "detection": true,
+      "solving_service": "manual",
+      "retry_strategy": "exponential_backoff"
+    }
+  }
+}
