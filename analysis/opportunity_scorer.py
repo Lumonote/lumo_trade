@@ -511,6 +511,7 @@ class OpportunityScorer:
 
             # ========== v4.0 信号质量评估 ==========
             score = 45.0  # 基准分45分
+            signals = []
 
             # 定义信号权重���按模型类型分组，避免同质化信号重复计分）
             # 趋势类模型（相关性高，取最佳信号）
@@ -725,6 +726,49 @@ class OpportunityScorer:
 
             score += buy_ratio * 60  # 提高买入信号占比权重
             score -= sell_ratio * 60 # 提高卖出信号惩罚权重
+            # [新增] 阳线占比与连续红柱 (Red Bar Ratio & Consecutive Red Bars)
+            # 游资喜欢“红肥绿瘦”的K线形态，意味着多头强势
+            try:
+                close = historical_data['close']
+                red_bars = 0
+                consecutive_red = 0
+                current_consecutive = 0
+                
+                # 统计近10天
+                check_days = min(10, len(close))
+                for i in range(1, check_days + 1):
+                    c_price = float(close.iloc[-i])
+                    o_price = float(historical_data['open'].iloc[-i])
+                    
+                    if c_price >= o_price: # 收阳（包含十字星）
+                        red_bars += 1
+                        current_consecutive += 1
+                    else:
+                        current_consecutive = 0
+                    consecutive_red = max(consecutive_red, current_consecutive)
+                
+                # 阳线占比加分
+                if red_bars >= 7:
+                    score += 15
+                    signals.append(f'红肥绿瘦(近10日{red_bars}阳)')
+                elif red_bars >= 5:
+                    score += 5
+                
+                # 连续红柱加分 (当前连续天数)
+                curr_streak = 0
+                for i in range(1, check_days + 1):
+                    if float(close.iloc[-i]) >= float(historical_data['open'].iloc[-i]):
+                        curr_streak += 1
+                    else:
+                        break
+                
+                if curr_streak >= 3:
+                    streak_bonus = 5 + (curr_streak - 3) * 3
+                    score += streak_bonus
+                    signals.append(f'连续{curr_streak}日收阳')
+            except Exception as e:
+                pass
+
             # 确保分数在0-100范围内
             score = max(0, min(100, score))
 
@@ -748,6 +792,7 @@ class OpportunityScorer:
                 },
                 'top_buy_models': [k for k, v in current_signals.items() if v == '买入'][:8],
                 'top_sell_models': [k for k, v in current_signals.items() if v == '卖出'][:5],
+                'signals': signals,
                 'scoring_method': 'v4.0_signal_quality'
             }
 
@@ -1727,6 +1772,63 @@ class OpportunityScorer:
                 score -= 5   # 价涨量缩，上涨乏力
             else:
                 score -= 10  # 价跌量增，抛压较重
+
+            # 7. [新增] 量能逐渐放大检测 (Volume Gradually Increasing)
+            # 检查最近5天的量能趋势
+            try:
+                if len(volume) >= 5:
+                    vol_ma5 = volume.rolling(window=5).mean()
+                    # 趋势向上：MA5连续3天上涨
+                    if vol_ma5.iloc[-1] > vol_ma5.iloc[-2] > vol_ma5.iloc[-3]:
+                         score += 10
+                         signals.append('量能温和放大(MA5上行)')
+                    # 或者：量能逐级放大 (Vol_t > Vol_t-1 > Vol_t-2)
+                    elif float(volume.iloc[-1]) > float(volume.iloc[-2]) > float(volume.iloc[-3]):
+                         score += 8
+                         signals.append('成交量逐级放大')
+            except:
+                pass
+
+            # 8. [新增] 缩量回调检测 (Shrinking Volume on Drop) - 增强版
+            # 检查最近4天内，如果是下跌，是否缩量
+            shrink_drop_count = 0
+            try:
+                for i in range(1, min(5, len(close))): 
+                    p_curr = float(close.iloc[-i])
+                    p_prev = float(close.iloc[-i-1])
+                    v_curr = float(volume.iloc[-i])
+                    v_prev = float(volume.iloc[-i-1])
+                    
+                    if p_curr < p_prev and v_curr < v_prev:
+                        shrink_drop_count += 1
+                
+                if shrink_drop_count >= 2:
+                    score += 10  # 连续缩量回调，加分
+                    signals.append(f'近期缩量回调({shrink_drop_count}天)')
+            except:
+                pass
+
+            # 9. [新增] 连续买入 (Continuous Buying) - 连续价涨量增
+            # 检查最近连续价涨量增的天数
+            buy_streak = 0
+            try:
+                for i in range(1, min(6, len(close))):
+                    p_curr = float(close.iloc[-i])
+                    p_prev = float(close.iloc[-i-1])
+                    v_curr = float(volume.iloc[-i])
+                    v_prev = float(volume.iloc[-i-1])
+                    
+                    if p_curr > p_prev and v_curr > v_prev:
+                        buy_streak += 1
+                    else:
+                        break 
+                
+                if buy_streak >= 2:
+                    buy_streak_score = 10 + (buy_streak - 2) * 5
+                    score += buy_streak_score
+                    signals.append(f'连续价涨量增({buy_streak}天)')
+            except:
+                pass
 
             score = max(0, min(100, score))
 
