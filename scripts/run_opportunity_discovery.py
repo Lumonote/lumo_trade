@@ -233,6 +233,7 @@ class OpportunityDiscovery:
                                 'name': stock.get('name', '未知'),
                                 'exchange': stock.get('exchange', 'UNKNOWN'),
                                 'popularity_score': stock.get('popularity_score', 0),
+                                'change_pct': stock.get('change_pct', 0),
                                 'scoring_result': {
                                     'total_score': 0,
                                     'rating': 'C',
@@ -261,6 +262,7 @@ class OpportunityDiscovery:
                             'name': stock.get('name', '未知'),
                             'exchange': stock.get('exchange', 'UNKNOWN'),
                             'popularity_score': stock.get('popularity_score', 0),
+                            'change_pct': stock.get('change_pct', 0),
                             'scoring_result': {
                                 'total_score': 0,
                                 'rating': 'C',
@@ -322,6 +324,8 @@ class OpportunityDiscovery:
             topics = self.topics_collector.get_guba_topics(limit=9)
             if topics and len(topics) >= 5:
                 self.global_hot_news = topics
+                # 供Markdown报表复用
+                self.guba_topics = topics
                 logger.info(f"✓ 首页热门内容已切换为股吧话题，共 {len(self.global_hot_news)} 条")
             else:
                 logger.warning(f"⚠️ 股吧话题采集数量不足（{len(topics) if topics else 0} 条），将尝试通用热榜话题或热门板块兜底")
@@ -366,61 +370,66 @@ class OpportunityDiscovery:
         logger.info(f"\n步骤3.5: 对优质股票进行LLM深度分析...")
 
         try:
-            llm_config = LLMConfig()
-            if llm_config.is_configured():
-                llm_analyzer = LLMAnalyzer(llm_config)
-
-                # 筛选A级及以上股票(评分≥60分)
-                passed_stocks = [
-                    r for r in filter_results
-                    if r.get('passed', False) and
-                    r.get('scoring_result', {}).get('total_score', 0) >= 60
-                ]
-                # 按分数降序排序
-                passed_stocks.sort(key=lambda x: x.get('scoring_result', {}).get('total_score', 0), reverse=True)
-                
-                # 【优化3】取前10名（从Top20改为Top10，降低成本和耗时）
-                high_grade_stocks = passed_stocks[:10]
-
-                if high_grade_stocks:
-                    logger.info(f"发现 {len(high_grade_stocks)} 只高分股票(≥60分, Top10)，准备进行LLM并发分析...")
-
-                    llm_analyzed_count = 0
-                    # 【优化3】动态调整并发数：股票数量少时降低并发，避免资源浪费
-                    max_workers = min(5, max(2, len(high_grade_stocks) // 2))  # 2-5之间动态调整
-                    logger.info(f"  LLM并发数: {max_workers} (根据股票数量动态调整)")
-                    
-                    # 使用线程池并发执行，限制并发数避免API限流
-                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        future_to_stock = {
-                            executor.submit(self._process_single_llm_task, llm_analyzer, stock): stock 
-                            for stock in high_grade_stocks
-                        }
-                        
-                        for future in as_completed(future_to_stock):
-                            try:
-                                if future.result():
-                                    llm_analyzed_count += 1
-                            except Exception as e:
-                                logger.error(f"LLM并发任务异常: {e}")
-
-                    logger.info(f"✓ LLM深度分析完成: {llm_analyzed_count}/{len(high_grade_stocks)} 只股票")
-
-                    # 输出LLM分析汇总表格
-                    if llm_analyzed_count > 0:
-                        self._print_llm_summary_table(high_grade_stocks)
-                else:
-                    logger.info("无符合条件(≥60分)的股票，跳过LLM分析")
+            skip_llm = os.environ.get('KRONOS_SKIP_LLM', '').strip().lower() in ('1', 'true', 'yes', 'on')
+            if skip_llm:
+                logger.info("⏭️ KRONOS_SKIP_LLM=1，跳过LLM深度分析")
             else:
-                logger.info("⏭️ LLM未配置，跳过深度分析")
-                logger.info("💡 可在GUI中配置通义千问或DeepSeek API以启用AI智能分析")
+                llm_config = LLMConfig()
+                if llm_config.is_configured():
+                    llm_analyzer = LLMAnalyzer(llm_config)
+
+                    # 筛选A级及以上股票(评分≥60分)且未被超大市值过滤
+                    passed_stocks = [
+                        r for r in filter_results
+                        if r.get('passed', False) and
+                        r.get('scoring_result', {}).get('total_score', 0) >= 60 and
+                        '超大市值过滤' not in r.get('scoring_result', {}).get('exclusion_flags', [])
+                    ]
+                    # 按分数降序排序
+                    passed_stocks.sort(key=lambda x: x.get('scoring_result', {}).get('total_score', 0), reverse=True)
+                    
+                    # 【优化3】取前10名（从Top20改为Top10，降低成本和耗时）
+                    high_grade_stocks = passed_stocks[:10]
+
+                    if high_grade_stocks:
+                        logger.info(f"发现 {len(high_grade_stocks)} 只高分股票(≥60分, Top10)，准备进行LLM并发分析...")
+
+                        llm_analyzed_count = 0
+                        # 【优化3】动态调整并发数：股票数量少时降低并发，避免资源浪费
+                        max_workers = min(5, max(2, len(high_grade_stocks) // 2))  # 2-5之间动态调整
+                        logger.info(f"  LLM并发数: {max_workers} (根据股票数量动态调整)")
+                        
+                        # 使用线程池并发执行，限制并发数避免API限流
+                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            future_to_stock = {
+                                executor.submit(self._process_single_llm_task, llm_analyzer, stock): stock 
+                                for stock in high_grade_stocks
+                            }
+                            
+                            for future in as_completed(future_to_stock):
+                                try:
+                                    if future.result():
+                                        llm_analyzed_count += 1
+                                except Exception as e:
+                                    logger.error(f"LLM并发任务异常: {e}")
+
+                        logger.info(f"✓ LLM深度分析完成: {llm_analyzed_count}/{len(high_grade_stocks)} 只股票")
+
+                        # 输出LLM分析汇总表格
+                        if llm_analyzed_count > 0:
+                            self._print_llm_summary_table(high_grade_stocks)
+                    else:
+                        logger.info("无符合条件(≥60分)的股票，跳过LLM分析")
+                else:
+                    logger.info("⏭️ LLM未配置，跳过深度分析")
+                    logger.info("💡 可在GUI中配置通义千问或DeepSeek API以启用AI智能分析")
 
         except Exception as e:
             logger.warning(f"LLM深度分析流程失败: {e}")
 
         # 额外步骤：为Top10股票补充具体新闻/入选原因
         logger.info(f"\n步骤3.8: 为Top10股票补充具体新闻/入选原因...")
-        passed_stocks = [r for r in filter_results if r.get('passed', False)]
+        passed_stocks = [r for r in filter_results if r.get('passed', False) and '超大市值过滤' not in r.get('scoring_result', {}).get('exclusion_flags', [])]
         top_stocks = sorted(passed_stocks, key=lambda x: x.get('final_score', 0), reverse=True)[:10]
 
         for stock in top_stocks:
@@ -538,6 +547,28 @@ class OpportunityDiscovery:
                         bad_keywords = ['上交所', '深交所', '证券交易所']
                         if any(b in ts for b in bad_keywords) and len(ts) < 20:
                             return False
+                        
+                        # 过滤无关代码，例如 [zo90002031], [of123456]
+                        import re
+                        # 查找所有 [...] 或 (...) 格式的内容
+                        brackets = re.findall(r'[\[\(]([a-zA-Z0-9]+)[\]\)]', ts)
+                        for b_content in brackets:
+                            # 忽略纯文字，只关注包含数字的
+                            if not any(c.isdigit() for c in b_content):
+                                continue
+                                
+                            # 归一化：移除 sz/sh 前缀，转小写
+                            clean_content = b_content.lower().replace('sz', '').replace('sh', '')
+                            
+                            # 如果包含数字但不是当前股票代码，且长度超过4位（避免误杀年份等），则认为是无关代码
+                            # 特别处理：如果包含 zo/of 等前缀且数字部分包含当前代码（如 zo90002031 包含 002031），也应过滤
+                            
+                            # 简单策略：如果不等于当前代码，且看起来像个代码(>5位数字或字母数字组合)
+                            if clean_content != str(code) and len(clean_content) >= 5:
+                                # 再次确认是否是 ETF/LOF 等基金代码特征
+                                if re.match(r'^(zo|of|so|sz|sh)?\d+', b_content.lower()):
+                                    return False
+                                    
                         return True
 
                     latest_news = [n for n in latest_news if _valid_title(n.get('title', ''))]
@@ -685,11 +716,39 @@ class OpportunityDiscovery:
                     'net_profit_yoy': hot_stock.get('net_profit_yoy')
                 }
 
+            # 构造市场数据 (用于高级分析)
+            market_data = None
+            try:
+                from analysis.sentiment_cache_manager import get_sentiment_cache
+                cache = get_sentiment_cache()
+                
+                # 尝试获取板块信息
+                sector_name = hot_stock.get('sector_name')
+                sector_info = {}
+                if sector_name:
+                    sector_info = {'name': sector_name}
+                    # 尝试从缓存获取板块情绪
+                    sector_sentiment = cache.get_sector(sector_name)
+                    if sector_sentiment:
+                        sector_info['sentiment'] = sector_sentiment
+                
+                # 获取大盘情绪
+                market_sentiment = cache.get_market_sentiment()
+                
+                market_data = {
+                    'sector_info': sector_info,
+                    'market_sentiment': market_sentiment,
+                    'hot_stock_data': hot_stock  # 传递原始热股数据以备用
+                }
+            except Exception as e:
+                logger.warning(f"构造市场数据失败: {e}")
+
             # 多维度打分（注入全市场热门新闻以进行事件面加分）
             scoring_result = self.scorer.calculate_comprehensive_score(
                 stock_code,
                 global_hot_news=self.global_hot_news,
-                fundamental_data=fundamental_data
+                fundamental_data=fundamental_data,
+                market_data=market_data
             )
 
             return {
@@ -697,6 +756,7 @@ class OpportunityDiscovery:
                 'name': stock_name,
                 'exchange': hot_stock.get('exchange', 'UNKNOWN'),
                 'popularity_score': hot_stock.get('popularity_score', 0),
+                'change_pct': hot_stock.get('change_pct', 0),
                 'scoring_result': scoring_result
             }
 

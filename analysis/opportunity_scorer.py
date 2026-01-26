@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-投资机会多维度打分系统 v4.0 - 游资思维重构版
+投资机会多维度打分系统 v4.5 - 游资思维重构版
 =====================================
 
 核心设计理念（顶级游资/操盘手思维）:
@@ -10,6 +10,11 @@
 3. 信号稀缺性：重视少数先行信号，而非同质化信号堆积
 4. 量价验证：资金流入是核心，情绪是反指标
 5. 风险优先：宁可错过，不可套牢
+
+v4.5更新：
+- 连续放量上涨/缩量下跌重点评分
+- 追高风险综合评估
+- 集成高级分析模块（筹码、板块、分时、情绪周期、资金流向、形态、时间窗口）
 
 整合量化模型、技术面、情绪面、板块、基本面、事件等多维度进行综合评分
 """
@@ -21,7 +26,6 @@ import numpy as np
 from typing import Dict, Optional, Tuple, List
 import logging
 
-# 添加项目根目录到路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
@@ -30,6 +34,14 @@ from analysis.investor_sentiment import InvestorSentimentAnalyzer
 from analysis.fundamental_data_collector import FundamentalDataCollector
 from analysis.news_sentiment_collector import NewsSentimentCollector
 from analysis.event_analyzer import EventAnalyzer
+
+try:
+    from analysis.advanced_analysis import AdvancedAnalyzer
+    ADVANCED_ANALYSIS_AVAILABLE = True
+except ImportError:
+    ADVANCED_ANALYSIS_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("高级分析模块未加载，部分功能不可用")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -61,12 +73,12 @@ class OpportunityScorer:
     # 核心理念：大幅提高位置与时机权重，严防高位接盘，寻找底部启动
     # 权重总和=1.0
     DIMENSION_WEIGHTS = {
-        'position_timing': 0.25, # 【核心大幅提升】位置与时机（低位启动核心，从0.18提升到0.25）
-        'volume_health': 0.20,   # 【核心提升】量价结构（主力吸筹验证，从0.16提升到0.20）
+        'position_timing': 0.22, # 【核心大幅提升】位置与时机（低位启动核心，从0.18提升到0.25）
+        'volume_health': 0.15,   # 【核心提升】量价结构（主力吸筹验证，从0.16提升到0.20）
         'technical': 0.05,       # 技术分析（降权，从0.09降到0.05）
-        'quantitative': 0.30,    # 量化模型（降权，从0.36降到0.30，平衡权重）
+        'quantitative': 0.39,    # 量化模型（降权，从0.36降到0.30，平衡权重）
         'liquidity': 0.04,       # 流动性
-        'sector': 0.10,          # 【提升】板块强度（从0.09提升到0.10）
+        'sector': 0.09,          # 【提升】板块强度（从0.09提升到0.10）
         'dragon_tiger': 0.05,    # 龙虎榜
         'fundamental': 0.01,     # 基本面（降权）
         'events': 0.00,          # 消息催化（降权，忽略）
@@ -88,12 +100,12 @@ class OpportunityScorer:
     DYNAMIC_WEIGHT_PROFILES = {
         # 基础模板
         'base': {
-            'position_timing': 0.25,
-            'volume_health': 0.20,
+            'position_timing': 0.22,
+            'volume_health': 0.18,
             'technical': 0.05,
-            'quantitative': 0.30,
+            'quantitative': 0.36,
             'liquidity': 0.04,
-            'sector': 0.10,
+            'sector': 0.09,
             'dragon_tiger': 0.05,
             'fundamental': 0.01,
             'events': 0.00,
@@ -101,12 +113,12 @@ class OpportunityScorer:
         },
         # 底部启动模板：极致强化低位+量价
         'bottom_start': {
-            'position_timing': 0.35,  # 【极致提升】位置时机
-            'volume_health': 0.25,    # 【大幅提升】量价结构
+            'position_timing': 0.32,  # 【极致提升】位置时机
+            'volume_health': 0.23,    # 【大幅提升】量价结构
             'technical': 0.05,
-            'quantitative': 0.20,     # 【降权】量化模型
+            'quantitative': 0.26,     # 【降权】量化模型
             'liquidity': 0.03,
-            'sector': 0.08,
+            'sector': 0.07,
             'dragon_tiger': 0.04,
             'fundamental': 0.00,
             'events': 0.00,
@@ -114,12 +126,12 @@ class OpportunityScorer:
         },
         # 趋势接力模板：强调量化+量价+热点（总和=1.0）
         'trend_continuation': {
-            'position_timing': 0.16,  # 位置时机
-            'volume_health': 0.18,    # 【提升】量价结构（主力吸筹）
-            'technical': 0.11,        # 技术分析
-            'quantitative': 0.35,     # 【提升】量化模型
+            'position_timing': 0.14,  # 位置时机
+            'volume_health': 0.16,    # 【提升】量价结构（主力吸筹）
+            'technical': 0.10,        # 技术分析
+            'quantitative': 0.40,     # 【提升】量化模型
             'liquidity': 0.04,        # 流动性
-            'sector': 0.09,           # 【大幅提升】热点板块
+            'sector': 0.08,           # 【大幅提升】热点板块
             'dragon_tiger': 0.05,     # 【提升】龙虎榜（主力吸筹）
             'fundamental': 0.02,      # 基本面
             'events': 0.01,           # 消息催化
@@ -127,12 +139,12 @@ class OpportunityScorer:
         },
         # 消息驱动模板：强调量化+热点+量价+主力（总和=1.0）
         'news_driven': {
-            'position_timing': 0.14,  # 位置时机
-            'volume_health': 0.16,    # 【提升】量价结构（主力吸筹）
-            'technical': 0.07,        # 技术分析
-            'quantitative': 0.33,     # 【提升】量化模型
+            'position_timing': 0.13,  # 位置时机
+            'volume_health': 0.15,    # 【提升】量价结构（主力吸筹）
+            'technical': 0.06,        # 技术分析
+            'quantitative': 0.38,     # 【提升】量化模型
             'liquidity': 0.04,        # 流动性
-            'sector': 0.11,           # 【大幅提升】热点板块（消息驱动需要热点）
+            'sector': 0.12,           # 【大幅提升】热点板块（消息驱动需要热点）
             'dragon_tiger': 0.05,     # 【提升】龙虎榜（主力吸筹）
             'fundamental': 0.02,      # 基本面
             'events': 0.05,           # 消息催化（降权，因为已有热点板块）
@@ -147,14 +159,17 @@ class OpportunityScorer:
     }
 
     def __init__(self):
-        """初始化打分系统 v4.0"""
-        # 采集器按股票实例化，避免错误的无参构造
-        pass
+        """初始化打分系统 v4.5"""
+        if ADVANCED_ANALYSIS_AVAILABLE:
+            self.advanced_analyzer = AdvancedAnalyzer()
+        else:
+            self.advanced_analyzer = None
 
     def calculate_comprehensive_score(self, stock_code: str,
                                      historical_data: Optional[pd.DataFrame] = None,
                                      global_hot_news: Optional[list] = None,
-                                     fundamental_data: Optional[Dict] = None) -> Dict:
+                                     fundamental_data: Optional[Dict] = None,
+                                     market_data: Optional[Dict] = None) -> Dict:
         """
         计算综合评分
 
@@ -211,6 +226,10 @@ class OpportunityScorer:
             if historical_data is None or (hasattr(historical_data, 'empty') and historical_data.empty):
                 historical_data = self._fetch_historical_data(stock_code)
 
+            # 计算3日和5日涨幅
+            price_changes = self._calculate_price_changes(historical_data)
+            result['details']['price_changes'] = price_changes
+
             # 8. 基本面评分 (10%)
             # v4.1.1 修复：确保在流动性评分前获取完整基本面数据
             if fundamental_data is None:
@@ -224,6 +243,19 @@ class OpportunityScorer:
             result['scores']['fundamental'] = fundamental_score
             result['details']['fundamental'] = fundamental_details
 
+            # ========== 超大市值过滤机制 ==========
+            # 超过5000亿市值的股票直接过滤掉，不参与投资机会挖掘
+            market_cap_yi = fundamental_details.get('market_cap_yi', 0)
+            if not isinstance(market_cap_yi, (int, float)):
+                market_cap_yi = 0
+                
+            if market_cap_yi > 5000:  # 5000亿以上直接过滤
+                logger.info(f"{stock_code} 超大市值({market_cap_yi}亿 > 5000亿)，直接过滤不参与投资机会挖掘")
+                result['exclusion_flags'].append('超大市值过滤')
+                result['total_score'] = 0.0
+                result['rating'] = 'C'
+                result['recommendation'] = '超大市值，已过滤'
+                return result
 
             # ========== v4.1 流动性前置优化 ==========
             # 1. 【v4.1调整】流动性评分 (8%) - 前置计算，确保一票否决可用
@@ -319,16 +351,33 @@ class OpportunityScorer:
                 liquidity_score * weights_used.get('liquidity', 0.08)
             )
 
+            # [新增] 超大市值惩罚机制 (Super Large Cap Penalty)
+            # 游资/短线风格通常回避超大盘股（如茅台、工行等），除非是绝对的板块核心且有大利好
+            market_cap_yi = fundamental_details.get('market_cap_yi', 0)
+            # 确保 market_cap_yi 是数值
+            if not isinstance(market_cap_yi, (int, float)):
+                market_cap_yi = 0
+                
+            if market_cap_yi > 10000: # 1万亿以上，超级巨头 (如茅台)
+                cap_penalty = 25
+                total_score -= cap_penalty
+                logger.info(f"{stock_code} 超大市值({market_cap_yi}亿 > 10000亿)，总分扣除 {cap_penalty} 分")
+            elif market_cap_yi > 2000: # 2000亿以上，大盘股
+                cap_penalty = 12
+                total_score -= cap_penalty
+                logger.info(f"{stock_code} 大市值({market_cap_yi}亿 > 2000亿)，总分扣除 {cap_penalty} 分")
+
             # [新增] 卖出信号一票否决/降权机制
             # 如果量化评分过低(<45)或卖出信号多于买入信号，强制压低总分
             # 这里的目的是防止其他维度（如消息面/技术面）掩盖了模型给出的卖出信号
             quant_sell_count = quant_details.get('sell_count', 0)
             quant_buy_count = quant_details.get('buy_count', 0)
+
+            quant_cap_limit = None
             
             if quant_score < 45:
-                # 量化评分不及格，总分上限封顶60（不能评为A级）
                 logger.info(f"{stock_code} 量化评分过低({quant_score})，触发总分封顶限制")
-                total_score = min(total_score, 60.0)
+                quant_cap_limit = 60.0
             
             if quant_sell_count >= quant_buy_count and quant_sell_count > 0:
                 penalty = 15
@@ -339,16 +388,14 @@ class OpportunityScorer:
 
             # [新增] 量化买入信号额外加权
             # 如果买入信号占主导，额外奖励总分，确保好股票能被选出
-            if quant_buy_count > quant_sell_count and quant_score > 60:
-                bonus = 0
-                if quant_buy_count >= 5:
-                    bonus = 8
-                elif quant_buy_count >= 3:
-                    bonus = 5
-                
-                if bonus > 0:
-                    total_score += bonus
-                    logger.info(f"{stock_code} 量化买入信号主导({quant_buy_count} > {quant_sell_count})，总分额外奖励 {bonus} 分")
+            quant_buy_bonus = self._compute_total_score_quant_buy_bonus(quant_buy_count, quant_sell_count, quant_score)
+            if quant_buy_bonus > 0:
+                before = total_score
+                total_score = self._apply_headroom_bonus(total_score, quant_buy_bonus)
+                logger.info(
+                    f"{stock_code} 量化买入信号主导({quant_buy_count} > {quant_sell_count})，"
+                    f"总分额外奖励 {quant_buy_bonus} 分(有效+{total_score - before:.2f})"
+                )
             
             # 应用低位启动加分 (直接加在总分上，因为这是强信号)
             if low_pos_bonus > 0:
@@ -376,8 +423,14 @@ class OpportunityScorer:
                     logger.info(f"{stock_code} 屏蔽低位启动加分(原+{low_pos_bonus}): 技术({tech_score})/量化({quant_score})评分过低或趋势向下，避免左侧接飞刀")
                     low_pos_bonus = 0
                 else:
-                    total_score += low_pos_bonus
-                    logger.info(f"{stock_code} 触发低位启动加分: +{low_pos_bonus}")
+                    before = total_score
+                    total_score = self._apply_headroom_bonus(total_score, low_pos_bonus)
+                    logger.info(f"{stock_code} 触发低位启动加分: +{low_pos_bonus}(有效+{total_score - before:.2f})")
+
+            if quant_cap_limit is not None:
+                total_score = min(total_score, quant_cap_limit)
+
+            total_score = self._clamp_score(total_score)
 
             # 一票否决：如果有严重风险信号，大幅降低评分
             # v4.0 启用一票否决机制（游资思维：宁可错过，不可套牢）
@@ -396,6 +449,26 @@ class OpportunityScorer:
             result['recommendation'] = self._get_recommendation(result['rating'])
             result['weights_used'] = weights_used
             result['weight_mode'] = weight_mode
+
+            if self.advanced_analyzer is not None and historical_data is not None:
+                try:
+                    advanced_result = self.advanced_analyzer.full_analysis(
+                        stock_code=stock_code,
+                        historical_data=historical_data,
+                        fundamental_data=fundamental_data,
+                        market_data=market_data
+                    )
+                    result['advanced_analysis'] = advanced_result
+                    
+                    adv_score = advanced_result.get('overall_score', {}).get('final_score', 50)
+                    combined_score = result['total_score'] * 0.7 + adv_score * 0.3
+                    combined_score = self._clamp_score(combined_score)
+                    result['combined_score'] = round(combined_score, 2)
+                    result['combined_rating'] = self._get_rating(combined_score)
+                    
+                    logger.info(f"{stock_code} 高级分析完成: 基础{result['total_score']}分 + 高级{adv_score}分 = 综合{combined_score}分")
+                except Exception as adv_e:
+                    logger.warning(f"{stock_code} 高级分析失败: {adv_e}")
 
             logger.info(f"使用权重模式: {weight_mode} -> {weights_used}")
 
@@ -471,6 +544,88 @@ class OpportunityScorer:
         except Exception as e:
             logger.error(f"获取历史数据失败: {e}")
             return None
+
+    def _calculate_price_changes(self, historical_data: Optional[pd.DataFrame]) -> Dict:
+        """计算股票涨幅数据"""
+        try:
+            if historical_data is None or historical_data.empty or len(historical_data) < 6:
+                return {'change_1d': None, 'change_3d': None, 'change_5d': None}
+
+            df = historical_data.copy()
+            df = df.sort_values('timestamps', ascending=False)
+
+            current_close = df['close'].iloc[0] if len(df) > 0 else 0
+
+            # 1日涨幅
+            change_1d = df['close'].iloc[0] - df['close'].iloc[1] if len(df) > 1 else 0
+            change_1d_pct = (change_1d / df['close'].iloc[1] * 100) if len(df) > 1 and df['close'].iloc[1] != 0 else None
+
+            # 3日涨幅
+            change_3d = df['close'].iloc[0] - df['close'].iloc[3] if len(df) > 3 else 0
+            change_3d_pct = (change_3d / df['close'].iloc[3] * 100) if len(df) > 3 and df['close'].iloc[3] != 0 else None
+
+            # 5日涨幅
+            change_5d = df['close'].iloc[0] - df['close'].iloc[5] if len(df) > 5 else 0
+            change_5d_pct = (change_5d / df['close'].iloc[5] * 100) if len(df) > 5 and df['close'].iloc[5] != 0 else None
+
+            return {
+                'change_1d': round(change_1d_pct, 2) if change_1d_pct is not None else None,
+                'change_3d': round(change_3d_pct, 2) if change_3d_pct is not None else None,
+                'change_5d': round(change_5d_pct, 2) if change_5d_pct is not None else None,
+                'current_price': current_close
+            }
+        except Exception as e:
+            logger.warning(f"计算涨幅失败: {e}")
+            return {'change_1d': None, 'change_3d': None, 'change_5d': None}
+
+    @staticmethod
+    def _compute_quant_buy_count_bonus(buy_count: int) -> float:
+        if not isinstance(buy_count, int):
+            try:
+                buy_count = int(buy_count)
+            except Exception:
+                return 0.0
+        if buy_count <= 1:
+            return 0.0
+        return float(min(12.0, (buy_count - 1) * 0.8))
+
+    @staticmethod
+    def _compute_total_score_quant_buy_bonus(quant_buy_count: int, quant_sell_count: int, quant_score: float) -> float:
+        try:
+            buy_count = int(quant_buy_count)
+            sell_count = int(quant_sell_count)
+            score = float(quant_score)
+        except Exception:
+            return 0.0
+
+        if buy_count <= sell_count:
+            return 0.0
+
+        dominance = buy_count - sell_count
+        bonus = dominance * 2.0 + max(0, buy_count - 3) * 0.5
+        bonus = min(12.0, bonus)
+        if score < 45:
+            bonus = min(3.0, bonus)
+        return round(float(bonus), 2)
+
+    @staticmethod
+    def _clamp_score(score: float) -> float:
+        try:
+            score_val = float(score)
+        except Exception:
+            return 0.0
+        return max(0.0, min(100.0, score_val))
+
+    @staticmethod
+    def _apply_headroom_bonus(base_score: float, bonus_points: float) -> float:
+        base = OpportunityScorer._clamp_score(base_score)
+        try:
+            bonus = float(bonus_points)
+        except Exception:
+            bonus = 0.0
+        if bonus <= 0:
+            return base
+        return base + bonus * (100.0 - base) / 100.0
 
     def _score_quantitative_models(self, stock_code: str,
                                    historical_data: Optional[pd.DataFrame]) -> Tuple[float, Dict]:
@@ -726,6 +881,11 @@ class OpportunityScorer:
 
             score += buy_ratio * 60  # 提高买入信号占比权重
             score -= sell_ratio * 60 # 提高卖出信号惩罚权重
+
+            buy_count_bonus = self._compute_quant_buy_count_bonus(buy_count)
+            if buy_count_bonus > 0:
+                score += buy_count_bonus
+                signals.append(f'量化买入{buy_count}个')
             # [新增] 阳线占比与连续红柱 (Red Bar Ratio & Consecutive Red Bars)
             # 游资喜欢“红肥绿瘦”的K线形态，意味着多头强势
             try:
@@ -1596,6 +1756,79 @@ class OpportunityScorer:
             elif consecutive_up >= 3:
                 score -= 5   # 连涨3-4天
 
+            consecutive_down = 0
+            for i in range(1, min(10, len(close))):
+                if float(close.iloc[-i]) < float(close.iloc[-i-1]):
+                    consecutive_down += 1
+                else:
+                    break
+
+            if consecutive_down >= 3:
+                score -= 20
+                signals.append(f'连续下跌{consecutive_down}天，趋势偏弱')
+
+            # ========== 8. [v4.5] 追高风险综合评估 ==========
+            # 综合考虑：位置+涨幅+连涨天数，给出追高风险等级
+            chase_risk_score = 0
+            chase_risk_factors = []
+            
+            # 位置风险
+            if position_pct > 0.85:
+                chase_risk_score += 40
+                chase_risk_factors.append('接近年内最高点')
+            elif position_pct > 0.70:
+                chase_risk_score += 25
+                chase_risk_factors.append('处于高位区间')
+            elif position_pct > 0.50:
+                chase_risk_score += 10
+                chase_risk_factors.append('处于中高位')
+            
+            # 短期涨幅风险
+            if change_5d > 20:
+                chase_risk_score += 35
+                chase_risk_factors.append(f'5日涨幅{change_5d:.1f}%过大')
+            elif change_5d > 10:
+                chase_risk_score += 20
+                chase_risk_factors.append(f'5日涨幅{change_5d:.1f}%偏高')
+            
+            # 中期涨幅风险
+            if change_20d > 40:
+                chase_risk_score += 30
+                chase_risk_factors.append(f'20日涨幅{change_20d:.1f}%过大')
+            elif change_20d > 25:
+                chase_risk_score += 15
+                chase_risk_factors.append(f'20日涨幅{change_20d:.1f}%偏高')
+            
+            # 连涨天数风险
+            if consecutive_up >= 5:
+                chase_risk_score += 20
+                chase_risk_factors.append(f'连涨{consecutive_up}天')
+            elif consecutive_up >= 3:
+                chase_risk_score += 10
+            
+            # 距离高点风险
+            if distance_from_high < 5:
+                chase_risk_score += 25
+                chase_risk_factors.append('距高点<5%')
+            elif distance_from_high < 10:
+                chase_risk_score += 10
+            
+            # 追高风险等级判定（分数压缩到0-100，避免过激表述）
+            chase_risk_level = 'low'
+            chase_risk_score = max(0, min(100, chase_risk_score))
+
+            if chase_risk_score >= 75:
+                chase_risk_level = 'high'
+                score -= 20
+                signals.append(f'⚠️ 追高风险偏高({chase_risk_score}分): {", ".join(chase_risk_factors[:2])}')
+            elif chase_risk_score >= 50:
+                chase_risk_level = 'medium'
+                score -= 10
+                signals.append(f'⚠️ 追高风险居中({chase_risk_score}分)')
+            elif chase_risk_score >= 25:
+                chase_risk_level = 'low_medium'
+                score -= 5
+
             # 确保分数在合理范围内
             score = max(0, min(100, score))
 
@@ -1611,8 +1844,11 @@ class OpportunityScorer:
                 'year_high': round(year_high, 2),
                 'year_low': round(year_low, 2),
                 'current_price': round(current_price, 2),
+                'chase_risk_score': chase_risk_score,
+                'chase_risk_level': chase_risk_level,
+                'chase_risk_factors': chase_risk_factors,
                 'signals': signals,
-                'scoring_method': 'v4.0_anti_chasing'
+                'scoring_method': 'v4.5_anti_chasing_enhanced'
             }
 
             return round(score, 2), details
@@ -1621,12 +1857,125 @@ class OpportunityScorer:
             logger.error(f"位置时机评分失败: {e}")
             return 50.0, {'error': str(e)}
 
+    def _detect_consecutive_volume_price_pattern(self, 
+                                                  close: pd.Series, 
+                                                  volume: pd.Series,
+                                                  pattern_type: str = '放量上涨',
+                                                  min_days: int = 2,
+                                                  max_lookback: int = 10) -> Dict:
+        """
+        检测连续多日量价形态 - v4.5核心方法
+        
+        Args:
+            close: 收盘价序列
+            volume: 成交量序列
+            pattern_type: 形态类型 ('放量上涨', '缩量下跌', '放量下跌', '缩量上涨')
+            min_days: 最小连续天数
+            max_lookback: 最大回溯天数
+            
+        Returns:
+            {
+                'detected': bool,           # 是否检测到形态
+                'consecutive_days': int,    # 连续天数
+                'avg_volume_ratio': float,  # 平均量比
+                'total_gain_pct': float,    # 总涨跌幅
+                'pattern_strength': str     # 形态强度: 'weak', 'medium', 'strong', 'very_strong'
+            }
+        """
+        result = {
+            'detected': False,
+            'consecutive_days': 0,
+            'avg_volume_ratio': 1.0,
+            'total_gain_pct': 0.0,
+            'pattern_strength': 'none'
+        }
+        
+        try:
+            if len(close) < 6 or len(volume) < 6:
+                return result
+            
+            # 计算5日均量作为基准
+            avg_vol_5 = float(volume.iloc[-6:-1].mean())
+            if avg_vol_5 <= 0:
+                return result
+            
+            consecutive_days = 0
+            total_vol_ratio = 0.0
+            start_price = float(close.iloc[-1])
+            end_price = start_price
+            
+            # 从最近一天往前检测
+            for i in range(1, min(max_lookback + 1, len(close))):
+                curr_close = float(close.iloc[-i])
+                prev_close = float(close.iloc[-i-1]) if i < len(close) - 1 else curr_close
+                curr_vol = float(volume.iloc[-i])
+                prev_vol = float(volume.iloc[-i-1]) if i < len(volume) - 1 else curr_vol
+                
+                vol_ratio = curr_vol / avg_vol_5
+                price_change = curr_close - prev_close
+                vol_change = curr_vol - prev_vol
+                
+                # 根据形态类型判断是否符合条件
+                pattern_match = False
+                
+                if pattern_type == '放量上涨':
+                    # 价格上涨 + 成交量放大(>1.1倍均量)
+                    pattern_match = price_change > 0 and vol_ratio > 1.1
+                elif pattern_type == '缩量下跌':
+                    # 价格下跌 + 成交量萎缩(<0.9倍均量)
+                    pattern_match = price_change < 0 and vol_ratio < 0.9
+                elif pattern_type == '放量下跌':
+                    # 价格下跌 + 成交量放大(>1.1倍均量) - 危险形态
+                    pattern_match = price_change < 0 and vol_ratio > 1.1
+                elif pattern_type == '缩量上涨':
+                    # 价格上涨 + 成交量萎缩(<0.9倍均量) - 警告形态
+                    pattern_match = price_change > 0 and vol_ratio < 0.9
+                
+                if pattern_match:
+                    consecutive_days += 1
+                    total_vol_ratio += vol_ratio
+                    if consecutive_days == 1:
+                        end_price = curr_close
+                else:
+                    # 形态中断，停止检测
+                    break
+            
+            # 判断是否达到最小天数要求
+            if consecutive_days >= min_days:
+                result['detected'] = True
+                result['consecutive_days'] = consecutive_days
+                result['avg_volume_ratio'] = total_vol_ratio / consecutive_days if consecutive_days > 0 else 1.0
+                
+                # 计算总涨跌幅
+                first_price = float(close.iloc[-consecutive_days-1]) if consecutive_days < len(close) else float(close.iloc[0])
+                result['total_gain_pct'] = (end_price / first_price - 1) * 100 if first_price > 0 else 0
+                
+                # 判断形态强度
+                avg_vol = result['avg_volume_ratio']
+                days = consecutive_days
+                if days >= 5 and avg_vol > 1.5:
+                    result['pattern_strength'] = 'very_strong'
+                elif days >= 4 or (days >= 3 and avg_vol > 1.5):
+                    result['pattern_strength'] = 'strong'
+                elif days >= 3 or (days >= 2 and avg_vol > 1.3):
+                    result['pattern_strength'] = 'medium'
+                else:
+                    result['pattern_strength'] = 'weak'
+            
+            return result
+            
+        except Exception as e:
+            logger.debug(f"量价形态检测失败: {e}")
+            return result
+
     def _score_volume_health(self, stock_code: str,
                              historical_data: Optional[pd.DataFrame]) -> Tuple[float, Dict]:
         """
-        量价健康度评分 (0-100分) - v3.0新增
+        量价健康度评分 (0-100分) - v4.5 连续放量上涨/缩量下跌优化版
 
-        评分逻辑:
+        核心优化（v4.5）:
+        - 连续多日放量上涨: 重点加分项（健康上涨形态）
+        - 连续多日缩量下跌: 健康调整形态，加分
         - 量价同向: 价涨量增/价跌量缩为健康
         - 量比: 当日成交量与5日均量比值
         - 资金流入连续性: 连续放量天数
@@ -1830,6 +2179,111 @@ class OpportunityScorer:
             except:
                 pass
 
+            # 10. [v4.5核心] 连续多日放量上涨检测 (Consecutive Volume-Up Price-Up)
+            # 游资核心形态: 连续放量上涨是主力持续吸筹的强信号
+            consecutive_vol_up_price_up = self._detect_consecutive_volume_price_pattern(
+                close, volume, pattern_type='放量上涨'
+            )
+            if consecutive_vol_up_price_up['detected']:
+                days = consecutive_vol_up_price_up['consecutive_days']
+                avg_vol_ratio = consecutive_vol_up_price_up['avg_volume_ratio']
+                total_gain = consecutive_vol_up_price_up['total_gain_pct']
+                
+                # 根据连续天数和放量幅度动态加分
+                if days >= 5:
+                    bonus = 35  # 5天以上连续放量上涨，极强信号
+                    signals.append(f'🔥🔥 连续{days}日放量上涨(量比{avg_vol_ratio:.1f}x,涨幅{total_gain:.1f}%)')
+                elif days >= 4:
+                    bonus = 28
+                    signals.append(f'🔥 连续{days}日放量上涨(量比{avg_vol_ratio:.1f}x,涨幅{total_gain:.1f}%)')
+                elif days >= 3:
+                    bonus = 20
+                    signals.append(f'连续{days}日放量上涨(量比{avg_vol_ratio:.1f}x)')
+                elif days >= 2:
+                    bonus = 12
+                    signals.append(f'连续{days}日放量上涨')
+                else:
+                    bonus = 0
+                
+                # 低位放量上涨额外加分
+                if is_low_pos and days >= 3:
+                    bonus += 10
+                    signals.append('低位连续放量上涨(主力吸筹)')
+                
+                score += bonus
+
+            # 11. [v4.5核心] 连续多日缩量下跌检测 (Consecutive Volume-Down Price-Down)
+            # 健康调整形态: 缩量下跌说明抛压减轻，调整接近尾声
+            consecutive_vol_down_price_down = self._detect_consecutive_volume_price_pattern(
+                close, volume, pattern_type='缩量下跌'
+            )
+            if consecutive_vol_down_price_down['detected']:
+                days = consecutive_vol_down_price_down['consecutive_days']
+                avg_vol_ratio = consecutive_vol_down_price_down['avg_volume_ratio']
+                total_loss = abs(consecutive_vol_down_price_down['total_gain_pct'])
+                
+                # 缩量下跌是健康调整，但需要结合位置判断
+                if days >= 4:
+                    bonus = 20  # 4天以上缩量下跌，调整充分
+                    signals.append(f'连续{days}日缩量下跌(量比{avg_vol_ratio:.1f}x,跌幅{total_loss:.1f}%),调整充分')
+                elif days >= 3:
+                    bonus = 15
+                    signals.append(f'连续{days}日缩量下跌(量比{avg_vol_ratio:.1f}x),健康调整')
+                elif days >= 2:
+                    bonus = 8
+                    signals.append(f'连续{days}日缩量下跌,正常回调')
+                else:
+                    bonus = 0
+                
+                # 如果是低位缩量下跌后企稳，更佳
+                if is_low_pos and days >= 3:
+                    bonus += 8
+                    signals.append('低位缩量整理(筹码集中)')
+                
+                score += bonus
+
+            # 12. [v4.5] 放量下跌风险检测 (Volume-Up Price-Down Warning)
+            # 危险形态: 放量下跌说明主力出货
+            consecutive_vol_up_price_down = self._detect_consecutive_volume_price_pattern(
+                close, volume, pattern_type='放量下跌'
+            )
+            if consecutive_vol_up_price_down['detected']:
+                days = consecutive_vol_up_price_down['consecutive_days']
+                avg_vol_ratio = consecutive_vol_up_price_down['avg_volume_ratio']
+                total_loss = abs(consecutive_vol_up_price_down['total_gain_pct'])
+                
+                # 放量下跌是危险信号，扣分
+                if days >= 3:
+                    penalty = 25
+                    signals.append(f'⚠️ 连续{days}日放量下跌(量比{avg_vol_ratio:.1f}x,跌幅{total_loss:.1f}%),抛压沉重')
+                elif days >= 2:
+                    penalty = 15
+                    signals.append(f'⚠️ 连续{days}日放量下跌,需警惕')
+                else:
+                    penalty = 0
+                
+                score -= penalty
+
+            # 13. [v4.5] 缩量上涨警告 (Volume-Down Price-Up Warning)
+            # 警告形态: 缩量上涨说明上涨动能不足
+            consecutive_vol_down_price_up = self._detect_consecutive_volume_price_pattern(
+                close, volume, pattern_type='缩量上涨'
+            )
+            if consecutive_vol_down_price_up['detected']:
+                days = consecutive_vol_down_price_up['consecutive_days']
+                
+                # 缩量上涨是警告信号，轻微扣分
+                if days >= 3:
+                    penalty = 10
+                    signals.append(f'缩量上涨{days}日,上涨动能不足')
+                elif days >= 2:
+                    penalty = 5
+                    signals.append(f'缩量上涨,动能减弱')
+                else:
+                    penalty = 0
+                
+                score -= penalty
+
             score = max(0, min(100, score))
 
             volume_health = '健康'
@@ -1849,7 +2303,14 @@ class OpportunityScorer:
                 'last_price_up': last_price_up,
                 'last_vol_up': last_vol_up,
                 'signals': signals,
-                'volume_health': volume_health
+                'volume_health': volume_health,
+                'volume_price_patterns': {
+                    'vol_up_price_up': consecutive_vol_up_price_up if consecutive_vol_up_price_up['detected'] else None,
+                    'vol_down_price_down': consecutive_vol_down_price_down if consecutive_vol_down_price_down['detected'] else None,
+                    'vol_up_price_down': consecutive_vol_up_price_down if consecutive_vol_up_price_down['detected'] else None,
+                    'vol_down_price_up': consecutive_vol_down_price_up if consecutive_vol_down_price_up['detected'] else None,
+                },
+                'scoring_method': 'v4.5_volume_price_pattern'
             }
 
             return round(score, 2), details
@@ -2315,14 +2776,15 @@ class OpportunityScorer:
             sector = analyzer.get_sector_info_and_sentiment()
 
             if sector:
-                score = sector.get('sentiment_score', 50)
+                sector_sentiment = sector.get('sector_sentiment', {})
+                score = sector_sentiment.get('sentiment_score', 50)
                 details = {
                     'sector_name': sector.get('sector_name', '未知'),
                     'sentiment_score': score,
-                    'overall': sector.get('overall', '中性'),
-                    'change_pct': sector.get('change_pct', 0),
-                    'turnover_rate': sector.get('turnover_rate', 0),
-                    'leader_stock': sector.get('leader_stock', {})
+                    'overall': sector_sentiment.get('overall', '中性'),
+                    'change_pct': sector_sentiment.get('change_pct', 0),
+                    'turnover_rate': sector_sentiment.get('turnover_rate', 0),
+                    'leader_stock': sector_sentiment.get('leader_stock', {})
                 }
                 return float(score), details
             return 50.0, {'error': '无板块数据'}
@@ -2384,15 +2846,15 @@ class OpportunityScorer:
 
             # 小市值加分 (新增)
             # 逻辑：市值越小越容易被资金推动
+            # external_data 为扁平结构时(total_market_cap 来自 HotStocksFetcher)，单位已是“亿元”
+            # 否则默认为“元”，转换为“亿元”
             total_mv = indicators.get('total_market_cap')
             if isinstance(total_mv, (int, float)) and total_mv > 0:
-                # 自动推断单位：如果是元(>1亿)，转换为亿；如果是万元(>1万)，转换为亿
-                mv_yi = total_mv
-                if total_mv > 100000000:  # 可能是元
+                if external_data is not None and 'financial_indicators' not in external_data:
+                    mv_yi = float(total_mv)
+                else:
                     mv_yi = total_mv / 100000000.0
-                elif total_mv > 10000:    # 可能是万元
-                    mv_yi = total_mv / 10000.0
-                
+
                 market_cap_yi = round(mv_yi, 2)
 
                 # 仅当PE非亏损时才加分，避免炒作垃圾股

@@ -1,0 +1,134 @@
+{
+  "scoring": {
+    "technical_weight": 0.20,
+    "quantitative_weight": 0.25,
+    "fundamental_weight": 0.15,
+    "sentiment_weight": 0.15,
+    "sector_weight": 0.10,
+    "events_weight": 0.10,
+    "dragon_tiger_weight": 0.05,
+    "min_score": 0,
+    "max_score": 100
+  },
+  "filtering": {
+    "stage1_data_quality": {
+      "min_volume": 1000000,
+      "require_price": true,
+      "require_listing": true,
+      "min_market_cap": null
+    },
+    "stage2_technical": {
+      "price_above_ma20": true,
+      "volume_confirmation": true,
+      "rsi_range": [20, 80],
+      "max_daily_volatility": 0.15
+    },
+    "stage3_fundamental": {
+      "max_pe_ratio": 100,
+      "require_profitability": true,
+      "max_debt_to_equity": 2.0
+    },
+    "stage4_quantitative": {
+      "min_buy_ratio": 0.4,
+      "min_buy_signals": 5,
+      "require_quality_models": true
+    },
+    "stage5_risk": {
+      "max_drawdown_30d": 0.30,
+      "max_volatility_30d": 0.50,
+      "exclude_negative_news": true
+    },
+    "stage6_custom": {
+      "sector_filter": null,
+      "market_cap_range": null,
+      "price_range": null
+    }
+  },
+  "llm": {
+    "enabled": true,
+    "preferred_models": ["qwen", "deepseek"],
+    "timeout": 30,
+    "max_retries": 2,
+    "max_concurrent": 5,
+    "min_score_for_llm": 60,
+    "max_stocks_for_llm": 10,
+    "output_format": "structured",
+    "include_predictions": true,
+    "include_risk_analysis": true
+  },
+  "data_sources": {
+    "hot_stocks": {
+      "primary": "auto",
+      "fallback_order": ["eastmoney", "tonghuashun", "xueqiu"],
+      "rate_limits": {
+        "eastmoney": {
+          "requests_per_minute": 30,
+          "burst_limit": 5
+        },
+        "tonghuashun": {
+          "requests_per_minute": 20,
+          "burst_limit": 3
+        },
+        "xueqiu": {
+          "requests_per_minute": 12,
+          "burst_limit": 2
+        }
+      }
+    },
+    "news": {
+      "sources": ["eastmoney", "tonghuashun", "xueqiu"],
+      "update_interval_minutes": 15,
+      "max_news_per_stock": 5,
+      "max_global_news": 10
+    },
+    "cache": {
+      "hot_stocks_ttl": 300,
+      "news_ttl": 1800,
+      "prices_ttl": 60,
+      "indicators_ttl": 900,
+      "sentiment_ttl": 3600
+    }
+  },
+  "performance": {
+    "max_workers": 10,
+    "batch_size": 20,
+    "request_timeout": 10,
+    "enable_rich_progress": true,
+    "log_level": "INFO"
+  },
+  "output": {
+    "report_formats": ["html"],
+    "include_charts": true,
+    "include_tables": true,
+    "max_stocks_in_report": 50,
+    "top_stocks_highlight": 10,
+    "include_llm_analysis": true,
+    "report_templates": {
+      "html": "templates/report.html",
+      "markdown": "templates/report.md"
+    }
+  },
+  "market_hours": {
+    "trading_days": [1, 2, 3, 4, 5],
+    "start_time": "09:30",
+    "end_time": "15:00",
+    "lunch_break": {
+      "start": "11:30",
+      "end": "13:00"
+    }
+  },
+  "thresholds": {
+    "high_volume": 5000000,
+    "large_market_cap": 100000000000,
+    "low_volume": 100000,
+    "high_volatility": 0.10,
+    "strong_trend": 0.05
+  },
+  "sectors": {
+    "technology": ["半导体", "芯片", "软件", "人工智能", "大数据"],
+    "healthcare": ["医药生物", "医疗器械", "生物制药", "疫苗"],
+    "finance": ["银行", "证券", "保险", "房地产"],
+    "energy": ["石油石化", "煤炭", "新能源", "光伏", "储能"],
+    "consumer": ["食品饮料", "家电", "汽车", "服装纺织"]
+  }
+}

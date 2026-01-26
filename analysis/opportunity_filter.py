@@ -48,9 +48,9 @@ class OpportunityFilter:
         },
         # 阶段1: 流动性筛选（v4.1 前置到阶段1，游资核心门槛）
         'stage1_liquidity': {
-            # 'min_avg_amount_20d': 3000,    # 20日均成交额最低3000万（已移除）
-            # 'min_turnover_rate': 0.5,      # 换手率最低0.5%（已移除）
-            # 'min_circulation_cap': 20,     # 流通市值最低20亿（已移除）
+            'min_avg_amount_20d': 3000,
+            'min_turnover_rate': 0.5,
+            'min_circulation_cap': 20,
         },
         # 阶段2: 位置与时机筛选（反追涨核心）
         'stage2_position': {
@@ -612,7 +612,7 @@ class OpportunityFilter:
         }
 
         try:
-            config = self.STAGE_THRESHOLDS['stage1_liquidity']
+            config = self.STAGE_THRESHOLDS.get('stage1_liquidity', {})
             liquidity_details = scoring_result.get('details', {}).get('liquidity', {})
 
             if 'error' in liquidity_details:
@@ -629,15 +629,19 @@ class OpportunityFilter:
             circulation_cap = liquidity_details.get('circulation_market_cap', 0)
             liquidity_level = liquidity_details.get('liquidity_level', '一般')
 
+            min_avg_amount_20d = float(config.get('min_avg_amount_20d', 3000) or 3000)
+            min_turnover_rate = float(config.get('min_turnover_rate', 0.5) or 0.5)
+            min_circulation_cap = float(config.get('min_circulation_cap', 20) or 20)
+
             # ========== 筛选条件 ==========
             # 条件1: 成交额门槛
-            amount_ok = avg_amount_wan >= config['min_avg_amount_20d']
+            amount_ok = avg_amount_wan >= min_avg_amount_20d
 
             # 条件2: 换手率门槛
-            turnover_ok = avg_turnover >= config['min_turnover_rate']
+            turnover_ok = avg_turnover >= min_turnover_rate
 
             # 条件3: 流通市值门槛（可选，如无数据则通过）
-            cap_ok = circulation_cap >= config['min_circulation_cap'] if circulation_cap > 0 else True
+            cap_ok = circulation_cap >= min_circulation_cap if circulation_cap > 0 else True
 
             # 综合判断：成交额和换手率必须满足，市值可选
             passed = True  # amount_ok and turnover_ok (用户要求移除流动性筛选)
@@ -645,13 +649,13 @@ class OpportunityFilter:
             stage_result['passed'] = passed
             stage_result['details'] = {
                 'avg_amount_20d_wan': avg_amount_wan,
-                'min_avg_amount': config.get('min_avg_amount_20d', 0),
+                'min_avg_amount': min_avg_amount_20d,
                 'amount_ok': amount_ok,
                 'avg_turnover_20d': avg_turnover,
-                'min_turnover_rate': config.get('min_turnover_rate', 0),
+                'min_turnover_rate': min_turnover_rate,
                 'turnover_ok': turnover_ok,
                 'circulation_market_cap': circulation_cap,
-                'min_circulation_cap': config.get('min_circulation_cap', 0),
+                'min_circulation_cap': min_circulation_cap,
                 'cap_ok': cap_ok,
                 'liquidity_level': liquidity_level
             }
@@ -663,15 +667,17 @@ class OpportunityFilter:
                 if circulation_cap > 0:
                     reason_parts.append(f"流通市值{circulation_cap:.0f}亿")
                 reason_parts.append(f"流动性{liquidity_level}")
+                if not (amount_ok and turnover_ok and cap_ok):
+                    reason_parts.append("未达建议门槛")
                 reason_parts.append("(筛选已禁用)")
                 stage_result['reason'] = f"✓ " + ", ".join(reason_parts)
             else:
                 # Unreachable code but kept for structure
                 fail_reasons = []
                 if not amount_ok:
-                    fail_reasons.append(f"成交额不足({avg_amount_wan:.0f}万<{config.get('min_avg_amount_20d', 0)}万)")
+                    fail_reasons.append(f"成交额不足({avg_amount_wan:.0f}万<{min_avg_amount_20d:.0f}万)")
                 if not turnover_ok:
-                    fail_reasons.append(f"换手率过低({avg_turnover:.2f}%<{config.get('min_turnover_rate', 0)}%)")
+                    fail_reasons.append(f"换手率过低({avg_turnover:.2f}%<{min_turnover_rate:.2f}%)")
                 stage_result['reason'] = f"✗ " + ", ".join(fail_reasons)
 
         except Exception as e:

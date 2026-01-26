@@ -33,6 +33,94 @@ def _fmt_money(num):
         return '—'
 
 
+def _generate_selection_reason(stock: Dict) -> str:
+    """
+    根据股票的评分数据生成有意义的入选原因
+    """
+    try:
+        scoring = stock.get('scoring_result') or {}
+        scores = scoring.get('scores') or {}
+        details = scoring.get('details') or {}
+
+        reasons = []
+        rating = stock.get('rating') or scoring.get('rating') or 'C'
+        final_score = float(stock.get('final_score', 0) or 0)
+
+        tech_score = float(scores.get('technical', 0) or 0)
+        sent_score = float(scores.get('sentiment', 0) or 0)
+        quant_score = float(scores.get('quantitative', 0) or 0)
+        sector_score = float(scores.get('sector', 0) or 0)
+
+        sec = details.get('sector') or {}
+        sector_name = sec.get('sector_name', '')
+        sector_chg = float(sec.get('change_pct', 0) or 0)
+
+        cf = details.get('sentiment', {}).get('capital_flow') or {}
+        cf_trend = cf.get('trend', '')
+
+        qd = details.get('quantitative') or {}
+        buy_count = int(qd.get('buy_count', 0) or 0)
+
+        ed = details.get('events') or {}
+        pos_events = int(ed.get('positive_events', 0) or 0)
+        ev_rating = ed.get('rating', '')
+
+        price_changes = details.get('price_changes') or {}
+        change_1d = float(price_changes.get('change_1d', 0) or 0)
+        change_3d = float(price_changes.get('change_3d', 0) or 0)
+
+        if rating == 'A':
+            reasons.append("综合评级A级")
+        elif rating == 'B' and final_score >= 80:
+            reasons.append("综合评分优秀")
+
+        if tech_score >= 75:
+            reasons.append(f"技术面强势({tech_score:.0f}分)")
+        elif tech_score >= 65:
+            reasons.append(f"技术指标向好({tech_score:.0f}分)")
+
+        if sector_name and sector_name != '未知':
+            if sector_chg >= 5:
+                reasons.append(f"{sector_name}领涨+{sector_chg:.1f}%")
+            elif sector_chg >= 2:
+                reasons.append(f"{sector_name}板块走强+{sector_chg:.1f}%")
+            elif sector_chg > 0:
+                reasons.append(f"{sector_name}板块温和上涨+{sector_chg:.1f}%")
+
+        if cf_trend == 'inflow':
+            reasons.append("资金持续流入")
+        elif cf_trend == 'strong_inflow':
+            reasons.append("资金大幅流入")
+
+        if buy_count >= 3:
+            reasons.append(f"{buy_count}个量化模型发出买入信号")
+        elif buy_count >= 2:
+            reasons.append(f"{buy_count}个量化模型共振看涨")
+
+        if pos_events >= 2:
+            reasons.append(f"{pos_events}条利好事件驱动")
+
+        if ev_rating == '利好':
+            reasons.append("消息面偏正面")
+
+        if change_3d >= 5:
+            reasons.append(f"三日涨幅{change_3d:+.1f}%")
+
+        if len(reasons) >= 2:
+            return "；".join(reasons[:3])
+        elif len(reasons) == 1:
+            return reasons[0]
+        else:
+            if final_score >= 70:
+                return f"综合评分{final_score:.0f}分，各维度表现良好"
+            elif final_score >= 60:
+                return f"综合评分{final_score:.0f}分，具备投资价值"
+            else:
+                return "通过多维度筛选，满足投资条件"
+    except Exception:
+        return "综合评分达标"
+
+
 class OpportunityReportGenerator:
     """投资机会挖掘报表生成器"""
 
@@ -74,8 +162,8 @@ class OpportunityReportGenerator:
         # 生成漏斗数据
         funnel_data = self._generate_funnel_data(stage_stats, total_count)
 
-        # TOP 推荐（完整排序，前端默认显示10行并可滚动）
-        top_10 = sorted(passed_stocks, key=lambda x: x.get('final_score', 0), reverse=True)
+        # TOP 推荐（完整排序，前端默认显示20行并可滚动）
+        top_20 = sorted(passed_stocks, key=lambda x: x.get('final_score', 0), reverse=True)
 
         # 量化优先排名（量化模型数量优先 + 分数排名）
         def quant_sort_key(stock):
@@ -86,10 +174,13 @@ class OpportunityReportGenerator:
             model_count = len(models)
             return (model_count, score)
 
-        quant_top_10 = sorted(passed_stocks, key=quant_sort_key, reverse=True)
+        quant_top_20 = sorted(passed_stocks, key=quant_sort_key, reverse=True)
 
         # 按淘汰阶段分组
         grouped_stocks = self._group_by_elimination_stage(analysis_results)
+
+        # 记录热门话题，供Markdown报表复用
+        self._latest_global_hot_news = global_hot_news or []
 
         # 生成HTML
         html_content = self._generate_html(
@@ -98,10 +189,10 @@ class OpportunityReportGenerator:
             passed_count=passed_count,
             stage_stats=stage_stats,
             funnel_data=funnel_data,
-            top_10=top_10,
-            quant_top_10=quant_top_10,
+            top_20=top_20,
+            quant_top_20=quant_top_20,
             grouped_stocks=grouped_stocks,
-            global_hot_news=global_hot_news or [],
+            global_hot_news=self._latest_global_hot_news,
             sector_hot_news=sector_hot_news or [],
             hot_news_title=hot_news_title
         )
@@ -137,24 +228,161 @@ class OpportunityReportGenerator:
             }
 
             lines = []
-            lines.append("# 投资机会挖掘 TOP10 报告")
+            lines.append("# 投资机会挖掘 TOP20 报告")
             lines.append(f"\n生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-            # 综合排名 TOP10
-            lines.append("## 🏆 综合排名 TOP10")
-            lines.append(" | 排名 | 代码 | 股票名称 | 综合得分 | 所有指标信息 | ")
-            lines.append(" |------|------|----------|----------|--------------| ")
+            # 综合排名 TOP20
+            lines.append("## 🏆 综合排名 TOP20")
+            lines.append(" | 排名 | 代码 | 股票名称 | 综合得分 | 详细分析 | ")
+            lines.append(" |------|------|----------|----------|----------| ")
 
-            for i, stock in enumerate(top_10[:10], 1):
+            for i, stock in enumerate(top_20[:20], 1):
                 code = stock.get('stock_code') or stock.get('code') or '未知'
                 name_txt = stock.get('name', '未知')
                 score = float(stock.get('final_score', 0) or 0)
 
                 summary_txt = self._build_full_indicator_summary(stock)
-                lines.append(f" | {i} | {code} | {name_txt} | {score:.2f} | {summary_txt} | ")
+                advanced_txt = self._build_advanced_analysis_summary(stock)
+                
+                # 合并展示：指标信息 + 高级分析
+                full_analysis = f"{summary_txt}<br><b>【高级分析】</b>{advanced_txt}"
+                
+                lines.append(f" | {i} | {code} | {name_txt} | {score:.2f} | {full_analysis} | ")
+
+            # 添加股吧话题精选（如果有）
+            topics = getattr(self, '_latest_global_hot_news', None)
+            if topics:
+                lines.append("\n---\n")
+                lines.append("## 💬 股吧话题精选\n")
+                idx = 1
+                for t in topics:
+                    title = t.get('title', '') or ''
+                    if not title or '【有奖】' in title:
+                        continue
+                    raw_url = t.get('url', '') or ''
+                    if raw_url.startswith('http'):
+                        url = raw_url
+                    else:
+                        base = 'https://gubatopic.eastmoney.com/'
+                        if raw_url.startswith('/'):
+                            url = base.rstrip('/') + raw_url
+                        else:
+                            url = base.rstrip('/') + '/' + raw_url
+                    heat = t.get('heat', 0)
+                    lines.append(f"{idx}. [{title}]({url}) - 热度: {heat}")
+                    idx += 1
+
+            # 添加板块分组股票表格
+            lines.append("\n---\n")
+            lines.append("## 📊 热点股票板块分布\n")
+            lines.append(" | 所属板块 | 股票列表 |")
+            lines.append(" |-------------------|----------|")
+
+            # 按板块分组所有股票，存储板块涨幅
+            sector_stocks = {}
+            sector_change_candidates = {}
+
+            def _is_numeric_text(text) -> bool:
+                try:
+                    stripped = str(text).strip()
+                except Exception:
+                    return False
+                if not stripped:
+                    return False
+                if stripped.startswith(('+', '-')):
+                    stripped = stripped[1:]
+                if stripped.count('.') > 1:
+                    return False
+                parts = stripped.split('.')
+                if not all(p.isdigit() for p in parts if p != ''):
+                    return False
+                return any(p != '' for p in parts)
+
+            def _pick_sector_change(candidates):
+                if not candidates:
+                    return None
+                usable = []
+                for c in candidates:
+                    if c is None:
+                        continue
+                    if isinstance(c, bool):
+                        continue
+                    if isinstance(c, (int, float)):
+                        usable.append(float(c))
+                        continue
+                    if isinstance(c, str):
+                        s = c.strip()
+                        if not s or _is_numeric_text(s) is False:
+                            continue
+                        try:
+                            usable.append(float(s))
+                        except Exception:
+                            continue
+                if not usable:
+                    return None
+                rounded = [round(v, 2) for v in usable]
+                freq = {}
+                for v in rounded:
+                    freq[v] = freq.get(v, 0) + 1
+                best = max(freq.items(), key=lambda x: (x[1], abs(x[0])))[0]
+                return float(best)
+            for stock in analysis_results:
+                details = stock.get('scoring_result', {}).get('details', {})
+                sector = details.get('sector') or {}
+                sector_name = sector.get('sector_name', '')
+                sector_chg = sector.get('change_pct', None)
+
+                if sector_name is not None:
+                    sector_name = str(sector_name).strip()
+
+                # 将未知板块归类为"其他"
+                if (not sector_name) or sector_name == '未知' or _is_numeric_text(sector_name):
+                    sector_name = '其他'
+
+                if sector_name not in sector_stocks:
+                    sector_stocks[sector_name] = []
+                    sector_change_candidates[sector_name] = []
+                sector_change_candidates[sector_name].append(sector_chg)
+                sector_stocks[sector_name].append(stock)
+
+            # 如果没有板块数据，提示用户
+            if not sector_stocks:
+                lines.append(" | 暂无板块数据 | — |")
+            else:
+                # 按股票数量降序排序，相同数量的按涨幅降序排序
+                sorted_sectors = sorted(
+                    sector_stocks.items(),
+                    key=lambda x: (-len(x[1]), _pick_sector_change(sector_change_candidates.get(x[0])) or 0),
+                    reverse=False
+                )
+
+                # 输出每个板块
+                for sector_name, stocks in sorted_sectors:
+                    sector_chg = _pick_sector_change(sector_change_candidates.get(sector_name))
+                    if sector_chg is not None:
+                        sector_chg_str = f"{sector_chg:+.2f}%"
+                        sector_header = f"{sector_name}({sector_chg_str})"
+                    else:
+                        sector_header = sector_name
+
+                    stock_parts = []
+                    for stock in stocks:
+                        code = stock.get('stock_code') or stock.get('code') or '未知'
+                        name = stock.get('name', '未知')
+                        price_changes = stock.get('scoring_result', {}).get('details', {}).get('price_changes', {})
+                        change_pct = price_changes.get('change_1d') if price_changes else None
+                        
+                        if change_pct is not None:
+                            change_str = f"{change_pct:+.2f}%"
+                            stock_parts.append(f"**{name}({code})** {change_str}")
+                        else:
+                            stock_parts.append(f"**{name}({code})**")
+
+                    stocks_str = " ".join(stock_parts)
+                    lines.append(f" | {sector_header} | {stocks_str} |")
 
             # 添加LLM智能分析结果
-            llm_stocks = [s for s in top_10[:10] if s.get('llm_analysis')]
+            llm_stocks = [s for s in top_20[:20] if s.get('llm_analysis')]
             if llm_stocks:
                 lines.append("\n---\n")
                 lines.append("## 🤖 AI智能分析结果\n")
@@ -224,9 +452,9 @@ class OpportunityReportGenerator:
 
             with open(md_path, 'w', encoding='utf-8') as mf:
                 mf.write('\n'.join(lines))
-            logger.info(f"✓ TOP10统计Markdown已生成: {md_path}")
+            logger.info(f"✓ TOP20统计Markdown已生成: {md_path}")
         except Exception as e:
-            logger.warning(f"生成TOP10 Markdown失败: {e}")
+            logger.warning(f"生成TOP20 Markdown失败: {e}")
         return filepath
 
     def _calculate_stage_statistics(self, analysis_results: List[Dict]) -> Dict:
@@ -342,7 +570,7 @@ class OpportunityReportGenerator:
         return grouped
 
     def _generate_html(self, report_title: str, total_count: int, passed_count: int,
-                      stage_stats: Dict, funnel_data: List[Dict], top_10: List[Dict], quant_top_10: List[Dict],
+                      stage_stats: Dict, funnel_data: List[Dict], top_20: List[Dict], quant_top_20: List[Dict],
                       grouped_stocks: Dict, global_hot_news: List[Dict], sector_hot_news: List[Dict], hot_news_title: str = None) -> str:
         """生成HTML内容"""
 
@@ -1283,7 +1511,7 @@ class OpportunityReportGenerator:
                 <tbody>
 '''
 
-        for i, stock in enumerate(top_10, 1):
+        for i, stock in enumerate(top_20, 1):
             rank_class = f"rank-{i}" if i <= 3 else "rank-other"
             rating = stock.get('rating', 'C')
             rating_class = f"rating-{rating.replace('+', '-plus')}"
@@ -1540,9 +1768,21 @@ class OpportunityReportGenerator:
             suggestion = self._get_recommendation_text(rating)
             filter_res = '' if eliminated in (0, None) else f'阶段{eliminated}淘汰'
 
-            overview = f"【概览】评级{rating}，建议：{suggestion}"
+            # 获取涨幅数据
+            price_changes = stock.get('scoring_result', {}).get('details', {}).get('price_changes', {})
+            change_1d = price_changes.get('change_1d') if price_changes else None
+            change_3d = price_changes.get('change_3d') if price_changes else None
+            change_5d = price_changes.get('change_5d') if price_changes else None
+            sector_chg = sec.get('change_pct', 0)
+
+            change_1d_str = f"{change_1d:+.2f}%" if change_1d is not None else "—"
+            change_3d_str = f"{change_3d:+.2f}%" if change_3d is not None else "—"
+            change_5d_str = f"{change_5d:+.2f}%" if change_5d is not None else "—"
+            sector_chg_str = f"{sector_chg:+.2f}%" if sector_chg is not None else "—"
+
+            overview = f"【概览】评级{rating}，建议：{suggestion}<br>【涨幅】当日:{change_1d_str}，3日:{change_3d_str}，5日:{change_5d_str}"
             if filter_res:
-                overview = f"【概览】评级{rating}，{filter_res}，建议：{suggestion}"
+                overview = f"【概览】评级{rating}，{filter_res}，建议：{suggestion}<br>【涨幅】当日:{change_1d_str}，3日:{change_3d_str}，5日:{change_5d_str}"
 
             parts = [overview]
             
@@ -1559,9 +1799,8 @@ class OpportunityReportGenerator:
             ])
 
             # 新增：入选原因与最新动态
-            reason = stock.get('selection_reason')
-            if reason:
-                parts.append(f"【入选原因】{reason}")
+            reason = _generate_selection_reason(stock)
+            parts.append(f"【入选原因】{reason if reason else '无'}")
             
             latest_news = stock.get('latest_news')
             if latest_news:
@@ -1592,6 +1831,185 @@ class OpportunityReportGenerator:
         except Exception as e:
             total = stock.get('final_score') or (scoring.get('total_score') if 'scoring_result' in stock else 0)
             return f"综合{float(total or 0):.2f}分；数据解析错误: {str(e)}"
+
+    def _build_advanced_analysis_summary(self, stock: Dict) -> str:
+        """生成高级分析摘要（用于Markdown表格）"""
+        try:
+            parts = []
+            scoring_result = stock.get('scoring_result') or {}
+            details = scoring_result.get('details') or {}
+            advanced = stock.get('advanced_analysis') or scoring_result.get('advanced_analysis') or {}
+            
+            # 1. 追高风险 (来自 details.momentum)
+            momentum = details.get('momentum') or {}
+            chase_risk = momentum.get('chase_risk_level', '')
+            chase_score = momentum.get('chase_risk_score', 0)
+            if chase_risk:
+                risk_emoji = {'low': '🟢', 'low_medium': '🟡', 'medium': '🟠', 'high': '🔴'}.get(chase_risk, '⚪')
+                risk_cn = {'low': '低', 'low_medium': '中低', 'medium': '中等', 'high': '偏高'}.get(chase_risk, chase_risk)
+                safe_score = max(0, min(100, float(chase_score or 0)))
+                parts.append(f"**追高风险**: {risk_emoji} {risk_cn}({safe_score:.0f}分)")
+
+            # 2. 量价形态 (来自 details.volume_health)
+            volume_health = details.get('volume_health') or {}
+            patterns = volume_health.get('patterns') or {}
+            if patterns:
+                p_list = []
+                for p_type, p_data in patterns.items():
+                    if isinstance(p_data, dict) and p_data.get('detected'):
+                        days = p_data.get('consecutive_days', 0)
+                        p_name = {'vol_up_price_up': '放量上涨', 'vol_down_price_down': '缩量下跌', 
+                                 'vol_up_price_down': '放量下跌', 'vol_down_price_up': '缩量上涨'}.get(p_type, p_type)
+                        p_list.append(f"{p_name}({days}天)")
+                if p_list:
+                    parts.append(f"**量价**: {', '.join(p_list)}")
+
+            # 3. 高级分析维度 (来自 advanced_analysis)
+            if advanced:
+                # 兼容两种结构：直接中文Key(旧) 或 English Key(新)
+                
+                # 3.1 综合评分
+                adv_score = 0
+                if 'overall_score' in advanced:
+                    adv_score = advanced['overall_score'].get('final_score', 0)
+                else:
+                    adv_score = advanced.get('综合评分', 0)
+                
+                parts.append(f"**高级评分**: {adv_score:.1f}分")
+                
+                dimensions = advanced.get('dimensions', {})
+                
+                # 3.2 筹码 (Chip)
+                chip = dimensions.get('chip', {}).get('details', {}) or advanced.get('筹码分析', {})
+                if chip:
+                    conc = chip.get('concentration_90') or chip.get('90%筹码集中度', 0)
+                    control = chip.get('main_force_control') or chip.get('主力控盘度', 0)
+                    lock_raw = chip.get('lock_pattern') or chip.get('锁仓形态')
+                    lock_str = ''
+                    if isinstance(lock_raw, dict):
+                         if lock_raw.get('detected'):
+                             lock_str = f"🔒 {lock_raw.get('type', '锁仓')}"
+                    elif isinstance(lock_raw, str):
+                        lock_str = lock_raw
+                    
+                    chip_parts = []
+                    if conc: chip_parts.append(f"集中度{conc:.1f}%")
+                    if control: chip_parts.append(f"控盘{control:.1f}") # 控盘度可能是0-1或0-100，这里假设是数值
+                    if lock_str and lock_str != '无': chip_parts.append(lock_str)
+                    
+                    if chip_parts:
+                        parts.append(f"**筹码**: {', '.join(chip_parts)}")
+                
+                # 3.3 板块 (Sector)
+                sector = dimensions.get('sector', {}).get('details', {}) or advanced.get('板块联动', {})
+                if sector:
+                    s_name = sector.get('sector_name') or sector.get('所属板块', '')
+                    s_rank = sector.get('sector_rank') or sector.get('板块排名', 0)
+                    s_rot = sector.get('rotation_phase') or sector.get('轮动阶段', '')
+                    
+                    sec_parts = []
+                    if s_name: sec_parts.append(f"{s_name}(排名{s_rank})")
+                    if s_rot and s_rot != 'unknown': sec_parts.append(s_rot)
+                    
+                    if sec_parts:
+                        parts.append(f"**板块**: {', '.join(sec_parts)}")
+
+                # 3.4 资金 (Capital)
+                capital = dimensions.get('capital_flow', {}).get('details', {}) or advanced.get('资金流向', {})
+                if capital:
+                    cont_dict = capital.get('continuity', {})
+                    main_cont = cont_dict.get('consecutive_inflow_days', 0) if isinstance(cont_dict, dict) else capital.get('主力连续性', 0)
+                    cont_trend = cont_dict.get('trend', '') if isinstance(cont_dict, dict) else capital.get('trend', '')
+                    retail = capital.get('retail_ratio') or capital.get('散户占比', 0)
+
+                    def _infer_main_force_direction() -> str:
+                        trend_val = ''
+                        if isinstance(cont_trend, str):
+                            trend_val = cont_trend.strip().lower()
+                        elif cont_trend is not None:
+                            trend_val = str(cont_trend).strip().lower()
+
+                        if trend_val:
+                            if any(k in trend_val for k in ['inflow', 'in_flow', 'net_in', 'in', 'buy', 'long', 'positive', '流入', '净流入', '买入']):
+                                return '买入'
+                            if any(k in trend_val for k in ['outflow', 'out_flow', 'net_out', 'out', 'sell', 'short', 'negative', '流出', '净流出', '卖出']):
+                                return '卖出'
+
+                        for k in ['main_net_inflow', 'main_force_net_inflow', 'net_inflow', '主力净流入', '主力资金净流入']:
+                            if k in capital:
+                                try:
+                                    v = float(capital.get(k) or 0)
+                                    if v > 0:
+                                        return '买入'
+                                    if v < 0:
+                                        return '卖出'
+                                except Exception:
+                                    pass
+
+                        if isinstance(cont_dict, dict):
+                            inflow_days = cont_dict.get('consecutive_inflow_days', 0) or cont_dict.get('inflow_days', 0) or 0
+                            outflow_days = cont_dict.get('consecutive_outflow_days', 0) or cont_dict.get('outflow_days', 0) or 0
+                            try:
+                                inflow_days = int(inflow_days)
+                            except Exception:
+                                inflow_days = 0
+                            try:
+                                outflow_days = int(outflow_days)
+                            except Exception:
+                                outflow_days = 0
+                            if inflow_days > 0 and outflow_days <= 0:
+                                return '买入'
+                            if outflow_days > 0 and inflow_days <= 0:
+                                return '卖出'
+                        return ''
+                    
+                    cap_parts = []
+                    if main_cont > 0:
+                        direction = _infer_main_force_direction()
+                        direction_str = f"({direction})" if direction else ""
+                        cap_parts.append(f"主力连续{main_cont}天{direction_str}")
+                    if retail > 0 and abs(retail - 50.0) > 0.1: cap_parts.append(f"散户{retail:.1f}%")
+                    
+                    if cap_parts:
+                        parts.append(f"**资金**: {', '.join(cap_parts)}")
+
+                # 3.5 情绪 (Sentiment)
+                sent_dim = dimensions.get('sentiment_cycle', {})
+                sent_details = sent_dim.get('details', {})
+                # 旧版可能直接在 sent_dim 或 advanced.get('情绪周期')
+                
+                market_cycle = sent_details.get('market_cycle') or advanced.get('情绪周期', {}).get('市场周期', '')
+                fg_index = sent_details.get('fear_greed_index') or advanced.get('情绪周期', {}).get('恐惧贪婪指数', 0)
+                
+                if market_cycle or fg_index:
+                    parts.append(f"**情绪**: {market_cycle or '-'}, 恐贪{fg_index:.0f}")
+
+                # 3.6 分时 (Intraday)
+                intra = dimensions.get('intraday', {}).get('details', {}) or advanced.get('分时特征', {})
+                if intra:
+                    manip = intra.get('manipulation', {})
+                    manip_type = manip.get('type') if isinstance(manip, dict) else intra.get('操盘痕迹', '')
+                    if manip_type:
+                        parts.append(f"**分时**: {manip_type}")
+
+                # 3.7 K线形态 (Patterns)
+                # pattern_detector returns {'patterns': {'detected_patterns': [...]}} usually
+                pats_dim = dimensions.get('patterns', {})
+                pats_list = pats_dim.get('details', {}).get('detected_patterns', []) or advanced.get('K线形态', {}).get('识别形态', [])
+                if pats_list:
+                    # pats_list 可能是 [{'name': '...'}, ...] 或 ['...', ...]
+                    pat_names = []
+                    for p in pats_list:
+                        if isinstance(p, dict):
+                            pat_names.append(p.get('name', ''))
+                        elif isinstance(p, str):
+                            pat_names.append(p)
+                    if pat_names:
+                        parts.append(f"**形态**: {', '.join(pat_names[:2])}")
+                
+            return ' '.join(parts) if parts else "—"
+        except Exception as e:
+            return f"解析错误: {str(e)}"
 
     def _generate_group_html(self, group_name: str, stocks: List[Dict], is_passed: bool) -> str:
         """生成分组HTML"""
@@ -1760,7 +2178,7 @@ class OpportunityReportGenerator:
 '''
 
             # 新增：入选原因与最新动态
-            selection_reason = stock.get('selection_reason')
+            selection_reason = _generate_selection_reason(stock)
             latest_news = stock.get('latest_news')
             news_html = ''
             

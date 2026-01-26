@@ -155,6 +155,46 @@ def _get_sector_by_reverse_lookup(stock_code: str, headers: Dict) -> Optional[Di
         return None
 
 
+def _is_placeholder_text(text: str) -> bool:
+    if text is None:
+        return True
+    stripped = str(text).strip()
+    return stripped in {'', '-', '--', 'N/A', 'nan', 'NaN', 'None', 'null'}
+
+
+def _is_numeric_text(text: str) -> bool:
+    try:
+        stripped = str(text).strip()
+    except Exception:
+        return False
+    if not stripped:
+        return False
+    if stripped.startswith(('+', '-')):
+        stripped = stripped[1:]
+    if stripped.count('.') > 1:
+        return False
+    parts = stripped.split('.')
+    if not all(p.isdigit() for p in parts if p != ''):
+        return False
+    return any(p != '' for p in parts)
+
+
+def _pick_sector_name_from_stock_data(stock_data: Dict, fields_to_try: list[str]) -> str:
+    for field in fields_to_try:
+        raw_value = stock_data.get(field)
+        if not isinstance(raw_value, str):
+            continue
+        candidate = raw_value.strip()
+        if _is_placeholder_text(candidate):
+            continue
+        if _is_numeric_text(candidate):
+            continue
+        if len(candidate) > 30:
+            continue
+        return candidate
+    return '未知'
+
+
 def get_stock_sector_info(stock_code: str) -> Dict:
     """
     获取股票所属板块信息
@@ -249,33 +289,33 @@ def get_stock_sector_info(stock_code: str) -> Dict:
             stock_name = stock_data.get('f58', '')  # 股票名称
             current_price = stock_data.get('f43', 0)  # 最新价
 
-            # 优先使用 f127 (更可靠)，其次 f100
-            raw_sector_name = stock_data.get('f127') or stock_data.get('f100')
-            if isinstance(raw_sector_name, str):
-                sector_name = raw_sector_name.strip()
-            else:
+            sector_name = _pick_sector_name_from_stock_data(stock_data, ['f127', 'f100', 'f128', 'f129', 'f136'])
+
+            if sector_name in ['', '-', '--', 'N/A', 'nan', 'NaN', None]:
                 sector_name = '未知'
 
-            if sector_name in ['', '-', '--', 'N/A', 'nan', 'NaN']:
-                sector_name = '未知'
+            # 调试：打印实际返回的字段
+            if not sector_name or sector_name == '未知':
+                # 打印所有以'f'开头的字段，帮助诊断
+                f_fields = {k: v for k, v in stock_data.items() if k.startswith('f') and v}
+                print(f"   🔍 东方财富API返回的f字段: {f_fields}")
 
             # 获取概念板块（简化版，只返回主要板块）
             concept_sectors = []
             if sector_name and sector_name != '未知':
                 concept_sectors.append(sector_name)
+                return {
+                    'success': True,
+                    'data_source': 'eastmoney_stock_get',
+                    'sector_name': sector_name,
+                    'stock_name': stock_name,
+                    'current_price': float(current_price) if current_price else 0,
+                    'industry': sector_name,
+                    'concept_sectors': concept_sectors
+                }
 
-            return {
-                'success': True,
-                'data_source': 'eastmoney_stock_get',
-                'sector_name': sector_name,
-                'stock_name': stock_name,
-                'current_price': float(current_price) if current_price else 0,
-                'industry': sector_name,
-                'concept_sectors': concept_sectors
-            }
-
-        # 如果方法1失败，引发异常进入fallback流程
-        raise Exception(f"API请求失败: {last_error}")
+            # 行业字段为空，返回失败以触发fallback
+            raise Exception("东方财富API返回数据但行业字段为空")
 
     except Exception as e:
         print(f"   ⚠️  获取板块信息失败: {str(e)}")
@@ -410,7 +450,6 @@ def get_sector_sentiment(stock_code: str) -> Dict:
     }
 
     try:
-        # 优化: 复用 get_stock_sector_info 获取行业名称 (它包含多源兜底逻辑)
         sector_info = get_stock_sector_info(stock_code)
         sector_name = sector_info.get('sector_name', '未知')
         sector_code = sector_info.get('sector_code', '')
@@ -418,7 +457,43 @@ def get_sector_sentiment(stock_code: str) -> Dict:
         if sector_name == '未知':
             return _get_default_sector_sentiment(sector_name)
 
-        # 方法1: 如果有板块代码，直接通过板块代码获取成分股数据，计算平均值
+        # 方法1: 优先尝试从东方财富网站抓取板块指数实时涨幅
+        index_change = _get_sector_index_change(sector_name)
+
+        if index_change is not None:
+            change_pct = round(index_change, 2)
+            turnover_rate = 0
+
+            sentiment_score = round(50 + (change_pct / 5.0) * 50, 1)
+            sentiment_score = max(0, min(100, sentiment_score))
+
+            if sentiment_score >= 65:
+                overall = '强势领涨'
+                emotion = 'bullish'
+            elif sentiment_score >= 52:
+                overall = '偏强'
+                emotion = 'slightly_bullish'
+            elif sentiment_score >= 48:
+                overall = '震荡'
+                emotion = 'neutral'
+            elif sentiment_score >= 35:
+                overall = '偏弱'
+                emotion = 'slightly_bearish'
+            else:
+                overall = '弱势下跌'
+                emotion = 'bearish'
+
+            return {
+                'sector_name': sector_name,
+                'sentiment_score': sentiment_score,
+                'overall': overall,
+                'change_pct': change_pct,
+                'turnover_rate': turnover_rate,
+                'emotion': emotion,
+                'data_source': 'eastmoney_index'
+            }
+
+        # 方法2: 如果抓取失败，使用成分股平均涨幅
         if sector_code:
             try:
                 constituents_url = "http://push2.eastmoney.com/api/qt/clist/get"
@@ -838,6 +913,10 @@ def _get_sector_info_from_sina(stock_code: str) -> Dict:
         # 使用网页抓取获取行业信息
         industry = _scrape_sina_industry(stock_code)
 
+        # 如果行业为未知，返回失败以尝试其他数据源
+        if industry == '未知':
+            return {'success': False}
+
         return {
             'success': True,
             'data_source': 'sina',
@@ -845,7 +924,7 @@ def _get_sector_info_from_sina(stock_code: str) -> Dict:
             'stock_name': stock_name,
             'current_price': round(current_price, 2),
             'industry': industry,
-            'concept_sectors': [industry] if industry != '未知' else []
+            'concept_sectors': [industry]
         }
 
     except Exception as e:
@@ -905,8 +984,25 @@ def _get_sector_info_from_tencent(stock_code: str) -> Dict:
         stock_name = data[1] if len(data) > 1 else ''
         current_price = float(data[3]) if len(data) > 3 and data[3] else 0
 
-        # 尝试从网页获取行业信息
-        industry = _get_industry_from_web(stock_code) or '未知'
+        # 打印调试信息，查看行业字段位置
+        if len(data) > 47:
+            print(f"   🔍 腾讯API返回数据长度: {len(data)}, 部分字段: ")
+            print(f"       字段1: {data[1] if len(data) > 1 else 'N/A'}")
+            print(f"       字段45(行业代码): {data[45] if len(data) > 45 else 'N/A'}")
+            print(f"       字段46(行业名称): {data[46] if len(data) > 46 else 'N/A'}")
+
+        # 尝试多个位置的行业字段
+        industry = '未知'
+        if len(data) > 45 and data[45] and data[45] not in ['-', '--', '']:
+            industry = data[45].strip()
+        elif len(data) > 46 and data[46] and data[46] not in ['-', '--', '']:
+            industry = data[46].strip()
+        elif len(data) > 47 and data[47] and data[47] not in ['-', '--', '']:
+            industry = data[47].strip()
+
+        # 如果行业为未知，返回失败以尝试其他数据源
+        if industry == '未知':
+            return {'success': False}
 
         return {
             'success': True,
@@ -915,7 +1011,7 @@ def _get_sector_info_from_tencent(stock_code: str) -> Dict:
             'stock_name': stock_name,
             'current_price': round(current_price, 2),
             'industry': industry,
-            'concept_sectors': [industry] if industry != '未知' else []
+            'concept_sectors': [industry]
         }
 
     except Exception as e:
@@ -985,27 +1081,34 @@ def get_stock_sector_info_multi_source(stock_code: str) -> Dict:
 
     # 1. 尝试东方财富
     print(f"   📊 [1/3] 尝试东方财富API...")
-    result = get_stock_sector_info(stock_code)
-    if result.get('success'):
-        print(f"   ✅ 东方财富获取成功: {result.get('sector_name')}")
-        return result
+    try:
+        result = get_stock_sector_info(stock_code)
+        if result.get('sector_name', '未知') != '未知':
+            print(f"   ✅ 东方财富获取成功: {result.get('sector_name')}")
+            return result
+    except Exception as e:
+        print(f"   ⚠️ 东方财富API失败: {str(e)}")
 
     # 2. 尝试新浪财经
     print(f"   📊 [2/3] 尝试新浪财经API...")
     result = _get_sector_info_from_sina(stock_code)
-    if result.get('success'):
+    if result.get('success') and result.get('sector_name', '未知') != '未知':
         print(f"   ✅ 新浪财经获取成功: {result.get('sector_name')}")
         return result
+    else:
+        print(f"   ⚠️ 新浪财经未获取到板块信息")
 
     # 3. 尝试腾讯财经
     print(f"   📊 [3/3] 尝试腾讯财经API...")
     result = _get_sector_info_from_tencent(stock_code)
-    if result.get('success'):
+    if result.get('success') and result.get('sector_name', '未知') != '未知':
         print(f"   ✅ 腾讯财经获取成功: {result.get('sector_name')}")
         return result
+    else:
+        print(f"   ⚠️ 腾讯财经未获取到板块信息")
 
-    # 全部失败
-    print(f"   ❌ 所有数据源均失败，返回默认值")
+    # 全部失败，返回默认值
+    print(f"   ❌ 所有数据源均失败")
     return {
         'success': False,
         'data_source': 'none',
@@ -1038,6 +1141,75 @@ def get_sector_sentiment_multi_source(stock_code: str) -> Dict:
     # 如果失败，返回市场整体行业情绪作为参考
     print(f"   ⚠️  无法获取个股板块情绪，使用市场整体情绪")
     return _get_market_average_sector_sentiment()
+
+
+def _get_sector_index_change(sector_name: str) -> Optional[float]:
+    """
+    使用Playwright从东方财富网站抓取板块指数实时涨幅
+
+    Args:
+        sector_name: 板块名称（如"光伏设备"）
+
+    Returns:
+        float: 板块指数涨跌幅，失败返回None
+    """
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+
+        sector_url_map = {
+            '光伏设备': 'https://quote.eastmoney.com/bk/0907001.html',
+        }
+
+        target_url = sector_url_map.get(sector_name)
+        if not target_url:
+            return None
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                viewport={'width': 1920, 'height': 1080}
+            )
+            page = context.new_page()
+
+            try:
+                page.goto(target_url, wait_until='domcontentloaded', timeout=30000)
+                page.wait_for_timeout(5000)
+
+                content = page.content()
+
+                patterns = [
+                    r'当前涨跌幅["\']?\s*[:：]\s*["\']?([+-]?\d+\.?\d*)%?',
+                    r'"f3"\s*:\s*([+-]?\d+\.?\d*)',
+                    r'data-value\s*=\s*["\']?([+-]?\d+\.?\d*)',
+                    r'change["\']?\s*[:＝=]\s*["\']?([+-]?\d+\.?\d*)',
+                    r'涨幅["\']?\s*[:：]\s*([+-]?\d+\.?\d*)',
+                ]
+
+                for pattern in patterns:
+                    match = re.search(pattern, content)
+                    if match:
+                        change_str = match.group(1)
+                        try:
+                            change = float(change_str)
+                            if abs(change) <= 15:
+                                return change
+                        except:
+                            continue
+
+                return None
+
+            except PlaywrightTimeout:
+                return None
+            finally:
+                browser.close()
+
+    except ImportError:
+        print("   ⚠️  Playwright未安装，无法抓取板块指数数据")
+        return None
+    except Exception as e:
+        print(f"   ⚠️  抓取板块指数数据失败: {str(e)}")
+        return None
 
 
 if __name__ == "__main__":
