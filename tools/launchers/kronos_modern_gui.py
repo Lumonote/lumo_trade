@@ -1,20 +1,27 @@
 #!/usr/local/bin/python3.11
+# -*- coding: utf-8 -*-
 """
 Kronos macOS现代化GUI - Big Sur/Monterey风格
 采用Apple最新设计语言：毛玻璃效果、圆角、阴影和现代化控件
 使用具有完整tkinter支持的系统Python环境
 """
 
+import os
+import sys
+
+# 设置UTF-8编码环境，解决中文乱码问题
+if sys.platform == 'darwin':
+    os.environ['LC_ALL'] = 'zh_CN.UTF-8'
+    os.environ['LANG'] = 'zh_CN.UTF-8'
+
 import asyncio
 import hashlib
 import json
-import os
 import platform
 import queue
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 import webbrowser
@@ -2535,10 +2542,17 @@ class KronosMacOSGUI:
 
     def check_license(self):
         """检查授权状态"""
-        if platform.system() == "Windows":
-            self.run_shell_command("powershell quick_start.ps1 7", "7", "正在检查授权状态...", auto_input=None)
-        else:
-            self.run_shell_command("bash quick_start.sh 7", "7", "正在检查授权状态...", auto_input=None)
+        # 显示授权信息对话框
+        self._mb_showinfo(
+            "授权信息",
+            "Kronos 授权系统\n\n"
+            "本软件采用订阅制授权模式。\n\n"
+            "功能限制：\n"
+            "  - 基础预测功能：无限制\n"
+            "  - 投资机会挖掘：需要有效订阅\n"
+            "  - 批量分析功能：需要有效订阅\n\n"
+            "如需购买订阅或获取授权码，请联系管理员。"
+        )
 
     def activate_license(self):
         """激活授权码"""
@@ -3005,8 +3019,10 @@ class KronosMacOSGUI:
                     # 修复Windows PowerShell命令执行，避免编码和路径问题
                     cmd = f'cmd /c "chcp 65001 >nul 2>&1 && powershell -NoProfile -ExecutionPolicy Bypass -File {ps1_path} 6"'
                 else:
-                    # 使用 bash + printf 的现有路径
-                    cmd = f'printf "{symbols}\\n1\\n{days}\\n" | bash ./quick_start.sh 6'
+                    # 非交互模式：直接传入参数6，使用环境变量传参
+                    os.environ['KRONOS_SYMBOLS'] = symbols
+                    os.environ['KRONOS_DAYS'] = days
+                    cmd = f'bash ./quick_start.sh 6'
 
                 self.run_shell_command_with_analysis(cmd, f"正在批量获取数据和预测分析...", symbols)
             else:
@@ -3183,10 +3199,10 @@ class KronosMacOSGUI:
                     if script_path.exists():
                         # 使用引号包围路径以处理空格，并设置PYTHONPATH
                         script_args = command.replace(f"{PYTHON_COMMAND} {script_part}", "")  # 提取参数部分
-                        final_command = f'PYTHONPATH="{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model" "{PYTHON_COMMAND}" "{script_path}"{script_args}'
+                        final_command = f'PYTHONPATH="{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model:{work_dir}/utils:{work_dir}/analysis:{work_dir}/finetune" KRONOS_PROJECT_ROOT="{work_dir}" "{PYTHON_COMMAND}" "{script_path}"{script_args}'
                     else:
                         output_text.insert(tk.END, f"警告：脚本文件不存在 {script_path}\n")
-                        final_command = f'PYTHONPATH="{work_dir}" "{PYTHON_COMMAND}" {command.replace(f"{PYTHON_COMMAND} ", "")}'
+                        final_command = f'PYTHONPATH="{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model:{work_dir}/utils:{work_dir}/analysis" KRONOS_PROJECT_ROOT="{work_dir}" "{PYTHON_COMMAND}" {command.replace(f"{PYTHON_COMMAND} ", "")}'
                 elif command.startswith("powershell quick_start.ps1"):
                     # Windows PowerShell脚本执行 - 提取参数
                     script_args = command.replace("powershell quick_start.ps1", "").strip()
@@ -3211,12 +3227,14 @@ class KronosMacOSGUI:
                 # 设置环境变量
                 env = os.environ.copy()
                 env['TERM'] = 'xterm-256color'
-                env['PYTHONPATH'] = f"{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model"
-                # 强制子进程使用UTF-8，避免Windows控制台乱码
+                env['PYTHONPATH'] = f"{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model:{work_dir}/utils:{work_dir}/analysis:{work_dir}/finetune"
+                env['KRONOS_PROJECT_ROOT'] = str(work_dir)
+                # 强制子进程使用UTF-8，避免乱码
                 env['PYTHONIOENCODING'] = 'utf-8'
                 env['PYTHONUTF8'] = '1'
-                env['LC_ALL'] = 'C.UTF-8'
-                env['LANG'] = 'C.UTF-8'
+                # macOS 中文环境使用 zh_CN.UTF-8
+                env['LC_ALL'] = 'zh_CN.UTF-8'
+                env['LANG'] = 'zh_CN.UTF-8'
 
                 # 在打包模式下，安装依赖（参数为"1"）时允许强制安装
                 try:
@@ -3706,11 +3724,11 @@ class KronosMacOSGUI:
                     if script_path.exists():
                         # 使用引号包围路径以处理空格，并设置PYTHONPATH
                         script_args = command.replace(f"{PYTHON_COMMAND} {script_part}", "")  # 提取参数部分
-                        final_command = f'PYTHONPATH="{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model" "{PYTHON_COMMAND}" "{script_path}"{script_args}'
+                        final_command = f'PYTHONPATH="{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model:{work_dir}/utils:{work_dir}/analysis:{work_dir}/finetune" KRONOS_PROJECT_ROOT="{work_dir}" "{PYTHON_COMMAND}" "{script_path}"{script_args}'
                     else:
                         output_text.insert(tk.END, f"警告：脚本文件不存在 {script_path}\n")
                         # 尝试使用相对路径
-                        final_command = f'PYTHONPATH="{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model" "{PYTHON_COMMAND}" {command.replace(f"{PYTHON_COMMAND} ", "")}'
+                        final_command = f'PYTHONPATH="{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model:{work_dir}/utils:{work_dir}/analysis:{work_dir}/finetune" KRONOS_PROJECT_ROOT="{work_dir}" "{PYTHON_COMMAND}" {command.replace(f"{PYTHON_COMMAND} ", "")}'
                 elif command.startswith("bash quick_start.sh"):
                     # 跨平台脚本执行支持 - 提取参数
                     script_args = command.replace("bash quick_start.sh", "").strip()
@@ -3752,12 +3770,14 @@ class KronosMacOSGUI:
                 # 设置环境变量，确保在app包环境中正常执行
                 env = os.environ.copy()
                 env['TERM'] = 'xterm-256color'
-                env['PYTHONPATH'] = f"{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model"  # 设置终端类型
-                # 强制子进程使用UTF-8，避免Windows控制台乱码
+                env['PYTHONPATH'] = f"{work_dir}:{work_dir}/scripts:{work_dir}/examples:{work_dir}/model:{work_dir}/utils:{work_dir}/analysis:{work_dir}/finetune"
+                env['KRONOS_PROJECT_ROOT'] = str(work_dir)  # 设置终端类型
+                # 强制子进程使用UTF-8，避免乱码
                 env['PYTHONIOENCODING'] = 'utf-8'
                 env['PYTHONUTF8'] = '1'
-                env['LC_ALL'] = 'C.UTF-8'
-                env['LANG'] = 'C.UTF-8'
+                # macOS 中文环境使用 zh_CN.UTF-8
+                env['LC_ALL'] = 'zh_CN.UTF-8'
+                env['LANG'] = 'zh_CN.UTF-8'
 
                 # 在打包模式下，安装依赖（参数为"1"）时允许强制安装
                 try:

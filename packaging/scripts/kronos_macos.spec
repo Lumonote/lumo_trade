@@ -20,6 +20,7 @@ a = Analysis(
         (os.path.join(project_root, 'examples'), 'examples'),
         (os.path.join(project_root, 'model'), 'model'),
         (os.path.join(project_root, 'analysis'), 'analysis'),
+        (os.path.join(project_root, 'utils'), 'utils'),
         (os.path.join(project_root, 'resources'), 'resources'),
         (os.path.join(project_root, 'quick_start.sh'), '.'),
         (os.path.join(project_root, 'requirements.txt'), '.'),
@@ -48,8 +49,7 @@ a = Analysis(
         'finetune.license_system.license_validator',
         'finetune.license_system.json_storage',
         'finetune.license_system.activate',
-        # 注意: pandas/numpy等大型库不打包，通过"安装依赖"按钮安装到系统Python
-        # LLM服务会动态调用系统Python来使用这些库
+        'utils.retry_utils',
     ],
     hookspath=[],
     hooksconfig={},

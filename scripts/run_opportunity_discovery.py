@@ -22,9 +22,11 @@ try:
 except ImportError:
     RICH_AVAILABLE = False
 
-# 添加项目根目录到路径
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 添加项目根目录到路径 - 优先使用环境变量，否则使用当前工作目录
+project_root = os.environ.get('KRONOS_PROJECT_ROOT', os.getcwd())
 sys.path.insert(0, project_root)
+# 也添加脚本所在目录
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scripts.hot_stocks_fetcher import HotStocksFetcher
 from analysis.opportunity_scorer import OpportunityScorer

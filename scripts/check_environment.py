@@ -7,6 +7,7 @@ Kronos 环境检测脚本
 
 import sys
 import os
+import re
 import json
 import subprocess
 import platform
@@ -89,8 +90,9 @@ def get_actual_python_path():
     """获取实际的Python解释器路径"""
     import shutil
 
-    # 优先检查环境变量中指定的 Python (通常由 quick_start.ps1 设置)
-    venv_python = os.environ.get('KRONOS_PYTHON_PATH')
+    # 优先检查环境变量中指定的 Python
+    # GUI 设置 PYTHON_CMD 和 PYTHON
+    venv_python = os.environ.get('PYTHON_CMD') or os.environ.get('PYTHON') or os.environ.get('KRONOS_PYTHON_PATH')
     if venv_python and os.path.exists(venv_python):
         try:
             result = subprocess.run([venv_python, "--version"],
@@ -100,36 +102,32 @@ def get_actual_python_path():
         except:
             pass
 
-    # Windows: 检查用户虚拟环境
-    if platform.system() == "Windows":
-        venv_dir = os.path.join(os.environ.get('LocalAppData', ''), 'Kronos', 'venv')
-        venv_py = os.path.join(venv_dir, 'Scripts', 'python.exe')
-        if os.path.exists(venv_py):
-            try:
-                result = subprocess.run([venv_py, "--version"],
-                                        capture_output=True, text=True, timeout=5)
-                if result.returncode == 0 and "3." in result.stdout:
-                    return venv_py
-            except:
-                pass
-
-    # 如果在应用包内，sys.executable可能指向应用本身，需要检测真实的Python
+    # 动态检测系统中的Python，优先选择 3.11.x
     python_names = ['python3.11', 'python3', 'python']
+
+    best_python = None
+    best_version = ""
 
     for py_name in python_names:
         try:
             py_path = shutil.which(py_name)
             if py_path:
-                # 验证这是一个有效的Python解释器
                 result = subprocess.run([py_path, "--version"],
                                         capture_output=True, text=True, timeout=5)
-                if result.returncode == 0 and "3." in result.stdout:
-                    return py_path
+                if result.returncode == 0:
+                    version_match = re.search(r'3\.(\d+)\.(\d+)', result.stdout or result.stderr)
+                    if version_match:
+                        version = version_match.group(0)
+                        # 优先选择 3.11.x
+                        if version.startswith('3.11.'):
+                            return py_path
+                        elif version.startswith('3.') and (not best_python or version > best_version):
+                            best_python = py_path
+                            best_version = version
         except:
             continue
 
-    # 备选方案
-    return sys.executable
+    return best_python or sys.executable
 
 
 def print_header(text: str) -> None:
@@ -142,13 +140,58 @@ def print_header(text: str) -> None:
 
 def check_python_version() -> Tuple[bool, str]:
     """检查Python版本"""
-    version = sys.version_info
-    version_str = f"{version.major}.{version.minor}.{version.micro}"
+    # 使用实际检测到的Python路径获取版本，而不是 sys.version_info
+    # 这样可以避免在打包环境中使用错误的Python版本
+    python_path = get_actual_python_path()
 
-    if version.major >= 3 and version.minor >= 11:
-        return True, version_str
-    else:
-        return False, version_str
+    # 打印调试信息
+    print(f"DEBUG: 检测到的Python路径: {python_path}")
+
+    try:
+        result = subprocess.run(
+            [python_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        print(f"DEBUG: version命令返回码: {result.returncode}")
+        print(f"DEBUG: version命令stdout: {result.stdout}")
+        print(f"DEBUG: version命令stderr: {result.stderr}")
+
+        if result.returncode == 0:
+            # 提取版本号，如 "Python 3.11.2" -> "3.11.2"
+            version_output = result.stdout or result.stderr
+            version_match = re.search(r'Python\s+(\d+\.\d+\.\d+)', version_output)
+            if version_match:
+                version_str = version_match.group(1)
+                version_parts = version_str.split('.')
+                major = int(version_parts[0])
+                minor = int(version_parts[1])
+
+                if major >= 3 and minor >= 11:
+                    return True, version_str
+                else:
+                    return False, version_str
+
+            # 备选：直接匹配数字版本
+            version_match2 = re.search(r'(\d+\.\d+\.\d+)', version_output)
+            if version_match2:
+                version_str = version_match2.group(1)
+                version_parts = version_str.split('.')
+                major = int(version_parts[0])
+                minor = int(version_parts[1])
+                if major >= 3 and minor >= 11:
+                    return True, version_str
+                else:
+                    return False, version_str
+    except Exception as e:
+        print(f"DEBUG: 版本检查异常: {e}")
+        pass
+
+    # 如果所有方法都失败，返回警告但不报错
+    print(f"WARNING: 无法确定Python版本，使用回退方案")
+    return False, "未知"
 
 
 def check_package_installed(package_name: str) -> Tuple[bool, str]:

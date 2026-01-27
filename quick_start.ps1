@@ -52,6 +52,9 @@ $ErrorActionPreference = 'Continue'
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUTF8 = '1'
 
+# 设置 pip 使用用户安装模式，解决 Python 3.12+ externally-managed-environment 限制
+$env:PIP_USER = '1'
+
 # Get command line argument
 $Choice = $args[0]
 
@@ -191,6 +194,12 @@ if ($IsPackaged) {
 }
 
 # In packaged (_MEI) scenario, we must ensure embedded Python is healthy (encodings/site)
+$IsNonInteractive = $false
+if ($env:AUTO_CHOICE -or $env:KRONOS_IS_APP_BUNDLE -eq 'true' -or $IsPackaged -or $args.Count -gt 0) {
+    $IsNonInteractive = $true
+    Write-Host "INFO: 检测到非交互模式" -ForegroundColor Cyan
+}
+
 function Fix-EmbeddedPythonPth {
     param([Parameter(Mandatory=$true)][string]$BaseDir)
 
@@ -652,7 +661,8 @@ if ($Choice -eq "1") {
             Write-Host "ACTION: 安装系统 Python 3.11.9 并重试依赖安装" -ForegroundColor Yellow
             Ensure-SystemPython -TargetVersion '3.11.9'
             $python = Get-PythonCommand
-            & $python -m pip install -r requirements.txt @mirrorArgs
+            # 使用 --user flag 解决 Python 3.12+ externally-managed-environment 限制
+            & $python -m pip install --user -r requirements.txt @mirrorArgs
             $exitCode = $LASTEXITCODE
             if ($exitCode -eq 0) {
                 Write-Host "OK: 重试依赖安装成功" -ForegroundColor Green
@@ -674,7 +684,7 @@ if ($Choice -eq "1") {
         Write-Host "SKIP: Playwright 已安装 (版本 $playwrightVersion)，跳过包安装" -ForegroundColor Yellow
     } else {
         Write-Host "ACTION: 正在安装 Playwright Python 包..." -ForegroundColor Yellow
-        & $python -m pip install 'playwright' @mirrorArgs
+        & $python -m pip install --user 'playwright' @mirrorArgs
         $exitCode = $LASTEXITCODE
         if ($exitCode -eq 0) {
             $playwrightVersion = Get-PackageVersion -Python $python -Package 'playwright'
@@ -706,7 +716,7 @@ if ($Choice -eq "1") {
         Write-Host "SKIP: ModelScope 已安装 (版本 $modelscopeVersion)" -ForegroundColor Yellow
     } else {
         Write-Host "ACTION: 正在安装 ModelScope 包..." -ForegroundColor Yellow
-        & $python -m pip install 'modelscope' @mirrorArgs
+        & $python -m pip install --user 'modelscope' @mirrorArgs
         $exitCode = $LASTEXITCODE
         if ($exitCode -eq 0) {
             $modelscopeVersion = Get-PackageVersion -Python $python -Package 'modelscope'
@@ -780,7 +790,7 @@ elseif ($Choice -eq "4") {
 
             # 安装CPU版本
             Write-Host "   安装PyTorch CPU版本..." -ForegroundColor Yellow
-            & $python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+            & $python -m pip install --user torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "`n✓ 安装完成！" -ForegroundColor Green
@@ -800,7 +810,7 @@ elseif ($Choice -eq "4") {
 
             # 安装GPU版本 (CUDA 11.8)
             Write-Host "   安装PyTorch GPU版本 (CUDA 11.8)..." -ForegroundColor Yellow
-            & $python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+            & $python -m pip install --user torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "`n✓ 安装完成！" -ForegroundColor Green
@@ -815,7 +825,7 @@ elseif ($Choice -eq "4") {
 
             # 卸载并重装
             & $python -m pip uninstall torch torchvision torchaudio -y
-            & $python -m pip install torch torchvision torchaudio @mirrorArgs
+            & $python -m pip install --user torch torchvision torchaudio @mirrorArgs
 
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "`n✓ 安装完成！" -ForegroundColor Green
@@ -934,13 +944,13 @@ elseif ($Choice -eq "7") {
     Write-Host "注意：此过程可能需要15-30分钟，请耐心等待..." -ForegroundColor Yellow
     Write-Host ""
 
-    # 自动模式：在应用包/非交互/提供环境变量时，跳过交互输入
-    if ($env:AUTO_CHOICE -or $env:KRONOS_IS_APP_BUNDLE -eq 'true' -or $IsPackaged) {
+    # 非交互模式：在应用包/非交互/提供环境变量时，跳过交互输入
+    if ($IsNonInteractive) {
         $limit = if ($env:KRONOS_LIMIT) { [int]$env:KRONOS_LIMIT } else { 100 }
         # 约束范围
         if ($limit -lt 10) { $limit = 10 }
         if ($limit -gt 300) { $limit = 300 }
-        Write-Host "AUTO: 检测到自动模式，使用采集数量: $limit" -ForegroundColor Blue
+        Write-Host "AUTO: 检测到非交互模式，使用采集数量: $limit" -ForegroundColor Blue
         Write-Host "正在启动投资机会挖掘系统..." -ForegroundColor Green
         Invoke-Python -Script 'scripts/run_opportunity_discovery.py' -Args @('--limit', $limit, '--workers', '10')
     } else {
@@ -987,7 +997,7 @@ elseif ($Choice -eq "11") {
         if (Test-Path 'webui/requirements.txt') {
             try {
                 $python = Get-PythonCommand
-                & $python -m pip install -r 'webui/requirements.txt'
+                & $python -m pip install --user -r 'webui/requirements.txt'
             } catch {
                 # Ignore installation failure to avoid blocking startup
             }

@@ -75,6 +75,7 @@ a = Analysis(
         'finetune.license_system.license_validator',
         'finetune.license_system.json_storage',
         'finetune.license_system.activate',
+        'utils.retry_utils',
     ],
     hookspath=['packaging/hooks'],
     hooksconfig={},

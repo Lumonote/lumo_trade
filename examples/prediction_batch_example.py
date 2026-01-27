@@ -556,7 +556,7 @@ def plot_prediction_enhanced(historical_df, pred_df, stock_code, save_path=None,
                 for col in ['open', 'high', 'low', 'close']:
                     pred_df.loc[future_mask, col] = pred_df.loc[future_mask, col] - price_gap
                 
-                # ⚠️ 关键：修正后必须重新创建pred_future，确保使用最新数据！
+                # ⚠️ 关键：修正后必须重新创建pred_overlap和pred_future，确保使用最新数据！
                 pred_future = pred_df[pred_df['timestamps'].dt.date > overlap_date].copy()
                 
                 # 验证修正效果

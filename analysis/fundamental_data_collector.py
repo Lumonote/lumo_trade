@@ -5,6 +5,7 @@
 采集股票的关键财务指标和基本面数据
 """
 
+import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -16,9 +17,33 @@ import random
 from pathlib import Path
 import sys
 
-# 添加项目根目录到路径
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# 添加项目根目录到路径 - 优先使用环境变量
+# 尝试多个可能的路径位置
+possible_roots = []
+if 'KRONOS_PROJECT_ROOT' in os.environ:
+    possible_roots.append(os.environ['KRONOS_PROJECT_ROOT'])
+possible_roots.append(str(Path(__file__).parent.parent))  # analysis 的父目录
+possible_roots.append(str(Path(__file__).parent.parent.parent))  # Frameworks 的父目录
+possible_roots.append(str(Path(__file__).parent))  # 当前目录
+
+# 查找有效的根目录
+project_root = None
+for root in possible_roots:
+    root_path = Path(root)
+    utils_path = root_path / 'utils'
+    if root_path.exists() and utils_path.exists():
+        project_root = str(root_path)
+        break
+
+if project_root is None:
+    # 最后尝试从当前工作目录查找
+    project_root = os.getcwd()
+
+sys.path.insert(0, project_root)
+# 也添加 utils 目录
+utils_path = Path(project_root) / 'utils'
+if utils_path.exists():
+    sys.path.insert(0, str(utils_path))
 
 from utils.retry_utils import (
     exponential_backoff_with_jitter,

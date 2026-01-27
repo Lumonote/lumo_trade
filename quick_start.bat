@@ -6,11 +6,39 @@ REM Kronos 快速启动脚本 (Windows版本)
 REM 设置颜色
 color 0A
 
+REM 设置 pip 使用用户安装模式，解决 Python 3.12+ externally-managed-environment 限制
+set PIP_USER=1
+
+REM 检测Python - 优先使用环境变量中传入的Python
+if defined PYTHON_CMD (
+    set PYTHON_CMD=%PYTHON_CMD%
+) else if defined PYTHON (
+    set PYTHON_CMD=%PYTHON%
+) else if exist "C:\Python311\python.exe" (
+    set PYTHON_CMD=C:\Python311\python.exe
+) else if exist "C:\Python310\python.exe" (
+    set PYTHON_CMD=C:\Python310\python.exe
+) else (
+    set PYTHON_CMD=python
+)
+
 REM 支持通过命令行参数直接选择菜单项（非交互模式）
 if not "%~1"=="" (
     set choice=%~1
+    set NON_INTERACTIVE=1
     goto valid_input
 )
+
+:input_validation
+set /p choice=请选择操作 (1-16):
+if "%choice%"=="" goto invalid_input
+echo %choice%| findstr /r "^[0-9][0-9]*$" >nul
+if errorlevel 1 goto invalid_input
+if %choice% geq 1 if %choice% leq 16 goto valid_input
+
+:invalid_input
+echo ERROR: 无效输入，请输入 1-16 之间的数字
+goto input_validation
 
 :main_menu
 cls
@@ -53,16 +81,6 @@ echo.
 echo TIP: 提示: 首次使用请先选择选项1进行一键安装
 echo.
 
-REM 输入验证循环
-:input_validation
-set /p choice=请选择操作 (1-16):
-if "%choice%"=="" goto invalid_input
-echo %choice%| findstr /r "^[0-9][0-9]*$" >nul
-if errorlevel 1 goto invalid_input
-if %choice% geq 1 if %choice% leq 16 goto valid_input
-
-:invalid_input
-echo ERROR: 无效输入，请输入 1-16 之间的数字
 goto input_validation
 
 :valid_input
@@ -72,7 +90,7 @@ if "%choice%"=="3" goto check_env
 if "%choice%"=="4" goto fetch_tushare
 if "%choice%"=="5" goto fetch_crawler
 if "%choice%"=="6" goto batch_fetch
-if "%choice%"=="7" goto run_prediction
+if "%choice%"=="7" goto opportunity_discovery
 if "%choice%"=="8" goto run_prediction
 if "%choice%"=="9" goto opportunity_discovery
 if "%choice%"=="10" goto major_positive_news_discovery
@@ -90,7 +108,7 @@ echo STEP 步骤 0/4: 配置 Python 环境和清华镜像源...
 echo.
 
 REM 检查是否已安装 Python
-python --version >nul 2>&1
+%PYTHON_CMD% --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: 未找到 Python，正在尝试安装...
     echo 请手动安装 Python 3.11.13 或更高版本
@@ -100,7 +118,7 @@ if errorlevel 1 (
 )
 
 REM 获取当前 Python 版本
-for /f "tokens=2" %%i in ('python --version 2^>^&1') do set CURRENT_VERSION=%%i
+for /f "tokens=2" %%i in ('%PYTHON_CMD% --version 2^>^&1') do set CURRENT_VERSION=%%i
 echo 当前 Python 版本: %CURRENT_VERSION%
 
 REM 检查版本是否符合要求 (3.11+)
@@ -140,7 +158,7 @@ if exist "%APPDATA%\pip\pip.ini" (
 
 REM 升级 pip
 echo 正在升级 pip...
-python -m pip install --upgrade pip
+%PYTHON_CMD% -m pip install --upgrade pip
 if errorlevel 1 (
     echo WARN:  pip 升级失败，继续使用当前版本
 ) else (
@@ -153,7 +171,8 @@ echo STEP 步骤 1/4: 验证 Python 环境...
 
 echo STEP 步骤 2/4: 正在安装 Python 依赖包...
 if exist "requirements.txt" (
-    python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
+    REM 使用 --user flag 解决 Python 3.12+ externally-managed-environment 限制
+    %PYTHON_CMD% -m pip install --user -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
     if errorlevel 1 (
         echo ERROR: Python 依赖包安装失败
         echo TIP: 提示: 已配置清华镜像源，如仍失败请检查网络连接
@@ -174,7 +193,7 @@ if defined PLAYWRIGHT_VERSION (
     echo SKIP:  Playwright 已安装 (版本 !PLAYWRIGHT_VERSION!)，跳过包安装
 ) else (
     echo ACTION:  正在安装 Playwright Python 包...
-    python -m pip install playwright -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
+    %PYTHON_CMD% -m pip install --user playwright -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
     if errorlevel 1 (
         echo WARN:  Playwright 安装失败，但继续安装其他组件
         set "PLAYWRIGHT_VERSION="
@@ -190,7 +209,7 @@ if defined PLAYWRIGHT_VERSION (
 
 if defined PLAYWRIGHT_VERSION (
     echo ACTION:  正在安装/刷新 Playwright 浏览器 (chromium)...
-    python -m playwright install chromium
+    %PYTHON_CMD% -m playwright install chromium
     if errorlevel 1 (
         echo WARN:  Chromium 浏览器资源安装失败，可稍后手动运行 "playwright install chromium"
     ) else (
@@ -206,7 +225,7 @@ if defined MODELSCOPE_VERSION (
     echo SKIP:  ModelScope 已安装 (版本 !MODELSCOPE_VERSION!)，跳过包安装
 ) else (
     echo ACTION:  正在安装 ModelScope SDK...
-    python -m pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
+    %PYTHON_CMD% -m pip install --user modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
     if errorlevel 1 (
         echo WARN:  ModelScope 安装失败，跳过模型下载
         set "MODELSCOPE_VERSION="
@@ -270,13 +289,13 @@ goto main_menu
 
 :config_wizard
 echo STEP 启动配置向导...
-python scripts/config_wizard.py
+%PYTHON_CMD% scripts/config_wizard.py
 pause
 goto main_menu
 
 :check_env
 echo CHECK: 检查环境状态...
-python scripts/check_environment.py
+%PYTHON_CMD% scripts/check_environment.py
 pause
 goto main_menu
 
@@ -322,7 +341,7 @@ echo.
 echo 正在批量获取 %symbols% 的数据（使用 %source% 数据源，获取 %days% 天数据）...
 
 REM 批量获取数据
-python scripts/batch_fetch.py --symbols %symbols% --min-days %days% --config config/tushare_config.json
+%PYTHON_CMD% scripts/batch_fetch.py --symbols %symbols% --min-days %days% --config config/tushare_config.json
 if errorlevel 1 (
     echo ERROR: 数据获取失败
     pause
@@ -342,7 +361,7 @@ echo PREDICT: 开始运行预测...
 echo 使用股票 %clean_symbol% 进行预测演示
 echo 预测完成后将自动生成HTML综合分析报告并打开浏览器
 REM 使用代码中的默认参数：T=0.8, p=0.90, n=3
-python examples/prediction_batch_example.py --stock-code %clean_symbol%
+%PYTHON_CMD% examples/prediction_batch_example.py --stock-code %clean_symbol%
 if errorlevel 1 (
     echo WARN: 预测运行失败，但数据已成功获取
 ) else (
@@ -365,17 +384,22 @@ echo.
 echo 注意：此过程可能需要15-30分钟，请耐心等待...
 echo.
 
-set /p confirm=是否开始投资机会挖掘？(Y/n):
-if /i "%confirm%"=="n" goto main_menu
+REM 非交互模式跳过确认
+if "%NON_INTERACTIVE%"=="1" (
+    echo AUTO: 检测到非交互模式，直接执行...
+) else (
+    set /p confirm=是否开始投资机会挖掘？(Y/n):
+    if /i "%confirm%"=="n" goto main_menu
+)
 
 echo 正在启动投资机会挖掘系统...
-python scripts/run_opportunity_discovery.py --limit 100 --workers 10
+%PYTHON_CMD% scripts/run_opportunity_discovery.py --limit 100 --workers 10
 if errorlevel 1 (
     echo ERROR: 投资机会挖掘执行失败
 ) else (
     echo OK: 投资机会挖掘完成！报表已生成到results目录
 )
-pause
+if "%NON_INTERACTIVE%"=="" pause
 goto main_menu
 
 :major_positive_news_discovery
@@ -454,7 +478,7 @@ set /p confirm=是否开始重大利好消息挖掘？(Y/n):
 if /i "%confirm%"=="n" goto main_menu
 
 echo 正在启动重大利好消息挖掘系统...
-python scripts/run_major_positive_news_discovery.py --limit 50 --mode %mode%
+%PYTHON_CMD% scripts/run_major_positive_news_discovery.py --limit 50 --mode %mode%
 if errorlevel 1 (
     echo ERROR: 重大利好消息挖掘执行失败
 ) else (
@@ -465,14 +489,14 @@ goto main_menu
 
 :run_prediction
 echo PREDICT: 运行预测示例
-python examples/prediction_example.py
+%PYTHON_CMD% examples/prediction_example.py
 pause
 goto main_menu
 
 :install_playwright
 echo CRAWLER: 正在安装 Playwright 浏览器...
 echo 这可能需要几分钟时间，请耐心等待...
-pip install playwright
+pip install --user playwright
 if errorlevel 1 (
     echo ERROR: Playwright 安装失败
     pause
@@ -490,7 +514,7 @@ goto main_menu
 
 :test_crawler
 echo TEST: 测试爬虫功能...
-python -c "import asyncio; from scripts.crawler import CrawlerManager; asyncio.run(CrawlerManager().test_connection())"
+%PYTHON_CMD% -c "import asyncio; from scripts.crawler import CrawlerManager; asyncio.run(CrawlerManager().test_connection())"
 pause
 goto main_menu
 
@@ -555,11 +579,11 @@ echo       系统状态检查 STATUS:
 echo ================================
 echo.
 echo PYTHON: Python 环境：
-python --version >nul 2>&1
+%PYTHON_CMD% --version >nul 2>&1
 if errorlevel 1 (
     echo   ERROR: Python 未安装
 ) else (
-    for /f "tokens=*" %%i in ('python --version 2^>^&1') do echo   OK: %%i
+    for /f "tokens=*" %%i in ('%PYTHON_CMD% --version 2^>^&1') do echo   OK: %%i
 )
 
 echo PACKAGE: 包管理器：
@@ -572,7 +596,7 @@ if errorlevel 1 (
 
 echo DOCS: 关键依赖包：
 for %%p in (torch pandas numpy matplotlib tqdm) do (
-    python -c "import %%p" >nul 2>&1
+    %PYTHON_CMD% -c "import %%p" >nul 2>&1
     if errorlevel 1 (
         echo   ERROR: %%p 未安装
     ) else (
@@ -581,7 +605,7 @@ for %%p in (torch pandas numpy matplotlib tqdm) do (
 )
 
 echo CRAWLER:  Playwright：
-python -c "import playwright" >nul 2>&1
+%PYTHON_CMD% -c "import playwright" >nul 2>&1
 if errorlevel 1 (
     echo   ERROR: Playwright 未安装
 ) else (
@@ -595,7 +619,7 @@ if errorlevel 1 (
 )
 
 echo MODELSCOPE: ModelScope：
-python -c "import modelscope" >nul 2>&1
+%PYTHON_CMD% -c "import modelscope" >nul 2>&1
 if errorlevel 1 (
     echo   ERROR: ModelScope 未安装
 ) else (
@@ -657,7 +681,7 @@ if errorlevel 1 (
 )
 
 echo 正在获取 %symbol% 的数据...
-python scripts/fetch_data.py --symbol %symbol% --source tushare
+%PYTHON_CMD% scripts/fetch_data.py --symbol %symbol% --source tushare
 pause
 goto main_menu
 
@@ -698,18 +722,18 @@ if "%source_choice%"=="3" set source=tonghuashun
 if "%source_choice%"=="4" set source=xueqiu
 
 echo 使用 %source% 数据源获取 %symbol% 的数据，请稍候...
-python scripts/fetch_data.py --symbol %symbol% --source %source%
+%PYTHON_CMD% scripts/fetch_data.py --symbol %symbol% --source %source%
 pause
 goto main_menu
 
 :start_webui
 echo WEB: 启动Web界面...
 echo 正在检查Web界面依赖...
-python -c "import flask, flask_cors, pandas, numpy, plotly" >nul 2>&1
+%PYTHON_CMD% -c "import flask, flask_cors, pandas, numpy, plotly" >nul 2>&1
 if errorlevel 1 (
     echo WARN:  缺少Web界面依赖，正在安装...
     if exist "webui\requirements.txt" (
-        pip install -r webui\requirements.txt
+        pip install --user -r webui\requirements.txt
         if errorlevel 1 (
             echo ERROR: Web界面依赖安装失败
             pause
@@ -730,7 +754,7 @@ echo 按 Ctrl+C 停止服务器
 echo.
 if exist "webui\app.py" (
     cd webui
-    python app.py
+    %PYTHON_CMD% app.py
     cd..
 ) else (
     echo ERROR: 未找到 webui\app.py 文件
@@ -742,7 +766,7 @@ goto main_menu
 setlocal EnableDelayedExpansion
 set "pkg=%~1"
 set "version="
-for /f "tokens=2 delims=: " %%v in ('python -m pip show %pkg% 2^>nul ^| findstr /r "^Version"') do set "version=%%v"
+for /f "tokens=2 delims=: " %%v in ('%PYTHON_CMD% -m pip show %pkg% 2^>nul ^| findstr /r "^Version"') do set "version=%%v"
 endlocal & set "%~2=%version%"
 exit /b
 

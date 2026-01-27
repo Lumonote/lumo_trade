@@ -2,25 +2,224 @@
 
 # Ensure we are in the project root
 cd "$(dirname "$0")"
+SCRIPT_DIR=$(pwd)
 
-# Set PYTHONPATH to include current directory
-export PYTHONPATH=$PYTHONPATH:$(pwd)
+# 设置 PYTHONPATH - 添加所有必要的目录
+export PYTHONPATH="${SCRIPT_DIR}:${SCRIPT_DIR}/scripts:${SCRIPT_DIR}/analysis:${SCRIPT_DIR}/model:${SCRIPT_DIR}/utils:${SCRIPT_DIR}/finetune:${PYTHONPATH:-}"
+
+# 设置项目根目录环境变量
+export KRONOS_PROJECT_ROOT="${SCRIPT_DIR}"
+
+# 设置 pip 使用用户安装模式，解决 Python 3.12+ externally-managed-environment 限制
+export PIP_USER=1
+
+# 设置中文编码环境，解决乱码问题
+export LC_ALL=zh_CN.UTF-8
+export LANG=zh_CN.UTF-8
+export PYTHONIOENCODING=utf-8
+export PYTHONUTF8=1
 
 # Function to pause
 pause() {
     read -p "Press Enter to continue..."
 }
 
-# Check for python command
-if command -v python3 &>/dev/null; then
-    PYTHON_CMD=python3
-elif command -v python &>/dev/null; then
-    PYTHON_CMD=python
-else
-    echo "Error: Python not found. Please install Python 3.11+"
+# Check for python command - 智能选择 Python 3.11+
+find_python() {
+    # 尝试找到 Python 3.11+
+
+    # 1. 优先使用环境变量
+    if [[ -n "$PYTHON_CMD" && -x "$PYTHON_CMD" ]]; then
+        ver=$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
+        if [[ "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]]; then
+            echo "$PYTHON_CMD"
+            return 0
+        fi
+    fi
+
+    if [[ -n "$PYTHON" && -x "$PYTHON" ]]; then
+        ver=$("$PYTHON" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
+        if [[ "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]]; then
+            echo "$PYTHON"
+            return 0
+        fi
+    fi
+
+    # 2. 检查 python 命令
+    if command -v python &>/dev/null; then
+        ver=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
+        if [[ "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]]; then
+            echo "python"
+            return 0
+        fi
+    fi
+
+    # 3. 检查 python3 命令
+    if command -v python3 &>/dev/null; then
+        ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
+        if [[ "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]]; then
+            echo "python3"
+            return 0
+        fi
+    fi
+
+    # 4. 检查完整路径
+    for path in /usr/local/bin/python3.11 /opt/homebrew/bin/python3.11; do
+        if [[ -x "$path" ]]; then
+            echo "$path"
+            return 0
+        fi
+    done
+
+    # 5. 尝试通过 which 找 python3.11
+    if command -v python3.11 &>/dev/null; then
+        echo "python3.11"
+        return 0
+    fi
+
+    return 1
+}
+
+PYTHON_CMD=$(find_python)
+if [[ -z "$PYTHON_CMD" ]]; then
+    echo "Error: Python 3.11+ not found. Please install Python 3.11 or later."
     exit 1
 fi
 
+echo "DEBUG: 使用Python: $PYTHON_CMD"
+$PYTHON_CMD --version
+
+# 非交互模式：支持直接传入选项编号执行并退出
+# 例如: ./quick_start.sh 7 或 ./quick_start.sh --batch 7
+BATCH_MODE=false
+MENU_CHOICE=""
+
+if [[ "$1" == "--batch" || "$1" == "-b" ]]; then
+    BATCH_MODE=true
+    MENU_CHOICE="$2"
+elif [[ -n "$1" ]]; then
+    # 直接传入选项编号也进入非交互模式
+    BATCH_MODE=true
+    MENU_CHOICE="$1"
+fi
+
+# 非交互模式：直接执行对应选项并退出
+if [[ "$BATCH_MODE" == "true" && -n "$MENU_CHOICE" ]]; then
+    case $MENU_CHOICE in
+        1)
+            echo "PACKAGE: 开始一键安装所有依赖和模型..."
+            $PYTHON_CMD --version
+            echo "Installing dependencies..."
+            # 使用 --user flag 解决 Python 3.12+ externally-managed-environment 限制
+            $PYTHON_CMD -m pip install --user -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+            echo "Installing playwright..."
+            $PYTHON_CMD -m pip install --user playwright -i https://pypi.tuna.tsinghua.edu.cn/simple
+            $PYTHON_CMD -m playwright install chromium
+            exit 0
+            ;;
+        2)
+            echo "STEP 启动配置向导..."
+            $PYTHON_CMD scripts/config_wizard.py
+            exit 0
+            ;;
+        3)
+            echo "CHECK: 检查环境状态..."
+            $PYTHON_CMD scripts/check_environment.py
+            exit 0
+            ;;
+        4)
+            echo "DATA: 获取股票数据 (Tushare)"
+            $PYTHON_CMD scripts/fetch_data.py --source tushare
+            exit 0
+            ;;
+        5)
+            echo "DATA: 获取股票数据 (爬虫)"
+            $PYTHON_CMD scripts/fetch_data.py --source crawler
+            exit 0
+            ;;
+        6)
+            echo "CHART: 批量获取数据及预测K线"
+            # 非交互模式：从环境变量获取参数
+            if [[ "$BATCH_MODE" == "true" ]]; then
+                symbols="${KRONOS_SYMBOLS:-}"
+                days="${KRONOS_DAYS:-365}"
+                if [[ -z "$symbols" ]]; then
+                    echo "ERROR: 非交互模式下需要设置 KRONOS_SYMBOLS 环境变量"
+                    exit 1
+                fi
+                echo "AUTO: 使用环境变量参数 - 股票: $symbols, 天数: $days"
+            else
+                read -p "请输入股票代码（多个代码用逗号分隔）: " symbols
+                read -p "请输入要获取的天数（默认365天）: " days
+                days=${days:-365}
+            fi
+            echo "正在批量获取..."
+            $PYTHON_CMD scripts/batch_fetch.py --symbols "$symbols" --min-days "$days" --config config/tushare_config.json
+
+            # Extract first symbol for prediction example
+            first_symbol=$(echo $symbols | cut -d',' -f1)
+            clean_symbol=$(echo $first_symbol | cut -d'.' -f1)
+
+            echo "PREDICT: 开始运行预测演示 ($clean_symbol)..."
+            $PYTHON_CMD examples/prediction_batch_example.py --stock-code "$clean_symbol"
+            exit 0
+            ;;
+        7)
+            echo "🔥 投资机会挖掘 - 分析TOP100热门股票"
+            echo "正在启动投资机会挖掘系统..."
+            $PYTHON_CMD scripts/run_opportunity_discovery.py --limit 100 --workers 10
+            exit 0
+            ;;
+        8)
+            echo "PREDICT: 运行预测示例"
+            $PYTHON_CMD examples/prediction_example.py
+            exit 0
+            ;;
+        9)
+            echo "🔥 投资机会挖掘 - 分析TOP100热门股票"
+            echo "正在启动投资机会挖掘系统..."
+            $PYTHON_CMD scripts/run_opportunity_discovery.py --limit 100 --workers 10
+            exit 0
+            ;;
+        10)
+            echo "🔥🔥 重大利好消息挖掘 - 从资讯流挖掘投资机会"
+            $PYTHON_CMD scripts/run_major_opportunity_discovery.py --limit 50 --workers 10
+            exit 0
+            ;;
+        11)
+            echo "CRAWLER: 安装 Playwright 浏览器"
+            $PYTHON_CMD -m pip install playwright -i https://pypi.tuna.tsinghua.edu.cn/simple
+            $PYTHON_CMD -m playwright install chromium
+            exit 0
+            ;;
+        12)
+            echo "CRAWLER: 测试爬虫功能"
+            $PYTHON_CMD scripts/test_crawler.py
+            exit 0
+            ;;
+        13)
+            echo "WEB: 启动Web界面"
+            cd webui && $PYTHON_CMD app.py
+            exit 0
+            ;;
+        14)
+            echo "INFO: 显示使用帮助"
+            cat docs/README.md 2>/dev/null || echo "帮助文档未找到"
+            exit 0
+            ;;
+        15)
+            echo "INFO: 查看系统状态..."
+            $PYTHON_CMD scripts/check_environment.py
+            exit 0
+            ;;
+        *)
+            echo "未知选项: $MENU_CHOICE"
+            exit 1
+            ;;
+    esac
+fi
+
+# 交互模式：显示菜单并等待用户选择
 while true; do
     clear
     echo "================================"
@@ -40,12 +239,12 @@ while true; do
     echo "7. 🔥 投资机会挖掘 (TOP100热门股票)"
     echo ""
     echo "PREDICT: 预测功能"
-echo "8. 运行预测示例"
-echo ""
-echo "DISCOVERY: 机会挖掘"
-echo "9. 🔥 投资机会挖掘 (TOP100热门股票)"
-echo "10. 🔥🔥 重大利好消息挖掘 (从资讯流挖掘)"
-echo ""
+    echo "8. 运行预测示例"
+    echo ""
+    echo "DISCOVERY: 机会挖掘"
+    echo "9. 🔥 投资机会挖掘 (TOP100热门股票)"
+    echo "10. 🔥🔥 重大利好消息挖掘 (从资讯流挖掘)"
+    echo ""
 echo "CRAWLER: 爬虫设置"
 echo "11. 安装 Playwright 浏览器"
 echo "12. 测试爬虫功能"
@@ -70,9 +269,10 @@ echo "16. 退出"
             # Check python version
             $PYTHON_CMD --version
             echo "Installing dependencies..."
-            $PYTHON_CMD -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+            # 使用 --user flag 解决 Python 3.12+ externally-managed-environment 限制
+            $PYTHON_CMD -m pip install --user -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
             echo "Installing playwright..."
-            $PYTHON_CMD -m pip install playwright -i https://pypi.tuna.tsinghua.edu.cn/simple
+            $PYTHON_CMD -m pip install --user playwright -i https://pypi.tuna.tsinghua.edu.cn/simple
             $PYTHON_CMD -m playwright install chromium
             pause
             ;;
@@ -103,18 +303,23 @@ echo "16. 退出"
             days=${days:-365}
             echo "正在批量获取..."
             $PYTHON_CMD scripts/batch_fetch.py --symbols "$symbols" --min-days "$days" --config config/tushare_config.json
-            
+
             # Extract first symbol for prediction example
             first_symbol=$(echo $symbols | cut -d',' -f1)
             clean_symbol=$(echo $first_symbol | cut -d'.' -f1)
-            
+
             echo "PREDICT: 开始运行预测演示 ($clean_symbol)..."
             $PYTHON_CMD examples/prediction_batch_example.py --stock-code "$clean_symbol"
+
             pause
             ;;
         7)
-            echo "PREDICT: 运行预测示例"
-            $PYTHON_CMD examples/prediction_example.py
+            echo "🔥 投资机会挖掘 - 分析TOP100热门股票"
+            read -p "是否开始投资机会挖掘？(Y/n): " confirm
+            if [[ "$confirm" != "n" && "$confirm" != "N" ]]; then
+                echo "正在启动投资机会挖掘系统..."
+                $PYTHON_CMD scripts/run_opportunity_discovery.py --limit 100 --workers 10
+            fi
             pause
             ;;
         8)
@@ -187,9 +392,9 @@ echo "16. 退出"
             echo ""
             echo "START: 快速开始："
             echo "  1. 运行 quick_start.sh"
-            echo "  2. 选择"1"进行一键安装"
-            echo "  3. 选择"2"配置数据源（需要Tushare Token）"
-            echo "  4. 选择"9"或"10"运行投资机会挖掘"
+            echo "  2. 选择 1 进行一键安装"
+            echo "  3. 选择 2 配置数据源（需要Tushare Token）"
+            echo "  4. 选择 7 或 9 运行投资机会挖掘"
             echo ""
             echo "DATA: 数据源配置："
             echo "  - Tushare: 需要注册账号获取Token (https://tushare.pro/)"

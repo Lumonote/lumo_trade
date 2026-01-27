@@ -157,6 +157,14 @@ class SentimentCacheManager:
         """设置大盘整体情绪缓存"""
         self.set('overall_market', data)
 
+    def get_market_sentiment(self) -> Optional[Dict]:
+        """获取市场情绪缓存(兼容旧接口, 等价于大盘整体情绪)"""
+        return self.get_overall_market()
+
+    def set_market_sentiment(self, data: Dict):
+        """设置市场情绪缓存(兼容旧接口, 等价于大盘整体情绪)"""
+        self.set_overall_market(data)
+
     def get_sector(self, sector_identifier: str) -> Optional[Dict]:
         """
         获取板块情绪缓存
