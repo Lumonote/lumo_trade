@@ -104,9 +104,25 @@ function Invoke-Python {
     # 如果在打包环境中，设置环境变量以便Python脚本能找到模块
     $originalEnv = $env:KRONOS_PACKED_ROOT
     $originalPyPath = $env:KRONOS_PYTHON_PATH
+    $originalPythonPathEnv = $env:PYTHONPATH
     if ($IsPackaged) {
         $env:KRONOS_PACKED_ROOT = $scriptDir
         Write-Host "INFO: 设置打包路径: $scriptDir" -ForegroundColor Cyan
+
+        # 组装 Python 路径，确保能导入 utils/analysis/model 等顶级包
+        try {
+            $paths = @(
+                $scriptDir,
+                (Join-Path $scriptDir 'scripts'),
+                (Join-Path $scriptDir 'examples'),
+                (Join-Path $scriptDir 'model'),
+                (Join-Path $scriptDir 'utils'),
+                (Join-Path $scriptDir 'analysis'),
+                (Join-Path $scriptDir 'finetune')
+            )
+            $env:PYTHONPATH = ($paths -join ';')
+            Write-Host "INFO: 设置 PYTHONPATH: $($env:PYTHONPATH)" -ForegroundColor Cyan
+        } catch {}
     }
 
     # 设置 Python 路径环境变量，让检查脚本能使用正确的 Python
@@ -130,6 +146,12 @@ function Invoke-Python {
             Remove-Item env:KRONOS_PYTHON_PATH -ErrorAction SilentlyContinue
         } else {
             $env:KRONOS_PYTHON_PATH = $originalPyPath
+        }
+
+        if ($null -eq $originalPythonPathEnv) {
+            Remove-Item env:PYTHONPATH -ErrorAction SilentlyContinue
+        } else {
+            $env:PYTHONPATH = $originalPythonPathEnv
         }
     }
 }
@@ -284,19 +306,29 @@ function Ensure-ManagedVenvAndDeps {
     # 3) Use mirror for faster installation
     $mirrorArgs = @('-i', 'https://pypi.tuna.tsinghua.edu.cn/simple/', '--trusted-host', 'pypi.tuna.tsinghua.edu.cn')
 
-    # 4) Upgrade pip and install requirements
-    try { & $venvPy -m pip install -U pip @mirrorArgs } catch {}
+    $originalPipUser = $env:PIP_USER
+    $env:PIP_USER = ''
 
-    if (Test-Path 'requirements.txt') {
-        Write-Host "INSTALL: 安装项目依赖 requirements.txt 到用户虚拟环境" -ForegroundColor Cyan
-        & $venvPy -m pip install -r requirements.txt @mirrorArgs
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "ERROR: 依赖安装失败（虚拟环境），请检查网络或镜像源" -ForegroundColor Red
+    try {
+        try { & $venvPy -m pip install -U pip @mirrorArgs } catch {}
+
+        if (Test-Path 'requirements.txt') {
+            Write-Host "INSTALL: 安装项目依赖 requirements.txt 到用户虚拟环境" -ForegroundColor Cyan
+            & $venvPy -m pip install -r requirements.txt @mirrorArgs
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "ERROR: 依赖安装失败（虚拟环境），请检查网络或镜像源" -ForegroundColor Red
+                exit 1
+            }
+        } else {
+            Write-Host "ERROR: 未找到 requirements.txt 文件" -ForegroundColor Red
             exit 1
         }
-    } else {
-        Write-Host "ERROR: 未找到 requirements.txt 文件" -ForegroundColor Red
-        exit 1
+    } finally {
+        if ($null -eq $originalPipUser) {
+            Remove-Item Env:PIP_USER -ErrorAction SilentlyContinue
+        } else {
+            $env:PIP_USER = $originalPipUser
+        }
     }
 
     # 5) Ensure playwright and browsers (optional, best-effort)

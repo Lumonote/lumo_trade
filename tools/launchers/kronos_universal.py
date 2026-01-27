@@ -60,8 +60,19 @@ def fallback_to_native():
     """回退到原生界面"""
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+    # 非 macOS 平台直接回退到命令行/基础 GUI，避免错误调用 macOS 原生界面
+    if platform.system() != "Darwin":
+        print("当前非 macOS 平台，回退到基础界面...")
+        try:
+            sys.path.insert(0, project_root)
+            import kronos_app
+            kronos_app.main()
+            return
+        except Exception as e2:
+            print(f"命令行界面启动失败: {e2}")
+            return
+
     try:
-        # 尝试原生macOS界面
         sys.path.insert(0, os.path.join(project_root, 'tools', 'launchers'))
         import kronos_native_macos
         kronos_native_macos.main()
@@ -69,25 +80,28 @@ def fallback_to_native():
         print(f"原生界面启动失败: {e}")
         print("启动命令行界面...")
         try:
-            # 回退到命令行界面
             sys.path.insert(0, project_root)
             import kronos_app
             kronos_app.main()
         except Exception as e2:
             print(f"命令行界面也启动失败: {e2}")
-            # 最后的原生错误提示
             try:
-                subprocess.run(['osascript', '-e', f'''
-                    display dialog "Kronos 启动失败，所有界面都不可用。
+                subprocess.run(
+                    [
+                        'osascript',
+                        '-e',
+                        f'''display dialog "Kronos 启动失败，所有界面都不可用。
 
 错误信息: {str(e2)}
 
 请尝试：
 1. 运行一键安装脚本
 2. 检查 Python 环境
-3. 联系技术支持" with title "Kronos 启动错误" buttons {{"确定"}} default button 1 with icon stop
-                '''], check=False)
-            except:
+3. 联系技术支持" with title "Kronos 启动错误" buttons {{"确定"}} default button 1 with icon stop''',
+                    ],
+                    check=False,
+                )
+            except Exception:
                 print("无法显示错误对话框，程序退出")
 
 

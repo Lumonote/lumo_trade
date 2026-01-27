@@ -119,17 +119,18 @@ python license_generator.py
 ### 开发者打包流程
 
 ```bash
-# Windows版本
-./packaging/scripts/build_universal.sh windows
+# Windows 本地构建（在 Windows CMD/PowerShell 中执行）
+packaging\scripts\build_universal.bat windows
 
-# macOS版本  
-./packaging/scripts/build_universal.sh mac
+# Windows 使用 Docker 构建（在 macOS/Linux 上为 Windows 生成安装包）
+./packaging/scripts/build_universal.sh windows-docker
 
-# 查看状态
-./packaging/scripts/build_universal.sh status
+# macOS 本地构建（在 macOS 终端）
+./packaging/scripts/build_universal.sh macos
 
-# 清理构建
-./packaging/scripts/build_universal.sh clean
+# 清理构建产物
+./packaging/scripts/build_universal.sh macos --clean        # macOS/Linux
+packaging\scripts\build_universal.bat windows --clean       # Windows
 ```
 
 ## 💡 商业化优势

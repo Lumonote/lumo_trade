@@ -243,9 +243,7 @@ class OpportunityReportGenerator:
 
                 summary_txt = self._build_full_indicator_summary(stock)
                 advanced_txt = self._build_advanced_analysis_summary(stock)
-                
-                # 合并展示：指标信息 + 高级分析
-                full_analysis = f"{summary_txt}<br><b>【高级分析】</b>{advanced_txt}"
+                full_analysis = f"{summary_txt}<br>【高级】{advanced_txt}" if advanced_txt and advanced_txt != "—" else summary_txt
                 
                 lines.append(f" | {i} | {code} | {name_txt} | {score:.2f} | {full_analysis} | ")
 
@@ -1839,6 +1837,37 @@ class OpportunityReportGenerator:
             scoring_result = stock.get('scoring_result') or {}
             details = scoring_result.get('details') or {}
             advanced = stock.get('advanced_analysis') or scoring_result.get('advanced_analysis') or {}
+
+            def _num(val, default=None):
+                if val is None:
+                    return default
+                if isinstance(val, bool):
+                    return default
+                if isinstance(val, (int, float)):
+                    return float(val)
+                if isinstance(val, str):
+                    s = val.strip()
+                    if not s:
+                        return default
+                    s = s.replace(',', '')
+                    if s.endswith('%'):
+                        s = s[:-1].strip()
+                    if s.startswith('+'):
+                        s = s[1:].strip()
+                    try:
+                        return float(s)
+                    except Exception:
+                        return default
+                if isinstance(val, dict):
+                    for k in ('final_score', 'score', 'value', 'pct', 'percent', 'ratio', 'index'):
+                        if k in val:
+                            v2 = _num(val.get(k), default=None)
+                            if v2 is not None:
+                                return v2
+                    return default
+                if isinstance(val, (list, tuple)) and val:
+                    return _num(val[0], default=default)
+                return default
             
             # 1. 追高风险 (来自 details.momentum)
             momentum = details.get('momentum') or {}
@@ -1848,7 +1877,7 @@ class OpportunityReportGenerator:
                 risk_emoji = {'low': '🟢', 'low_medium': '🟡', 'medium': '🟠', 'high': '🔴'}.get(chase_risk, '⚪')
                 risk_cn = {'low': '低', 'low_medium': '中低', 'medium': '中等', 'high': '偏高'}.get(chase_risk, chase_risk)
                 safe_score = max(0, min(100, float(chase_score or 0)))
-                parts.append(f"**追高风险**: {risk_emoji} {risk_cn}({safe_score:.0f}分)")
+                parts.append(f"追高风险: {risk_emoji} {risk_cn}({safe_score:.0f}分)")
 
             # 2. 量价形态 (来自 details.volume_health)
             volume_health = details.get('volume_health') or {}
@@ -1862,7 +1891,7 @@ class OpportunityReportGenerator:
                                  'vol_up_price_down': '放量下跌', 'vol_down_price_up': '缩量上涨'}.get(p_type, p_type)
                         p_list.append(f"{p_name}({days}天)")
                 if p_list:
-                    parts.append(f"**量价**: {', '.join(p_list)}")
+                    parts.append(f"量价: {', '.join(p_list)}")
 
             # 3. 高级分析维度 (来自 advanced_analysis)
             if advanced:
@@ -1871,11 +1900,15 @@ class OpportunityReportGenerator:
                 # 3.1 综合评分
                 adv_score = 0
                 if 'overall_score' in advanced:
-                    adv_score = advanced['overall_score'].get('final_score', 0)
+                    if isinstance(advanced.get('overall_score'), dict):
+                        adv_score = advanced['overall_score'].get('final_score', 0)
+                    else:
+                        adv_score = advanced.get('overall_score', 0)
                 else:
                     adv_score = advanced.get('综合评分', 0)
                 
-                parts.append(f"**高级评分**: {adv_score:.1f}分")
+                adv_score_num = _num(adv_score, default=0.0)
+                parts.append(f"高级评分: {adv_score_num:.1f}分")
                 
                 dimensions = advanced.get('dimensions', {})
                 
@@ -1893,12 +1926,16 @@ class OpportunityReportGenerator:
                         lock_str = lock_raw
                     
                     chip_parts = []
-                    if conc: chip_parts.append(f"集中度{conc:.1f}%")
-                    if control: chip_parts.append(f"控盘{control:.1f}") # 控盘度可能是0-1或0-100，这里假设是数值
+                    conc_num = _num(conc, default=None)
+                    control_num = _num(control, default=None)
+                    if conc_num not in (None, 0.0):
+                        chip_parts.append(f"集中度{conc_num:.1f}%")
+                    if control_num not in (None, 0.0):
+                        chip_parts.append(f"控盘{control_num:.1f}")
                     if lock_str and lock_str != '无': chip_parts.append(lock_str)
                     
                     if chip_parts:
-                        parts.append(f"**筹码**: {', '.join(chip_parts)}")
+                        parts.append(f"筹码: {', '.join(chip_parts)}")
                 
                 # 3.3 板块 (Sector)
                 sector = dimensions.get('sector', {}).get('details', {}) or advanced.get('板块联动', {})
@@ -1908,11 +1945,15 @@ class OpportunityReportGenerator:
                     s_rot = sector.get('rotation_phase') or sector.get('轮动阶段', '')
                     
                     sec_parts = []
-                    if s_name: sec_parts.append(f"{s_name}(排名{s_rank})")
+                    if s_name and str(s_name).strip() not in ('未知', 'Unknown', 'unknown'):
+                        if s_rank:
+                            sec_parts.append(f"{s_name}(排名{s_rank})")
+                        else:
+                            sec_parts.append(f"{s_name}")
                     if s_rot and s_rot != 'unknown': sec_parts.append(s_rot)
                     
                     if sec_parts:
-                        parts.append(f"**板块**: {', '.join(sec_parts)}")
+                        parts.append(f"板块: {', '.join(sec_parts)}")
 
                 # 3.4 资金 (Capital)
                 capital = dimensions.get('capital_flow', {}).get('details', {}) or advanced.get('资金流向', {})
@@ -1968,21 +2009,57 @@ class OpportunityReportGenerator:
                         direction = _infer_main_force_direction()
                         direction_str = f"({direction})" if direction else ""
                         cap_parts.append(f"主力连续{main_cont}天{direction_str}")
-                    if retail > 0 and abs(retail - 50.0) > 0.1: cap_parts.append(f"散户{retail:.1f}%")
+                    retail_num = _num(retail, default=None)
+                    if retail_num is not None and retail_num > 0 and abs(retail_num - 50.0) > 0.1:
+                        cap_parts.append(f"散户{retail_num:.1f}%")
                     
                     if cap_parts:
-                        parts.append(f"**资金**: {', '.join(cap_parts)}")
+                        parts.append(f"资金: {', '.join(cap_parts)}")
 
                 # 3.5 情绪 (Sentiment)
                 sent_dim = dimensions.get('sentiment_cycle', {})
                 sent_details = sent_dim.get('details', {})
                 # 旧版可能直接在 sent_dim 或 advanced.get('情绪周期')
                 
-                market_cycle = sent_details.get('market_cycle') or advanced.get('情绪周期', {}).get('市场周期', '')
-                fg_index = sent_details.get('fear_greed_index') or advanced.get('情绪周期', {}).get('恐惧贪婪指数', 0)
+                phase_raw = sent_details.get('market_cycle') or sent_details.get('cycle_phase') or ''
+                if not phase_raw:
+                    try:
+                        phase_raw = (advanced.get('情绪周期', {}) or {}).get('市场周期', '')
+                    except Exception:
+                        phase_raw = ''
+
+                phase_cn_map = {
+                    'bottom': '底部',
+                    'rising': '上升期',
+                    'top': '顶部',
+                    'falling': '下降期',
+                    'consolidation': '震荡',
+                    'unknown': '',
+                }
+                phase_txt = phase_cn_map.get(str(phase_raw).strip().lower(), str(phase_raw).strip() if phase_raw else '')
+
+                fg_raw = sent_details.get('fear_greed_index') or (advanced.get('情绪周期', {}) or {}).get('恐惧贪婪指数', None)
+                fg_num = _num(fg_raw, default=None)
+
+                emotion_txt = ''
+                if isinstance(fg_raw, dict):
+                    try:
+                        emotion_txt = str(fg_raw.get('emotion') or '').strip()
+                    except Exception:
+                        emotion_txt = ''
                 
-                if market_cycle or fg_index:
-                    parts.append(f"**情绪**: {market_cycle or '-'}, 恐贪{fg_index:.0f}")
+                show_sentiment = False
+                if phase_txt and phase_txt not in ('震荡', '-'):
+                    show_sentiment = True
+                if emotion_txt and emotion_txt not in ('中性', '-'):
+                    show_sentiment = True
+                if fg_num is not None and abs(fg_num - 50.0) >= 5:
+                    show_sentiment = True
+
+                if show_sentiment:
+                    fg_txt = f"{fg_num:.0f}" if fg_num is not None else "-"
+                    head = " / ".join([t for t in [phase_txt, emotion_txt] if t]) or '中性'
+                    parts.append(f"情绪: {head}, 恐贪{fg_txt}")
 
                 # 3.6 分时 (Intraday)
                 intra = dimensions.get('intraday', {}).get('details', {}) or advanced.get('分时特征', {})
@@ -1990,7 +2067,7 @@ class OpportunityReportGenerator:
                     manip = intra.get('manipulation', {})
                     manip_type = manip.get('type') if isinstance(manip, dict) else intra.get('操盘痕迹', '')
                     if manip_type:
-                        parts.append(f"**分时**: {manip_type}")
+                        parts.append(f"分时: {manip_type}")
 
                 # 3.7 K线形态 (Patterns)
                 # pattern_detector returns {'patterns': {'detected_patterns': [...]}} usually
@@ -2005,7 +2082,7 @@ class OpportunityReportGenerator:
                         elif isinstance(p, str):
                             pat_names.append(p)
                     if pat_names:
-                        parts.append(f"**形态**: {', '.join(pat_names[:2])}")
+                        parts.append(f"形态: {', '.join(pat_names[:2])}")
                 
             return ' '.join(parts) if parts else "—"
         except Exception as e:

@@ -27,6 +27,7 @@ import time
 import webbrowser
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict
 
 # 首先尝试导入tkinter
 HAS_TKINTER = False
@@ -1200,6 +1201,8 @@ class LLMConfigDialog:
         self.parent = parent
         self.system_python = None
         self.llm_config = None
+        self.tushare_config = None
+        self.config_dir = None
 
         # 检测系统Python（已安装依赖的环境）
         self.system_python = self._detect_system_python_with_deps()
@@ -1219,7 +1222,21 @@ class LLMConfigDialog:
         try:
             # 不导入pandas，直接使用基础Python模块读取配置
             import json
-            config_path = project_root / 'config' / 'llm_config.json'
+            self.config_dir = self._resolve_config_dir()
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+
+            app_config_dir = project_root / 'config'
+            if app_config_dir.exists():
+                for name in ("llm_config.json", "tushare_config.json"):
+                    src = app_config_dir / name
+                    dst = self.config_dir / name
+                    if src.exists() and not dst.exists():
+                        try:
+                            shutil.copy2(src, dst)
+                        except Exception:
+                            pass
+
+            config_path = self.config_dir / 'llm_config.json'
 
             if config_path.exists():
                 with open(config_path, 'r', encoding='utf-8') as f:
@@ -1249,6 +1266,8 @@ class LLMConfigDialog:
                 with open(config_path, 'w', encoding='utf-8') as f:
                     json.dump(self.llm_config, f, indent=2, ensure_ascii=False)
 
+            self.tushare_config = self._load_tushare_config()
+
         except Exception as e:
             messagebox.showerror(
                 "配置错误",
@@ -1259,7 +1278,7 @@ class LLMConfigDialog:
         # 创建对话框
         self.parent = parent
         self.dialog = tk.Toplevel(parent)
-        self.dialog.title("AI 模型配置")
+        self.dialog.title("AI 模型与数据配置")
 
         # 根据父窗口尺寸进行自适应宽高（默认最小 720x600）
         try:
@@ -1326,13 +1345,13 @@ class LLMConfigDialog:
         icon_label.pack(pady=(0, 10))
 
         # 主标题
-        title_label = tk.Label(header_frame, text="AI 智能分析配置",
+        title_label = tk.Label(header_frame, text="AI 模型与数据配置",
                                font=("SF Pro Display", 20, "bold"),
                                fg="#1F2937", bg="#FFFFFF")
         title_label.pack()
 
         # 描述文字
-        desc_label = tk.Label(header_frame, text="配置大模型 API，启用 AI 智能预测和投资建议",
+        desc_label = tk.Label(header_frame, text="配置大模型 API 与数据源（Tushare），启用 AI 智能预测和投资建议",
                               font=("SF Pro Display", 13, "normal"),
                               fg="#6B7280", bg="#FFFFFF")
         desc_label.pack(pady=(5, 0))
@@ -1486,6 +1505,12 @@ class LLMConfigDialog:
 
         # DeepSeek 配置
         self.create_llm_config_section(scrollable_frame, "deepseek", "DeepSeek", "DeepSeek 大模型")
+
+        # 分隔线
+        tk.Frame(scrollable_frame, bg="#E5E7EB", height=1).pack(fill=tk.X, pady=20)
+
+        # Tushare 配置
+        self.create_tushare_config_section(scrollable_frame)
 
         # 底部按钮区域
         button_frame = tk.Frame(main_frame, bg="#FFFFFF")
@@ -1824,6 +1849,372 @@ class LLMConfigDialog:
         _adapt_section_layout()
         content_frame.bind("<Configure>", _adapt_section_layout)
 
+    def _resolve_config_dir(self) -> Path:
+        env_dir = os.environ.get('KRONOS_CONFIG_DIR')
+        if env_dir:
+            return Path(env_dir)
+        if getattr(sys, 'frozen', False):
+            return Path.home() / "Documents" / "Kronos" / "config"
+        return project_root / 'config'
+
+    def _default_tushare_config(self) -> Dict[str, Any]:
+        return {
+            "tushare": {"token": "", "timeout": 30, "retry_count": 3},
+            "data_settings": {
+                "output_dir": "./data/",
+                "file_format": "csv",
+                "date_format": "%Y-%m-%d %H:%M:%S"
+            },
+            "default_params": {
+                "freq": "5min",
+                "adj": "qfq",
+                "start_date": "",
+                "end_date": "",
+                "data_dir": "./data/tushare_data"
+            }
+        }
+
+    def _load_tushare_config(self) -> Dict[str, Any]:
+        config_dir = self.config_dir or self._resolve_config_dir()
+        config_path = config_dir / 'tushare_config.json'
+        cfg: Dict[str, Any] = {}
+        try:
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f) or {}
+        except Exception:
+            cfg = {}
+
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        default_cfg = self._default_tushare_config()
+        merged = default_cfg
+        merged.update({k: v for k, v in cfg.items() if k in ('data_settings', 'default_params') and isinstance(v, dict)})
+
+        token = ""
+        timeout = 30
+        retry_count = 3
+        if isinstance(cfg.get('tushare'), dict):
+            token = str(cfg.get('tushare', {}).get('token', '') or '')
+            timeout = int(cfg.get('tushare', {}).get('timeout', timeout) or timeout)
+            retry_count = int(cfg.get('tushare', {}).get('retry_count', retry_count) or retry_count)
+        else:
+            token = str(cfg.get('token', '') or '')
+            if 'timeout' in cfg:
+                timeout = int(cfg.get('timeout', timeout) or timeout)
+            if 'retry_count' in cfg:
+                retry_count = int(cfg.get('retry_count', retry_count) or retry_count)
+
+        merged['tushare'] = {"token": token, "timeout": timeout, "retry_count": retry_count}
+        merged['token'] = token
+        merged['timeout'] = timeout
+        merged['retry_count'] = retry_count
+        return merged
+
+    def _save_tushare_config(self) -> bool:
+        if not self.tushare_config:
+            self.tushare_config = self._default_tushare_config()
+
+        token_entry = getattr(self, "tushare_token_entry", None)
+        timeout_entry = getattr(self, "tushare_timeout_entry", None)
+        retry_entry = getattr(self, "tushare_retry_entry", None)
+        if not token_entry:
+            return True
+
+        token = token_entry.get().strip()
+        timeout_str = timeout_entry.get().strip() if timeout_entry else ""
+        retry_str = retry_entry.get().strip() if retry_entry else ""
+
+        try:
+            timeout = int(timeout_str) if timeout_str else int(self.tushare_config.get('tushare', {}).get('timeout', 30))
+        except Exception:
+            timeout = 30
+        try:
+            retry_count = int(retry_str) if retry_str else int(self.tushare_config.get('tushare', {}).get('retry_count', 3))
+        except Exception:
+            retry_count = 3
+
+        timeout = max(5, min(timeout, 120))
+        retry_count = max(0, min(retry_count, 10))
+
+        if 'tushare' not in self.tushare_config or not isinstance(self.tushare_config.get('tushare'), dict):
+            self.tushare_config['tushare'] = {}
+        self.tushare_config['tushare']['token'] = token
+        self.tushare_config['tushare']['timeout'] = timeout
+        self.tushare_config['tushare']['retry_count'] = retry_count
+        self.tushare_config['token'] = token
+        self.tushare_config['timeout'] = timeout
+        self.tushare_config['retry_count'] = retry_count
+
+        config_dir = self.config_dir or self._resolve_config_dir()
+        config_dir.mkdir(parents=True, exist_ok=True)
+        primary_path = config_dir / 'tushare_config.json'
+
+        def _write(path: Path) -> bool:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(self.tushare_config, f, indent=2, ensure_ascii=False)
+                return True
+            except Exception:
+                return False
+
+        ok = _write(primary_path)
+
+        app_path = project_root / 'config' / 'tushare_config.json'
+        if app_path.resolve() != primary_path.resolve():
+            try:
+                _write(app_path)
+            except Exception:
+                pass
+
+        return ok
+
+    def create_tushare_config_section(self, parent):
+        cfg = self.tushare_config or self._load_tushare_config()
+        self.tushare_config = cfg
+
+        section_frame = tk.Frame(parent, bg="#F9FAFB", relief="flat", bd=0)
+        section_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+
+        content_frame = tk.Frame(section_frame, bg="#F9FAFB")
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+
+        title_row = tk.Frame(content_frame, bg="#F9FAFB")
+        title_row.pack(fill=tk.X, pady=(0, 10))
+
+        title_label = tk.Label(title_row, text="Tushare 数据配置",
+                               font=("SF Pro Display", 16, "bold"),
+                               fg="#1F2937", bg="#F9FAFB")
+        title_label.pack(side=tk.LEFT)
+
+        status_label = tk.Label(title_row, text="未配置",
+                                font=("SF Pro Display", 12, "normal"),
+                                fg="#DC2626", bg="#F9FAFB")
+        status_label.pack(side=tk.RIGHT)
+
+        desc_label = tk.Label(content_frame, text="在线配置 Tushare Token，用于更稳定的行情/基本面数据获取",
+                              font=("SF Pro Display", 12, "normal"),
+                              fg="#6B7280", bg="#F9FAFB")
+        desc_label.pack(anchor="w", pady=(0, 12))
+
+        token_label = tk.Label(content_frame, text="Token",
+                               font=("SF Pro Display", 13, "bold"),
+                               fg="#1F2937", bg="#F9FAFB")
+        token_label.pack(anchor="w", pady=(0, 5))
+
+        token_row = tk.Frame(content_frame, bg="#F9FAFB")
+        token_row.pack(fill=tk.X, pady=(0, 8))
+
+        token_entry = tk.Entry(token_row, font=("SF Pro Display", 12, "normal"),
+                               bg="#FFFFFF", fg="#1F2937", relief="flat", bd=0,
+                               highlightthickness=1, highlightbackground="#E5E7EB",
+                               highlightcolor="#4F46E5", show="*")
+        token_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8, ipadx=10)
+        token_entry.insert(0, str(cfg.get('tushare', {}).get('token', '') or ''))
+        self.tushare_token_entry = token_entry
+
+        show_var = tk.BooleanVar(value=False)
+
+        def toggle_show():
+            show_var.set(not show_var.get())
+            token_entry.configure(show="" if show_var.get() else "*")
+            toggle_btn.configure(text="隐藏" if show_var.get() else "显示")
+
+        toggle_btn = tk.Button(token_row, text="显示",
+                               font=("SF Pro Display", 11, "bold"),
+                               fg="#374151", bg="#FFFFFF", relief="solid", bd=1,
+                               padx=12, pady=7, command=toggle_show,
+                               cursor="hand2", highlightthickness=1,
+                               highlightbackground="#D1D5DB")
+        toggle_btn.pack(side=tk.LEFT, padx=(10, 0))
+
+        token_help = tk.Frame(content_frame, bg="#FEF3C7", relief="flat", bd=0)
+        token_help.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        help_content = tk.Frame(token_help, bg="#FEF3C7")
+        help_content.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
+
+        help_title_row = tk.Frame(help_content, bg="#FEF3C7")
+        help_title_row.pack(fill=tk.X, expand=True, pady=(0, 5))
+
+        info_icon = tk.Label(help_title_row, text="ℹ️",
+                             font=("Apple Color Emoji", 14),
+                             bg="#FEF3C7")
+        info_icon.pack(side=tk.LEFT, padx=(0, 8))
+
+        help_title_label = tk.Label(help_title_row, text="获取 Token",
+                                    font=("SF Pro Display", 11, "bold"),
+                                    fg="#92400E", bg="#FEF3C7",
+                                    anchor="w")
+        help_title_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        help_lines = [
+            "1. 登录 tushare.pro",
+            "2. 进入个人中心 - Token",
+            "3. 复制 Token 粘贴到上方输入框"
+        ]
+
+        help_labels = []
+        for line in help_lines:
+            line_label = tk.Label(help_content, text=line,
+                                  font=("SF Pro Display", 11, "normal"),
+                                  fg="#92400E", bg="#FEF3C7",
+                                  anchor="w")
+            line_label.pack(fill=tk.X, expand=True, anchor="w", pady=1, padx=(18, 0))
+            help_labels.append(line_label)
+
+        def open_token_page():
+            webbrowser.open("https://tushare.pro/user/token")
+
+        link_row = tk.Frame(help_content, bg="#FEF3C7")
+        link_row.pack(fill=tk.X, expand=True, pady=(8, 0), padx=(22, 0))
+
+        link_btn = tk.Label(link_row, text="前往获取 →",
+                            font=("SF Pro Display", 11, "bold"),
+                            fg="#4F46E5", bg="#FEF3C7",
+                            cursor="hand2")
+        link_btn.pack(side=tk.LEFT)
+        link_btn.bind("<Button-1>", lambda e: open_token_page())
+
+        param_row = tk.Frame(content_frame, bg="#F9FAFB")
+        param_row.pack(fill=tk.X, pady=(6, 0))
+
+        timeout_label = tk.Label(param_row, text="超时(秒)",
+                                 font=("SF Pro Display", 12, "bold"),
+                                 fg="#1F2937", bg="#F9FAFB")
+        timeout_label.pack(side=tk.LEFT)
+
+        timeout_entry = tk.Entry(param_row, font=("SF Pro Display", 12, "normal"),
+                                 bg="#FFFFFF", fg="#1F2937", relief="flat", bd=0,
+                                 highlightthickness=1, highlightbackground="#E5E7EB",
+                                 highlightcolor="#4F46E5")
+        timeout_entry.pack(side=tk.LEFT, padx=(10, 18), ipady=6, ipadx=10)
+        timeout_entry.insert(0, str(cfg.get('tushare', {}).get('timeout', 30) or 30))
+        self.tushare_timeout_entry = timeout_entry
+
+        retry_label = tk.Label(param_row, text="重试次数",
+                               font=("SF Pro Display", 12, "bold"),
+                               fg="#1F2937", bg="#F9FAFB")
+        retry_label.pack(side=tk.LEFT)
+
+        retry_entry = tk.Entry(param_row, font=("SF Pro Display", 12, "normal"),
+                               bg="#FFFFFF", fg="#1F2937", relief="flat", bd=0,
+                               highlightthickness=1, highlightbackground="#E5E7EB",
+                               highlightcolor="#4F46E5")
+        retry_entry.pack(side=tk.LEFT, padx=(10, 0), ipady=6, ipadx=10)
+        retry_entry.insert(0, str(cfg.get('tushare', {}).get('retry_count', 3) or 3))
+        self.tushare_retry_entry = retry_entry
+
+        action_row = tk.Frame(content_frame, bg="#F9FAFB")
+        action_row.pack(fill=tk.X, pady=(12, 0))
+
+        test_btn = tk.Button(action_row, text="测试连接",
+                             font=("SF Pro Display", 12, "normal"),
+                             fg="#4F46E5", bg="#EEF2FF", relief="flat", bd=0,
+                             padx=14, pady=7, cursor="hand2")
+        test_btn.pack(side=tk.LEFT)
+
+        save_btn = tk.Button(action_row, text="保存 Tushare 配置",
+                             font=("SF Pro Display", 12, "normal"),
+                             fg="#FFFFFF", bg="#10B981", relief="flat", bd=0,
+                             padx=14, pady=7, cursor="hand2")
+        save_btn.pack(side=tk.LEFT, padx=(10, 0))
+
+        def refresh_status():
+            has_token = bool(token_entry.get().strip())
+            status_label.configure(
+                text="已配置" if has_token else "未配置",
+                fg="#10B981" if has_token else "#DC2626"
+            )
+
+        refresh_status()
+        token_entry.bind("<KeyRelease>", lambda e: refresh_status())
+
+        def do_save():
+            ok = self._save_tushare_config()
+            if ok:
+                messagebox.showinfo("成功", "✅ Tushare 配置已保存！", parent=self.dialog)
+            else:
+                messagebox.showwarning("提示", "⚠️ 已尝试保存，但可能存在写入失败（请检查权限）", parent=self.dialog)
+
+        save_btn.configure(command=do_save)
+
+        def do_test():
+            token = token_entry.get().strip()
+            if not token:
+                messagebox.showwarning("提示", "请先填写 Tushare Token", parent=self.dialog)
+                return
+
+            test_btn.configure(text="测试中...", state=tk.DISABLED)
+
+            def _run():
+                try:
+                    code = (
+                        "import warnings\n"
+                        "warnings.filterwarnings('ignore', message='urllib3 v2 only supports OpenSSL*')\n"
+                        "import tushare as ts\n"
+                        "ts.set_token(__import__('os').environ.get('KRONOS_TUSHARE_TOKEN',''))\n"
+                        "pro = ts.pro_api()\n"
+                        "try:\n"
+                        "    df = pro.stock_basic(exchange='', list_status='L', fields='ts_code', limit=1)\n"
+                        "    print('OK' if df is not None else 'FAIL')\n"
+                        "except Exception as e:\n"
+                        "    msg = str(e)\n"
+                        "    if '没有接口访问权限' in msg or '接口访问权限' in msg:\n"
+                        "        print('LIMITED:' + msg)\n"
+                        "    else:\n"
+                        "        raise\n"
+                    )
+                    env = os.environ.copy()
+                    env['KRONOS_TUSHARE_TOKEN'] = token
+                    result = subprocess.run(
+                        [self.system_python, "-c", code],
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                        env=env
+                    )
+                    stdout = (result.stdout or "").strip()
+                    stderr = (result.stderr or "").strip()
+                    ok = result.returncode == 0 and ("OK" in stdout)
+                    limited = result.returncode == 0 and stdout.startswith("LIMITED:")
+                    self.dialog.after(0, lambda: test_btn.configure(text="测试连接", state=tk.NORMAL))
+                    if ok:
+                        messagebox.showinfo("测试成功", "✅ Tushare 连接测试成功！", parent=self.dialog)
+                    elif limited:
+                        msg = stdout[len("LIMITED:"):].strip()
+                        messagebox.showwarning(
+                            "权限不足",
+                            "✅ 已成功连接到 Tushare，但当前账号没有该接口访问权限。\n\n"
+                            f"{msg}\n\n"
+                            "建议：登录 tushare.pro 查看权限说明/升级积分，或更换有权限的 Token。",
+                            parent=self.dialog
+                        )
+                    else:
+                        err_text = stderr or stdout
+                        messagebox.showwarning("测试失败", f"⚠️ Tushare 连接测试失败\n\n{err_text}", parent=self.dialog)
+                except Exception as e:
+                    self.dialog.after(0, lambda: test_btn.configure(text="测试连接", state=tk.NORMAL))
+                    messagebox.showerror("测试失败", f"❌ Tushare 连接测试异常\n\n{str(e)}", parent=self.dialog)
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        test_btn.configure(command=do_test)
+
+        def _adapt_layout(event=None):
+            try:
+                w = content_frame.winfo_width() or self.dialog.winfo_width()
+                wrap_w = max(280, int(w * 0.90))
+                for lbl in help_labels:
+                    lbl.configure(wraplength=wrap_w)
+            except Exception:
+                pass
+
+        _adapt_layout()
+        content_frame.bind("<Configure>", _adapt_layout)
+
     def save_config(self):
         """保存配置"""
         try:
@@ -1851,14 +2242,28 @@ class LLMConfigDialog:
                         if selected_model:
                             self.llm_config[llm_name]['model'] = selected_model
 
-            # 保存到文件
-            config_path = project_root / 'config' / 'llm_config.json'
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(config_path, 'w', encoding='utf-8') as f:
+            config_dir = self.config_dir or self._resolve_config_dir()
+            config_dir.mkdir(parents=True, exist_ok=True)
+
+            llm_path = config_dir / 'llm_config.json'
+            with open(llm_path, 'w', encoding='utf-8') as f:
                 json.dump(self.llm_config, f, indent=2, ensure_ascii=False)
 
-            messagebox.showinfo("成功", "✅ 配置保存成功！", parent=self.dialog)
-            self.dialog.destroy()
+            app_llm_path = project_root / 'config' / 'llm_config.json'
+            if app_llm_path.resolve() != llm_path.resolve():
+                try:
+                    app_llm_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(app_llm_path, 'w', encoding='utf-8') as f:
+                        json.dump(self.llm_config, f, indent=2, ensure_ascii=False)
+                except Exception:
+                    pass
+
+            tushare_ok = self._save_tushare_config()
+            if tushare_ok:
+                messagebox.showinfo("成功", "✅ 配置保存成功！", parent=self.dialog)
+                self.dialog.destroy()
+            else:
+                messagebox.showwarning("提示", "⚠️ LLM 配置已保存，但 Tushare 配置可能写入失败（请检查权限）", parent=self.dialog)
 
         except Exception as e:
             messagebox.showerror("错误", f"保存配置失败：{e}", parent=self.dialog)
@@ -2052,7 +2457,7 @@ class KronosMacOSGUI:
         functions = [
             {"title": "批量分析", "desc": "多股票分析", "icon": "📈", "color": "#EA580C", "command": self.batch_predict},
             {"title": "投资机会挖掘", "desc": "TOP100热门股票分析买入机会", "icon": "🔥", "color": "#DC2626", "command": self.opportunity_discovery},
-            {"title": "AI模型配置", "desc": "配置通义千问/DeepSeek", "icon": "🤖", "color": "#7C3AED",
+            {"title": "AI模型与数据配置", "desc": "配置通义千问/DeepSeek 与数据源", "icon": "🤖", "color": "#7C3AED",
              "command": self.config_llm},
             {"title": "环境检查", "desc": "检查系统环境", "icon": "🔍", "color": "#4F46E5",
              "command": self.check_environment},
@@ -2429,7 +2834,7 @@ class KronosMacOSGUI:
                 self.activate_license()
 
     def config_llm(self):
-        """AI模型配置"""
+        """AI模型与数据配置"""
         LLMConfigDialog(self.root)
 
     def fetch_tushare(self):
@@ -3952,53 +4357,90 @@ def main():
     """主程序入口"""
     try:
         if not HAS_TKINTER:
-            # 如果没有tkinter，使用原生macOS界面
-            print("tkinter不可用，启动原生macOS界面...")
-            from kronos_native_macos import main as native_main
-            native_main()
+            # 不同平台的回退策略
+            if platform.system() == "Darwin":
+                print("tkinter不可用，启动原生macOS界面...")
+                from kronos_native_macos import main as native_main
+                native_main()
+            else:
+                print("tkinter不可用，回退到基础GUI/命令行界面...")
+                from kronos_app import main as fallback_main
+                fallback_main()
             return
 
-        # 检查tkinter可用性
-        test_root = tk.Tk()
-        test_root.withdraw()
-        test_root.destroy()
+        try:
+            test_root = tk.Tk()
+            test_root.withdraw()
+            test_root.destroy()
+        except Exception as e:
+            print(f"tkinter 初始化失败: {e}")
+            if platform.system() == "Darwin":
+                print("启动原生macOS界面...")
+                from kronos_native_macos import main as native_main
+                native_main()
+            else:
+                print("回退到基础GUI/命令行界面...")
+                from kronos_app import main as fallback_main
+                fallback_main()
+            return
 
-        # 启动macOS现代化GUI
         app = KronosMacOSGUI()
         app.run()
 
     except ImportError as e:
         print(f"GUI界面需要tkinter支持: {e}")
-        print("启动原生macOS界面...")
-        # 回退到原生macOS版本
-        try:
-            from kronos_native_macos import main as native_main
-            native_main()
-        except Exception as e2:
-            print(f"原生界面也启动失败: {e2}")
-            # 显示简单的原生对话框
-            subprocess.run(['osascript', '-e', f'''
-                display dialog "Kronos GUI启动失败
-                
-错误信息: {str(e)}
-
-正在尝试使用原生界面..." with title "Kronos" buttons {{"确定"}} default button 1 with icon note
-            '''], check=False)
-            # 最后尝试使用kronos_app.py
+        if platform.system() == "Darwin":
+            print("启动原生macOS界面...")
             try:
-                from kronos_app import main as fallback_main
-                fallback_main()
-            except:
-                subprocess.run(['osascript', '-e', '''
-                    display dialog "所有界面都启动失败，请检查系统环境" with title "Kronos错误" buttons {"确定"} default button 1 with icon stop
-                '''], check=False)
+                from kronos_native_macos import main as native_main
+                native_main()
+            except Exception as e2:
+                print(f"原生界面也启动失败: {e2}")
+                try:
+                    subprocess.run(
+                        [
+                            'osascript',
+                            '-e',
+                            f'display dialog "Kronos GUI启动失败: {str(e)}" with title "Kronos" buttons {{"确定"}} default button 1 with icon note',
+                        ],
+                        check=False,
+                    )
+                except Exception:
+                    pass
+                try:
+                    from kronos_app import main as fallback_main
+                    fallback_main()
+                except Exception:
+                    try:
+                        subprocess.run(
+                            [
+                                'osascript',
+                                '-e',
+                                'display dialog "所有界面都启动失败，请检查系统环境" with title "Kronos错误" buttons {"确定"} default button 1 with icon stop',
+                            ],
+                            check=False,
+                        )
+                    except Exception:
+                        pass
+        else:
+            print("回退到基础GUI/命令行界面...")
+            from kronos_app import main as fallback_main
+            fallback_main()
 
     except Exception as e:
         print(f"程序启动失败: {e}")
-        # 使用原生macOS对话框
-        subprocess.run(['osascript', '-e', f'''
-            display dialog "程序启动失败: {str(e)}" with title "Kronos错误" buttons {{"确定"}} default button 1 with icon stop
-        '''], check=False)
+        if platform.system() == "Darwin":
+            try:
+                subprocess.run(
+                    [
+                        'osascript',
+                        '-e',
+                        f'display dialog "程序启动失败: {str(e)}" with title "Kronos错误" buttons {{"确定"}} default button 1 with icon stop',
+                    ],
+                    check=False,
+                )
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

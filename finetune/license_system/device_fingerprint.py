@@ -3,10 +3,14 @@ import platform
 import hashlib
 import subprocess
 import uuid
-import psutil
 import json
 import re
 import os
+
+try:
+    import psutil  # type: ignore
+except ImportError:
+    psutil = None
 
 
 class DeviceFingerprint:
@@ -33,7 +37,13 @@ class DeviceFingerprint:
 
         # CPU信息
         info['cpu_id'] = self._get_cpu_id()
-        info['cpu_count'] = psutil.cpu_count(logical=False)
+        try:
+            if psutil is not None:
+                info['cpu_count'] = psutil.cpu_count(logical=False)
+            else:
+                info['cpu_count'] = os.cpu_count() or 0
+        except Exception:
+            info['cpu_count'] = os.cpu_count() or 0
 
         # 主板信息
         info['motherboard'] = self._get_motherboard_info()
@@ -42,7 +52,13 @@ class DeviceFingerprint:
         info['disk_serial'] = self._get_primary_disk_serial()
 
         # 内存信息
-        info['memory_total'] = psutil.virtual_memory().total
+        try:
+            if psutil is not None:
+                info['memory_total'] = psutil.virtual_memory().total
+            else:
+                info['memory_total'] = 0
+        except Exception:
+            info['memory_total'] = 0
 
         # 网卡MAC地址
         info['mac_address'] = self._get_primary_mac()
@@ -212,14 +228,15 @@ class DeviceFingerprint:
                         if 'ether ' in l:
                             mac = l.split('ether')[1].strip()
                             return mac.replace(':', '').upper()
-            interfaces = psutil.net_if_addrs()
-            for interface_name, addresses in interfaces.items():
-                if 'lo' not in interface_name.lower() and 'loopback' not in interface_name.lower():
-                    for addr in addresses:
-                        if addr.family == psutil.AF_LINK:
-                            mac = addr.address
-                            if mac != '00:00:00:00:00:00':
-                                return mac.replace(':', '').upper()
+            if psutil is not None:
+                interfaces = psutil.net_if_addrs()
+                for interface_name, addresses in interfaces.items():
+                    if 'lo' not in interface_name.lower() and 'loopback' not in interface_name.lower():
+                        for addr in addresses:
+                            if getattr(addr, "family", None) == getattr(psutil, "AF_LINK", None):
+                                mac = getattr(addr, "address", "")
+                                if mac and mac != '00:00:00:00:00:00':
+                                    return mac.replace(':', '').upper()
 
         except Exception as e:
             print(f"获取MAC地址失败: {e}")
