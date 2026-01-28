@@ -236,6 +236,9 @@ class XueQiuCrawler:
         """发送HTTP请求，使用智能重试和频率控制"""
         if not self.page:
             await self._init_token()
+        if not self.page:
+            self.logger.error("浏览器页面未初始化，跳过请求")
+            return None
 
         # 使用请求优化器执行请求
         async def _do_request():

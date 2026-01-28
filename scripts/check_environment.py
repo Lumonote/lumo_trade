@@ -90,9 +90,18 @@ def get_actual_python_path():
     """获取实际的Python解释器路径"""
     import shutil
 
+    # Windows：优先使用 Kronos 用户级虚拟环境（与 quick_start.ps1 保持一致）
+    if IS_WINDOWS:
+        try:
+            venv_py = Path(os.environ.get('LOCALAPPDATA', '')) / 'Kronos' / 'venv' / 'Scripts' / 'python.exe'
+            if venv_py.exists():
+                return str(venv_py)
+        except Exception:
+            pass
+
     # 优先检查环境变量中指定的 Python
     # GUI 设置 PYTHON_CMD 和 PYTHON
-    venv_python = os.environ.get('PYTHON_CMD') or os.environ.get('PYTHON') or os.environ.get('KRONOS_PYTHON_PATH')
+    venv_python = os.environ.get('KRONOS_PYTHON_PATH') or os.environ.get('PYTHON_CMD') or os.environ.get('PYTHON')
     if venv_python and os.path.exists(venv_python):
         try:
             result = subprocess.run([venv_python, "--version"],
@@ -199,17 +208,54 @@ def check_package_installed(package_name: str) -> Tuple[bool, str]:
     try:
         # 使用实际的Python解释器路径
         python_path = get_actual_python_path()
+        code = r"""
+import importlib, json, sys, traceback
+name = sys.argv[1]
+try:
+    mod = importlib.import_module(name)
+    ver = getattr(mod, "__version__", "") or getattr(mod, "VERSION", "") or ""
+    if isinstance(ver, (tuple, list)):
+        ver = ".".join(str(x) for x in ver)
+    print(json.dumps({"ok": True, "version": str(ver)}))
+except Exception as e:
+    print(json.dumps({
+        "ok": False,
+        "type": e.__class__.__name__,
+        "error": str(e),
+        "trace": traceback.format_exc(),
+    }))
+"""
         result = subprocess.run(
-            [python_path, "-c", f"import {package_name}; print({package_name}.__version__)"],
+            [python_path, "-c", code, package_name],
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=20
         )
-        if result.returncode == 0:
-            version = result.stdout.strip()
-            return True, version
-        else:
+        stdout = (result.stdout or "").strip()
+        if result.returncode == 0 and stdout:
+            try:
+                payload = json.loads(stdout.splitlines()[-1])
+            except Exception:
+                payload = None
+
+            if isinstance(payload, dict):
+                if payload.get("ok") is True:
+                    version = (payload.get("version") or "").strip()
+                    return True, version or "已安装"
+                err_type = (payload.get("type") or "").strip()
+                err_msg = (payload.get("error") or "").strip()
+                if err_type == "ModuleNotFoundError":
+                    return False, "未安装"
+                if err_msg:
+                    return False, f"导入失败: {err_type}: {err_msg}"
+                return False, f"导入失败: {err_type or '未知错误'}"
+
+        # 兜底：返回 stderr/stdout 的末尾，方便定位 DLL/依赖问题
+        msg = (result.stderr or result.stdout or "").strip()
+        msg = msg.splitlines()[-1].strip() if msg else "未安装"
+        if "No module named" in msg or "ModuleNotFoundError" in msg:
             return False, "未安装"
+        return False, f"检查失败: {msg}"
     except Exception as e:
         return False, f"检查失败: {str(e)}"
 
@@ -219,6 +265,7 @@ def check_required_packages() -> Dict[str, Tuple[bool, str]]:
     required_packages = {
         'numpy': 'numpy',
         'pandas': 'pandas',
+        'pytz': 'pytz',
         'torch': 'torch',
         'matplotlib': 'matplotlib',
         'tqdm': 'tqdm',

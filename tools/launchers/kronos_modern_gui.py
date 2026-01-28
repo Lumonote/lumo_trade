@@ -1147,19 +1147,22 @@ class LLMConfigDialog:
 
     def _detect_system_python_with_deps(self):
         """检测已安装pandas依赖的系统Python"""
-        # 优先使用全局检测到的PYTHON_COMMAND
+        env_python = os.environ.get('KRONOS_PYTHON_PATH') or os.environ.get('PYTHON_CMD') or os.environ.get('PYTHON')
+        if env_python and Path(env_python).exists():
+            return env_python
+
+        if platform.system() == "Windows":
+            try:
+                venv_python = Path(os.environ.get('LOCALAPPDATA', '')) / 'Kronos' / 'venv' / 'Scripts' / 'python.exe'
+                if venv_python.exists():
+                    return str(venv_python)
+            except Exception:
+                pass
+
         if 'PYTHON_COMMAND' in globals():
             python_cmd = PYTHON_COMMAND
-            # 验证是否有pandas
-            try:
-                result = subprocess.run(
-                    [python_cmd, '-c', 'import pandas; print("OK")'],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0 and 'OK' in result.stdout:
-                    return python_cmd
-            except:
-                pass
+            if python_cmd and Path(str(python_cmd)).exists():
+                return python_cmd
 
         # 尝试pyenv Python
         try:
@@ -1186,12 +1189,7 @@ class LLMConfigDialog:
             try:
                 py_path = shutil.which(cmd)
                 if py_path:
-                    result = subprocess.run(
-                        [py_path, '-c', 'import pandas; print("OK")'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0 and 'OK' in result.stdout:
-                        return py_path
+                    return py_path
             except:
                 continue
 
@@ -3681,6 +3679,9 @@ class KronosMacOSGUI:
 
                 env['PYTHON'] = detect_python()
                 env['PYTHON_CMD'] = detect_python()  # 为了与quick_start.sh兼容
+                env['PYTHONUNBUFFERED'] = '1'
+                env['PYTHONIOENCODING'] = 'utf-8'
+                env['PYTHONUTF8'] = '1'
 
                 # 执行数据获取命令 - 使用非阻塞IO避免Windows缓冲区死锁
                 creationflags = 0
@@ -3712,21 +3713,20 @@ class KronosMacOSGUI:
                 output_thread.start()
 
                 # 超时配置
-                timeout_seconds = 1800  # 10分钟总超时
-                no_output_timeout = 120  # 2分钟无输出超时
+                # 总超时在 Windows 安装依赖/下载浏览器等场景会误杀长任务，因此禁用总超时，仅保留“无输出提醒”
+                timeout_seconds = 0  # 0 表示不启用总超时
+                no_output_timeout = 300 if platform.system() == "Windows" else 120
                 last_output_time = time.time()
                 start_time = time.time()
 
                 # 非阻塞读取输出
                 while True:
                     # 检查总超时
-                    if time.time() - start_time > timeout_seconds:
-                        output_text.insert(tk.END, f"\n⚠️ 警告: 执行超过{timeout_seconds}秒，强制终止\n")
-                        try:
-                            process.kill()
-                        except:
-                            pass
-                        break
+                    if timeout_seconds and (time.time() - start_time > timeout_seconds):
+                        output_text.insert(tk.END, f"\n⚠️ 执行超过{timeout_seconds}秒，继续等待...\n")
+                        output_text.see(tk.END)
+                        cmd_window.window.update()
+                        start_time = time.time()
 
                     # 检查进程是否结束
                     if process.poll() is not None:
@@ -3754,8 +3754,10 @@ class KronosMacOSGUI:
                     except queue.Empty:
                         # 队列为空，检查无输出超时
                         if time.time() - last_output_time > no_output_timeout:
-                            output_text.insert(tk.END, f"\n⚠️ 警告: {no_output_timeout}秒无输出，可能卡住\n")
-                            output_text.insert(tk.END, "继续等待中...\n")
+                            output_text.insert(
+                                tk.END,
+                                f"\n⚠️ {no_output_timeout}秒无输出（Windows 下可能为输出缓冲/写报告/网络等待），继续等待...\n",
+                            )
                             output_text.see(tk.END)
                             cmd_window.window.update()
                             # 重置计时器，避免重复提示
@@ -3791,11 +3793,18 @@ class KronosMacOSGUI:
                         if html_files:
                             # 按修改时间排序，显示最新的报告
                             html_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+                            latest_report = html_files[0]
                             output_text.insert(tk.END, f"\n🎉 分析完成！找到 {len(html_files)} 个分析报告\n")
                             output_text.insert(tk.END, f"📁 报告位置: {results_dir}\n\n")
+                            output_text.insert(tk.END, f"🆕 最新报告: {latest_report.name}\n")
 
                             # 添加打开报告的按钮
                             self.add_report_buttons(cmd_window.content_frame, html_files)
+                            try:
+                                self.open_html_report(latest_report)
+                                output_text.insert(tk.END, "✅ 已自动打开最新报告\n")
+                            except Exception:
+                                pass
                         else:
                             output_text.insert(tk.END, f"\n⚠️  分析完成，但在 {results_dir} 未找到HTML报告文件\n")
                     else:
@@ -3874,9 +3883,8 @@ class KronosMacOSGUI:
         """打开HTML报告"""
         try:
             import webbrowser
-            # 确保文件路径使用正确编码，避免路径中的特殊字符导致问题
-            safe_path = str(html_file).encode('utf-8', errors='replace').decode('utf-8')
-            webbrowser.open(f"file://{safe_path}")
+            html_path = Path(html_file).resolve()
+            webbrowser.open(html_path.as_uri())
         except Exception as e:
             messagebox.showerror("错误", f"无法打开报告文件: {e}")
 
@@ -4245,6 +4253,9 @@ class KronosMacOSGUI:
                 if python_path:
                     env['PYTHON'] = python_path
                     env['PYTHON_CMD'] = python_path  # 为了与quick_start.sh兼容
+                env['PYTHONUNBUFFERED'] = '1'
+                env['PYTHONIOENCODING'] = 'utf-8'
+                env['PYTHONUTF8'] = '1'
 
                 # 执行命令 - 确保工作目录正确设置
                 if auto_input:
@@ -4286,20 +4297,19 @@ class KronosMacOSGUI:
                     output_thread.start()
 
                     # 超时配置
-                    timeout_seconds = 300  # 5分钟总超时
-                    no_output_timeout = 60  # 1分钟无输出超时
+                    # 总超时在 Windows 安装依赖/下载浏览器等场景会误杀长任务，因此禁用总超时，仅保留“无输出提醒”
+                    timeout_seconds = 0  # 0 表示不启用总超时
+                    no_output_timeout = 180 if platform.system() == "Windows" else 60
                     last_output_time = time.time()
                     start_time = time.time()
 
                     # 非阻塞读取
                     while True:
-                        if time.time() - start_time > timeout_seconds:
-                            output_text.insert(tk.END, f"\n⚠️ 执行超过{timeout_seconds}秒，强制终止\n")
-                            try:
-                                process.kill()
-                            except:
-                                pass
-                            break
+                        if timeout_seconds and (time.time() - start_time > timeout_seconds):
+                            output_text.insert(tk.END, f"\n⚠️ 执行超过{timeout_seconds}秒，继续等待...\n")
+                            output_text.see(tk.END)
+                            cmd_window.update()
+                            start_time = time.time()
 
                         if process.poll() is not None:
                             # 读取剩余输出
@@ -4321,7 +4331,10 @@ class KronosMacOSGUI:
                             last_output_time = time.time()
                         except queue.Empty:
                             if time.time() - last_output_time > no_output_timeout:
-                                output_text.insert(tk.END, f"\n⚠️ {no_output_timeout}秒无输出，继续等待...\n")
+                                output_text.insert(
+                                    tk.END,
+                                    f"\n⚠️ {no_output_timeout}秒无输出（Windows 下可能为输出缓冲/网络等待），继续等待...\n",
+                                )
                                 output_text.see(tk.END)
                                 cmd_window.update()
                                 last_output_time = time.time()

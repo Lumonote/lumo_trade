@@ -105,6 +105,9 @@ function Invoke-Python {
     $originalEnv = $env:KRONOS_PACKED_ROOT
     $originalPyPath = $env:KRONOS_PYTHON_PATH
     $originalPythonPathEnv = $env:PYTHONPATH
+    $originalPwBrowsersPath = $env:PLAYWRIGHT_BROWSERS_PATH
+    $originalPyUnbuffered = $env:PYTHONUNBUFFERED
+    $originalResultsDir = $env:KRONOS_RESULTS_DIR
     if ($IsPackaged) {
         $env:KRONOS_PACKED_ROOT = $scriptDir
         Write-Host "INFO: 设置打包路径: $scriptDir" -ForegroundColor Cyan
@@ -123,16 +126,35 @@ function Invoke-Python {
             $env:PYTHONPATH = ($paths -join ';')
             Write-Host "INFO: 设置 PYTHONPATH: $($env:PYTHONPATH)" -ForegroundColor Cyan
         } catch {}
+
+        # 固定 Playwright 浏览器资源目录（避免默认落到 ms-playwright 导致找不到 chromium_headless_shell）
+        try {
+            $pwDir = Join-Path $env:LocalAppData 'Kronos\pw-browsers'
+            $env:PLAYWRIGHT_BROWSERS_PATH = $pwDir
+            if (-not (Test-Path $pwDir)) { New-Item -ItemType Directory -Path $pwDir -Force | Out-Null }
+            Write-Host "INFO: 设置 PLAYWRIGHT_BROWSERS_PATH: $pwDir" -ForegroundColor Cyan
+        } catch {}
+
+        # 固定结果输出目录，避免打包运行时写入临时目录导致 GUI 找不到最新报告
+        try {
+            $docs = [Environment]::GetFolderPath('MyDocuments')
+            if (-not $docs) { $docs = $env:USERPROFILE }
+            $resultsDir = Join-Path $docs 'Kronos\results'
+            if (-not (Test-Path $resultsDir)) { New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null }
+            $env:KRONOS_RESULTS_DIR = $resultsDir
+            Write-Host "INFO: 设置 KRONOS_RESULTS_DIR: $resultsDir" -ForegroundColor Cyan
+        } catch {}
     }
 
     # 设置 Python 路径环境变量，让检查脚本能使用正确的 Python
     $env:KRONOS_PYTHON_PATH = $python
+    $env:PYTHONUNBUFFERED = '1'
 
     try {
         if ($Args) {
-            & $python $Script @Args
+            & $python -u $Script @Args
         } else {
-            & $python $Script
+            & $python -u $Script
         }
     } finally {
         # 恢复原始环境变量
@@ -152,6 +174,24 @@ function Invoke-Python {
             Remove-Item env:PYTHONPATH -ErrorAction SilentlyContinue
         } else {
             $env:PYTHONPATH = $originalPythonPathEnv
+        }
+
+        if ($null -eq $originalPwBrowsersPath) {
+            Remove-Item env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue
+        } else {
+            $env:PLAYWRIGHT_BROWSERS_PATH = $originalPwBrowsersPath
+        }
+
+        if ($null -eq $originalPyUnbuffered) {
+            Remove-Item env:PYTHONUNBUFFERED -ErrorAction SilentlyContinue
+        } else {
+            $env:PYTHONUNBUFFERED = $originalPyUnbuffered
+        }
+
+        if ($null -eq $originalResultsDir) {
+            Remove-Item env:KRONOS_RESULTS_DIR -ErrorAction SilentlyContinue
+        } else {
+            $env:KRONOS_RESULTS_DIR = $originalResultsDir
         }
     }
 }
@@ -319,6 +359,15 @@ function Ensure-ManagedVenvAndDeps {
                 Write-Host "ERROR: 依赖安装失败（虚拟环境），请检查网络或镜像源" -ForegroundColor Red
                 exit 1
             }
+
+            # 修复 pandas/tushare 在部分环境下导入失败：pytz 模块存在但缺少元数据(dist-info)
+            try {
+                & $venvPy -c "import importlib.metadata as m; print(m.version('pytz'))" 1>$null 2>$null
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "ACTION: 正在修复 pytz 元数据（安装/重装 pytz）..." -ForegroundColor Yellow
+                    & $venvPy -m pip install -U --force-reinstall pytz @mirrorArgs
+                }
+            } catch {}
         } else {
             Write-Host "ERROR: 未找到 requirements.txt 文件" -ForegroundColor Red
             exit 1
@@ -341,7 +390,33 @@ function Ensure-ManagedVenvAndDeps {
         & $venvPy -m pip install playwright @mirrorArgs
         if ($LASTEXITCODE -ne 0) { Write-Host "WARN: Playwright 安装失败（可稍后重试）" -ForegroundColor Yellow }
     }
-    try { & $venvPy -m playwright install chromium } catch { Write-Host "WARN: Chromium 资源安装失败（可稍后手动执行）" -ForegroundColor Yellow }
+    $pwHosts = @(
+        $env:PLAYWRIGHT_DOWNLOAD_HOST,
+        'https://npmmirror.com/mirrors/playwright',
+        'https://playwright.azureedge.net'
+    ) | Where-Object { $_ -ne $null } | Select-Object -Unique
+    $pwOk = $false
+    foreach ($h in $pwHosts) {
+        if ($pwOk) { break }
+        if ($h -and $h.Trim()) {
+            $env:PLAYWRIGHT_DOWNLOAD_HOST = $h.Trim()
+            Write-Host "MIRROR: 使用 Playwright 下载源: $($env:PLAYWRIGHT_DOWNLOAD_HOST)" -ForegroundColor Cyan
+        } else {
+            Remove-Item Env:PLAYWRIGHT_DOWNLOAD_HOST -ErrorAction SilentlyContinue
+            Write-Host "MIRROR: 使用 Playwright 默认下载源" -ForegroundColor Cyan
+        }
+        for ($attempt = 1; $attempt -le 3 -and (-not $pwOk); $attempt++) {
+            try {
+                & $venvPy -m playwright install chromium chromium-headless-shell
+                if ($LASTEXITCODE -eq 0) { $pwOk = $true; break }
+            } catch {}
+            Write-Host "WARN: Playwright 浏览器资源下载失败，重试 $attempt/3" -ForegroundColor Yellow
+            Start-Sleep -Seconds (5 * $attempt)
+        }
+    }
+    if (-not $pwOk) {
+        Write-Host "WARN: Chromium 浏览器资源安装失败（网络/DNS 可能受限）。可稍后重试或使用可访问外网的网络环境。" -ForegroundColor Yellow
+    }
 
     Write-Host "DONE: 用户虚拟环境与依赖已就绪 -> $venvDir" -ForegroundColor Green
 }
@@ -716,7 +791,13 @@ if ($Choice -eq "1") {
         Write-Host "SKIP: Playwright 已安装 (版本 $playwrightVersion)，跳过包安装" -ForegroundColor Yellow
     } else {
         Write-Host "ACTION: 正在安装 Playwright Python 包..." -ForegroundColor Yellow
-        & $python -m pip install --user 'playwright' @mirrorArgs
+        $originalPipUser = $env:PIP_USER
+        $env:PIP_USER = ''
+        try {
+            & $python -m pip install 'playwright' @mirrorArgs
+        } finally {
+            if ($null -eq $originalPipUser) { Remove-Item Env:PIP_USER -ErrorAction SilentlyContinue } else { $env:PIP_USER = $originalPipUser }
+        }
         $exitCode = $LASTEXITCODE
         if ($exitCode -eq 0) {
             $playwrightVersion = Get-PackageVersion -Python $python -Package 'playwright'
@@ -733,12 +814,34 @@ if ($Choice -eq "1") {
 
     $step++
     Write-Host ("STATUS: 步骤 {0}/{1}: 安装/刷新 Playwright 浏览器 (chromium)..." -f $step, $totalSteps) -ForegroundColor Cyan
-    & $python -m playwright install chromium
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -eq 0) {
+    $pwHosts = @(
+        $env:PLAYWRIGHT_DOWNLOAD_HOST,
+        'https://npmmirror.com/mirrors/playwright',
+        'https://playwright.azureedge.net'
+    ) | Where-Object { $_ -ne $null } | Select-Object -Unique
+    $pwOk = $false
+    foreach ($h in $pwHosts) {
+        if ($pwOk) { break }
+        if ($h -and $h.Trim()) {
+            $env:PLAYWRIGHT_DOWNLOAD_HOST = $h.Trim()
+            Write-Host "MIRROR: 使用 Playwright 下载源: $($env:PLAYWRIGHT_DOWNLOAD_HOST)" -ForegroundColor Cyan
+        } else {
+            Remove-Item Env:PLAYWRIGHT_DOWNLOAD_HOST -ErrorAction SilentlyContinue
+            Write-Host "MIRROR: 使用 Playwright 默认下载源" -ForegroundColor Cyan
+        }
+        for ($attempt = 1; $attempt -le 3 -and (-not $pwOk); $attempt++) {
+            try {
+                & $python -m playwright install chromium chromium-headless-shell
+                if ($LASTEXITCODE -eq 0) { $pwOk = $true; break }
+            } catch {}
+            Write-Host "WARN: Playwright 浏览器资源下载失败，重试 $attempt/3" -ForegroundColor Yellow
+            Start-Sleep -Seconds (5 * $attempt)
+        }
+    }
+    if ($pwOk) {
         Write-Host "OK: Chromium 浏览器资源已就绪" -ForegroundColor Green
     } else {
-        Write-Host "WARN: Chromium 浏览器资源安装失败 (退出代码 $exitCode)，可稍后手动运行 'playwright install chromium'" -ForegroundColor Yellow
+        Write-Host "WARN: Chromium 浏览器资源安装失败（网络/DNS 可能受限）。可稍后重试或使用可访问外网的网络环境。" -ForegroundColor Yellow
     }
 
     $step++
@@ -748,7 +851,13 @@ if ($Choice -eq "1") {
         Write-Host "SKIP: ModelScope 已安装 (版本 $modelscopeVersion)" -ForegroundColor Yellow
     } else {
         Write-Host "ACTION: 正在安装 ModelScope 包..." -ForegroundColor Yellow
-        & $python -m pip install --user 'modelscope' @mirrorArgs
+        $originalPipUser = $env:PIP_USER
+        $env:PIP_USER = ''
+        try {
+            & $python -m pip install 'modelscope' @mirrorArgs
+        } finally {
+            if ($null -eq $originalPipUser) { Remove-Item Env:PIP_USER -ErrorAction SilentlyContinue } else { $env:PIP_USER = $originalPipUser }
+        }
         $exitCode = $LASTEXITCODE
         if ($exitCode -eq 0) {
             $modelscopeVersion = Get-PackageVersion -Python $python -Package 'modelscope'

@@ -204,6 +204,9 @@ class TongHuaShunCrawler:
     async def _make_request(self, url: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
         """发送HTTP请求，使用智能重试和频率控制"""
         await self._init_browser()
+        if not self.page:
+            print("⚠️ 同花顺浏览器未就绪，跳过本次请求")
+            return None
 
         # 使用请求优化器执行请求
         async def _do_request():
