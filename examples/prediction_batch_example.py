@@ -525,8 +525,9 @@ def plot_prediction_enhanced(historical_df, pred_df, stock_code, save_path=None,
         pred_overlap = pred_df[pred_df['timestamps'].dt.date == overlap_date].copy()
         pred_future = pred_df[pred_df['timestamps'].dt.date > overlap_date].copy()
 
-        # 🔧 关键修正：确保未来预测从真实历史收盘价开始 (修正"预测起点不对"的问题)
-        if not pred_future.empty:
+        # 🔧 关键修正：确保预测数据与历史数据平滑连接 (修正"预测起点不对"的问题)
+        # 注意：需要修正重叠日预测数据(pred_overlap)和未来预测数据(pred_future)
+        if not pred_overlap.empty or not pred_future.empty:
             # 确定锚点价格：优先使用真实历史数据的最后收盘价
             anchor_price = None
             anchor_source = "未知"
@@ -537,31 +538,39 @@ def plot_prediction_enhanced(historical_df, pred_df, stock_code, save_path=None,
             elif not hist_non_overlap.empty:
                 anchor_price = hist_non_overlap['close'].iloc[-1]
                 anchor_source = "真实历史收盘价(非重叠日)"
-            elif not pred_overlap.empty:
-                anchor_price = pred_overlap['close'].iloc[-1]
-                anchor_source = "预测重叠日收盘价(无历史数据)"
             
             if anchor_price is not None:
-                future_first_close = pred_future['close'].iloc[0]
-                price_gap = future_first_close - anchor_price
+                # 获取预测数据的第一个收盘价（可能是重叠日或未来日的第一个点）
+                if not pred_overlap.empty:
+                    pred_first_close = pred_overlap['close'].iloc[0]
+                else:
+                    pred_first_close = pred_future['close'].iloc[0]
+                
+                price_gap = pred_first_close - anchor_price
                 gap_pct = abs(price_gap / anchor_price) * 100
                 
                 # 总是修正，确保连接平滑
                 print(f"  🔧 优化预测起点 ({anchor_source}):")
-                print(f"     锚点价格: ¥{anchor_price:.2f} -> 原预测起点: ¥{future_first_close:.2f}")
+                print(f"     锚点价格: ¥{anchor_price:.2f} -> 原预测起点: ¥{pred_first_close:.2f}")
                 print(f"     修正幅度: {gap_pct:.2f}% (平移预测曲线以匹配真实走势)")
 
-                # 🔧 修正原始pred_df，确保修改持久化
-                future_mask = pred_df['timestamps'].dt.date > overlap_date
+                # 🔧 修正原始pred_df：包括重叠日和未来日的所有预测数据
+                # 使用 >= overlap_date 来包含重叠日的所有预测数据
+                pred_mask = pred_df['timestamps'].dt.date >= overlap_date
                 for col in ['open', 'high', 'low', 'close']:
-                    pred_df.loc[future_mask, col] = pred_df.loc[future_mask, col] - price_gap
+                    pred_df.loc[pred_mask, col] = pred_df.loc[pred_mask, col] - price_gap
                 
                 # ⚠️ 关键：修正后必须重新创建pred_overlap和pred_future，确保使用最新数据！
+                pred_overlap = pred_df[pred_df['timestamps'].dt.date == overlap_date].copy()
                 pred_future = pred_df[pred_df['timestamps'].dt.date > overlap_date].copy()
                 
                 # 验证修正效果
-                new_future_first = pred_future['close'].iloc[0]
-                print(f"  ✅ 修正后未来日起点: ¥{new_future_first:.2f}")
+                if not pred_overlap.empty:
+                    new_overlap_first = pred_overlap['close'].iloc[0]
+                    print(f"  ✅ 修正后重叠日起点: ¥{new_overlap_first:.2f}")
+                if not pred_future.empty:
+                    new_future_first = pred_future['close'].iloc[0]
+                    print(f"  ✅ 修正后未来日起点: ¥{new_future_first:.2f}")
 
         print(f"📊 数据分离结果:")
         print(f"  - 历史数据(前14天): {len(hist_non_overlap)} 个点")
@@ -654,6 +663,30 @@ def plot_prediction_enhanced(historical_df, pred_df, stock_code, save_path=None,
     if not pred_overlap_idx.empty:
         ax1.plot(pred_overlap_idx['plot_index'], pred_overlap_idx['close'],
                  color='#FF4444', linewidth=1.5, alpha=0.9, label='预测数据')
+
+    # 🔧 关键修复：添加连接线，确保历史数据和预测数据平滑连接
+    # 连接1：重叠日历史数据的最后一个点 -> 重叠日预测数据的第一个点
+    if not hist_overlap_idx.empty and not pred_overlap_idx.empty:
+        last_hist_idx = hist_overlap_idx['plot_index'].iloc[-1]
+        last_hist_price = hist_overlap_idx['close'].iloc[-1]
+        first_pred_idx = pred_overlap_idx['plot_index'].iloc[0]
+        first_pred_price = pred_overlap_idx['close'].iloc[0]
+        
+        # 绘制连接线（虚线，表示过渡）
+        ax1.plot([last_hist_idx, first_pred_idx], [last_hist_price, first_pred_price],
+                 color='#FF4444', linewidth=1.5, alpha=0.7, linestyle='--')
+        print(f"  🔗 添加连接线：历史终点({last_hist_price:.2f}) -> 预测起点({first_pred_price:.2f})")
+    
+    # 连接2：重叠日预测数据的最后一个点 -> 未来预测数据的第一个点
+    if not pred_overlap_idx.empty and not pred_future_idx.empty:
+        last_overlap_idx = pred_overlap_idx['plot_index'].iloc[-1]
+        last_overlap_price = pred_overlap_idx['close'].iloc[-1]
+        first_future_idx = pred_future_idx['plot_index'].iloc[0]
+        first_future_price = pred_future_idx['close'].iloc[0]
+        
+        # 绘制连接线
+        ax1.plot([last_overlap_idx, first_future_idx], [last_overlap_price, first_future_price],
+                 color='#FF4444', linewidth=1.5, alpha=0.9)
 
     # 绘制未来预测数据（红色实线）
     if not pred_future_idx.empty:

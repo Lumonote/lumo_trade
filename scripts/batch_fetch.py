@@ -127,16 +127,53 @@ class BatchDataFetcher:
 
             # 获取数据
             if self.use_multi_source:
-                # 使用异步多数据源获取器
-                df = await self.fetcher.fetch_stock_data(
-                    symbol=symbol,
-                    start_date=kwargs.get('start_date'),
-                    end_date=kwargs.get('end_date'),
-                    freq=kwargs.get('freq', '5min'),
-                    adj=kwargs.get('adj', 'qfq'),
-                    auto_extend=kwargs.get('auto_extend', True),
-                    min_days=kwargs.get('min_days', 365)
-                )
+                # 使用异步多数据源获取器，优先使用Tushare，然后是爬虫
+                # 批量分析时优先使用Tushare，失败后使用爬虫作为备选
+                available_sources = self.fetcher.get_available_sources()
+                
+                df = None
+                # 优先尝试Tushare
+                if 'tushare' in available_sources:
+                    try:
+                        print(f"📡 尝试Tushare数据源...")
+                        df = await self.fetcher.fetch_stock_data(
+                            symbol=symbol,
+                            start_date=kwargs.get('start_date'),
+                            end_date=kwargs.get('end_date'),
+                            freq=kwargs.get('freq', '5min'),
+                            source='tushare',  # 明确指定Tushare
+                            adj=kwargs.get('adj', 'qfq'),
+                            auto_extend=kwargs.get('auto_extend', True),
+                            min_days=kwargs.get('min_days', 365)
+                        )
+                        if df is not None and not df.empty:
+                            print(f"✅ Tushare数据源成功获取 {len(df)} 条数据")
+                    except Exception as e:
+                        print(f"⚠️ Tushare数据源失败: {e}")
+                
+                # 如果Tushare失败，尝试爬虫数据源作为备选
+                if df is None or df.empty:
+                    print(f"⚠️ Tushare数据源不可用，尝试爬虫数据源作为备选...")
+                    crawler_sources = [s for s in available_sources if s in ['eastmoney', 'tonghuashun', 'xueqiu']]
+                    for crawler_source in crawler_sources:
+                        try:
+                            print(f"📡 尝试爬虫数据源: {crawler_source}")
+                            df = await self.fetcher.fetch_stock_data(
+                                symbol=symbol,
+                                start_date=kwargs.get('start_date'),
+                                end_date=kwargs.get('end_date'),
+                                freq=kwargs.get('freq', '5min'),
+                                source=crawler_source,
+                                adj=kwargs.get('adj', 'qfq'),
+                                auto_extend=kwargs.get('auto_extend', True),
+                                min_days=kwargs.get('min_days', 365)
+                            )
+                            if df is not None and not df.empty:
+                                print(f"✅ 爬虫数据源 {crawler_source} 成功获取 {len(df)} 条数据")
+                                break
+                        except Exception as e:
+                            print(f"⚠️ 爬虫数据源 {crawler_source} 失败: {e}")
+                            continue
             else:
                 # 使用同步Tushare获取器
                 df = self.fetcher.fetch_stock_data(

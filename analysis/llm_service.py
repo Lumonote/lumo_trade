@@ -300,6 +300,9 @@ class LLMAnalyzer:
                 'Content-Type': 'application/json'
             }
 
+            # MiniMax 模型限制 max_tokens <= 2048
+            safe_max_tokens = min(max_tokens, 2048)
+
             data = {
                 "model": config['model'],
                 "messages": [
@@ -312,7 +315,7 @@ class LLMAnalyzer:
                         "content": prompt
                     }
                 ],
-                "max_tokens": max_tokens,
+                "max_tokens": safe_max_tokens,
                 "temperature": 0.7
             }
 
@@ -322,6 +325,8 @@ class LLMAnalyzer:
             result = response.json()
             if result.get('choices') and len(result['choices']) > 0:
                 return True, result['choices'][0]['message']['content']
+            elif result.get('base_resp', {}).get('status_code') == 2013:
+                return False, f"MiniMax 错误: {result.get('base_resp', {}).get('status_msg', '参数错误')}"
             else:
                 return False, f"API 返回格式异常: {result}"
 
@@ -340,44 +345,78 @@ class LLMAnalyzer:
         if not api_key:
             return False, "Kimi API Key 未配置"
 
-        try:
-            url = f"{config['base_url']}/chat/completions"
-            headers = {
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json'
-            }
+        # 重试机制配置
+        max_retries = 3
+        retry_delay = 2  # 秒
+        
+        for attempt in range(max_retries):
+            try:
+                url = f"{config['base_url']}/chat/completions"
+                headers = {
+                    'Authorization': f'Bearer {api_key}',
+                    'Content-Type': 'application/json'
+                }
 
-            data = {
-                "model": config['model'],
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "你是一位资深的股票分析师，擅长技术分析、基本面分析和市场研判。"
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                "max_tokens": max_tokens,
-                "temperature": 0.7
-            }
+                # 获取模型配置，默认为 kimi-k2.5
+                model = config.get('model', 'kimi-k2.5')
+                
+                data = {
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "你是一位资深的股票分析师，擅长技术分析、基本面分析和市场研判。"
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                    "max_tokens": max_tokens
+                    # Note: kimi-k2.5 模型不支持自定义 temperature，仅允许默认值
+                }
 
-            response = requests.post(url, headers=headers, json=data, timeout=60)
-            response.raise_for_status()
+                # 增加超时时间到120秒，避免复杂分析请求超时
+                # 使用连接超时和读取超时分离设置
+                response = requests.post(
+                    url, 
+                    headers=headers, 
+                    json=data, 
+                    timeout=(10, 120)  # (连接超时, 读取超时)
+                )
 
-            result = response.json()
-            if result.get('choices') and len(result['choices']) > 0:
-                return True, result['choices'][0]['message']['content']
-            else:
-                return False, f"API 返回格式异常: {result}"
+                if response.status_code == 400:
+                    error_detail = response.text
+                    return False, f"Kimi API 请求错误 (400): {error_detail}"
 
-        except requests.exceptions.Timeout:
-            return False, "请求超时，请检查网络连接"
-        except requests.exceptions.RequestException as e:
-            return False, f"API 调用失败: {str(e)}"
-        except Exception as e:
-            return False, f"未知错误: {str(e)}"
+                response.raise_for_status()
+
+                result = response.json()
+                if result.get('choices') and len(result['choices']) > 0:
+                    return True, result['choices'][0]['message']['content']
+                else:
+                    return False, f"API 返回格式异常: {result}"
+
+            except requests.exceptions.Timeout as e:
+                if attempt < max_retries - 1:
+                    print(f"  ⚠️ Kimi API 请求超时，第{attempt + 1}次重试...")
+                    import time
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 指数退避
+                    continue
+                return False, f"请求超时，已重试{max_retries}次，请检查网络连接或稍后重试"
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    print(f"  ⚠️ Kimi API 请求失败，第{attempt + 1}次重试: {e}")
+                    import time
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                return False, f"API 调用失败: {str(e)}"
+            except Exception as e:
+                return False, f"未知错误: {str(e)}"
+        
+        return False, "请求失败，已达到最大重试次数"
 
     def analyze_stock(self, stock_data: Dict) -> Tuple[bool, Dict]:
         """

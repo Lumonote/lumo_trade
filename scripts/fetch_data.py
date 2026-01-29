@@ -64,12 +64,15 @@ class TushareDataFetcher:
         """初始化Tushare API"""
         self.config = config
         self.token = config.get('tushare', {}).get('token', '')
-        
+
         # 尝试从环境变量获取
         if not self.token or self.token == "your_tushare_token_here":
             self.token = os.environ.get('TUSHARE_TOKEN', '')
-            
+
         self.pro = None
+        self.last_request_time = 0  # 上次请求时间，用于速率限制
+        self.min_request_interval = 31  # Tushare限制每分钟最多2次，间隔至少31秒
+
         if self.token and TUSHARE_AVAILABLE:
             try:
                 ts.set_token(self.token)
@@ -82,6 +85,19 @@ class TushareDataFetcher:
                 print("⚠️  Tushare模块未安装")
             else:
                 print("⚠️  未找到Tushare Token，请配置config/tushare_config.json或设置TUSHARE_TOKEN环境变量")
+
+    def _rate_limit_wait(self):
+        """等待以满足Tushare速率限制（每分钟最多2次）"""
+        import time
+        current_time = time.time()
+        elapsed = current_time - self.last_request_time
+
+        if elapsed < self.min_request_interval:
+            wait_time = self.min_request_interval - elapsed
+            print(f"⏱️ Tushare速率限制，等待 {wait_time:.1f} 秒...")
+            time.sleep(wait_time)
+
+        self.last_request_time = time.time()
 
     def _convert_symbol_format(self, symbol: str) -> str:
         """转换股票代码为Tushare格式"""
@@ -112,16 +128,19 @@ class TushareDataFetcher:
             return None
 
         try:
+            # 速率限制等待
+            self._rate_limit_wait()
+
             # 处理日期格式
             start_dt = start_date.replace('-', '') if start_date else ''
             end_dt = end_date.replace('-', '') if end_date else ''
-            
+
             # Tushare freq映射
             ts_freq = freq
             if freq == '5min': ts_freq = '5min'
             elif freq == '1min': ts_freq = '1min'
             elif freq == 'daily': ts_freq = 'D'
-            
+
             print(f"📡 Tushare正在获取 {ts_code} ({freq}) 数据...")
             
             # 使用pro_bar通用接口
@@ -182,9 +201,12 @@ class TushareDataFetcher:
         """获取股票基本信息"""
         if not self.pro:
             return None
-            
+
         ts_code = self._convert_symbol_format(symbol)
         try:
+            # 速率限制等待
+            self._rate_limit_wait()
+
             df = self.pro.stock_basic(
                 ts_code=ts_code,
                 fields='ts_code,symbol,name,area,industry,market,list_date'
