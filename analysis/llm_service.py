@@ -1,6 +1,6 @@
 """
 LLM 服务模块
-支持通义千问和 DeepSeek 大模型 API 调用
+支持通义千问、DeepSeek、MiniMax、Kimi 大模型 API 调用
 用于股票分析的 AI 智能预测和建议
 """
 
@@ -46,6 +46,22 @@ class LLMConfig:
                     "base_url": "https://api.deepseek.com",
                     "register_url": "https://platform.deepseek.com/api_keys",
                     "description": "DeepSeek 大模型"
+                },
+                "minimax": {
+                    "enabled": False,
+                    "api_key": "",
+                    "model": "abab6.5s-chat",
+                    "base_url": "https://api.minimax.chat/v1/text/chatcompletion_v2",
+                    "register_url": "https://platform.minimax.com/api_keys",
+                    "description": "MiniMax 海螺AI大模型"
+                },
+                "kimi": {
+                    "enabled": False,
+                    "api_key": "",
+                    "model": "moonshot-v1-8k",
+                    "base_url": "https://api.moonshot.cn/v1",
+                    "register_url": "https://platform.moonshot.com/console/api-keys",
+                    "description": "Kimi 月之暗面大模型"
                 }
             }
             self.save_config(default_config)
@@ -74,14 +90,14 @@ class LLMConfig:
         优先返回已启用且配置了 API Key 的服务；
         若都未配置 API Key，则返回已启用的服务（用于提示）。
         """
-        # 优先选择“已启用且已配置API Key”的模型
-        for name in ['qwen', 'deepseek']:
+        # 优先选择"已启用且已配置API Key"的模型
+        for name in ['qwen', 'deepseek', 'minimax', 'kimi']:
             cfg = self.config.get(name, {})
             if cfg.get('enabled') and cfg.get('api_key'):
                 return name
 
-        # 其次选择“仅启用但未配置API Key”的模型（用于 UI/提示）
-        for name in ['qwen', 'deepseek']:
+        # 其次选择"仅启用但未配置API Key"的模型（用于 UI/提示）
+        for name in ['qwen', 'deepseek', 'minimax', 'kimi']:
             cfg = self.config.get(name, {})
             if cfg.get('enabled'):
                 return name
@@ -91,7 +107,7 @@ class LLMConfig:
     def get_enabled_llms(self) -> list:
         """获取已启用且配置了 API Key 的所有LLM服务列表"""
         enabled = []
-        for name in ['qwen', 'deepseek']:
+        for name in ['qwen', 'deepseek', 'minimax', 'kimi']:
             cfg = self.config.get(name, {})
             if cfg.get('enabled') and cfg.get('api_key'):
                 enabled.append(name)
@@ -269,6 +285,100 @@ class LLMAnalyzer:
         except Exception as e:
             return False, f"未知错误: {str(e)}"
 
+    def _call_minimax_api(self, prompt: str, max_tokens: int = 2000) -> Tuple[bool, str]:
+        """调用 MiniMax API (OpenAI 兼容接口)"""
+        config = self.config.config.get('minimax', {})
+        api_key = config.get('api_key')
+
+        if not api_key:
+            return False, "MiniMax API Key 未配置"
+
+        try:
+            url = f"{config['base_url']}"
+            headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            }
+
+            data = {
+                "model": config['model'],
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "你是一位资深的股票分析师，擅长技术分析、基本面分析和市场研判。"
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "max_tokens": max_tokens,
+                "temperature": 0.7
+            }
+
+            response = requests.post(url, headers=headers, json=data, timeout=60)
+            response.raise_for_status()
+
+            result = response.json()
+            if result.get('choices') and len(result['choices']) > 0:
+                return True, result['choices'][0]['message']['content']
+            else:
+                return False, f"API 返回格式异常: {result}"
+
+        except requests.exceptions.Timeout:
+            return False, "请求超时，请检查网络连接"
+        except requests.exceptions.RequestException as e:
+            return False, f"API 调用失败: {str(e)}"
+        except Exception as e:
+            return False, f"未知错误: {str(e)}"
+
+    def _call_kimi_api(self, prompt: str, max_tokens: int = 2000) -> Tuple[bool, str]:
+        """调用 Kimi API (OpenAI 兼容接口)"""
+        config = self.config.config.get('kimi', {})
+        api_key = config.get('api_key')
+
+        if not api_key:
+            return False, "Kimi API Key 未配置"
+
+        try:
+            url = f"{config['base_url']}/chat/completions"
+            headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            }
+
+            data = {
+                "model": config['model'],
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "你是一位资深的股票分析师，擅长技术分析、基本面分析和市场研判。"
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "max_tokens": max_tokens,
+                "temperature": 0.7
+            }
+
+            response = requests.post(url, headers=headers, json=data, timeout=60)
+            response.raise_for_status()
+
+            result = response.json()
+            if result.get('choices') and len(result['choices']) > 0:
+                return True, result['choices'][0]['message']['content']
+            else:
+                return False, f"API 返回格式异常: {result}"
+
+        except requests.exceptions.Timeout:
+            return False, "请求超时，请检查网络连接"
+        except requests.exceptions.RequestException as e:
+            return False, f"API 调用失败: {str(e)}"
+        except Exception as e:
+            return False, f"未知错误: {str(e)}"
+
     def analyze_stock(self, stock_data: Dict) -> Tuple[bool, Dict]:
         """
         综合分析股票数据
@@ -303,6 +413,10 @@ class LLMAnalyzer:
                     success, raw = self._call_qwen_api(prompt, max_tokens=3000)
                 elif name == 'deepseek':
                     success, raw = self._call_deepseek_api(prompt, max_tokens=3000)
+                elif name == 'minimax':
+                    success, raw = self._call_minimax_api(prompt, max_tokens=3000)
+                elif name == 'kimi':
+                    success, raw = self._call_kimi_api(prompt, max_tokens=3000)
                 else:
                     success, raw = False, f"未知的 LLM 服务: {name}"
 
@@ -335,6 +449,10 @@ class LLMAnalyzer:
             success, result = self._call_qwen_api(prompt, max_tokens=3000)
         elif self.llm_name == 'deepseek':
             success, result = self._call_deepseek_api(prompt, max_tokens=3000)
+        elif self.llm_name == 'minimax':
+            success, result = self._call_minimax_api(prompt, max_tokens=3000)
+        elif self.llm_name == 'kimi':
+            success, result = self._call_kimi_api(prompt, max_tokens=3000)
         else:
             return False, {"error": "未知的 LLM 服务"}
 
@@ -559,6 +677,10 @@ class LLMAnalyzer:
             return self._call_qwen_api(test_prompt, max_tokens=100)
         elif self.llm_name == 'deepseek':
             return self._call_deepseek_api(test_prompt, max_tokens=100)
+        elif self.llm_name == 'minimax':
+            return self._call_minimax_api(test_prompt, max_tokens=100)
+        elif self.llm_name == 'kimi':
+            return self._call_kimi_api(test_prompt, max_tokens=100)
         else:
             return False, "未知的 LLM 服务"
 
