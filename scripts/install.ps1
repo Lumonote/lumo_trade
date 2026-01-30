@@ -338,13 +338,16 @@ function Install-Kronos {
         if (!(Install-PythonPackages -Packages $basicPackages -Description "基础依赖" -UseMirror:$useMirror)) {
             throw "基础依赖安装失败"
         }
-        
-        # 5. 安装Tushare
-        Write-ColorOutput "`n📈 步骤 5/7: 安装Tushare" "Blue"
+
+        # 5. 安装数据源依赖 (Tushare, Baostock)
+        Write-ColorOutput "`n📈 步骤 5/7: 安装数据源依赖 (Tushare, Baostock)" "Blue"
         if (!(Install-PythonPackages -Packages @("tushare") -Description "Tushare" -UseMirror:$useMirror)) {
             Write-ColorOutput "⚠️  Tushare安装失败，但继续安装" "Yellow"
         }
-        
+        if (!(Install-PythonPackages -Packages @("baostock") -Description "Baostock" -UseMirror:$useMirror)) {
+            Write-ColorOutput "⚠️  Baostock安装失败，但继续安装" "Yellow"
+        }
+
         # 6. 安装可视化依赖
         Write-ColorOutput "`n📊 步骤 6/7: 安装可视化依赖" "Blue"
         $vizPackages = @("matplotlib", "tqdm")

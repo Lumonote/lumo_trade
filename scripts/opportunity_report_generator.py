@@ -7,8 +7,8 @@
 
 import os
 import sys
-from datetime import datetime
-from typing import List, Dict
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
 import json
 import logging
 
@@ -379,6 +379,52 @@ class OpportunityReportGenerator:
                     stocks_str = " ".join(stock_parts)
                     lines.append(f" | {sector_header} | {stocks_str} |")
 
+            # 添加龙虎榜机构成交明细（按股票去重，显示关联营业部）
+            try:
+                top_list_data = self._fetch_top_list()
+                if top_list_data:
+                    lines.append("\n---\n")
+                    lines.append("## 🐉 龙虎榜机构成交明细\n")
+
+                    def fmt_amount(val):
+                        if abs(val) >= 100000000:
+                            return f"{val/100000000:.2f}亿"
+                        elif abs(val) >= 10000:
+                            return f"{val/10000:.2f}万"
+                        else:
+                            return f"{val:.2f}"
+
+                    # 按股票聚合，去重
+                    stock_map = {}  # code -> {name, net_buy, exalters}
+                    for exalter, stocks in top_list_data.items():
+                        for item in stocks:
+                            code = item.get('code', '')
+                            if code not in stock_map:
+                                stock_map[code] = {
+                                    'name': item.get('name', ''),
+                                    'net_buy': 0,
+                                    'exalters': []
+                                }
+                            stock_map[code]['net_buy'] += item.get('net_buy', 0)
+                            if exalter not in stock_map[code]['exalters']:
+                                stock_map[code]['exalters'].append(exalter)
+
+                    # 按净成交排序
+                    sorted_stocks = sorted(stock_map.items(), key=lambda x: x[1]['net_buy'], reverse=True)
+
+                    lines.append(" | 股票 | 净成交 | 关联营业部 |")
+                    lines.append(" |------|--------|------------|")
+
+                    for code, data in sorted_stocks:
+                        name = data['name']
+                        net_buy = data['net_buy']
+                        exalters = data['exalters']
+                        net_color = '+' if net_buy > 0 else '' if net_buy == 0 else ''
+                        exalter_str = "、".join(exalters)  # 显示所有营业部
+                        lines.append(f" | **{name}({code})** | {net_color}{fmt_amount(net_buy)} | {exalter_str} |")
+            except Exception as e:
+                logger.warning(f"生成龙虎榜Markdown失败: {e}")
+
             # 添加LLM智能分析结果
             llm_stocks = [s for s in top_20[:20] if s.get('llm_analysis')]
             if llm_stocks:
@@ -394,16 +440,32 @@ class OpportunityReportGenerator:
 
                     # 处理多模型或单模型结果
                     results_to_show = []
-                    if any(k in llm_result for k in ['qwen', 'deepseek']):
-                        for model_name, model_result in llm_result.items():
-                            if isinstance(model_result, dict) and 'error' not in model_result:
-                                results_to_show.append((model_name, model_result))
-                    else:
+                    # 检查是否为多模型结果（字典且key包含模型名称）
+                    if isinstance(llm_result, dict) and len(llm_result) > 0:
+                        # 判断是否为多模型格式（key包含"/"）或者包含已知模型名
+                        def contains_model_name(k):
+                            k_str = str(k)
+                            # 如果包含"/"，则提取模型名部分
+                            if '/' in k_str:
+                                model_part = k_str.split('/')[-1].lower()
+                            else:
+                                model_part = k_str.lower()
+                            return model_part in ['qwen', 'deepseek', 'minimax', 'kimi', 'glm']
+                        is_multi_model = any('/' in str(k) or contains_model_name(k) for k in llm_result.keys())
+                        if is_multi_model:
+                            for model_name, model_result in llm_result.items():
+                                if isinstance(model_result, dict) and 'error' not in model_result:
+                                    # 只提取模型名称部分（如 "Qwen" 而不是 "魔塔社区/Qwen"）
+                                    display_name = model_name.split('/')[-1] if '/' in model_name else model_name
+                                    results_to_show.append((display_name, model_result))
+                    elif isinstance(llm_result, dict) and 'llm_model' in llm_result:
+                        # 单模型旧格式
                         results_to_show.append((llm_result.get('llm_model', 'AI'), llm_result))
 
                     for model_name, result in results_to_show:
-                        model_display = {'qwen': '通义千问', 'deepseek': 'DeepSeek'}.get(model_name, model_name.upper()) if model_name else 'AI'
-                        lines.append(f"**{model_display}分析:**\n")
+                        # 只显示模型名称，不显示厂商
+                        model_display = model_name.split('/')[-1].upper() if model_name else 'AI'
+                        lines.append(f"**[{model_display}] 分析:**\n")
 
                         # 操作建议
                         operation = result.get('operation_advice', {})
@@ -454,6 +516,193 @@ class OpportunityReportGenerator:
         except Exception as e:
             logger.warning(f"生成TOP20 Markdown失败: {e}")
         return filepath
+
+    def _fetch_top_list(self, trade_date: str = None) -> Optional[Dict[str, List[Dict]]]:
+        """
+        获取龙虎榜机构专用数据 (Tushare top_inst接口)
+        按营业部名称分组，展示买卖情况
+
+        Args:
+            trade_date: 交易日期，格式YYYYMMDD，默认获取最近一个有数据的交易日
+
+        Returns:
+            按营业部名称分组的龙虎榜数据，获取失败返回None
+            格式: {'营业部名称': [{'code', 'name', 'buy', 'sell', 'net_buy', 'reason'}, ...], ...}
+        """
+        try:
+            import tushare as ts
+        except ImportError:
+            logger.warning("Tushare未安装，无法获取龙虎榜数据")
+            return None
+
+        # 加载Tushare配置
+        config_path = os.path.join(project_root, 'config', 'tushare_config.json')
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            token = config.get('tushare', {}).get('token', '')
+        except Exception as e:
+            logger.warning(f"加载Tushare配置失败: {e}")
+            return None
+
+        if not token:
+            logger.debug("Tushare Token未配置，跳过龙虎榜数据获取")
+            return None
+
+        try:
+            pro = ts.pro_api(token)
+
+            # 如果没有指定日期，获取最近一个有数据的交易日
+            if not trade_date:
+                trade_date = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+
+            # 调用top_inst接口
+            df = pro.top_inst(trade_date=trade_date)
+
+            if df is None or df.empty:
+                logger.debug(f"龙虎榜数据为空，日期: {trade_date}")
+                return None
+
+            # 获取所有股票代码列表，用于查询名称
+            ts_codes = df['ts_code'].unique().tolist()
+            code_name_map = {}
+            if ts_codes:
+                try:
+                    # 批量查询股票名称
+                    stock_df = pro.stock_basic(ts_code=','.join(ts_codes[:500]), fields='ts_code,name')
+                    if stock_df is not None and not stock_df.empty:
+                        for _, srow in stock_df.iterrows():
+                            code_name_map[srow.get('ts_code', '')] = srow.get('name', '')
+                except Exception as e:
+                    logger.warning(f"批量查询股票名称失败: {e}")
+
+            # 按营业部名称分组
+            result = {}
+            for _, row in df.iterrows():
+                ts_code = row.get('ts_code', '')
+                code = ts_code.split('.')[0] if ts_code else ''
+                # 优先使用stock_basic查询的名称，否则从接口返回的name字段获取
+                name = code_name_map.get(ts_code, row.get('name', ''))
+                exalter = row.get('exalter', '未知营业部')
+                side = row.get('side', '')
+                buy = row.get('buy', 0) or 0
+                sell = row.get('sell', 0) or 0
+                net_buy = row.get('net_buy', 0) or 0
+                reason = row.get('reason', '')
+
+                if exalter not in result:
+                    result[exalter] = []
+
+                result[exalter].append({
+                    'code': code,
+                    'name': name,
+                    'buy': buy,
+                    'sell': sell,
+                    'net_buy': net_buy,
+                    'side': side,
+                    'reason': reason,
+                })
+
+            # 每组按净成交额排序
+            for exalter in result:
+                result[exalter] = sorted(result[exalter], key=lambda x: abs(x.get('net_buy', 0)), reverse=True)
+
+            logger.info(f"✓ 获取龙虎榜数据成功，日期: {trade_date}，共{len(result)}个营业部")
+            return result
+
+        except Exception as e:
+            logger.warning(f"获取龙虎榜数据失败: {e}")
+            return None
+
+    def _generate_top_list_html(self, top_list_data: Dict[str, List[Dict]]) -> str:
+        """
+        生成龙虎榜HTML表格（按股票去重，显示关联营业部）
+
+        Args:
+            top_list_data: 按营业部名称分组的龙虎榜数据
+
+        Returns:
+            HTML字符串，如果数据为空返回空字符串
+        """
+        if not top_list_data:
+            return ''
+
+        def fmt_amount(val):
+            if abs(val) >= 100000000:
+                return f"{val/100000000:.2f}亿"
+            elif abs(val) >= 10000:
+                return f"{val/10000:.2f}万"
+            else:
+                return f"{val:.2f}"
+
+        # 按股票聚合，去重
+        stock_map = {}  # code -> {name, net_buy, exalters}
+        code_to_name = {}
+        for exalter, stocks in top_list_data.items():
+            for item in stocks:
+                code = item.get('code', '')
+                code_to_name[code] = item.get('name', '')
+                if code not in stock_map:
+                    stock_map[code] = {
+                        'net_buy': 0,
+                        'exalters': []
+                    }
+                stock_map[code]['net_buy'] += item.get('net_buy', 0)
+                if exalter not in stock_map[code]['exalters']:
+                    stock_map[code]['exalters'].append(exalter)
+
+        # 按净成交排序
+        sorted_stocks = sorted(stock_map.items(), key=lambda x: x[1]['net_buy'], reverse=True)
+
+        rows = []
+        for code, data in sorted_stocks:
+            name = code_to_name.get(code, '')
+            net_buy = data['net_buy']
+            exalters = data['exalters']
+            net_color = '#ef5350' if net_buy > 0 else '#66bb6a' if net_buy < 0 else '#b0bec5'
+            net_prefix = '+' if net_buy > 0 else ''
+
+            # 构建营业部标签
+            exalter_tags = []
+            for ex in exalters:
+                exalter_tags.append(f'<span style="display: inline-block; margin: 2px 4px; padding: 2px 6px; background: #e0f2fe; border-radius: 4px; font-size: 12px;">{ex}</span>')
+
+            rows.append(f'''
+                <tr>
+                    <td style="vertical-align: middle; padding: 12px;">
+                        <strong>{name}</strong><span style="color: #64748b; font-size: 12px;">({code})</span>
+                    </td>
+                    <td style="vertical-align: middle; padding: 12px;">
+                        <span style="color: {net_color}; font-weight: bold; font-size: 14px;">{net_prefix}{fmt_amount(net_buy)}</span>
+                    </td>
+                    <td style="vertical-align: middle; padding: 12px;">
+                        <div>{"".join(exalter_tags)}</div>
+                    </td>
+                </tr>
+            ''')
+
+        html = f'''
+            <table class="top10-table" style="width: 100%;">
+                <thead>
+                    <tr>
+                        <th style="width: 150px;">股票</th>
+                        <th style="width: 120px;">净成交</th>
+                        <th>关联营业部</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {"".join(rows)}
+                </tbody>
+            </table>
+        '''
+
+        full_html = f'''
+        <div class="section">
+            <div class="section-title">🐉 龙虎榜机构成交明细</div>
+            {html}
+        </div>
+        '''
+        return full_html
 
     def _calculate_stage_statistics(self, analysis_results: List[Dict]) -> Dict:
         """
@@ -1491,6 +1740,25 @@ class OpportunityReportGenerator:
 
         {sector_section_html}
 
+        <!-- 龙虎榜机构成交明细 -->
+'''
+        # 获取龙虎榜数据
+        top_list_data = self._fetch_top_list()
+        if top_list_data:
+            html += self._generate_top_list_html(top_list_data)
+        else:
+            logger.warning("龙虎榜数据获取失败或为空")
+            html += '''
+            <div style="text-align: center; color: #6b7280; padding: 20px;">
+                暂无可用龙虎榜数据<br>
+                <small>可能原因：Tushare Token未配置、接口无权限、昨日为非交易日</small>
+            </div>
+'''
+
+        html += '''
+
+        </div>
+
         <!-- TOP 推荐（默认展示10个，支持滚动到末尾） -->
         <div class="section">
             <div class="section-title">⭐ TOP 投资机会</div>
@@ -2352,7 +2620,8 @@ class OpportunityReportGenerator:
                     parts.append(f"置信{confidence*100:.0f}%")
 
                 if parts:
-                    model_tag = {'qwen': '千问', 'deepseek': 'DS'}.get(model_name, model_name.upper() if len(model_name) <= 3 else 'AI')
+                    # 只显示模型名称，不显示厂商
+                    model_tag = model_name.split('/')[-1].upper() if model_name else 'AI'
                     html_output.append(f'<div class="ai-brief"><span class="ai-tag">{model_tag}</span>{" · ".join(parts)}</div>')
 
             return "".join(html_output)
@@ -2371,10 +2640,22 @@ class OpportunityReportGenerator:
         try:
             # 处理多模型或单模型结果
             results_to_show = []
-            if any(k in llm_result for k in ['qwen', 'deepseek']):
+            # 判断是否为多模型格式
+            def contains_model_name(k):
+                k_str = str(k)
+                if '/' in k_str:
+                    model_part = k_str.split('/')[-1].lower()
+                else:
+                    model_part = k_str.lower()
+                return model_part in ['qwen', 'deepseek', 'minimax', 'kimi', 'glm']
+            is_multi_model = any(contains_model_name(k) for k in llm_result.keys()) if isinstance(llm_result, dict) else False
+
+            if is_multi_model:
                 for model_name, model_result in llm_result.items():
                     if isinstance(model_result, dict) and 'error' not in model_result:
-                        results_to_show.append((model_name, model_result))
+                        # 只提取模型名称部分
+                        display_name = model_name.split('/')[-1] if '/' in str(model_name) else model_name
+                        results_to_show.append((display_name, model_result))
             else:
                 results_to_show.append((llm_result.get('llm_model', 'AI'), llm_result))
 
@@ -2385,7 +2666,8 @@ class OpportunityReportGenerator:
             html_parts.append('<div class="ai-card-title">🤖 AI智能分析</div>')
 
             for model_name, result in results_to_show:
-                model_display = {'qwen': '通义千问', 'deepseek': 'DeepSeek'}.get(model_name, model_name.upper() if model_name else 'AI')
+                # 只显示模型名称，不显示厂商
+                model_display = model_name.split('/')[-1].upper() if model_name else 'AI'
 
                 # 操作建议
                 operation = result.get('operation_advice', {})
@@ -2580,13 +2862,24 @@ class OpportunityReportGenerator:
             rating_class = f"rating-{rating.replace('+', '-plus')}"
 
             # 支持多模型聚合结果
-            if any(k in llm_result for k in ['qwen', 'deepseek']):
+            def contains_model_name(k):
+                k_str = str(k)
+                if '/' in k_str:
+                    model_part = k_str.split('/')[-1].lower()
+                else:
+                    model_part = k_str.lower()
+                return model_part in ['qwen', 'deepseek', 'minimax', 'kimi', 'glm']
+            is_multi_model = any(contains_model_name(k) for k in llm_result.keys()) if isinstance(llm_result, dict) else False
+
+            if is_multi_model:
                 # 多模型结果
                 for model_name, model_result in llm_result.items():
                     if isinstance(model_result, dict) and 'error' not in model_result:
+                        # 只提取模型名称部分
+                        display_name = model_name.split('/')[-1] if '/' in str(model_name) else model_name
                         html += self._render_single_llm_card(
                             stock_name, stock_code, rating, rating_class,
-                            model_result, model_name
+                            model_result, display_name
                         )
             else:
                 # 单模型结果
@@ -2621,7 +2914,8 @@ class OpportunityReportGenerator:
         """
         model_badge = ''
         if model_name:
-            model_display = {'qwen': '通义千问', 'deepseek': 'DeepSeek'}.get(model_name, model_name.upper())
+            # 只显示模型名称，不显示厂商
+            model_display = model_name.split('/')[-1].upper() if model_name else 'AI'
             model_badge = f'<span class="llm-model-badge">{model_display}</span>'
 
         # 操作建议

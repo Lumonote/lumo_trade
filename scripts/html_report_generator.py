@@ -1880,18 +1880,23 @@ class KronosHTMLReportGenerator:
                 </div>
             """
 
-            # 模型显示名映射，兼容常见变体
-            badges = {
-                'qwen': '🌟 通义千问',
-                'qwen3': '🌟 通义千问3',
-                'qwen3-max': '🌟 通义千问3',
-                'qwen-max': '🌟 通义千问Max',
-                'qwen-plus': '🌟 通义千问Plus',
-                'deepseek': '🤖 DeepSeek',
-                'deepseek-chat': '🤖 DeepSeek Chat',
-                'deepseek-reasoner': '🧠 DeepSeek R1',
-                'deepseek-v3': '🤖 DeepSeek V3'
-            }
+            # 从配置文件加载模型描述
+            model_descriptions = {}
+            try:
+                import json
+                from pathlib import Path
+                config_path = Path(__file__).parent.parent / 'config' / 'llm_provider_config.json'
+                if config_path.exists():
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        provider_config = json.load(f)
+                        for provider_name, provider_data in provider_config.get('providers', {}).items():
+                            models = provider_data.get('models', {})
+                            for model_key, model_cfg in models.items():
+                                desc = model_cfg.get('description', '')
+                                if desc:
+                                    model_descriptions[model_key] = desc
+            except Exception:
+                pass
 
             # 若 llm_predicted_kline 是字典，按模型名取对应DF作为后备数据源
             predicted_map = llm_predicted_kline if isinstance(llm_predicted_kline, dict) else {}
@@ -1903,7 +1908,8 @@ class KronosHTMLReportGenerator:
                 if not isinstance(model_data, dict):
                     continue
 
-                model_display = badges.get(str(model_key).lower(), f"🤖 {str(model_key).upper()}")
+                # 从配置获取描述，否则使用模型key
+                model_display = model_descriptions.get(str(model_key), f"🤖 {str(model_key)}")
 
                 html += f"""
                 <div class='model-block'>
@@ -2289,18 +2295,31 @@ class KronosHTMLReportGenerator:
 
         # 获取LLM模型来源
         llm_model = llm_analysis.get('llm_model', 'unknown')
-        model_display = {
-            'qwen': '🌟 通义千问',
-            'deepseek': '🤖 DeepSeek',
-            'unknown': '🤖 AI'
-        }.get(llm_model.lower(), f'🤖 {llm_model.upper()}')
+
+        # 从配置文件加载模型描述
+        model_description = '🤖 AI'
+        try:
+            from pathlib import Path
+            config_path = Path(__file__).parent.parent / 'config' / 'llm_provider_config.json'
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    provider_config = json.load(f)
+                    for provider_data in provider_config.get('providers', {}).values():
+                        models = provider_data.get('models', {})
+                        if llm_model in models:
+                            desc = models[llm_model].get('description', '')
+                            if desc:
+                                model_description = desc
+                            break
+        except Exception:
+            pass
 
         html = f"""<div class='llm-analysis-section single-model'>
         <div class='llm-header'>
             <span style='display: inline-block; padding: 10px 20px; background: rgba(100, 181, 246, 0.2);
                          border: 1px solid var(--accent-blue); border-radius: 20px;
                          font-size: 1.1em; font-weight: bold;'>
-                {model_display} 智能分析
+                {model_description} 智能分析
             </span>
         </div>
         """

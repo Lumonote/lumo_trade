@@ -604,6 +604,12 @@ class OpportunityDiscovery:
         logger.info(f"报表路径: {report_path}")
         logger.info("=" * 60)
 
+        # 关闭资源
+        try:
+            self.scorer.close()
+        except Exception as e:
+            logger.warning(f"关闭scorer失败: {e}")
+
         return report_path
 
     def _preload_global_data(self, hot_stocks: List[Dict]):
@@ -769,39 +775,53 @@ class OpportunityDiscovery:
     def _process_single_llm_task(self, llm_analyzer: LLMAnalyzer, stock_result: Dict) -> bool:
         """
         处理单只股票的LLM分析任务（用于并发执行）
+        支持多模型并发分析
         """
         stock_code = stock_result.get('stock_code', '')
         stock_name = stock_result.get('name', '')
         scoring_result = stock_result.get('scoring_result', {})
 
         try:
-            logger.info(f"  正在分析 {stock_code} ({stock_name})...")
+            # 获取所有启用的模型
+            enabled_models = llm_analyzer.config.get_enabled_model_names()
+
+            if not enabled_models:
+                logger.warning(f"    ⚠️ {stock_code} 未配置任何LLM模型，跳过分析")
+                return False
+
+            logger.info(f"  正在分析 {stock_code} ({stock_name})，共{len(enabled_models)}个模型...")
 
             # 准备LLM分析数据
             stock_data = self._prepare_llm_analysis_data(
                 stock_code, stock_name, scoring_result
             )
 
-            # 调用LLM分析
-            success, llm_result = llm_analyzer.analyze_stock(stock_data)
+            # 多模型分析
+            all_results = {}
+            for model_full_key in enabled_models:
+                model_name = model_full_key.split('/')[-1]  # 去掉 provider 前缀
+                success, llm_result = llm_analyzer.analyze_stock(stock_data, model_full_key)
 
-            if success:
-                # 保存LLM分析结果
-                stock_result['llm_analysis'] = llm_result
+                if success:
+                    all_results[model_name] = llm_result
+                    logger.info(f"    ✓ {stock_code} [{model_name}] 分析完成")
+                else:
+                    logger.warning(f"    ✗ {stock_code} [{model_name}] 分析失败: {llm_result.get('error', '未知错误')}")
 
-                # 提取预测K线数据
-                llm_predicted_kline = llm_analyzer.extract_predicted_kline(llm_result)
+            if all_results:
+                # 保存多模型分析结果
+                stock_result['llm_analysis'] = all_results
+                # 使用第一个模型的结果提取预测K线
+                first_model = list(all_results.values())[0]
+                llm_predicted_kline = llm_analyzer.extract_predicted_kline(first_model)
                 if not llm_predicted_kline.empty:
                     stock_result['llm_predicted_kline'] = llm_predicted_kline
-                    logger.info(f"    ✓ {stock_code} LLM分析完成，含{len(llm_predicted_kline)}天预测数据")
+                    logger.info(f"    ✓ {stock_code} 多模型分析完成 ({len(all_results)}/{len(enabled_models)})，含{len(llm_predicted_kline)}天预测数据")
                 else:
-                    logger.info(f"    ✓ {stock_code} LLM分析完成")
-
-                # 输出LLM分析结果摘要到控制台
-                self._print_llm_analysis_summary(stock_code, stock_name, llm_result)
+                    logger.info(f"    ✓ {stock_code} 多模型分析完成 ({len(all_results)}/{len(enabled_models)})")
                 return True
             else:
-                logger.warning(f"    ✗ {stock_code} LLM分析失败: {llm_result}")
+                logger.warning(f"    ⚠️ {stock_code} 所有模型分析均失败")
                 return False
 
         except Exception as e:
@@ -1084,11 +1104,13 @@ class OpportunityDiscovery:
 
             # 处理多模型或单模型结果
             results_to_show = []
-            if any(k in llm_result for k in ['qwen', 'deepseek']):
+            # 检查是否为多模型结果（字典且包含模型名称作为key）
+            if isinstance(llm_result, dict) and any(k in llm_result for k in ['Qwen', 'DeepSeek', 'MiniMax', 'Kimi', 'qwen', 'deepseek']):
                 for model_name, model_result in llm_result.items():
                     if isinstance(model_result, dict) and 'error' not in model_result:
                         results_to_show.append((model_name, model_result))
-            else:
+            elif isinstance(llm_result, dict) and 'llm_model' in llm_result:
+                # 单模型旧格式
                 results_to_show.append((llm_result.get('llm_model', ''), llm_result))
 
             for model_name, result in results_to_show:

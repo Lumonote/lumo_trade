@@ -165,6 +165,30 @@ class OpportunityScorer:
         else:
             self.advanced_analyzer = None
 
+        # 初始化共享的数据获取器（复用连接，避免频繁初始化）
+        self._data_fetcher = None
+        self._init_data_fetcher()
+
+    def _init_data_fetcher(self):
+        """初始化共享数据获取器"""
+        try:
+            from scripts.fetch_data import MultiSourceDataFetcher
+            self._data_fetcher = MultiSourceDataFetcher()
+            logger.info("✓ 共享数据获取器初始化成功")
+        except Exception as e:
+            logger.warning(f"共享数据获取器初始化失败: {e}")
+            self._data_fetcher = None
+
+    def close(self):
+        """关闭数据获取器"""
+        if self._data_fetcher:
+            try:
+                import asyncio
+                asyncio.run(self._data_fetcher.close())
+            except Exception:
+                pass
+            self._data_fetcher = None
+
     def calculate_comprehensive_score(self, stock_code: str,
                                      historical_data: Optional[pd.DataFrame] = None,
                                      global_hot_news: Optional[list] = None,
@@ -482,17 +506,18 @@ class OpportunityScorer:
     def _fetch_historical_data(self, stock_code: str) -> Optional[pd.DataFrame]:
         """获取历史K线数据（日线，尽量保证足量数据）"""
         try:
-            # 延迟导入，避免在无数据需求时加载重依赖
-            from scripts.fetch_data import MultiSourceDataFetcher
-            import asyncio
+            # 使用共享的数据获取器
+            if not self._data_fetcher:
+                logger.warning(f"{stock_code}: 数据获取器未初始化，无法获取历史数据")
+                return None
 
-            fetcher = MultiSourceDataFetcher()
+            import asyncio
 
             async def _run():
                 # 过去一年到今天的日线数据
                 end_date = pd.Timestamp.today().strftime('%Y-%m-%d')
                 start_date = (pd.Timestamp.today() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
-                df = await fetcher.fetch_stock_data(
+                df = await self._data_fetcher.fetch_stock_data(
                     symbol=stock_code,
                     start_date=start_date,
                     end_date=end_date,
@@ -501,7 +526,6 @@ class OpportunityScorer:
                     auto_extend=True,
                     min_days=240
                 )
-                await fetcher.close()
                 return df
 
             # 在同步环境中运行异步获取

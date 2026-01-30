@@ -2227,37 +2227,55 @@ try:
                 }
 
                 # 检测是单模型还是多模型返回
-                enabled_llms = llm_config.get_enabled_llms()
-                if len(enabled_llms) > 1:
+                enabled_llms = llm_config.get_enabled_model_names()
+                is_multi_model = len(enabled_llms) > 1
+
+                if is_multi_model:
                     print(f"  📊 正在调用多个LLM模型进行智能分析...")
-                    print(f"  💡 启用的模型: {', '.join([m.upper() for m in enabled_llms])}")
+                    print(f"  💡 启用的模型: {', '.join([m.split('/')[-1] for m in enabled_llms])}")
                     print(f"  ⏱️ 这可能需要10-20秒，请耐心等待...")
+
+                    # 多模型分析 - 直接返回字典
+                    result = llm_analyzer.analyze_stock_multi_model(stock_data)
+
+                    if isinstance(result, dict) and 'error' in result:
+                        print(f"  ⚠️ LLM分析出错：{result['error']}")
+                        success = False
+                    else:
+                        success = True
                 else:
-                    print(f"  📊 正在调用 {llm_config.get_enabled_llm().upper()} 进行智能分析...")
+                    # 获取单个模型的名称（去掉provider前缀）
+                    model_name = enabled_llms[0].split('/')[-1] if enabled_llms else ''
+                    print(f"  📊 正在调用 {model_name.upper()} 进行智能分析...")
                     print(f"  💡 这可能需要5-10秒，请耐心等待...")
 
-                success, result = llm_analyzer.analyze_stock(stock_data)
+                    # 单模型分析 - 返回 (success, result) 元组
+                    success, result = llm_analyzer.analyze_stock(stock_data)
 
-                if success:
+                # 处理结果
+                if success and result:
                     llm_analysis_result = result
 
-                    # 多模型情况:result是字典{'qwen': {...}, 'deepseek': {...}}
-                    if isinstance(result, dict) and len(enabled_llms) > 1:
+                    # 多模型情况:result是字典{'模型': {...}, ...}
+                    if is_multi_model and isinstance(result, dict):
                         print(f"  ✅ 多模型LLM分析成功！")
 
                         # 为每个模型提取预测K线数据
                         llm_predicted_kline = {}
-                        for model_name, model_result in result.items():
+                        for model_full_key, model_result in result.items():
                             if isinstance(model_result, dict):
                                 kline_df = llm_analyzer.extract_predicted_kline(model_result)
-                                if not kline_df.empty:
-                                    llm_predicted_kline[model_name] = kline_df
-                                    print(f"  📈 [{model_name.upper()}] 提取到 {len(kline_df)} 天的AI预测数据")
+                                if kline_df is not None and not kline_df.empty:
+                                    llm_predicted_kline[model_full_key] = kline_df
+                                    model_display_name = model_full_key.split('/')[-1].upper()
+                                    print(f"  📈 [{model_display_name}] 提取到 {len(kline_df)} 天的AI预测数据")
 
                         # 显示每个模型的分析摘要
-                        for model_name, model_result in result.items():
+                        for model_full_key, model_result in result.items():
                             if isinstance(model_result, dict):
-                                print(f"\n  🤖 [{model_name.upper()}] 分析结果:")
+                                # 只提取模型名称部分（如 "Qwen" 而不是 "魔塔社区/Qwen"）
+                                model_display_name = model_full_key.split('/')[-1].upper()
+                                print(f"\n  🤖 [{model_display_name}] 分析结果:")
                                 if 'operation_advice' in model_result:
                                     op = model_result['operation_advice']
                                     print(f"     💡 操作建议: {op.get('action', '未知')}")
@@ -2267,23 +2285,23 @@ try:
                                 if 'summary' in model_result:
                                     print(f"     📋 综合总结: {model_result['summary'][:100]}...")
 
-                    # 单模型情况:result是单个分析字典
+                    # 单模型情况
                     else:
                         # 添加模型来源标识
                         if 'llm_model' not in result:
-                            result['llm_model'] = llm_config.get_enabled_llm()
-                        print(f"  ✅ LLM分析成功！（模型: {llm_config.get_enabled_llm().upper()}）")
+                            result['llm_model'] = enabled_llms[0].split('/')[-1] if enabled_llms else ''
+                        model_name = result.get('llm_model', '')
+                        print(f"  ✅ LLM分析成功！（模型: {model_name.upper()}）")
 
                         # 提取预测K线数据
                         llm_predicted_kline = llm_analyzer.extract_predicted_kline(result)
 
-                        # 确保是DataFrame且不为空 - 修复 AttributeError: 'dict' object has no attribute 'empty'
+                        # 确保是DataFrame且不为空
                         has_llm_prediction = False
                         if isinstance(llm_predicted_kline, pd.DataFrame) and not llm_predicted_kline.empty:
                             print(f"  📈 提取到 {len(llm_predicted_kline)} 天的AI预测数据")
                             has_llm_prediction = True
                         elif isinstance(llm_predicted_kline, dict):
-                             # 尝试从dict中恢复
                              try:
                                  if 'predictions' in llm_predicted_kline:
                                      llm_predicted_kline = pd.DataFrame(llm_predicted_kline['predictions'])
@@ -2292,7 +2310,7 @@ try:
                                          print(f"  ✅ 从字典中恢复了AI预测数据")
                              except:
                                  pass
-                        
+
                         if not has_llm_prediction:
                              llm_predicted_kline = pd.DataFrame()
 
@@ -2324,7 +2342,13 @@ try:
                     print(f"  💡 提示：请检查API配置或网络连接")
             else:
                 print(f"  ⏭️ LLM未配置，跳过AI智能分析")
-                print(f"  💡 提示：可在GUI中配置通义千问或DeepSeek API")
+                # 获取已启用的模型列表
+                enabled_models = llm_config.get_enabled_model_names() if 'llm_config' in dir() else []
+                if enabled_models:
+                    model_names = ", ".join([m.split('/')[-1] for m in enabled_models])
+                    print(f"  💡 提示：可在GUI中配置模型: {model_names}")
+                else:
+                    print(f"  💡 提示：可在GUI中配置LLM API")
 
         except Exception as e:
             print(f"  ⚠️ LLM分析出错：{str(e)}")

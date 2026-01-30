@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Kronos 配置向导
-帮助用户轻松配置 Tushare 和爬虫设置
+帮助用户轻松配置 Tushare、Baostock、Akshare 和爬虫设置
 """
 
 import json
@@ -218,6 +218,13 @@ class ConfigWizard:
             print("✅ Tushare 已配置")
         else:
             print("❌ Tushare 未配置")
+
+        # 检查 Baostock (不需要配置，安装即可用)
+        try:
+            import baostock
+            print("✅ Baostock 已安装 (免费数据源)")
+        except ImportError:
+            print("❌ Baostock 未安装 (运行: pip install baostock)")
 
         # 检查爬虫配置
         crawler_config_file = self.config_dir / 'crawler_config.json'

@@ -288,7 +288,8 @@ def check_optional_packages() -> Dict[str, Tuple[bool, str]]:
         'seaborn': 'seaborn',
         'plotly': 'plotly',
         'jupyter': 'jupyter',
-        'tushare': 'tushare'
+        'tushare': 'tushare',
+        'baostock': 'baostock'
     }
 
     results = {}

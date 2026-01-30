@@ -1495,14 +1495,8 @@ class LLMConfigDialog:
         # 再次刷新以避免异步添加内容未被首次捕获；仍保持视口，避免在用户滚动时跳动
         self.dialog.after(200, _update_scrollregion)
 
-        # 通义千问配置
-        self.create_llm_config_section(scrollable_frame, "qwen", "通义千问", "阿里云通义千问大模型")
-
-        # 分隔线
-        tk.Frame(scrollable_frame, bg="#E5E7EB", height=1).pack(fill=tk.X, pady=20)
-
-        # DeepSeek 配置
-        self.create_llm_config_section(scrollable_frame, "deepseek", "DeepSeek", "DeepSeek 大模型")
+        # 新版 LLM Provider 配置（基于 llm_provider_config.json）
+        self.create_llm_provider_config_section(scrollable_frame)
 
         # 分隔线
         tk.Frame(scrollable_frame, bg="#E5E7EB", height=1).pack(fill=tk.X, pady=20)
@@ -1854,6 +1848,241 @@ class LLMConfigDialog:
         if getattr(sys, 'frozen', False):
             return Path.home() / "Documents" / "Kronos" / "config"
         return project_root / 'config'
+
+    # ============ 新版 LLM Provider 配置方法 ============
+
+    def _load_llm_provider_config(self) -> Dict:
+        """加载新版 LLM Provider 配置文件"""
+        config_dir = self.config_dir or self._resolve_config_dir()
+        config_path = config_dir / 'llm_provider_config.json'
+
+        if config_path.exists():
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f) or {}
+            except Exception as e:
+                print(f"加载 Provider 配置失败: {e}")
+                return {}
+        return {}
+
+    def _save_llm_provider_config(self, config: Dict) -> bool:
+        """保存新版 LLM Provider 配置文件"""
+        try:
+            config_dir = self.config_dir or self._resolve_config_dir()
+            config_dir.mkdir(parents=True, exist_ok=True)
+            config_path = config_dir / 'llm_provider_config.json'
+
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"保存 Provider 配置失败: {e}")
+            return False
+
+    def create_llm_provider_config_section(self, parent):
+        """
+        基于 llm_provider_config.json 动态创建 LLM 配置界面
+        - 读取 llm_provider_config.json 获取所有可用模型
+        - 读取 llm_config.json 获取用户选择和 API Key
+        - 保存时将用户选择和 API Key 保存到 llm_config.json
+
+        llm_provider_config.json 结构:
+        {
+          "providers": {
+            "ProviderName": {
+              "enabled": true,
+              "base_url": "https://api.xxx.com",
+              "api_style": "openai",
+              "models": {
+                "ModelKey": {
+                  "model_id": "xxx",
+                  "endpoint": "/v1/chat/completions",
+                  "description": "模型描述"
+                }
+              }
+            }
+          }
+        }
+
+        llm_config.json 结构 (用户选择):
+        {
+          "enabled_models": ["ProviderName/ModelKey"],
+          "api_keys": {
+            "ProviderName/ModelKey": "sk-xxx"
+          }
+        }
+        """
+        provider_config = self._load_llm_provider_config()
+        providers = provider_config.get('providers', {})
+
+        if not providers:
+            hint_frame = tk.Frame(parent, bg="#FEF3C7", relief="flat", bd=0)
+            hint_frame.pack(fill=tk.X, pady=10)
+            hint_content = tk.Frame(hint_frame, bg="#FEF3C7")
+            hint_content.pack(fill=tk.X, padx=12, pady=10)
+            tk.Label(hint_content, text="未找到模型配置，请编辑 config/llm_provider_config.json",
+                    font=("SF Pro Display", 12, "bold"), fg="#92400E", bg="#FEF3C7").pack(anchor="w")
+            return
+
+        # 加载用户选择和 API Key
+        user_enabled = self.llm_config.get('enabled_models', [])
+        user_api_keys = self.llm_config.get('api_keys', {})
+
+        # 存储配置引用用于保存
+        self.llm_provider_config = provider_config
+        self._model_configs = {}
+
+        for provider_name, provider_data in providers.items():
+            if not provider_data.get('enabled', False):
+                continue
+
+            models = provider_data.get('models', {})
+            if not models:
+                continue
+
+            # Provider 分组容器
+            provider_frame = tk.Frame(parent, bg="#F3F4F6", relief="flat", bd=0)
+            provider_frame.pack(fill=tk.X, pady=(0, 15))
+
+            provider_content = tk.Frame(provider_frame, bg="#F3F4F6")
+            provider_content.pack(fill=tk.X, padx=12, pady=12)
+
+            # Provider 标题
+            tk.Label(provider_content, text=provider_name,
+                    font=("SF Pro Display", 15, "bold"), fg="#1F2937", bg="#F3F4F6").pack(anchor="w")
+
+            # API 地址
+            base_url = provider_data.get('base_url', '')
+            tk.Label(provider_content, text=f"API: {base_url}",
+                    font=("SF Pro Display", 10, "normal"), fg="#6B7280", bg="#F3F4F6").pack(anchor="w", pady=(2, 8))
+
+            # 遍历模型
+            for model_key, model_data in models.items():
+                if not model_data:
+                    continue
+
+                self._create_model_config_row(
+                    provider_content, provider_name, model_key, model_data,
+                    user_enabled, user_api_keys
+                )
+
+            tk.Frame(parent, bg="#E5E7EB", height=1).pack(fill=tk.X, pady=15)
+
+    def _create_model_config_row(self, parent, provider_name, model_key, model_data,
+                                  user_enabled, user_api_keys):
+        """创建单个模型的配置行"""
+        model_id = model_data.get('model_id', '')
+        description = model_data.get('description', model_key)
+        model_full_key = f"{provider_name}/{model_key}"
+
+        # 读取用户设置
+        is_enabled = model_full_key in user_enabled
+        # API Key 按 provider_name 加载（同一个 provider 的所有模型共享一个 key）
+        saved_api_key = user_api_keys.get(provider_name, '')
+
+        # 模型行容器
+        model_row = tk.Frame(parent, bg="#FFFFFF", relief="solid", bd=1)
+        model_row.pack(fill=tk.X, pady=(8, 0))
+
+        model_content = tk.Frame(model_row, bg="#FFFFFF")
+        model_content.pack(fill=tk.X, padx=12, pady=10)
+
+        # 标题行
+        title_row = tk.Frame(model_content, bg="#FFFFFF")
+        title_row.pack(fill=tk.X, pady=(0, 8))
+
+        tk.Label(title_row, text=description,
+                font=("SF Pro Display", 13, "bold"), fg="#1F2937", bg="#FFFFFF").pack(side=tk.LEFT)
+
+        # 启用开关
+        enabled_var = tk.BooleanVar(value=is_enabled)
+        setattr(self, f"{provider_name}_{model_key}_enabled_var", enabled_var)
+
+        switch_frame = tk.Frame(title_row, bg="#FFFFFF")
+        switch_frame.pack(side=tk.RIGHT)
+
+        switch_label = tk.Label(switch_frame, text="启用" if enabled_var.get() else "禁用",
+                               font=("SF Pro Display", 11, "normal"),
+                               fg="#10B981" if enabled_var.get() else "#6B7280",
+                               bg="#FFFFFF")
+        switch_label.pack(side=tk.LEFT, padx=(0, 6))
+
+        def toggle_model_switch():
+            new_state = not enabled_var.get()
+            enabled_var.set(new_state)
+            switch_label.config(
+                text="启用" if new_state else "禁用",
+                fg="#10B981" if new_state else "#6B7280"
+            )
+
+        switch_btn = tk.Button(switch_frame, text="○" if not enabled_var.get() else "●",
+                              font=("SF Pro Display", 14),
+                              fg="#10B981" if enabled_var.get() else "#9CA3AF",
+                              bg="#FFFFFF", relief="flat", bd=0,
+                              command=toggle_model_switch, cursor="hand2")
+        switch_btn.pack(side=tk.LEFT)
+
+        # 模型ID
+        tk.Label(model_content, text=f"模型: {model_id}",
+                font=("SF Pro Display", 10, "normal"), fg="#9CA3AF", bg="#FFFFFF").pack(anchor="w")
+
+        # API Key 输入
+        api_key_label = tk.Label(model_content, text="API Key",
+                                font=("SF Pro Display", 11, "bold"),
+                                fg="#374151", bg="#FFFFFF")
+        api_key_label.pack(anchor="w", pady=(10, 4))
+
+        api_key_entry = tk.Entry(model_content, font=("SF Pro Display", 11, "normal"),
+                                bg="#FFFFFF", fg="#1F2937", relief="flat", bd=0,
+                                highlightthickness=1, highlightbackground="#E5E7EB",
+                                highlightcolor="#4F46E5", show="*")
+        api_key_entry.pack(fill=tk.X, ipady=6, ipadx=8)
+        api_key_entry.insert(0, saved_api_key)
+        setattr(self, f"{provider_name}_{model_key}_api_key_entry", api_key_entry)
+
+        # 保存配置引用
+        self._model_configs[model_full_key] = {
+            'provider': provider_name,
+            'model_key': model_key,
+            'model_data': model_data
+        }
+
+    def save_llm_provider_config(self) -> bool:
+        """保存用户选择和 API Key 到 llm_config.json"""
+        try:
+            enabled_models = []
+            api_keys = {}
+
+            # 检查是否有模型配置
+            if not hasattr(self, '_model_configs') or not self._model_configs:
+                print(f"⚠️  没有模型配置需要保存")
+                return True
+
+            for model_full_key, cfg in self._model_configs.items():
+                provider_name = cfg['provider']
+                model_key = cfg['model_key']
+
+                enabled_var = getattr(self, f"{provider_name}_{model_key}_enabled_var", None)
+                api_key_entry = getattr(self, f"{provider_name}_{model_key}_api_key_entry", None)
+
+                if enabled_var and enabled_var.get():
+                    enabled_models.append(model_full_key)
+
+                # API Key 按 provider_name 存储（同一个 provider 的所有模型共享一个 key）
+                if api_key_entry:
+                    api_key = api_key_entry.get().strip()
+                    if api_key:
+                        api_keys[provider_name] = api_key
+
+            # 保存到 llm_config.json
+            self.llm_config['enabled_models'] = enabled_models
+            self.llm_config['api_keys'] = api_keys
+
+            print(f"💾 保存LLM配置: 启用={enabled_models}, API_keys providers={list(api_keys.keys())}")
+            return True
+        except Exception as e:
+            print(f"保存配置失败: {e}")
+            return False
 
     def _default_tushare_config(self) -> Dict[str, Any]:
         return {
@@ -2217,51 +2446,31 @@ class LLMConfigDialog:
         """保存配置"""
         try:
             import json
-            # 更新配置
-            for llm_name in ['qwen', 'deepseek']:
-                enabled_var = getattr(self, f"{llm_name}_enabled_var", None)
-                api_key_entry = getattr(self, f"{llm_name}_api_key_entry", None)
-                base_url_entry = getattr(self, f"{llm_name}_base_url_entry", None)
-                model_entry = getattr(self, f"{llm_name}_model_entry", None)
 
-                if enabled_var and api_key_entry:
-                    self.llm_config[llm_name]['enabled'] = enabled_var.get()
-                    self.llm_config[llm_name]['api_key'] = api_key_entry.get().strip()
-
-                    # 保存base_url（如果有）
-                    if base_url_entry:
-                        custom_url = base_url_entry.get().strip()
-                        if custom_url:
-                            self.llm_config[llm_name]['base_url'] = custom_url
-
-                    # 保存模型（如果填写了）
-                    if model_entry:
-                        selected_model = model_entry.get().strip()
-                        if selected_model:
-                            self.llm_config[llm_name]['model'] = selected_model
+            # 保存新版 Provider 配置
+            provider_ok = self.save_llm_provider_config()
 
             config_dir = self.config_dir or self._resolve_config_dir()
             config_dir.mkdir(parents=True, exist_ok=True)
 
+            # 如果旧的 llm_config.json 也需要保持兼容（可选）
             llm_path = config_dir / 'llm_config.json'
-            with open(llm_path, 'w', encoding='utf-8') as f:
-                json.dump(self.llm_config, f, indent=2, ensure_ascii=False)
-
-            app_llm_path = project_root / 'config' / 'llm_config.json'
-            if app_llm_path.resolve() != llm_path.resolve():
-                try:
-                    app_llm_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(app_llm_path, 'w', encoding='utf-8') as f:
-                        json.dump(self.llm_config, f, indent=2, ensure_ascii=False)
-                except Exception:
-                    pass
+            try:
+                with open(llm_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.llm_config, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
 
             tushare_ok = self._save_tushare_config()
-            if tushare_ok:
+
+            if provider_ok and tushare_ok:
                 messagebox.showinfo("成功", "✅ 配置保存成功！", parent=self.dialog)
                 self.dialog.destroy()
+            elif provider_ok:
+                messagebox.showwarning("提示", "⚠️ LLM 配置已保存，但 Tushare 配置可能写入失败", parent=self.dialog)
+                self.dialog.destroy()
             else:
-                messagebox.showwarning("提示", "⚠️ LLM 配置已保存，但 Tushare 配置可能写入失败（请检查权限）", parent=self.dialog)
+                messagebox.showerror("错误", "保存 LLM 配置失败，请检查配置文件权限", parent=self.dialog)
 
         except Exception as e:
             messagebox.showerror("错误", f"保存配置失败：{e}", parent=self.dialog)

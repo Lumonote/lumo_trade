@@ -147,11 +147,17 @@ else
         print_warning "使用国内镜像重试..."
         $PIP_CMD install numpy pandas torch matplotlib tqdm safetensors einops huggingface_hub -i https://pypi.tuna.tsinghua.edu.cn/simple/
     fi
-    
+
     # Tushare
     print_info "正在安装 Tushare..."
     if ! $PIP_CMD install tushare; then
         print_warning "Tushare 安装失败，可以稍后手动安装"
+    fi
+
+    # Baostock
+    print_info "正在安装 Baostock..."
+    if ! $PIP_CMD install baostock; then
+        print_warning "Baostock 安装失败，可以稍后手动安装"
     fi
 fi
 

@@ -1,533 +1,443 @@
 """
-LLM 服务模块
-支持通义千问、DeepSeek、MiniMax、Kimi 大模型 API 调用
-用于股票分析的 AI 智能预测和建议
+LLM 服务模块 - 基于配置的Provider架构
+
+配置文件分工:
+- llm_provider_config.json: 模型定义 (Provider、model_id、endpoint、description)
+- llm_config.json: 用户配置 (enabled_models、api_keys)
 """
 
 import json
 import os
 import re
-import pandas as pd
+import time
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Optional, Tuple
-import requests
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
+import requests
 
 
 class LLMConfig:
-    """LLM 配置管理类"""
+    """LLM 配置管理 - 分离通用配置和用户配置"""
 
-    def __init__(self, config_path: Optional[Path] = None):
+    def __init__(self, config_path: Optional[Path] = None, provider_config_path: Optional[Path] = None):
+        # 用户配置路径
         if config_path is None:
-            # 默认配置路径
             self.config_path = Path(__file__).parent.parent / 'config' / 'llm_config.json'
         else:
             self.config_path = Path(config_path)
 
-        self.config = self.load_config()
+        # 通用配置路径
+        if provider_config_path is None:
+            self.provider_config_path = Path(__file__).parent.parent / 'config' / 'llm_provider_config.json'
+        else:
+            self.provider_config_path = Path(provider_config_path)
 
-    def load_config(self) -> Dict:
-        """加载配置文件"""
-        if not self.config_path.exists():
-            # 创建默认配置
-            default_config = {
-                "qwen": {
-                    "enabled": False,
-                    "api_key": "",
-                    "model": "qwen3-max",
-                    "base_url": "https://dashscope.aliyuncs.com/api/v1",
-                    "register_url": "https://help.aliyun.com/zh/dashscope/developer-reference/activate-dashscope-and-create-an-api-key",
-                    "description": "阿里云通义千问大模型"
-                },
-                "deepseek": {
-                    "enabled": False,
-                    "api_key": "",
-                    "model": "deepseek-chat",
-                    "base_url": "https://api.deepseek.com",
-                    "register_url": "https://platform.deepseek.com/api_keys",
-                    "description": "DeepSeek 大模型"
-                },
-                "minimax": {
-                    "enabled": False,
-                    "api_key": "",
-                    "model": "abab6.5s-chat",
-                    "base_url": "https://api.minimax.chat/v1/text/chatcompletion_v2",
-                    "register_url": "https://platform.minimax.com/api_keys",
-                    "description": "MiniMax 海螺AI大模型"
-                },
-                "kimi": {
-                    "enabled": False,
-                    "api_key": "",
-                    "model": "moonshot-v1-8k",
-                    "base_url": "https://api.moonshot.cn/v1",
-                    "register_url": "https://platform.moonshot.com/console/api-keys",
-                    "description": "Kimi 月之暗面大模型"
-                }
-            }
-            self.save_config(default_config)
-            return default_config
+        self.config = self.load_user_config()
+        self.provider_config = self.load_provider_config()
 
-        try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"加载配置失败: {e}")
-            return {}
+    def load_user_config(self) -> Dict:
+        """加载用户配置 (enabled_models, api_keys)"""
+        if self.config_path.exists():
+            try:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"加载用户配置失败: {e}")
+        return {"enabled_models": [], "api_keys": {}}
 
-    def save_config(self, config: Dict):
-        """保存配置文件"""
+    def load_provider_config(self) -> Dict:
+        """加载通用配置 (Provider、模型定义)"""
+        if self.provider_config_path.exists():
+            try:
+                with open(self.provider_config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"加载通用配置失败: {e}")
+        return {"providers": {}}
+
+    def save_user_config(self, config: Dict = None):
+        """保存用户配置"""
         try:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_to_save = config or self.config
             with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-            self.config = config
+                json.dump(config_to_save, f, indent=2, ensure_ascii=False)
+            self.config = config_to_save
         except Exception as e:
-            print(f"保存配置失败: {e}")
+            print(f"保存用户配置失败: {e}")
 
-    def get_enabled_llm(self) -> Optional[str]:
-        """获取启用且已配置 API Key 的首选 LLM 服务
+    def get_providers(self) -> Dict:
+        """获取所有Provider配置"""
+        return self.provider_config.get('providers', {})
 
-        优先返回已启用且配置了 API Key 的服务；
-        若都未配置 API Key，则返回已启用的服务（用于提示）。
-        """
-        # 优先选择"已启用且已配置API Key"的模型
-        for name in ['qwen', 'deepseek', 'minimax', 'kimi']:
-            cfg = self.config.get(name, {})
-            if cfg.get('enabled') and cfg.get('api_key'):
-                return name
+    def get_enabled_providers(self) -> List[str]:
+        """获取已启用的Provider列表"""
+        return [name for name, cfg in self.get_providers().items() if cfg.get('enabled', False)]
 
-        # 其次选择"仅启用但未配置API Key"的模型（用于 UI/提示）
-        for name in ['qwen', 'deepseek', 'minimax', 'kimi']:
-            cfg = self.config.get(name, {})
-            if cfg.get('enabled'):
-                return name
+    def get_enabled_models(self) -> List[Tuple[str, str, Dict]]:
+        """获取所有启用的模型 [(provider_name, model_key, model_config), ...]"""
+        enabled = self.config.get('enabled_models', [])
+        enabled_set = set(enabled)
 
-        return None
+        result = []
+        for provider_name, provider_cfg in self.get_providers().items():
+            if not provider_cfg.get('enabled', False):
+                continue
+            models = provider_cfg.get('models', {})
+            for model_key, model_cfg in models.items():
+                model_full_key = f"{provider_name}/{model_key}"
+                if model_full_key in enabled_set:
+                    result.append((provider_name, model_key, model_cfg))
+        return result
 
-    def get_enabled_llms(self) -> list:
-        """获取已启用且配置了 API Key 的所有LLM服务列表"""
-        enabled = []
-        for name in ['qwen', 'deepseek', 'minimax', 'kimi']:
-            cfg = self.config.get(name, {})
-            if cfg.get('enabled') and cfg.get('api_key'):
-                enabled.append(name)
-        return enabled
+    def get_enabled_model_names(self) -> List[str]:
+        """获取所有启用的模型名称列表"""
+        return self.config.get('enabled_models', [])
 
     def is_configured(self) -> bool:
-        """检查是否已配置可用的 LLM（任一启用且有 API Key 即为已配置）"""
-        return len(self.get_enabled_llms()) > 0
+        """检查是否已配置至少一个启用的模型"""
+        return len(self.get_enabled_models()) > 0
 
-    def update_llm_config(self, llm_name: str, enabled: bool, api_key: str = None):
-        """更新 LLM 配置"""
-        if llm_name not in self.config:
-            return False
+    def set_model_enabled(self, model_full_key: str, enabled: bool):
+        """设置模型启用状态"""
+        enabled_models = self.config.get('enabled_models', [])
+        if enabled and model_full_key not in enabled_models:
+            enabled_models.append(model_full_key)
+        elif not enabled and model_full_key in enabled_models:
+            enabled_models.remove(model_full_key)
+        self.config['enabled_models'] = enabled_models
+        self.save_user_config()
 
-        self.config[llm_name]['enabled'] = enabled
-        if api_key is not None:
-            self.config[llm_name]['api_key'] = api_key
+    def set_api_key(self, provider_name: str, api_key: str):
+        """设置Provider的API Key"""
+        api_keys = self.config.get('api_keys', {})
+        api_keys[provider_name] = api_key.strip()
+        self.config['api_keys'] = api_keys
+        self.save_user_config()
 
-        self.save_config(self.config)
-        return True
+    def get_api_key(self, provider_name: str) -> str:
+        """获取Provider的API Key"""
+        return self.config.get('api_keys', {}).get(provider_name, '')
 
+    def get_model_description(self, provider_name: str, model_key: str) -> str:
+        """获取模型描述"""
+        provider_cfg = self.get_providers().get(provider_name, {})
+        models = provider_cfg.get('models', {})
+        model_cfg = models.get(model_key, {})
+        return model_cfg.get('description', f"{provider_name}/{model_key}")
 
-class LLMAnalyzer:
-    """LLM 分析器 - 统一的 LLM 调用接口"""
-
-    def __init__(self, config: LLMConfig = None):
-        self.config = config or LLMConfig()
-        self.llm_name = self.config.get_enabled_llm()
-        self.enabled_llms = self.config.get_enabled_llms()
-
-    def _call_qwen_api(self, prompt: str, max_tokens: int = 2000) -> Tuple[bool, str]:
-        """调用通义千问 API"""
-        config = self.config.config.get('qwen', {})
-        api_key = config.get('api_key')
-
-        if not api_key:
-            return False, "通义千问 API Key 未配置"
-
-        try:
-            url = f"{config['base_url']}/services/aigc/text-generation/generation"
-            headers = {
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json'
-            }
-
-            data = {
-                "model": config['model'],
-                "input": {
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "你是一位资深的股票分析师，擅长技术分析、基本面分析和市场研判。"
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ]
-                },
-                "parameters": {
-                    "max_tokens": max_tokens,
-                    "temperature": 0.7
-                }
-            }
-
-            response = requests.post(url, headers=headers, json=data, timeout=30)
-            response.raise_for_status()
-
-            result = response.json()
-
-            # 兼容不同版本的 DashScope 返回结构
-            # 1) 旧版: { output: { text: "..." } }
-            output = result.get('output') or {}
-            text = output.get('text')
-            if isinstance(text, str) and text.strip():
-                return True, text
-
-            # 2) 新版: { output: { choices: [ { message: { content: "..." } } ] } }
-            choices = output.get('choices')
-            if isinstance(choices, list) and choices:
-                first = choices[0] or {}
-                # 优先 message.content
-                msg = first.get('message') or {}
-                content = msg.get('content')
-                if isinstance(content, str) and content.strip():
-                    return True, content
-                # 兼容形态: choices[0].text
-                if isinstance(first.get('text'), str) and first.get('text').strip():
-                    return True, first.get('text')
-                # 兼容形态: message.content 为数组（富文本）
-                if isinstance(content, list) and content:
-                    try:
-                        # 将文本片段拼接
-                        parts = []
-                        for seg in content:
-                            if isinstance(seg, str):
-                                parts.append(seg)
-                            elif isinstance(seg, dict):
-                                txt = seg.get('text') or seg.get('content')
-                                if isinstance(txt, str):
-                                    parts.append(txt)
-                        joined = "\n".join(parts).strip()
-                        if joined:
-                            return True, joined
-                    except Exception:
-                        pass
-
-            # 3) 兜底: 常见的其他字段名
-            for key in [
-                'output_text', 'outputText', 'result', 'data'
-            ]:
-                val = result.get(key)
-                if isinstance(val, str) and val.strip():
-                    return True, val
-
-            # 无法识别的返回结构，回传精简后的错误信息
-            try:
-                compact = json.dumps(result, ensure_ascii=False)[:1200]
-            except Exception:
-                compact = str(result)
-            return False, f"API 返回格式异常: {compact}"
-
-        except requests.exceptions.Timeout:
-            return False, "请求超时，请检查网络连接"
-        except requests.exceptions.RequestException as e:
-            return False, f"API 调用失败: {str(e)}"
-        except Exception as e:
-            return False, f"未知错误: {str(e)}"
-
-    def _call_deepseek_api(self, prompt: str, max_tokens: int = 2000) -> Tuple[bool, str]:
-        """调用 DeepSeek API (OpenAI 兼容接口)"""
-        config = self.config.config.get('deepseek', {})
-        api_key = config.get('api_key')
-
-        if not api_key:
-            return False, "DeepSeek API Key 未配置"
-
-        try:
-            url = f"{config['base_url']}/v1/chat/completions"
-            headers = {
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json'
-            }
-
-            data = {
-                "model": config['model'],
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "你是一位资深的股票分析师，擅长技术分析、基本面分析和市场研判。"
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
+    def get_model_info(self, model_full_key: str) -> Optional[Dict]:
+        """根据完整模型key获取模型信息"""
+        for provider_name, provider_cfg in self.get_providers().items():
+            models = provider_cfg.get('models', {})
+            for model_key, model_cfg in models.items():
+                if f"{provider_name}/{model_key}" == model_full_key:
+                    return {
+                        'provider_name': provider_name,
+                        'model_key': model_key,
+                        'model_config': model_cfg,
+                        'api_key': self.get_api_key(provider_name)
                     }
-                ],
-                "max_tokens": max_tokens,
-                "temperature": 0.7
-            }
+        return None
 
-            # 增加超时时间到60秒，避免批量分析时Read timed out
-            response = requests.post(url, headers=headers, json=data, timeout=60)
-            response.raise_for_status()
 
-            result = response.json()
-            if result.get('choices') and len(result['choices']) > 0:
-                return True, result['choices'][0]['message']['content']
-            else:
-                return False, f"API 返回格式异常: {result}"
+class LLMProvider(ABC):
+    """LLM Provider 抽象基类"""
 
-        except requests.exceptions.Timeout:
-            return False, "请求超时，请检查网络连接"
-        except requests.exceptions.RequestException as e:
-            return False, f"API 调用失败: {str(e)}"
-        except Exception as e:
-            return False, f"未知错误: {str(e)}"
+    def __init__(self, config: Dict, provider_name: str):
+        self.config = config
+        self.provider_name = provider_name
+        self.base_url = config.get('base_url', '').rstrip('/')
+        self.api_style = config.get('api_style', 'openai')
 
-    def _call_minimax_api(self, prompt: str, max_tokens: int = 2000) -> Tuple[bool, str]:
-        """调用 MiniMax API (OpenAI 兼容接口)"""
-        config = self.config.config.get('minimax', {})
-        api_key = config.get('api_key')
+    @abstractmethod
+    def call_api(self, prompt: str, model_config: Dict, max_tokens: int = 2000) -> Tuple[bool, str]:
+        pass
 
+    def _get_headers(self, api_key: str) -> Dict:
+        return {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+
+
+class OpenAIProvider(LLMProvider):
+    """OpenAI兼容接口的Provider"""
+
+    def __init__(self, config: Dict, provider_name: str):
+        super().__init__(config, provider_name)
+
+    def call_api(self, prompt: str, model_config: Dict, max_tokens: int = 2000) -> Tuple[bool, str]:
+        api_key = model_config.get('api_key', '')
         if not api_key:
-            return False, "MiniMax API Key 未配置"
+            return False, f"[{self.provider_name}] API Key 未配置"
 
-        try:
-            url = f"{config['base_url']}"
-            headers = {
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json'
-            }
+        model_id = model_config.get('model_id', '')
+        endpoint = model_config.get('endpoint', '/v1/chat/completions')
+        url = f"{self.base_url}{endpoint}"
 
-            # MiniMax 模型限制 max_tokens <= 2048
-            safe_max_tokens = min(max_tokens, 2048)
+        timeout = model_config.get('timeout', 60)
+        if isinstance(timeout, list):
+            timeout = tuple(timeout)
 
-            data = {
-                "model": config['model'],
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "你是一位资深的股票分析师，擅长技术分析、基本面分析和市场研判。"
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                "max_tokens": safe_max_tokens,
-                "temperature": 0.7
-            }
+        retry_enabled = model_config.get('retry_enabled', False)
+        max_retries = model_config.get('retry_times', 3)
+        retry_delay = 2
 
-            response = requests.post(url, headers=headers, json=data, timeout=60)
-            response.raise_for_status()
-
-            result = response.json()
-            if result.get('choices') and len(result['choices']) > 0:
-                return True, result['choices'][0]['message']['content']
-            elif result.get('base_resp', {}).get('status_code') == 2013:
-                return False, f"MiniMax 错误: {result.get('base_resp', {}).get('status_msg', '参数错误')}"
-            else:
-                return False, f"API 返回格式异常: {result}"
-
-        except requests.exceptions.Timeout:
-            return False, "请求超时，请检查网络连接"
-        except requests.exceptions.RequestException as e:
-            return False, f"API 调用失败: {str(e)}"
-        except Exception as e:
-            return False, f"未知错误: {str(e)}"
-
-    def _call_kimi_api(self, prompt: str, max_tokens: int = 2000) -> Tuple[bool, str]:
-        """调用 Kimi API (OpenAI 兼容接口)"""
-        config = self.config.config.get('kimi', {})
-        api_key = config.get('api_key')
-
-        if not api_key:
-            return False, "Kimi API Key 未配置"
-
-        # 重试机制配置
-        max_retries = 3
-        retry_delay = 2  # 秒
-        
-        for attempt in range(max_retries):
+        for attempt in range(max_retries if retry_enabled else 1):
             try:
-                url = f"{config['base_url']}/chat/completions"
-                headers = {
-                    'Authorization': f'Bearer {api_key}',
-                    'Content-Type': 'application/json'
-                }
-
-                # 获取模型配置，默认为 kimi-k2.5
-                model = config.get('model', 'kimi-k2.5')
-                
                 data = {
-                    "model": model,
+                    "model": model_id,
                     "messages": [
-                        {
-                            "role": "system",
-                            "content": "你是一位资深的股票分析师，擅长技术分析、基本面分析和市场研判。"
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
+                        {"role": "system", "content": "你是一位资深的股票分析师，擅长技术分析、基本面分析和市场研判。"},
+                        {"role": "user", "content": prompt}
                     ],
-                    "max_tokens": max_tokens
-                    # Note: kimi-k2.5 模型不支持自定义 temperature，仅允许默认值
+                    "max_tokens": min(max_tokens, model_config.get('max_tokens', 4096)),
+                    "temperature": model_config.get('temperature', 0.7)
                 }
 
-                # 增加超时时间到120秒，避免复杂分析请求超时
-                # 使用连接超时和读取超时分离设置
                 response = requests.post(
-                    url, 
-                    headers=headers, 
-                    json=data, 
-                    timeout=(10, 120)  # (连接超时, 读取超时)
+                    url, headers=self._get_headers(api_key), json=data, timeout=timeout
                 )
 
                 if response.status_code == 400:
-                    error_detail = response.text
-                    return False, f"Kimi API 请求错误 (400): {error_detail}"
+                    return False, f"[{self.provider_name}] API请求错误: {response.text}"
 
                 response.raise_for_status()
-
                 result = response.json()
-                if result.get('choices') and len(result['choices']) > 0:
-                    return True, result['choices'][0]['message']['content']
-                else:
-                    return False, f"API 返回格式异常: {result}"
+                return self._parse_response(result)
 
-            except requests.exceptions.Timeout as e:
-                if attempt < max_retries - 1:
-                    print(f"  ⚠️ Kimi API 请求超时，第{attempt + 1}次重试...")
-                    import time
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # 指数退避
-                    continue
-                return False, f"请求超时，已重试{max_retries}次，请检查网络连接或稍后重试"
-            except requests.exceptions.RequestException as e:
-                if attempt < max_retries - 1:
-                    print(f"  ⚠️ Kimi API 请求失败，第{attempt + 1}次重试: {e}")
-                    import time
+            except requests.exceptions.Timeout:
+                if retry_enabled and attempt < max_retries - 1:
+                    print(f"  ⚠️ [{self.provider_name}] 请求超时，第{attempt + 1}次重试...")
                     time.sleep(retry_delay)
                     retry_delay *= 2
                     continue
-                return False, f"API 调用失败: {str(e)}"
+                return False, f"[{self.provider_name}] 请求超时"
+
+            except requests.exceptions.RequestException as e:
+                if retry_enabled and attempt < max_retries - 1:
+                    print(f"  ⚠️ [{self.provider_name}] 请求失败，第{attempt + 1}次重试: {e}")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                return False, f"[{self.provider_name}] API调用失败: {str(e)}"
+
             except Exception as e:
-                return False, f"未知错误: {str(e)}"
-        
-        return False, "请求失败，已达到最大重试次数"
+                return False, f"[{self.provider_name}] 未知错误: {str(e)}"
 
-    def analyze_stock(self, stock_data: Dict) -> Tuple[bool, Dict]:
-        """
-        综合分析股票数据
+        return False, f"[{self.provider_name}] 请求失败"
 
-        Args:
-            stock_data: 包含以下信息的字典
-                - code: 股票代码
-                - name: 股票名称
-                - current_price: 当前价格
-                - kline_data: K线数据 (最近30天)
-                - technical_analysis: 技术分析结果
-                - fundamental_data: 基本面数据
-                - news_sentiment: 消息面数据
-                - market_env: 市场环境
+    def _parse_response(self, result: Dict) -> Tuple[bool, str]:
+        if result.get('choices') and len(result['choices']) > 0:
+            content = result['choices'][0].get('message', {}).get('content', '')
+            if content:
+                return True, content
+        return False, f"[{self.provider_name}] API返回格式异常"
 
-        Returns:
-            (success, analysis_result)
-        """
-        if not self.config.is_configured():
-            return False, {"error": "未配置或启用任何 LLM 服务"}
 
-        # 构建分析提示词
+class DashScopeProvider(LLMProvider):
+    """DashScope（通义千问）接口的Provider"""
+
+    def __init__(self, config: Dict, provider_name: str):
+        super().__init__(config, provider_name)
+
+    def call_api(self, prompt: str, model_config: Dict, max_tokens: int = 2000) -> Tuple[bool, str]:
+        api_key = model_config.get('api_key', '')
+        if not api_key:
+            return False, f"[{self.provider_name}] API Key 未配置"
+
+        model_id = model_config.get('model_id', '')
+        endpoint = model_config.get('endpoint', '/services/aigc/text-generation/generation')
+        url = f"{self.base_url}{endpoint}"
+
+        try:
+            data = {
+                "model": model_id,
+                "input": {
+                    "messages": [
+                        {"role": "system", "content": "你是一位资深的股票分析师，擅长技术分析、基本面分析和市场研判。"},
+                        {"role": "user", "content": prompt}
+                    ]
+                },
+                "parameters": {
+                    "max_tokens": min(max_tokens, model_config.get('max_tokens', 4096)),
+                    "temperature": model_config.get('temperature', 0.7)
+                }
+            }
+
+            response = requests.post(url, headers=self._get_headers(api_key), json=data, timeout=30)
+            response.raise_for_status()
+            result = response.json()
+            return self._parse_response(result)
+
+        except requests.exceptions.Timeout:
+            return False, f"[{self.provider_name}] 请求超时"
+        except requests.exceptions.RequestException as e:
+            return False, f"[{self.provider_name}] API调用失败: {str(e)}"
+        except Exception as e:
+            return False, f"[{self.provider_name}] 未知错误: {str(e)}"
+
+    def _parse_response(self, result: Dict) -> Tuple[bool, str]:
+        output = result.get('output') or {}
+        text = output.get('text')
+        if isinstance(text, str) and text.strip():
+            return True, text
+
+        choices = output.get('choices')
+        if isinstance(choices, list) and choices:
+            first = choices[0] or {}
+            msg = first.get('message') or {}
+            content = msg.get('content')
+            if isinstance(content, str) and content.strip():
+                return True, content
+
+        for key in ['output_text', 'result']:
+            val = result.get(key)
+            if isinstance(val, str) and val.strip():
+                return True, val
+
+        return False, f"[{self.provider_name}] API返回格式异常"
+
+
+class LLMProviderFactory:
+    """LLM Provider 工厂类"""
+
+    _providers = {'openai': OpenAIProvider, 'dashscope': DashScopeProvider}
+
+    @classmethod
+    def create_provider(cls, provider_name: str, provider_config: Dict) -> LLMProvider:
+        api_style = provider_config.get('api_style', 'openai').lower()
+        provider_class = cls._providers.get(api_style)
+        if not provider_class:
+            raise ValueError(f"不支持的API风格: {api_style}")
+        return provider_class(provider_config, provider_name)
+
+
+class LLMAnalyzer:
+    """LLM 分析器"""
+
+    def __init__(self, config: LLMConfig = None):
+        self.config = config or LLMConfig()
+        self._provider_cache: Dict[str, Tuple[LLMProvider, Dict]] = {}
+
+    def _get_provider_and_model(self, provider_name: str, model_key: str) -> Tuple[Optional[LLMProvider], Optional[Dict]]:
+        cache_key = f"{provider_name}:{model_key}"
+        if cache_key in self._provider_cache:
+            return self._provider_cache[cache_key]
+
+        provider_cfg = self.config.get_providers().get(provider_name)
+        if not provider_cfg:
+            return None, None
+
+        models = provider_cfg.get('models', {})
+        model_cfg = models.get(model_key, {})
+
+        # 合并API Key
+        api_key = self.config.get_api_key(provider_name)
+        model_cfg['api_key'] = api_key
+
+        provider = LLMProviderFactory.create_provider(provider_name, provider_cfg)
+        self._provider_cache[cache_key] = (provider, model_cfg)
+        return provider, model_cfg
+
+    def analyze_stock(self, stock_data: Dict, model_full_key: str = None) -> Tuple[bool, Dict]:
+        """分析股票"""
         prompt = self._build_analysis_prompt(stock_data)
 
-        # 若启用多个模型，则分别调用并按模型分组返回
-        if len(self.enabled_llms) > 1:
-            aggregated: Dict[str, Dict] = {}
-            any_success = False
-            # 对每个启用模型进行调用；即使失败也记录占位，便于前端显示徽章与状态
-            for name in self.enabled_llms:
-                if name == 'qwen':
-                    success, raw = self._call_qwen_api(prompt, max_tokens=3000)
-                elif name == 'deepseek':
-                    success, raw = self._call_deepseek_api(prompt, max_tokens=3000)
-                elif name == 'minimax':
-                    success, raw = self._call_minimax_api(prompt, max_tokens=3000)
-                elif name == 'kimi':
-                    success, raw = self._call_kimi_api(prompt, max_tokens=3000)
-                else:
-                    success, raw = False, f"未知的 LLM 服务: {name}"
-
-                if success:
-                    parsed = self.parse_llm_response(raw)
-                    if parsed is not None:
-                        parsed['llm_model'] = name
-                        aggregated[name] = parsed
-                        any_success = True
-                    else:
-                        aggregated[name] = {
-                            'llm_model': name,
-                            'error': f"{name} 返回数据无法解析为结构化JSON",
-                            'raw_text': raw
-                        }
-                else:
-                    aggregated[name] = {
-                        'llm_model': name,
-                        'error': raw
-                    }
-
-            # 只要聚合结果存在，就返回成功，让前端渲染多模型版块
-            if aggregated:
-                return True, aggregated
-            else:
-                return False, {"error": "所有模型调用失败"}
-
-        # 单模型调用（保持兼容）
-        if self.llm_name == 'qwen':
-            success, result = self._call_qwen_api(prompt, max_tokens=3000)
-        elif self.llm_name == 'deepseek':
-            success, result = self._call_deepseek_api(prompt, max_tokens=3000)
-        elif self.llm_name == 'minimax':
-            success, result = self._call_minimax_api(prompt, max_tokens=3000)
-        elif self.llm_name == 'kimi':
-            success, result = self._call_kimi_api(prompt, max_tokens=3000)
+        # 获取启用的模型
+        if model_full_key:
+            info = self.config.get_model_info(model_full_key)
+            if not info:
+                return False, {"error": f"模型 {model_full_key} 未找到"}
+            provider_name = info['provider_name']
+            model_key = info['model_key']
         else:
-            return False, {"error": "未知的 LLM 服务"}
+            enabled = self.config.get_enabled_models()
+            if not enabled:
+                return False, {"error": "未配置任何启用的模型"}
+            provider_name, model_key, _ = enabled[0]
+            model_full_key = f"{provider_name}/{model_key}"
+
+        provider, model_cfg = self._get_provider_and_model(provider_name, model_key)
+        if not provider:
+            return False, {"error": f"模型 {model_full_key} 未配置"}
+
+        if not model_cfg.get('api_key'):
+            return False, {"error": f"模型 {model_full_key} 未配置 API Key"}
+
+        success, result = provider.call_api(prompt, model_cfg, max_tokens=3000)
 
         if not success:
             return False, {"error": result}
 
         parsed_result = self.parse_llm_response(result)
         if parsed_result is None:
-            return False, {"error": f"LLM 返回的数据格式无效，原始响应：\n{result}"}
+            return False, {"error": "LLM返回的数据格式无效"}
 
-        # 注入模型来源，便于前端标注
-        parsed_result['llm_model'] = self.llm_name or 'unknown'
+        parsed_result['llm_model'] = model_key
         return True, parsed_result
 
-    def parse_llm_response(self, llm_text: str) -> Optional[Dict]:
-        """
-        解析 LLM 返回的 JSON 格式分析结果
+    def analyze_stock_multi_model(self, stock_data: Dict, model_keys: List[str] = None) -> Dict:
+        """多模型分析"""
+        prompt = self._build_analysis_prompt(stock_data)
 
-        Args:
-            llm_text: LLM 返回的文本
+        if model_keys is None:
+            model_keys = self.config.get_enabled_model_names()
 
-        Returns:
-            解析后的字典，如果解析失败返回 None
-        """
+        if not model_keys:
+            return {"error": "未配置任何启用的模型"}
+
+        results = {}
+
+        for model_full_key in model_keys:
+            info = self.config.get_model_info(model_full_key)
+            if not info:
+                results[model_full_key] = {'llm_model': model_full_key, 'error': "模型未找到"}
+                continue
+
+            provider_name = info['provider_name']
+            model_key = info['model_key']
+            model_cfg = info['model_config']
+            model_cfg['api_key'] = info['api_key']
+
+            # 从provider配置中获取默认超时
+            provider_cfg = self.config.get_providers().get(provider_name, {})
+            if 'timeout' not in model_cfg:
+                default_timeout = provider_cfg.get('default_timeout', 90)
+                model_cfg['timeout'] = default_timeout
+
+            provider = LLMProviderFactory.create_provider(provider_name, provider_cfg)
+
+            if not model_cfg.get('api_key'):
+                results[model_full_key] = {'llm_model': model_key, 'error': "未配置 API Key"}
+                continue
+
+            success, raw = provider.call_api(prompt, model_cfg, max_tokens=3000)
+
+            if success:
+                parsed = self.parse_llm_response(raw)
+                if parsed:
+                    parsed['llm_model'] = model_key
+                    results[model_full_key] = parsed
+                else:
+                    results[model_full_key] = {'llm_model': model_key, 'error': "返回数据无法解析"}
+            else:
+                results[model_full_key] = {'llm_model': model_key, 'error': raw}
+
+        return results if results else {"error": "所有模型调用失败"}
+
+    def parse_llm_response(self, llm_text: str):
+        """解析LLM返回的JSON"""
         try:
-            # 尝试直接解析JSON
             import re
-
-            # 提取JSON代码块
             json_pattern = r'```json\s*(.*?)\s*```'
             matches = re.findall(json_pattern, llm_text, re.DOTALL)
 
             if matches:
                 json_str = matches[0]
             else:
-                # 尝试查找花括号包围的JSON
                 json_pattern2 = r'\{[\s\S]*\}'
                 matches2 = re.findall(json_pattern2, llm_text)
                 if matches2:
@@ -535,64 +445,43 @@ class LLMAnalyzer:
                 else:
                     return None
 
-            # 解析JSON
             result = json.loads(json_str)
-
-            # 验证必要字段
             required_fields = ['kline_prediction', 'operation_advice', 'risk_assessment', 'strategy']
             if not all(field in result for field in required_fields):
                 return None
-
             return result
 
-        except json.JSONDecodeError as e:
-            print(f"JSON 解析错误: {e}")
+        except json.JSONDecodeError:
             return None
-        except Exception as e:
-            print(f"解析 LLM 响应时发生错误: {e}")
+        except Exception:
             return None
 
-    def extract_predicted_kline(self, llm_analysis: Dict, base_date: datetime = None) -> pd.DataFrame:
-        """
-        从 LLM 分析结果中提取 K 线预测数据
+    def extract_predicted_kline(self, llm_analysis: Dict):
+        """从LLM分析结果中提取K线预测数据"""
+        import pandas as pd
 
-        Args:
-            llm_analysis: LLM 分析结果字典
-            base_date: 基准日期（默认为今天）
+        if not llm_analysis or 'kline_prediction' not in llm_analysis:
+            return None
 
-        Returns:
-            包含预测 K 线数据的 DataFrame
-        """
-        if base_date is None:
-            base_date = datetime.now()
-
-        predictions = llm_analysis.get('kline_prediction', {}).get('predictions', [])
-
+        predictions = llm_analysis['kline_prediction'].get('predictions', [])
         if not predictions:
-            return pd.DataFrame()
+            return None
 
-        # 构建 DataFrame
-        df_data = []
+        predicted_data = []
         for pred in predictions:
-            df_data.append({
+            predicted_data.append({
                 'date': pred.get('date', ''),
-                'open': pred.get('open', 0),
-                'high': pred.get('high', 0),
-                'low': pred.get('low', 0),
-                'close': pred.get('close', 0),
-                'change_pct': pred.get('change_pct', 0)
+                'open': pred.get('open'),
+                'high': pred.get('high'),
+                'low': pred.get('low'),
+                'close': pred.get('close'),
+                'change_pct': pred.get('change_pct')
             })
 
-        df = pd.DataFrame(df_data)
-
-        # 确保日期格式正确
-        if not df.empty and 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'], errors='coerce')
-
-        return df
+        return pd.DataFrame(predicted_data) if predicted_data else None
 
     def _build_analysis_prompt(self, stock_data: Dict) -> str:
-        """构建分析提示词 - 要求返回结构化JSON数据"""
+        """构建分析提示词"""
         code = stock_data.get('code', '未知')
         name = stock_data.get('name', '未知')
         current_price = stock_data.get('current_price', 0)
@@ -607,62 +496,23 @@ class LLMAnalyzer:
 
 """
 
-        # 添加K线数据
         if 'kline_data' in stock_data:
-            kline = stock_data['kline_data']
-            prompt += f"""## 历史K线数据（最近30个交易日）
-{kline}
-
-"""
-
-        # 添加技术分析
+            prompt += f"## 历史K线数据\n{stock_data['kline_data']}\n\n"
         if 'technical_analysis' in stock_data:
-            tech = stock_data['technical_analysis']
-            prompt += f"""## 技术面分析
-{tech}
-
-"""
-
-        # 添加基本面数据
+            prompt += f"## 技术面分析\n{stock_data['technical_analysis']}\n\n"
         if 'fundamental_data' in stock_data:
-            fund = stock_data['fundamental_data']
-            prompt += f"""## 基本面数据
-{fund}
-
-"""
-
-        # 添加消息面
+            prompt += f"## 基本面数据\n{stock_data['fundamental_data']}\n\n"
         if 'news_sentiment' in stock_data:
-            news = stock_data['news_sentiment']
-            prompt += f"""## 消息面分析
-{news}
-
-"""
-
-        # 添加市场环境
-        if 'market_env' in stock_data:
-            market = stock_data['market_env']
-            prompt += f"""## 市场环境
-{market}
-
-"""
+            prompt += f"## 消息面分析\n{stock_data['news_sentiment']}\n\n"
 
         prompt += """## 分析要求
-请基于以上信息，严格按照以下JSON格式输出分析结果（必须是有效的JSON格式，方便程序解析）：
+请严格按照以下JSON格式输出分析结果：
 
 ```json
 {
   "kline_prediction": {
     "predictions": [
-      {
-        "day": 1,
-        "date": "2025-11-01",
-        "open": 12.50,
-        "high": 13.20,
-        "low": 12.30,
-        "close": 13.00,
-        "change_pct": 4.0
-      }
+      {"day": 1, "date": "2025-11-01", "open": 12.50, "high": 13.20, "low": 12.30, "close": 13.00, "change_pct": 4.0}
     ],
     "support_levels": [12.00, 11.50],
     "resistance_levels": [13.50, 14.00],
@@ -678,67 +528,39 @@ class LLMAnalyzer:
     "confidence": 0.80
   },
   "risk_assessment": {
-    "risk_points": ["短期超买风险", "板块调整风险"],
+    "risk_points": ["短期超买风险"],
     "risk_level": "中",
     "overall_score": 60
   },
   "strategy": {
-    "short_term": "回调至12.50-12.70区间分批买入，短线目标13.20",
-    "mid_term": "目标价位13.50-14.00，分批止盈，持仓1-2周",
-    "position_strategy": "首次建仓30%，回调加仓20%，突破加仓20%，保留30%机动"
+    "short_term": "回调买入",
+    "mid_term": "目标13.50-14.00",
+    "position_strategy": "首次建仓30%"
   },
-  "summary": "综合分析认为该股票短期趋势向上，建议在回调时分批建仓，目标价位13.50-14.00，止损11.50。注意控制仓位，关注大盘走势。"
+  "summary": "综合分析认为..."
 }
 ```
 
-**重要说明**：
-1. predictions 数组至少包含未来5个交易日的预测数据
-2. 所有价格必须基于当前价格和技术分析合理推算
-3. action 只能是：买入、持有、卖出 之一
-4. position_control 只能是：轻仓、半仓、重仓 之一
-5. risk_level 只能是：低、中、高 之一
-6. 必须输出有效的JSON格式，不要包含注释或额外说明
-7. 确保所有字段都有值，不要遗漏
-
-请严格按照以上JSON格式输出，确保JSON格式正确无误。
-"""
-
+请严格按照JSON格式输出。"""
         return prompt
-
-    def test_connection(self) -> Tuple[bool, str]:
-        """测试 LLM 连接"""
-        if not self.llm_name:
-            return False, "未启用任何 LLM 服务"
-
-        test_prompt = "你好，请简单介绍一下你自己。"
-
-        if self.llm_name == 'qwen':
-            return self._call_qwen_api(test_prompt, max_tokens=100)
-        elif self.llm_name == 'deepseek':
-            return self._call_deepseek_api(test_prompt, max_tokens=100)
-        elif self.llm_name == 'minimax':
-            return self._call_minimax_api(test_prompt, max_tokens=100)
-        elif self.llm_name == 'kimi':
-            return self._call_kimi_api(test_prompt, max_tokens=100)
-        else:
-            return False, "未知的 LLM 服务"
 
 
 def main():
-    """测试函数"""
-    # 创建配置管理器
+    """测试"""
+    print("=== LLM 配置测试 ===\n")
+
     config = LLMConfig()
+    print(f"用户配置: {config.config_path}")
+    print(f"通用配置: {config.provider_config_path}")
 
-    # 创建分析器
-    analyzer = LLMAnalyzer(config)
+    print(f"\n✅ 已启用模型:")
+    for provider, model_key, model_cfg in config.get_enabled_models():
+        desc = model_cfg.get('description', '')
+        api_key = config.get_api_key(provider)
+        has_key = "✓" if api_key else "✗"
+        print(f"  - [{provider}] {model_key}: {desc} [API Key: {has_key}]")
 
-    # 测试连接
-    if config.is_configured():
-        success, result = analyzer.test_connection()
-        print(f"连接测试: {'成功' if success else '失败'}")
-        print(f"结果: {result}")
-    else:
-        print("请先配置 LLM 服务")
+    print(f"\n是否已配置: {config.is_configured()}")
 
 
 if __name__ == "__main__":

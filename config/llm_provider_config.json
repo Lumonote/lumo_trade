@@ -1,0 +1,107 @@
+{
+  "providers": {
+    "魔搭社区": {
+      "enabled": true,
+      "base_url": "https://dashscope.aliyuncs.com/api/v1",
+      "api_style": "dashscope",
+      "default_timeout": 90,
+      "models": {
+        "Qwen": {
+          "model_id": "qwen3-max-2026-01-23",
+          "endpoint": "/services/aigc/text-generation/generation",
+          "request_format": "dashscope",
+          "max_tokens": 4096,
+          "timeout": 90,
+          "description": "通义千问 qwen3-max"
+        },
+        "DeepSeek": {
+          "model_id": "deepseek-v3.2",
+          "endpoint": "/services/aigc/text-generation/generation",
+          "request_format": "openai",
+          "max_tokens": 4096,
+          "timeout": 90,
+          "description": "DeepSeek V3.2"
+        },
+        "MiniMax": {
+          "model_id": "MiniMax-M2.1",
+          "endpoint": "/services/aigc/text-generation/generation",
+          "request_format": "openai",
+          "max_tokens": 2048,
+          "timeout": 120,
+          "description": "MiniMax M2.1"
+        },
+        "Kimi": {
+          "model_id": "kimi-k2-thinking",
+          "endpoint": "/services/aigc/text-generation/generation",
+          "request_format": "openai",
+          "max_tokens": 8192,
+          "timeout": 120,
+          "retry_enabled": true,
+          "retry_times": 3,
+          "description": "Kimi K2 思考模型"
+        },
+        "GLM": {
+          "model_id": "glm-4.7",
+          "endpoint": "/services/aigc/text-generation/generation",
+          "request_format": "openai",
+          "max_tokens": 8192,
+          "timeout": 120,
+          "retry_enabled": true,
+          "retry_times": 3,
+          "description": "glm-4.7 智普"
+        }
+      }
+    },
+    "DeepSeek官方": {
+      "enabled": false,
+      "base_url": "https://api.deepseek.com",
+      "api_style": "openai",
+      "models": {
+        "DEEPSEEK-V3": {
+          "model_id": "deepseek-v3.2",
+          "endpoint": "/v1/chat/completions",
+          "request_format": "openai",
+          "max_tokens": 8192,
+          "description": "DeepSeek V3.2"
+        },
+        "DEEPSEEK-R1": {
+          "model_id": "deepseek-r1",
+          "endpoint": "/v1/chat/completions",
+          "request_format": "openai",
+          "max_tokens": 8192,
+          "description": "DeepSeek R1 推理模型"
+        }
+      }
+    },
+    "Kimi官方": {
+      "enabled": false,
+      "base_url": "https://api.moonshot.cn",
+      "api_style": "openai",
+      "models": {
+        "KIMI-K2": {
+          "model_id": "kimi-k2-thinking",
+          "endpoint": "/chat/completions",
+          "request_format": "openai",
+          "max_tokens": 8192,
+          "retry_enabled": true,
+          "retry_times": 3,
+          "description": "Kimi K2 思考模型"
+        }
+      }
+    },
+    "MiniMax官方": {
+      "enabled": false,
+      "base_url": "https://api.minimax.chat",
+      "api_style": "openai",
+      "models": {
+        "MINIMAX-M2": {
+          "model_id": "MiniMax-M2.1",
+          "endpoint": "/v1/text/chatcompletion_v2",
+          "request_format": "openai",
+          "max_tokens": 2048,
+          "description": "MiniMax M2.1"
+        }
+      }
+    }
+  }
+}

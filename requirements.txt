@@ -12,3 +12,4 @@ requests
 beautifulsoup4
 fake-useragent
 tushare>=1.4.0
+baostock

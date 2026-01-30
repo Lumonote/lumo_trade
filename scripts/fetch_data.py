@@ -34,6 +34,14 @@ except ImportError:
     TUSHARE_AVAILABLE = False
     print("⚠️ Tushare不可用，将仅使用爬虫数据源")
 
+# 尝试导入Baostock
+try:
+    import baostock as bs
+    BAOSTOCK_AVAILABLE = True
+except ImportError:
+    BAOSTOCK_AVAILABLE = False
+    print("⚠️ Baostock不可用，请运行: pip install baostock")
+
 # 添加项目根目录到路径
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -115,7 +123,7 @@ class TushareDataFetcher:
             return f"{symbol}.BJ"
         return symbol
 
-    def fetch_stock_data(self, symbol: str, start_date: str = None, end_date: str = None, 
+    def fetch_stock_data(self, symbol: str, start_date: str = None, end_date: str = None,
                          freq: str = '5min', adj: str = 'qfq') -> Optional[pd.DataFrame]:
         """从Tushare获取股票数据"""
         if not self.pro:
@@ -127,9 +135,16 @@ class TushareDataFetcher:
             print(f"❌ 无效的股票代码: {symbol}")
             return None
 
+        # 尝试获取数据
+        df = self._fetch_tushare_data(ts_code, start_date, end_date, freq, adj)
+
+        return df
+
+    def _fetch_tushare_data(self, ts_code: str, start_date: str = None, end_date: str = None,
+                            freq: str = '5min', adj: str = 'qfq'):
+        """从Tushare获取股票数据（内部方法）"""
         try:
-            # 速率限制等待
-            self._rate_limit_wait()
+            # 不等待速率限制，直接尝试，失败后会自动切换到爬虫
 
             # 处理日期格式
             start_dt = start_date.replace('-', '') if start_date else ''
@@ -142,7 +157,7 @@ class TushareDataFetcher:
             elif freq == 'daily': ts_freq = 'D'
 
             print(f"📡 Tushare正在获取 {ts_code} ({freq}) 数据...")
-            
+
             # 使用pro_bar通用接口
             try:
                 df = ts.pro_bar(
@@ -194,6 +209,16 @@ class TushareDataFetcher:
             return df
             
         except Exception as e:
+            error_msg = str(e)
+            # 检测频率限制/权限错误
+            if '每分钟最多访问' in error_msg or 'rate limit' in error_msg.lower() or 'frequency' in error_msg.lower():
+                print(f"⚠️  Tushare频率限制触发，自动切换到其他数据源...")
+                return None
+            # 检测权限不足错误
+            if '权限' in error_msg or 'permission' in error_msg.lower() or 'no permission' in error_msg.lower():
+                print(f"⚠️  Tushare权限不足，请检查账户积分和接口权限: {e}")
+                print(f"💡 提示: 低频行情接口需要 5000+ 积分，实时行情需要更高权限")
+                return None
             print(f"❌ Tushare获取失败: {e}")
             return None
 
@@ -215,8 +240,168 @@ class TushareDataFetcher:
                 return df.iloc[0].to_dict()
             return None
         except Exception as e:
+            error_msg = str(e)
+            # 检测频率限制错误
+            if '每分钟最多访问' in error_msg or 'rate limit' in error_msg.lower() or 'frequency' in error_msg.lower():
+                print(f"⚠️  Tushare频率限制触发，跳过该接口...")
+                return None
             print(f"⚠️  获取股票信息失败: {e}")
             return None
+
+
+class BaostockFetcher:
+    """Baostock数据获取器"""
+
+    def __init__(self):
+        """初始化Baostock"""
+        self._bs = None
+        self._init_baostock()
+
+    def _init_baostock(self):
+        """初始化Baostock连接"""
+        if not BAOSTOCK_AVAILABLE:
+            print("⚠️ Baostock模块未安装")
+            return
+
+        try:
+            import baostock as bs
+
+            # 登录Baostock
+            lg = bs.login()
+            if lg.error_code == '0':
+                self._bs = bs
+                print("✅ Baostock数据源已初始化")
+            else:
+                print(f"⚠️ Baostock登录失败: {lg.error_msg}")
+                self._bs = None
+        except Exception as e:
+            print(f"⚠️ Baostock初始化失败: {e}")
+            self._bs = None
+
+    def _convert_symbol_format(self, symbol: str) -> str:
+        """转换股票代码为Baostock格式"""
+        if not symbol:
+            return ""
+
+        # 如果已经是baostock格式，直接返回
+        if symbol.startswith(('sh.', 'sz.')):
+            return symbol
+
+        # 转换常见格式
+        if symbol.endswith(('.SH', '.SZ')):
+            return f"sh.{symbol.split('.')[0]}" if symbol.endswith('.SH') else f"sz.{symbol.split('.')[0]}"
+
+        # 简单的交易所推断
+        if symbol.startswith(('60', '68')):
+            return f"sh.{symbol}"
+        elif symbol.startswith(('00', '30')):
+            return f"sz.{symbol}"
+
+        return f"sz.{symbol}"
+
+    def fetch_stock_data(self, symbol: str, start_date: str = None, end_date: str = None,
+                         freq: str = '5min', adj: str = 'qfq') -> Optional[pd.DataFrame]:
+        """从Baostock获取股票数据"""
+        if not self._bs:
+            return None
+
+        bs_code = self._convert_symbol_format(symbol)
+        if not bs_code:
+            return None
+
+        return self._fetch_baostock_data(bs_code, start_date, end_date, freq, adj)
+
+    def _fetch_baostock_data(self, bs_code: str, start_date: str = None, end_date: str = None,
+                             freq: str = '5min', adj: str = 'qfq') -> Optional[pd.DataFrame]:
+        """从Baostock获取股票数据"""
+        try:
+            # 处理日期格式
+            if not start_date:
+                start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            if not end_date:
+                end_date = datetime.now().strftime('%Y-%m-%d')
+
+            # Baostock字段
+            fields = "date,time,open,high,low,close,volume,amount"
+
+            # 频率映射
+            period_map = {'1min': '1', '5min': '5', '15min': '15', '30min': '30', '60min': '60'}
+            period = period_map.get(freq, '5')
+
+            # 复权映射
+            adj_map = {'qfq': '1', 'hfq': '2', '': '3'}
+            adj_flag = adj_map.get(adj, '3')
+
+            print(f"📡 Baostock正在获取 {bs_code} ({freq})...")
+
+            rs = self._bs.query_history_k_data_plus(
+                bs_code, fields,
+                start_date=start_date, end_date=end_date,
+                frequency=period,
+                adjustflag=adj_flag
+            )
+
+            if rs.error_code != '0':
+                print(f"⚠️ Baostock查询失败: {rs.error_msg}")
+                return None
+
+            # 转换为DataFrame
+            data_list = []
+            while (rs.error_code == '0') and rs.next():
+                data_list.append(rs.get_row_data())
+
+            if not data_list:
+                print(f"⚠️ Baostock返回空数据")
+                return None
+
+            df = pd.DataFrame(data_list, columns=rs.fields)
+
+            # 构建时间戳
+            if 'time' in df.columns:
+                timestamps = []
+                for _, row in df.iterrows():
+                    date_part = str(row.get('date', '')).strip()
+                    time_part = str(row.get('time', '')).strip()
+                    if time_part and time_part != '00:00:00':
+                        # Baostock的time格式可能是 HHMMSSmmm 或 YYYYMMDDHHMMSSmmm
+                        # 需要解析并转换为标准时间格式
+                        try:
+                            if len(time_part) == 17:  # YYYYMMDDHHMMSSmmm
+                                # 格式: 20250205093500000 -> 2025-02-05 09:35:00
+                                formatted_time = f"{time_part[8:10]}:{time_part[10:12]}:{time_part[12:14]}"
+                            elif len(time_part) == 9:  # HHMMSSmmm
+                                formatted_time = f"{time_part[0:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                            else:
+                                formatted_time = time_part
+                            timestamps.append(f"{date_part} {formatted_time}")
+                        except Exception:
+                            timestamps.append(date_part)
+                    else:
+                        timestamps.append(date_part)
+                df['timestamp'] = timestamps
+            else:
+                df['timestamp'] = df['date']
+
+            # 转换数值列
+            numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            # 排序
+            df = df.sort_values('timestamp').reset_index(drop=True)
+
+            print(f"✅ Baostock获取成功: {len(df)} 条")
+            return df
+
+        except Exception as e:
+            print(f"❌ Baostock获取失败: {e}")
+            return None
+
+    def close(self):
+        """关闭连接"""
+        if self._bs:
+            self._bs.logout()
 
 
 class MultiSourceDataFetcher:
@@ -229,6 +414,7 @@ class MultiSourceDataFetcher:
         self.crawler_config_path = crawler_config_path
         self.config = {}
         self.tushare_fetcher = None
+        self.baostock_fetcher = None
         self.crawler_manager = None
         self.technical_analyzer = None
 
@@ -253,17 +439,21 @@ class MultiSourceDataFetcher:
                 print("✅ Tushare数据源已初始化")
             except Exception as e:
                 print(f"⚠️  Tushare初始化失败: {e}")
-                # 如果Tushare配置失败，使用默认配置
                 self.config = {'data_settings': {'output_dir': './data/'}}
         else:
             print("⚠️  Tushare不可用，跳过Tushare数据源初始化")
-            # 使用默认配置
             self.config = {'data_settings': {'output_dir': './data/'}}
+
+        # 初始化Baostock
+        if BAOSTOCK_AVAILABLE:
+            try:
+                self.baostock_fetcher = BaostockFetcher()
+            except Exception as e:
+                print(f"⚠️  Baostock初始化失败: {e}")
 
         # 初始化Playwright爬虫
         if CRAWLER_AVAILABLE:
             try:
-                # 检查爬虫配置文件是否存在
                 if os.path.exists(self.crawler_config_path):
                     self.crawler_manager = CrawlerManager(self.crawler_config_path)
                     print("✅ Playwright爬虫数据源已初始化")
@@ -283,12 +473,20 @@ class MultiSourceDataFetcher:
         sources = []
         if self.tushare_fetcher:
             sources.append('tushare')
+        if self.baostock_fetcher:
+            sources.append('baostock')
         if self.crawler_manager:
             sources.extend(['eastmoney', 'tonghuashun', 'xueqiu'])
         return sources
 
     async def close(self) -> None:
         """关闭并清理资源（特别是爬虫/浏览器管理器）"""
+        try:
+            if self.baostock_fetcher:
+                self.baostock_fetcher.close()
+                self.baostock_fetcher = None
+        except Exception as e:
+            print(f"⚠️  关闭Baostock失败: {e}")
         try:
             if self.crawler_manager:
                 await self.crawler_manager.close()
@@ -332,10 +530,11 @@ class MultiSourceDataFetcher:
         sources_to_try = []
 
         if source == 'auto':
-            # 自动模式：优先使用Tushare，然后是爬虫
+            # 自动模式：优先级 Tushare -> Baostock -> 爬虫
             if 'tushare' in available_sources:
                 sources_to_try.append('tushare')
-
+            if 'baostock' in available_sources:
+                sources_to_try.append('baostock')
             # 添加所有可用的爬虫数据源
             crawler_sources = [s for s in available_sources if s in ['eastmoney', 'tonghuashun', 'xueqiu']]
             sources_to_try.extend(crawler_sources)
@@ -361,6 +560,9 @@ class MultiSourceDataFetcher:
                 # 根据数据源获取数据
                 if current_source == 'tushare' and self.tushare_fetcher:
                     data = self.tushare_fetcher.fetch_stock_data(symbol, start_date, end_date, freq, adj)
+
+                elif current_source == 'baostock' and self.baostock_fetcher:
+                    data = self.baostock_fetcher.fetch_stock_data(symbol, start_date, end_date, freq, adj)
 
                 elif current_source in ['eastmoney', 'tonghuashun', 'xueqiu'] and self.crawler_manager:
                     data = await self._fetch_from_crawler(symbol, start_date, end_date, freq, current_source)
@@ -731,7 +933,7 @@ async def main():
     parser.add_argument('--adj', default='qfq', choices=['qfq', 'hfq', None],
                         help='复权类型 (qfq=前复权, hfq=后复权, None=不复权)')
     parser.add_argument('--source', default='auto',
-                        choices=['auto', 'tushare', 'eastmoney', 'tonghuashun', 'xueqiu'],
+                        choices=['auto', 'tushare', 'baostock', 'eastmoney', 'tonghuashun', 'xueqiu'],
                         help='数据源选择 (默认: auto)')
     parser.add_argument('--config', default='config/tushare_config.json',
                         help='Tushare配置文件路径')
@@ -751,6 +953,10 @@ async def main():
     if args.list_sources:
         print("\n📋 可用数据源:")
         print("  • tushare - Tushare金融数据接口")
+        if BAOSTOCK_AVAILABLE:
+            print("  • baostock - Baostock免费数据接口")
+        else:
+            print("  ⚠️  Baostock不可用，请安装: pip install baostock")
         if CRAWLER_AVAILABLE:
             print("  • eastmoney - 东方财富 (Playwright爬虫)")
             print("  • tonghuashun - 同花顺 (Playwright爬虫)")

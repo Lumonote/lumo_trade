@@ -1,38 +1,12 @@
 {
-  "qwen": {
-    "enabled": true,
-    "api_key": "sk-3e0134b86d9e4042a58bfbec050513f2",
-    "model": "qwen3-max",
-    "base_url": "https://dashscope.aliyuncs.com/api/v1",
-    "register_url": "https://help.aliyun.com/zh/dashscope/developer-reference/activate-dashscope-and-create-an-api-key",
-    "description": "阿里云通义千问大模型",
-    "register_guide": "1. 访问阿里云DashScope控制台\n2. 开通DashScope服务\n3. 创建API Key\n4. 将API Key复制到配置中"
-  },
-  "deepseek": {
-    "enabled": true,
-    "api_key": "sk-99a4be9109c2401081b60f8150ed4fd3",
-    "model": "deepseek-chat",
-    "base_url": "https://api.deepseek.com",
-    "register_url": "https://platform.deepseek.com/api_keys",
-    "description": "DeepSeek 大模型",
-    "register_guide": "1. 访问DeepSeek开放平台\n2. 注册并登录账号\n3. 创建API Key\n4. 将API Key复制到配置中"
-  },
-  "minimax": {
-    "enabled": true,
-    "api_key": "sk-cp-UNTiaydEvjnVmrhInmPImqbJEGne_xl_NPqsefPgDLuJ-vVhi5sTK6nMRcYqX4mEPYL3ZgJii5nxs48XwbdUTOZFSxu2js1KjqWQurZorTM-PojdkeMaZ_k",
-    "model": "M2-her",
-    "base_url": "https://api.minimax.chat/v1/text/chatcompletion_v2",
-    "register_url": "https://platform.minimaxi.com/docs/guides/quickstart-preparation",
-    "description": "MiniMax 海螺AI大模型",
-    "register_guide": "1. 访问MiniMax开放平台\n2. 注册并登录账号\n3. 创建API Key\n4. 将API Key复制到配置中"
-  },
-  "kimi": {
-    "enabled": true,
-    "api_key": "sk-6bbKkOR6SjmD2KFGCwLxr5iLWKQahCkmu32W3yzLQdLtKQCc",
-    "model": "kimi-k2.5",
-    "base_url": "https://api.moonshot.cn/v1",
-    "register_url": "https://platform.moonshot.cn/docs/overview",
-    "description": "Kimi 月之暗面大模型",
-    "register_guide": "1. 访问Kimi开放平台\n2. 注册并登录账号\n3. 创建API Key\n4. 将API Key复制到配置中"
+  "enabled_models": [
+    "魔搭社区/MiniMax",
+    "魔搭社区/GLM"
+  ],
+  "api_keys": {
+    "魔搭社区": "sk-3e0134b86d9e4042a58bfbec050513f2",
+    "DeepSeek官方": "",
+    "Kimi官方": "",
+    "MiniMax官方": ""
   }
 }
