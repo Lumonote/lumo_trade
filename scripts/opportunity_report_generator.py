@@ -552,15 +552,48 @@ class OpportunityReportGenerator:
         try:
             pro = ts.pro_api(token)
 
-            # 如果没有指定日期，获取最近一个有数据的交易日
+            max_back_days = 14
+
+            def resolve_latest_trade_date(base_dt: datetime) -> str:
+                base_str = base_dt.strftime('%Y%m%d')
+                try:
+                    start_str = (base_dt - timedelta(days=30)).strftime('%Y%m%d')
+                    cal_df = pro.trade_cal(exchange='SSE', start_date=start_str, end_date=base_str, fields='cal_date,is_open')
+                    if cal_df is not None and not cal_df.empty and 'is_open' in cal_df.columns:
+                        if 'cal_date' in cal_df.columns:
+                            cal_df = cal_df.sort_values('cal_date')
+                        open_dates = cal_df.loc[cal_df['is_open'] == 1, 'cal_date'].tolist()
+                        if open_dates:
+                            return open_dates[-1]
+                except Exception as e:
+                    logger.debug(f"trade_cal不可用，回退使用日期回溯: {e}")
+
+                candidate = base_dt
+                for _ in range(max_back_days):
+                    if candidate.weekday() < 5:
+                        return candidate.strftime('%Y%m%d')
+                    candidate -= timedelta(days=1)
+                return base_str
+
             if not trade_date:
-                trade_date = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+                trade_date = resolve_latest_trade_date(datetime.now() - timedelta(days=1))
 
-            # 调用top_inst接口
-            df = pro.top_inst(trade_date=trade_date)
-
-            if df is None or df.empty:
-                logger.debug(f"龙虎榜数据为空，日期: {trade_date}")
+            last_error = None
+            df = None
+            base_try_dt = datetime.strptime(trade_date, '%Y%m%d')
+            for i in range(max_back_days):
+                try_date = (base_try_dt - timedelta(days=i)).strftime('%Y%m%d')
+                try:
+                    df = pro.top_inst(trade_date=try_date)
+                    if df is not None and not df.empty:
+                        trade_date = try_date
+                        break
+                except Exception as e:
+                    last_error = e
+            else:
+                if last_error:
+                    raise last_error
+                logger.debug(f"龙虎榜数据为空，回溯{max_back_days}天仍无数据，起始日期: {trade_date}")
                 return None
 
             # 获取所有股票代码列表，用于查询名称
