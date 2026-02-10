@@ -62,10 +62,10 @@ class OpportunityScorer:
 
     # 评级阈值配置 (v4.0 - 提高门槛，宁缺毋滥)
     RATING_THRESHOLDS = {
-        'S': 82,   # S级：82分以上，极佳投资机会（更严格）
-        'A+': 72,  # A+级：72-82分，优秀投资机会
-        'A': 62,   # A级：62-72分，良好投资机会
-        'B': 48,   # B级：48-62分，一般投资机会
+        'S': 90,   # S级：82分以上，极佳投资机会（更严格）
+        'A+': 85,  # A+级：72-82分，优秀投资机会
+        'A': 70,   # A级：62-72分，良好投资机会
+        'B': 60,   # B级：48-62分，一般投资机会
         'C': 0     # C级：48分以下，较差/高风险
     }
 
@@ -513,20 +513,24 @@ class OpportunityScorer:
 
             import asyncio
 
+            timeout_seconds = int(os.environ.get('KRONOS_HISTORY_TIMEOUT', '60'))
+
             async def _run():
                 # 过去一年到今天的日线数据
                 end_date = pd.Timestamp.today().strftime('%Y-%m-%d')
                 start_date = (pd.Timestamp.today() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
-                df = await self._data_fetcher.fetch_stock_data(
-                    symbol=stock_code,
-                    start_date=start_date,
-                    end_date=end_date,
-                    freq='daily',
-                    source='auto',
-                    auto_extend=True,
-                    min_days=240
+                return await asyncio.wait_for(
+                    self._data_fetcher.fetch_stock_data(
+                        symbol=stock_code,
+                        start_date=start_date,
+                        end_date=end_date,
+                        freq='daily',
+                        source='auto',
+                        auto_extend=True,
+                        min_days=240
+                    ),
+                    timeout=timeout_seconds
                 )
-                return df
 
             # 在同步环境中运行异步获取
             try:
@@ -537,6 +541,9 @@ class OpportunityScorer:
                 asyncio.set_event_loop(loop)
                 df = loop.run_until_complete(_run())
                 loop.close()
+            except asyncio.TimeoutError:
+                logger.warning(f"{stock_code}: 历史数据获取超时({timeout_seconds}s)")
+                return None
 
             # 基本校验
             if df is None or df.empty:

@@ -51,14 +51,17 @@ class SentimentCacheManager:
         # 内存缓存
         self._memory_cache: Dict[str, Dict[str, Any]] = {}
 
-        # 缓存配置
+        # 缓存配置【优化】扩展sector TTL从120s到600s，减少重复API调用
         self.cache_ttl = {
             'overall_market': 600,      # 大盘情绪:10分钟
-            'sector': 120,              # 板块情绪:2分钟(实时行情需要更频繁更新)
-            'capital_flow': 300,        # 资金流向:5分钟
+            'sector': 600,              # 板块情绪:10分钟(从2分钟优化到10分钟，单次运行复用)
+            'capital_flow': 600,        # 资金流向:10分钟(从5分钟优化到10分钟)
             'dragon_tiger': 1800,       # 龙虎榜:30分钟
             'sector_list': 3600,        # 板块列表:1小时
             'sector_constituents': 3600,# 板块成分股:1小时
+            'moneyflow_ind_dc': 3600,    # 板块资金流向(单日):1小时
+            'moneyflow_mkt_dc': 3600,    # 大盘资金流向(单日):1小时
+            'sector_name': 3600,         # 个股板块名称缓存:1小时
         }
 
         logger.info(f"✓ 情绪缓存管理器已初始化: {self.cache_dir}")

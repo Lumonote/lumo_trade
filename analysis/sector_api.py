@@ -9,12 +9,270 @@
 import requests
 import time
 import re
-from typing import Dict, Optional
+import os
+import json
+import difflib
+from datetime import datetime, timedelta
+from typing import Dict, Optional, List, Tuple
 from bs4 import BeautifulSoup
 from analysis.sentiment_cache_manager import SentimentCacheManager
 
 # 初始化缓存管理器
 cache_manager = SentimentCacheManager()
+
+
+def _load_tushare_token() -> str:
+    token = os.environ.get('TUSHARE_TOKEN', '')
+    if token:
+        return token
+
+    project_root = os.path.dirname(os.path.dirname(__file__))
+    config_path = os.path.join(project_root, 'config', 'tushare_config.json')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            cfg = json.load(f) or {}
+        if isinstance(cfg.get('tushare'), dict):
+            return str(cfg.get('tushare', {}).get('token', '') or '')
+        return str(cfg.get('token', '') or '')
+    except Exception:
+        return ''
+
+
+def _get_tushare_pro():
+    try:
+        import tushare as ts
+    except Exception:
+        return None
+
+    token = _load_tushare_token()
+    if not token:
+        return None
+
+    try:
+        return ts.pro_api(token)
+    except Exception:
+        return None
+
+
+def _resolve_latest_trade_date(pro, base_dt: datetime, max_back_days: int = 14) -> str:
+    base_str = base_dt.strftime('%Y%m%d')
+    try:
+        start_str = (base_dt - timedelta(days=30)).strftime('%Y%m%d')
+        cal_df = pro.trade_cal(exchange='SSE', start_date=start_str, end_date=base_str, fields='cal_date,is_open')
+        if cal_df is not None and not cal_df.empty and 'is_open' in cal_df.columns and 'cal_date' in cal_df.columns:
+            cal_df = cal_df.sort_values('cal_date')
+            open_dates = cal_df.loc[cal_df['is_open'] == 1, 'cal_date'].tolist()
+            if open_dates:
+                return open_dates[-1]
+    except Exception:
+        pass
+
+    candidate = base_dt
+    for _ in range(max_back_days):
+        if candidate.weekday() < 5:
+            return candidate.strftime('%Y%m%d')
+        candidate -= timedelta(days=1)
+    return base_str
+
+
+def _normalize_sector_name(name: str) -> str:
+    return re.sub(r'(行业|板块|指数|概念|产业|Ⅱ|Ⅰ)', '', str(name or '').strip())
+
+
+def _fetch_moneyflow_ind_dc_all(trade_date: str):
+    cached = cache_manager.get('moneyflow_ind_dc', trade_date)
+    if isinstance(cached, list) and cached:
+        return cached
+
+    pro = _get_tushare_pro()
+    if not pro or not hasattr(pro, 'moneyflow_ind_dc'):
+        return None
+
+    try:
+        df = pro.moneyflow_ind_dc(trade_date=trade_date)
+        if df is None or df.empty:
+            return None
+        rows = df.to_dict('records')
+        cache_manager.set('moneyflow_ind_dc', rows, trade_date)
+        return rows
+    except Exception:
+        return None
+
+
+def _fetch_moneyflow_mkt_dc_all(trade_date: str):
+    cached = cache_manager.get('moneyflow_mkt_dc', trade_date)
+    if isinstance(cached, list) and cached:
+        return cached
+
+    pro = _get_tushare_pro()
+    if not pro or not hasattr(pro, 'moneyflow_mkt_dc'):
+        return None
+
+    try:
+        df = pro.moneyflow_mkt_dc(trade_date=trade_date)
+        if df is None or df.empty:
+            return None
+        rows = df.to_dict('records')
+        cache_manager.set('moneyflow_mkt_dc', rows, trade_date)
+        return rows
+    except Exception:
+        return None
+
+
+def _expand_sector_name_candidates(sector_name: str) -> List[str]:
+    if not sector_name:
+        return []
+    sector_name = str(sector_name).strip()
+    if not sector_name:
+        return []
+    candidates = [sector_name]
+    if sector_name == 'IT服务':
+        candidates.append('互联网服务')
+    if 'IT' in sector_name:
+        candidates.append(sector_name.replace('IT', '互联网'))
+        candidates.append(sector_name.replace('IT', '信息技术'))
+    return list(dict.fromkeys([c for c in candidates if c]))
+
+
+def _pick_industry_row_and_name(rows, sector_names: List[str]) -> Optional[Tuple[str, Dict]]:
+    if not rows or not sector_names:
+        return None
+
+    normalized_targets = []
+    for n in sector_names:
+        for cand in _expand_sector_name_candidates(n):
+            normalized_targets.append(cand)
+
+    normalized_targets = [t for t in normalized_targets if t]
+    if not normalized_targets:
+        return None
+
+    candidates: List[Tuple[str, Dict]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get('name', '') or r.get('ind_name', '') or '')
+        if not name:
+            continue
+        candidates.append((name, r))
+
+    if not candidates:
+        return None
+
+    for target_name in normalized_targets:
+        for name, r in candidates:
+            if name == target_name:
+                return name, r
+
+    for target_name in normalized_targets:
+        target = _normalize_sector_name(target_name)
+        for name, r in candidates:
+            norm = _normalize_sector_name(name)
+            if target and norm and (norm == target or norm in target or target in norm):
+                return name, r
+
+    best: Optional[Tuple[float, str, Dict]] = None
+    for target_name in normalized_targets:
+        t = _normalize_sector_name(target_name)
+        if not t:
+            continue
+        for name, r in candidates:
+            n = _normalize_sector_name(name)
+            if not n:
+                continue
+            score = difflib.SequenceMatcher(a=t, b=n).ratio()
+            if best is None or score > best[0]:
+                best = (score, name, r)
+
+    if best and best[0] >= 0.6:
+        return best[1], best[2]
+
+    return None
+
+
+def _build_sector_sentiment_from_ind_row(sector_name: str, row: Dict, trade_date: str) -> Dict:
+    change_pct = row.get('pct_change', row.get('change_pct', 0))
+    try:
+        change_pct = float(change_pct)
+    except Exception:
+        change_pct = 0.0
+    change_pct = round(change_pct, 2)
+
+    sentiment_score = round(50 + (change_pct / 5.0) * 50, 1)
+    sentiment_score = max(0, min(100, sentiment_score))
+
+    if sentiment_score >= 65:
+        overall = '强势领涨'
+        emotion = 'bullish'
+    elif sentiment_score >= 52:
+        overall = '偏强'
+        emotion = 'slightly_bullish'
+    elif sentiment_score >= 48:
+        overall = '震荡'
+        emotion = 'neutral'
+    elif sentiment_score >= 35:
+        overall = '偏弱'
+        emotion = 'slightly_bearish'
+    else:
+        overall = '弱势下跌'
+        emotion = 'bearish'
+
+    net_amount_yuan = row.get('net_amount')
+    try:
+        net_amount_yuan = float(net_amount_yuan)
+    except Exception:
+        net_amount_yuan = None
+
+    net_amount_wan = (net_amount_yuan / 10000.0) if isinstance(net_amount_yuan, (int, float)) else None
+    if isinstance(net_amount_wan, (int, float)):
+        net_amount_wan = round(net_amount_wan, 2)
+
+    return {
+        'sector_name': sector_name,
+        'sentiment_score': sentiment_score,
+        'overall': overall,
+        'change_pct': change_pct,
+        'turnover_rate': 0,
+        'emotion': emotion,
+        'data_source': 'tushare_moneyflow_ind_dc',
+        'trade_date': trade_date,
+        'net_amount': net_amount_wan,
+        '_amount_unit': '万元',
+        'net_amount_rate': row.get('net_amount_rate'),
+    }
+
+
+def _get_sector_sentiment_from_moneyflow_ind_dc(stock_code: str) -> Optional[Dict]:
+    sector_info = get_stock_sector_info_multi_source(stock_code)
+    if not isinstance(sector_info, dict):
+        sector_info = {}
+
+    sector_name = sector_info.get('industry') or sector_info.get('sector_name')
+    concept_sectors = sector_info.get('concept_sectors')
+    if not isinstance(concept_sectors, list):
+        concept_sectors = []
+    sector_candidates = [sector_name] + concept_sectors
+    sector_candidates = [str(s).strip() for s in sector_candidates if s and str(s).strip() and str(s).strip() != '未知']
+
+    if not sector_candidates:
+        return None
+
+    pro = _get_tushare_pro()
+    if not pro:
+        return None
+
+    trade_date = _resolve_latest_trade_date(pro, datetime.now())
+    rows = _fetch_moneyflow_ind_dc_all(trade_date)
+    if not rows:
+        trade_date = _resolve_latest_trade_date(pro, datetime.now() - timedelta(days=1))
+        rows = _fetch_moneyflow_ind_dc_all(trade_date)
+
+    picked = _pick_industry_row_and_name(rows, sector_candidates)
+    if not picked:
+        return None
+
+    matched_name, row = picked
+    return _build_sector_sentiment_from_ind_row(matched_name, row, trade_date)
 
 
 def _get_sector_by_reverse_lookup(stock_code: str, headers: Dict) -> Optional[Dict]:
@@ -284,6 +542,9 @@ def get_stock_sector_info(stock_code: str) -> Dict:
             except Exception:
                 pass
 
+        if not (data and data.get('data')):
+            raise Exception(f"东方财富API无有效数据: {last_error or '无返回'}")
+
         if data and data.get('data'):
             stock_data = data['data']
             stock_name = stock_data.get('f58', '')  # 股票名称
@@ -451,6 +712,8 @@ def get_sector_sentiment(stock_code: str) -> Dict:
 
     try:
         sector_info = get_stock_sector_info(stock_code)
+        if not isinstance(sector_info, dict):
+            sector_info = {}
         sector_name = sector_info.get('sector_name', '未知')
         sector_code = sector_info.get('sector_code', '')
 
@@ -563,6 +826,8 @@ def get_sector_sentiment(stock_code: str) -> Dict:
         if sectors:
             # 先尝试精确匹配
             for sector in sectors:
+                if not isinstance(sector, dict):
+                    continue
                 if sector.get('f14', '') == sector_name or sector.get('f12', '') == sector_code:
                     return _extract_sector_sentiment(sector, sector_name)
 
@@ -570,6 +835,8 @@ def get_sector_sentiment(stock_code: str) -> Dict:
             import re
             normalized_name = re.sub(r'(行业|板块|指数|概念|产业|Ⅱ|Ⅰ)', '', str(sector_name or ''))
             for sector in sectors:
+                if not isinstance(sector, dict):
+                    continue
                 sector_title = sector.get('f14', '')
                 normalized_title = re.sub(r'(行业|板块|指数|概念|产业|Ⅱ|Ⅰ)', '', str(sector_title or ''))
                 if normalized_name and normalized_title and (
@@ -660,7 +927,7 @@ def _get_stock_name(stock_code: str, headers: Dict) -> str:
         response = requests.get(url, params=params, headers=headers, timeout=10)
         data = response.json()
 
-        if data.get('data') and data['data'].get('diff'):
+        if data and data.get('data') and data['data'].get('diff'):
             return data['data']['diff'][0].get('f14', '')
         return ''
     except:
@@ -681,6 +948,73 @@ def _get_market_average_sector_sentiment() -> Dict:
     }
 
     try:
+        pro = _get_tushare_pro()
+        if pro and hasattr(pro, 'moneyflow_mkt_dc'):
+            trade_date = _resolve_latest_trade_date(pro, datetime.now())
+            rows = _fetch_moneyflow_mkt_dc_all(trade_date)
+            if not rows:
+                trade_date = _resolve_latest_trade_date(pro, datetime.now() - timedelta(days=1))
+                rows = _fetch_moneyflow_mkt_dc_all(trade_date)
+            if rows:
+                picked = None
+                for r in rows:
+                    if not isinstance(r, dict):
+                        continue
+                    name = str(r.get('name', '') or '')
+                    if not picked:
+                        picked = r
+                    if name and ('沪' in name or '上证' in name):
+                        picked = r
+                        break
+
+                if picked:
+                    net_amount_wan = None
+                    try:
+                        if picked.get('net_amount') is not None:
+                            net_amount_wan = round(float(picked.get('net_amount')) / 10000.0, 2)
+                    except Exception:
+                        net_amount_wan = None
+
+                    change_pct = picked.get('pct_change', picked.get('change_pct', 0))
+                    try:
+                        change_pct = float(change_pct)
+                    except Exception:
+                        change_pct = 0.0
+                    change_pct = round(change_pct, 2)
+
+                    sentiment_score = round(50 + (change_pct / 5.0) * 50, 1)
+                    sentiment_score = max(0, min(100, sentiment_score))
+
+                    if sentiment_score >= 65:
+                        overall = '市场强势'
+                        emotion = 'bullish'
+                    elif sentiment_score >= 52:
+                        overall = '市场偏强'
+                        emotion = 'slightly_bullish'
+                    elif sentiment_score >= 48:
+                        overall = '市场震荡'
+                        emotion = 'neutral'
+                    elif sentiment_score >= 35:
+                        overall = '市场偏弱'
+                        emotion = 'slightly_bearish'
+                    else:
+                        overall = '市场弱势'
+                        emotion = 'bearish'
+
+                    return {
+                        'sector_name': str(picked.get('name', '') or '市场整体'),
+                        'sentiment_score': sentiment_score,
+                        'overall': overall,
+                        'change_pct': change_pct,
+                        'turnover_rate': 0,
+                        'emotion': emotion,
+                        'data_source': 'tushare_moneyflow_mkt_dc',
+                        'trade_date': trade_date,
+                        'net_amount': net_amount_wan,
+                        '_amount_unit': '万元',
+                        'net_amount_rate': picked.get('net_amount_rate'),
+                    }
+
         # 获取所有行业板块涨跌数据
         sector_url = "http://push2.eastmoney.com/api/qt/clist/get"
         sector_params = {
@@ -699,7 +1033,7 @@ def _get_market_average_sector_sentiment() -> Dict:
 
         if response.status_code == 200:
             data = response.json()
-            if data.get('data') and data['data'].get('diff'):
+            if data and data.get('data') and data['data'].get('diff'):
                 sectors = data['data']['diff']
 
                 # 计算所有行业平均涨跌和换手
@@ -993,15 +1327,22 @@ def _get_sector_info_from_tencent(stock_code: str) -> Dict:
 
         # 尝试多个位置的行业字段
         industry = '未知'
-        if len(data) > 45 and data[45] and data[45] not in ['-', '--', '']:
-            industry = data[45].strip()
-        elif len(data) > 46 and data[46] and data[46] not in ['-', '--', '']:
-            industry = data[46].strip()
-        elif len(data) > 47 and data[47] and data[47] not in ['-', '--', '']:
-            industry = data[47].strip()
+        candidate_fields = []
+        if len(data) > 45:
+            candidate_fields.append(data[45])
+        if len(data) > 46:
+            candidate_fields.append(data[46])
+        if len(data) > 47:
+            candidate_fields.append(data[47])
 
-        # 如果行业为未知，返回失败以尝试其他数据源
-        if industry == '未知':
+        for field in candidate_fields:
+            if _is_placeholder_text(field) or _is_numeric_text(field):
+                continue
+            industry = str(field).strip()
+            if industry:
+                break
+
+        if industry == '未知' or _is_numeric_text(industry):
             return {'success': False}
 
         return {
@@ -1077,14 +1418,36 @@ def get_stock_sector_info_multi_source(stock_code: str) -> Dict:
     Returns:
         dict: 板块信息
     """
+    cached_name = cache_manager.get('sector_name', stock_code)
+    if isinstance(cached_name, str) and cached_name.strip() and cached_name.strip() != '未知':
+        return {
+            'success': True,
+            'data_source': 'cache',
+            'sector_name': cached_name,
+            'stock_name': '',
+            'current_price': 0,
+            'industry': cached_name,
+            'concept_sectors': [cached_name]
+        }
+
     print(f"   🔄 尝试多数据源获取板块信息...")
 
     # 1. 尝试东方财富
     print(f"   📊 [1/3] 尝试东方财富API...")
     try:
         result = get_stock_sector_info(stock_code)
-        if result.get('sector_name', '未知') != '未知':
-            print(f"   ✅ 东方财富获取成功: {result.get('sector_name')}")
+        if isinstance(result, dict) and result.get('sector_name', '未知') != '未知':
+            sector_name = result.get('sector_name')
+            if isinstance(sector_name, str) and sector_name.strip() and sector_name.strip() != '未知':
+                cache_manager.set('sector_name', sector_name, stock_code)
+
+            source = result.get('data_source') or 'eastmoney'
+            if source == 'sina':
+                print(f"   ✅ 新浪财经获取成功: {result.get('sector_name')}")
+            elif source == 'tencent':
+                print(f"   ✅ 腾讯财经获取成功: {result.get('sector_name')}")
+            else:
+                print(f"   ✅ 东方财富获取成功: {result.get('sector_name')}")
             return result
     except Exception as e:
         print(f"   ⚠️ 东方财富API失败: {str(e)}")
@@ -1093,6 +1456,9 @@ def get_stock_sector_info_multi_source(stock_code: str) -> Dict:
     print(f"   📊 [2/3] 尝试新浪财经API...")
     result = _get_sector_info_from_sina(stock_code)
     if result.get('success') and result.get('sector_name', '未知') != '未知':
+        sector_name = result.get('sector_name')
+        if isinstance(sector_name, str) and sector_name.strip() and sector_name.strip() != '未知':
+            cache_manager.set('sector_name', sector_name, stock_code)
         print(f"   ✅ 新浪财经获取成功: {result.get('sector_name')}")
         return result
     else:
@@ -1102,6 +1468,9 @@ def get_stock_sector_info_multi_source(stock_code: str) -> Dict:
     print(f"   📊 [3/3] 尝试腾讯财经API...")
     result = _get_sector_info_from_tencent(stock_code)
     if result.get('success') and result.get('sector_name', '未知') != '未知':
+        sector_name = result.get('sector_name')
+        if isinstance(sector_name, str) and sector_name.strip() and sector_name.strip() != '未知':
+            cache_manager.set('sector_name', sector_name, stock_code)
         print(f"   ✅ 腾讯财经获取成功: {result.get('sector_name')}")
         return result
     else:
@@ -1131,16 +1500,36 @@ def get_sector_sentiment_multi_source(stock_code: str) -> Dict:
     Returns:
         dict: 板块情绪
     """
-    # 尝试东方财富获取个股板块情绪
-    result = get_sector_sentiment(stock_code)
+    try:
+        cached = cache_manager.get('sector', stock_code)
+        if isinstance(cached, dict) and cached.get('data_source') and cached.get('data_source') != 'default':
+            return cached
+    except Exception:
+        pass
 
-    # 如果成功且不是默认值
-    if result.get('data_source') != 'default':
+    result = _get_sector_sentiment_from_moneyflow_ind_dc(stock_code)
+    if isinstance(result, dict) and result.get('data_source') == 'tushare_moneyflow_ind_dc':
+        try:
+            cache_manager.set('sector', result, stock_code)
+        except Exception:
+            pass
         return result
 
-    # 如果失败，返回市场整体行业情绪作为参考
+    result = get_sector_sentiment(stock_code)
+    if result.get('data_source') != 'default':
+        try:
+            cache_manager.set('sector', result, stock_code)
+        except Exception:
+            pass
+        return result
+
     print(f"   ⚠️  无法获取个股板块情绪，使用市场整体情绪")
-    return _get_market_average_sector_sentiment()
+    result = _get_market_average_sector_sentiment()
+    try:
+        cache_manager.set('sector', result, stock_code)
+    except Exception:
+        pass
+    return result
 
 
 def _get_sector_index_change(sector_name: str) -> Optional[float]:

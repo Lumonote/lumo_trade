@@ -55,6 +55,9 @@ from utils.retry_utils import (
 import logging
 logger = logging.getLogger(__name__)
 
+_INDUSTRY_COMPARISON_CACHE = {}
+_INDUSTRY_COMPARISON_CACHE_TTL = 3600
+
 
 class FundamentalDataCollector:
     """基本面财务数据采集器"""
@@ -637,6 +640,10 @@ class FundamentalDataCollector:
             dict: 行业对比数据
         """
         try:
+            cached = _INDUSTRY_COMPARISON_CACHE.get(self.stock_code)
+            if cached and time.time() - cached['timestamp'] < _INDUSTRY_COMPARISON_CACHE_TTL:
+                return cached['data']
+
             # 东方财富行业数据API - 使用ulist.np替代stock/get
             url = "http://push2.eastmoney.com/api/qt/ulist.np/get"
             market_id = '1' if self.stock_code.startswith('6') or self.stock_code.startswith('900') else '0'
@@ -647,9 +654,16 @@ class FundamentalDataCollector:
             }
 
             response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            data = response.json()
+            data = None
+            if response.status_code == 200 and response.text and response.text.strip():
+                try:
+                    data = response.json()
+                except Exception:
+                    data = None
+            if data is None:
+                data = self._get_data_via_curl(url, params)
 
-            if data.get('data') and data['data'].get('diff'):
+            if data and data.get('data') and data['data'].get('diff'):
                 stock_data = data['data']['diff'][0]
 
                 comparison = {
@@ -664,6 +678,10 @@ class FundamentalDataCollector:
                 if comparison['industry'] == 'N/A':
                      comparison['industry'] = stock_data.get('f102', 'N/A')
 
+                _INDUSTRY_COMPARISON_CACHE[self.stock_code] = {
+                    'timestamp': time.time(),
+                    'data': comparison
+                }
                 return comparison
 
         except Exception as e:

@@ -9,10 +9,13 @@ import os
 import sys
 import argparse
 import logging
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict
+from typing import List, Dict, Optional
 import time
+import requests
+from requests.adapters import HTTPAdapter  # 【优化1】连接池管理
 
 # 【优化6】Rich进度条支持（可选，未安装时降级到文本输出）
 try:
@@ -57,6 +60,12 @@ class OpportunityDiscovery:
         Args:
             max_workers: 并发处理的最大线程数
         """
+        # 【优化1】创建全局HTTP Session，复用连接
+        self.session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20)
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+
         # 投资机会挖掘流程要求实时数据，禁用热门股票缓存
         self.hot_stocks_fetcher = HotStocksFetcher(disable_cache=True)
         self.scorer = OpportunityScorer()
@@ -71,7 +80,150 @@ class OpportunityDiscovery:
         self.sector_hot_news = []
         self.max_workers = max_workers
 
-    def run(self, limit: int = 100, test_codes: List[str] = None) -> str:
+    def _load_tushare_token(self) -> str:
+        config_path = os.path.join(project_root, 'config', 'tushare_config.json')
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            return config.get('tushare', {}).get('token', '')
+        except Exception as e:
+            logger.warning(f"加载Tushare配置失败: {e}")
+            return ''
+
+    def _resolve_latest_trade_date(self, pro, base_dt: datetime, max_back_days: int = 14) -> str:
+        base_str = base_dt.strftime('%Y%m%d')
+        try:
+            start_str = (base_dt - timedelta(days=30)).strftime('%Y%m%d')
+            cal_df = pro.trade_cal(exchange='SSE', start_date=start_str, end_date=base_str, fields='cal_date,is_open')
+            if cal_df is not None and not cal_df.empty and 'is_open' in cal_df.columns and 'cal_date' in cal_df.columns:
+                cal_df = cal_df.sort_values('cal_date')
+                open_dates = cal_df.loc[cal_df['is_open'] == 1, 'cal_date'].tolist()
+                if open_dates:
+                    return open_dates[-1]
+        except Exception as e:
+            logger.debug(f"trade_cal不可用，回退使用日期回溯: {e}")
+
+        candidate = base_dt
+        for _ in range(max_back_days):
+            if candidate.weekday() < 5:
+                return candidate.strftime('%Y%m%d')
+            candidate -= timedelta(days=1)
+        return base_str
+
+    def _fetch_moneyflow_dc_stocks(self, limit: int) -> List[Dict]:
+        try:
+            import tushare as ts
+        except ImportError:
+            logger.warning("Tushare未安装，无法获取资金流向榜单")
+            return []
+
+        token = self._load_tushare_token()
+        if not token:
+            logger.warning("Tushare Token未配置，无法获取资金流向榜单")
+            return []
+
+        try:
+            pro = ts.pro_api(token)
+        except Exception as e:
+            logger.warning(f"初始化Tushare失败: {e}")
+            return []
+
+        max_back_days = 14
+        trade_date = self._resolve_latest_trade_date(pro, datetime.now(), max_back_days=max_back_days)
+
+        last_error: Optional[Exception] = None
+        df = None
+        selected_date = trade_date
+        for i in range(max_back_days):
+            try_date = (datetime.strptime(trade_date, '%Y%m%d') - timedelta(days=i)).strftime('%Y%m%d')
+            try:
+                if hasattr(pro, 'moneyflow_dc'):
+                    df = pro.moneyflow_dc(trade_date=try_date)
+                else:
+                    df = pro.moneyflow_ths(trade_date=try_date)
+                if df is not None and not df.empty:
+                    selected_date = try_date
+                    break
+            except Exception as e:
+                last_error = e
+
+        if df is None or df.empty:
+            if last_error:
+                logger.warning(f"资金流向榜单获取失败: {last_error}")
+            return []
+
+        try:
+            import pandas as pd
+        except ImportError:
+            pd = None
+
+        sort_cols = [
+            'net_amount_rate',
+            'net_mf_amount_rate',
+            'buy_lg_amount_rate',
+            'buy_elg_amount_rate',
+            'net_amount',
+            'net_mf_amount',
+            'net_amount_main',
+        ]
+        sort_col = next((c for c in sort_cols if c in df.columns), None)
+        if sort_col is None:
+            sort_col = df.columns[0]
+
+        if pd is not None:
+            df['_sort_value'] = pd.to_numeric(df.get(sort_col), errors='coerce').fillna(0.0)
+            df = df.sort_values('_sort_value', ascending=False)
+        else:
+            df = df.sort_values(by=sort_col, ascending=False)
+
+        top_df = df.head(limit).copy()
+        top_df['_amount_unit'] = '万元'
+
+        data_dir = os.path.join(project_root, 'data')
+        os.makedirs(data_dir, exist_ok=True)
+        csv_path = os.path.join(data_dir, f"moneyflow_dc_{selected_date}_top{min(limit, len(top_df))}.csv")
+        try:
+            top_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+            logger.info(f"✓ 资金流向榜单CSV已保存: {csv_path}")
+        except Exception as e:
+            logger.warning(f"保存资金流向CSV失败: {e}")
+
+        def map_exchange(ts_code: str) -> str:
+            if ts_code.endswith('.SZ'):
+                return 'SZ'
+            if ts_code.endswith('.SH'):
+                return 'SH'
+            if ts_code.endswith('.BJ'):
+                return 'BJ'
+            return 'UNKNOWN'
+
+        results: List[Dict] = []
+        sort_unit = '%' if str(sort_col).endswith('_rate') else '万元'
+        for idx, (_, row) in enumerate(top_df.iterrows(), start=1):
+            ts_code = str(row.get('ts_code', '') or '')
+            code = ts_code.split('.')[0] if ts_code else str(row.get('code', '') or '')
+            name = str(row.get('name', '') or '')
+            sort_value = row.get('_sort_value', row.get(sort_col, 0))
+            sort_value_float = float(sort_value) if isinstance(sort_value, (int, float)) else None
+            results.append({
+                'code': code,
+                'name': name,
+                'exchange': map_exchange(ts_code),
+                'rank': idx,
+                'source': 'tushare_moneyflow_dc',
+                'trade_date': selected_date,
+                'moneyflow_sort_field': sort_col,
+                'moneyflow_sort_value': sort_value_float if sort_value_float is not None else sort_value,
+                'moneyflow_sort_unit': sort_unit,
+                'moneyflow_sort_value_wan': sort_value_float if (sort_unit == '万元' and sort_value_float is not None) else None,
+                'moneyflow_sort_value_yuan': (sort_value_float * 10000.0) if (sort_unit == '万元' and sort_value_float is not None) else None,
+                'popularity_score': max(0, 100 - idx + 1)
+            })
+
+        logger.info(f"✓ 获取资金流向榜单成功，日期: {selected_date}，共{len(results)}只股票")
+        return results
+
+    def run(self, limit: int = 100, test_codes: List[str] = None, source: str = 'heat') -> str:
         """
         运行完整的投资机会挖掘流程
 
@@ -101,19 +253,28 @@ class OpportunityDiscovery:
                     'change_pct': 0
                 })
         else:
-            logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
-            # 强制直接采集，避免使用缓存或本地回退
-            hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
+            if source == 'moneyflow_dc':
+                logger.info(f"\n步骤1: 正在获取资金流向榜单 TOP {limit}...")
+                hot_stocks = self._fetch_moneyflow_dc_stocks(limit=limit)
+                if not hot_stocks:
+                    logger.warning("资金流向榜单获取失败，回退使用热度榜")
+                    logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
+                    hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
+            else:
+                logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
+                # 强制直接采集，避免使用缓存或本地回退
+                hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
 
         if not hot_stocks:
             logger.error("✗ 获取热门股票失败，程序终止")
             return ""
 
-        # 检查是否使用了 fallback 数据（静态备用数据，非实时热股）
-        fallback_count = sum(1 for s in hot_stocks if s.get('source') == 'fallback')
-        if fallback_count > 0:
-            logger.warning(f"⚠️ 警告: 有 {fallback_count}/{len(hot_stocks)} 只股票来自备用数据源（非实时热股）")
-            logger.warning("⚠️ 这表示所有实时数据源（东方财富/同花顺）获取失败，请检查网络连接")
+        if source != 'moneyflow_dc':
+            # 检查是否使用了 fallback 数据（静态备用数据，非实时热股）
+            fallback_count = sum(1 for s in hot_stocks if s.get('source') == 'fallback')
+            if fallback_count > 0:
+                logger.warning(f"⚠️ 警告: 有 {fallback_count}/{len(hot_stocks)} 只股票来自备用数据源（非实时热股）")
+                logger.warning("⚠️ 这表示所有实时数据源（东方财富/同花顺）获取失败，请检查网络连接")
 
         logger.info(f"✓ 成功获取 {len(hot_stocks)} 只热门股票")
 
@@ -161,13 +322,11 @@ class OpportunityDiscovery:
                 )
 
                 with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                    # 提交所有分析任务
                     future_to_stock = {
                         executor.submit(self._analyze_single_stock, stock): stock
                         for stock in hot_stocks
                     }
 
-                    # 收集结果
                     for future in as_completed(future_to_stock):
                         stock = future_to_stock[future]
                         try:
@@ -175,7 +334,6 @@ class OpportunityDiscovery:
                             if result:
                                 scored_stocks.append(result)
                             else:
-                                # 分析失败时创建默认结果，确保所有股票都进入最终报表
                                 scored_stocks.append({
                                     'stock_code': stock.get('code', ''),
                                     'name': stock.get('name', '未知'),
@@ -187,18 +345,8 @@ class OpportunityDiscovery:
                                         'error': '分析失败'
                                     }
                                 })
-                            completed_count += 1
-                            
-                            # 更新进度条
-                            progress.update(
-                                task,
-                                advance=1,
-                                description=f"[cyan]分析: {stock.get('name', stock.get('code'))}"
-                            )
-
                         except Exception as e:
                             logger.error(f"分析 {stock.get('code')} 失败: {e}")
-                            # 异常时也创建默认结果
                             scored_stocks.append({
                                 'stock_code': stock.get('code', ''),
                                 'name': stock.get('name', '未知'),
@@ -210,18 +358,20 @@ class OpportunityDiscovery:
                                     'error': f'分析异常: {str(e)}'
                                 }
                             })
-                            completed_count += 1
-                            progress.update(task, advance=1)
+
+                        completed_count += 1
+                        progress.update(
+                            task,
+                            advance=1,
+                            description=f"[cyan]分析: {stock.get('name', stock.get('code'))}"
+                        )
         else:
-            # 降级到文本输出
+            
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # 提交所有分析任务
                 future_to_stock = {
                     executor.submit(self._analyze_single_stock, stock): stock
                     for stock in hot_stocks
                 }
-
-                # 收集结果
                 for future in as_completed(future_to_stock):
                     stock = future_to_stock[future]
                     try:
@@ -229,7 +379,6 @@ class OpportunityDiscovery:
                         if result:
                             scored_stocks.append(result)
                         else:
-                            # 分析失败时创建默认结果，确保所有股票都进入最终报表
                             scored_stocks.append({
                                 'stock_code': stock.get('code', ''),
                                 'name': stock.get('name', '未知'),
@@ -242,23 +391,8 @@ class OpportunityDiscovery:
                                     'error': '分析失败'
                                 }
                             })
-
-                        completed_count += 1
-
-                        # 显示进度
-                        progress = (completed_count / total_count) * 100
-                        elapsed = time.time() - progress_start_time
-                        avg_time = elapsed / completed_count if completed_count > 0 else 0
-                        remaining = avg_time * (total_count - completed_count)
-                        logger.info(
-                            f"进度: {completed_count}/{total_count} ({progress:.1f}%) - "
-                            f"{stock.get('name', stock.get('code'))} | "
-                            f"已用: {elapsed:.1f}s | 预计剩余: {remaining:.1f}s"
-                        )
-
                     except Exception as e:
                         logger.error(f"分析 {stock.get('code')} 失败: {e}")
-                        # 异常时也创建默认结果
                         scored_stocks.append({
                             'stock_code': stock.get('code', ''),
                             'name': stock.get('name', '未知'),
@@ -271,7 +405,17 @@ class OpportunityDiscovery:
                                 'error': f'分析异常: {str(e)}'
                             }
                         })
-                        completed_count += 1
+
+                    completed_count += 1
+                    progress = (completed_count / total_count) * 100
+                    elapsed = time.time() - progress_start_time
+                    avg_time = elapsed / completed_count if completed_count > 0 else 0
+                    remaining = avg_time * (total_count - completed_count)
+                    logger.info(
+                        f"进度: {completed_count}/{total_count} ({progress:.1f}%) - "
+                        f"{stock.get('name', stock.get('code'))} | "
+                        f"已用: {elapsed:.1f}s | 预计剩余: {remaining:.1f}s"
+                    )
 
         logger.info(f"✓ 完成 {len(scored_stocks)}/{total_count} 只股票的分析")
 
@@ -389,9 +533,21 @@ class OpportunityDiscovery:
                     ]
                     # 按分数降序排序
                     passed_stocks.sort(key=lambda x: x.get('scoring_result', {}).get('total_score', 0), reverse=True)
-                    
-                    # 【优化3】取前10名（从Top20改为Top10，降低成本和耗时）
-                    high_grade_stocks = passed_stocks[:10]
+
+                    # 【优化3】自适应调整LLM分析数量
+                    # 基于分数差距自动降低不必要的LLM调用
+                    if len(passed_stocks) > 15:
+                        # 大量通过的情况：只分析Top8，避免成本过高
+                        high_grade_stocks = passed_stocks[:8]
+                        logger.info(f"通过股票过多({len(passed_stocks)}只)，为控制成本仅分析Top8")
+                    elif len(passed_stocks) > 10:
+                        # 中等数量：分析Top10，正常情况
+                        high_grade_stocks = passed_stocks[:10]
+                        logger.info(f"识别{len(passed_stocks)}只通过股票，分析Top10")
+                    else:
+                        # 数量较少：全部分析
+                        high_grade_stocks = passed_stocks[:len(passed_stocks)]
+                        logger.info(f"仅{len(passed_stocks)}只通过股票，全部进行LLM分析")
 
                     if high_grade_stocks:
                         logger.info(f"发现 {len(high_grade_stocks)} 只高分股票(≥60分, Top10)，准备进行LLM并发分析...")
@@ -610,6 +766,12 @@ class OpportunityDiscovery:
         except Exception as e:
             logger.warning(f"关闭scorer失败: {e}")
 
+        # 【优化1】关闭HTTP Session
+        try:
+            self.session.close()
+        except Exception as e:
+            logger.warning(f"关闭HTTP Session失败: {e}")
+
         return report_path
 
     def _preload_global_data(self, hot_stocks: List[Dict]):
@@ -622,7 +784,8 @@ class OpportunityDiscovery:
         """
         try:
             from analysis.investor_sentiment import InvestorSentimentAnalyzer
-            from analysis.sector_api import get_stock_sector_info_multi_source, get_sector_sentiment_multi_source
+            from analysis.sector_api import _get_tushare_pro, _resolve_latest_trade_date
+            from analysis.sector_api import _fetch_moneyflow_ind_dc_all, _build_sector_sentiment_from_ind_row
             from analysis.sentiment_cache_manager import get_sentiment_cache
             
             cache = get_sentiment_cache()
@@ -637,54 +800,33 @@ class OpportunityDiscovery:
             except Exception as e:
                 logger.warning(f"  大盘情绪预加载失败: {e}")
             
-            # 2. 预加载板块数据（按板块去重）
+            # 2. 预加载板块数据（优先Tushare资金流向接口）
             try:
-                logger.info("  正在预加载板块数据（按板块去重）...")
-                sector_codes = set()  # 用于去重的股票代码集合
-                sector_names = {}  # {股票代码: 板块名称}
-                
-                # 先批量获取板块信息（限制并发避免限流）
-                from concurrent.futures import ThreadPoolExecutor, as_completed
-                sector_info_results = {}
-                
-                # 使用小并发数避免限流
-                with ThreadPoolExecutor(max_workers=5) as executor:
-                    future_to_code = {
-                        executor.submit(get_stock_sector_info_multi_source, stock.get('code', '')): stock.get('code', '')
-                        for stock in hot_stocks[:50]  # 只预加载前50只，避免耗时过长
-                    }
-                    
-                    for future in as_completed(future_to_code):
-                        stock_code = future_to_code[future]
-                        try:
-                            sector_info = future.result(timeout=5)
-                            if sector_info.get('success'):
-                                sector_name = sector_info.get('sector_name', '未知')
-                                if sector_name and sector_name != '未知':
-                                    sector_info_results[stock_code] = sector_name
-                        except Exception as e:
-                            logger.debug(f"  获取 {stock_code} 板块信息失败: {e}")
-                
-                # 按板块名称去重，预加载板块情绪
-                unique_sectors = set(sector_info_results.values())
-                logger.info(f"  识别到 {len(unique_sectors)} 个不同板块，开始预加载板块情绪...")
-                
-                preloaded_count = 0
-                for sector_name in unique_sectors:
-                    try:
-                        # 找到该板块的任意一只股票代码
-                        sample_code = next((code for code, name in sector_info_results.items() if name == sector_name), None)
-                        if sample_code:
-                            # 获取板块情绪（会自动缓存）
-                            sector_sentiment = get_sector_sentiment_multi_source(sample_code)
-                            if sector_sentiment.get('success'):
-                                # 缓存到全局缓存（按板块名称）
-                                cache.set_sector(sector_name, sector_sentiment)
-                                preloaded_count += 1
-                    except Exception as e:
-                        logger.debug(f"  预加载板块 {sector_name} 情绪失败: {e}")
-                
-                logger.info(f"  ✓ 成功预加载 {preloaded_count}/{len(unique_sectors)} 个板块的情绪数据")
+                logger.info("  正在预加载板块数据（Tushare资金流向优先）...")
+                pro = _get_tushare_pro()
+                if not pro:
+                    logger.warning("  Tushare不可用，跳过板块预加载")
+                else:
+                    trade_date = _resolve_latest_trade_date(pro, datetime.now())
+                    rows = _fetch_moneyflow_ind_dc_all(trade_date)
+                    if not rows:
+                        trade_date = _resolve_latest_trade_date(pro, datetime.now() - timedelta(days=1))
+                        rows = _fetch_moneyflow_ind_dc_all(trade_date)
+
+                    if rows:
+                        preloaded_count = 0
+                        for row in rows:
+                            if not isinstance(row, dict):
+                                continue
+                            sector_name = row.get('name') or row.get('ind_name')
+                            if not sector_name:
+                                continue
+                            sentiment = _build_sector_sentiment_from_ind_row(str(sector_name), row, trade_date)
+                            cache.set_sector(str(sector_name), sentiment)
+                            preloaded_count += 1
+                        logger.info(f"  ✓ 成功预加载 {preloaded_count} 个板块情绪数据")
+                    else:
+                        logger.warning("  板块资金流向数据为空，跳过板块预加载")
                 
             except Exception as e:
                 logger.warning(f"  板块数据预加载失败: {e}")
@@ -1139,6 +1281,7 @@ class OpportunityDiscovery:
 def main():
     parser = argparse.ArgumentParser(description='投资机会挖掘系统')
     parser.add_argument('--limit', type=int, default=100, help='获取热门股票的数量（默认100）')
+    parser.add_argument('--source', type=str, default='heat', choices=['heat', 'moneyflow_dc'], help='候选来源：heat(热度榜) / moneyflow_dc(资金流向榜单)')
     parser.add_argument('--workers', type=int, default=10, help='并发处理线程数（默认10）')
     parser.add_argument('--test-codes', type=str, help='指定测试股票代码，逗号分隔')
 
@@ -1149,7 +1292,7 @@ def main():
         test_codes = args.test_codes.split(',')
 
     discovery = OpportunityDiscovery(max_workers=args.workers)
-    discovery.run(limit=args.limit, test_codes=test_codes)
+    discovery.run(limit=args.limit, test_codes=test_codes, source=args.source)
 
 
 if __name__ == "__main__":

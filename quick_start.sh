@@ -165,9 +165,11 @@ if [[ "$BATCH_MODE" == "true" && -n "$MENU_CHOICE" ]]; then
             exit 0
             ;;
         7)
-            echo "🔥 投资机会挖掘 - 分析TOP100热门股票"
+            limit="${KRONOS_OPPORTUNITY_LIMIT:-100}"
+            source="${KRONOS_OPPORTUNITY_SOURCE:-heat}"
+            echo "🔥 投资机会挖掘 - 分析TOP${limit}候选股票 (source=${source})"
             echo "正在启动投资机会挖掘系统..."
-            $PYTHON_CMD scripts/run_opportunity_discovery.py --limit 100 --workers 10
+            $PYTHON_CMD scripts/run_opportunity_discovery.py --limit "$limit" --source "$source" --workers 10
             exit 0
             ;;
         8)
@@ -176,9 +178,11 @@ if [[ "$BATCH_MODE" == "true" && -n "$MENU_CHOICE" ]]; then
             exit 0
             ;;
         9)
-            echo "🔥 投资机会挖掘 - 分析TOP100热门股票"
+            limit="${KRONOS_OPPORTUNITY_LIMIT:-100}"
+            source="${KRONOS_OPPORTUNITY_SOURCE:-heat}"
+            echo "🔥 投资机会挖掘 - 分析TOP${limit}候选股票 (source=${source})"
             echo "正在启动投资机会挖掘系统..."
-            $PYTHON_CMD scripts/run_opportunity_discovery.py --limit 100 --workers 10
+            $PYTHON_CMD scripts/run_opportunity_discovery.py --limit "$limit" --source "$source" --workers 10
             exit 0
             ;;
         10)
@@ -236,13 +240,13 @@ while true; do
     echo "4. 获取股票数据 (Tushare)"
     echo "5. 获取股票数据 (爬虫)"
     echo "6. 批量获取数据及预测K线"
-    echo "7. 🔥 投资机会挖掘 (TOP100热门股票)"
+    echo "7. 🔥 投资机会挖掘 (热度榜/资金流向，可自定义条数)"
     echo ""
     echo "PREDICT: 预测功能"
     echo "8. 运行预测示例"
     echo ""
     echo "DISCOVERY: 机会挖掘"
-    echo "9. 🔥 投资机会挖掘 (TOP100热门股票)"
+    echo "9. 🔥 投资机会挖掘 (热度榜/资金流向，可自定义条数)"
     echo "10. 🔥🔥 重大利好消息挖掘 (从资讯流挖掘)"
     echo ""
 echo "CRAWLER: 爬虫设置"
@@ -314,11 +318,19 @@ echo "16. 退出"
             pause
             ;;
         7)
-            echo "🔥 投资机会挖掘 - 分析TOP100热门股票"
+            echo "🔥 投资机会挖掘 - 自定义候选来源与条数"
             read -p "是否开始投资机会挖掘？(Y/n): " confirm
             if [[ "$confirm" != "n" && "$confirm" != "N" ]]; then
+                read -p "请输入分析条数（默认100）: " limit
+                limit=${limit:-100}
+                echo "候选来源：1) 热度榜(默认)  2) 资金流向榜单(moneyflow_dc)"
+                read -p "请选择来源 (1/2): " source_choice
+                source="heat"
+                if [[ "$source_choice" == "2" ]]; then
+                    source="moneyflow_dc"
+                fi
                 echo "正在启动投资机会挖掘系统..."
-                $PYTHON_CMD scripts/run_opportunity_discovery.py --limit 100 --workers 10
+                $PYTHON_CMD scripts/run_opportunity_discovery.py --limit "$limit" --source "$source" --workers 10
             fi
             pause
             ;;
@@ -328,11 +340,19 @@ echo "16. 退出"
             pause
             ;;
         9)
-            echo "🔥 投资机会挖掘 - 分析TOP100热门股票"
+            echo "🔥 投资机会挖掘 - 自定义候选来源与条数"
             read -p "是否开始投资机会挖掘？(Y/n): " confirm
             if [[ "$confirm" != "n" && "$confirm" != "N" ]]; then
+                read -p "请输入分析条数（默认100）: " limit
+                limit=${limit:-100}
+                echo "候选来源：1) 热度榜(默认)  2) 资金流向榜单(moneyflow_dc)"
+                read -p "请选择来源 (1/2): " source_choice
+                source="heat"
+                if [[ "$source_choice" == "2" ]]; then
+                    source="moneyflow_dc"
+                fi
                 echo "正在启动投资机会挖掘系统..."
-                $PYTHON_CMD scripts/run_opportunity_discovery.py --limit 100 --workers 10
+                $PYTHON_CMD scripts/run_opportunity_discovery.py --limit "$limit" --source "$source" --workers 10
             fi
             pause
             ;;

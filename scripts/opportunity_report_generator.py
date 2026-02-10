@@ -576,7 +576,12 @@ class OpportunityReportGenerator:
                 return base_str
 
             if not trade_date:
-                trade_date = resolve_latest_trade_date(datetime.now() - timedelta(days=1))
+                now = datetime.now()
+                if now.hour >= 15:
+                    base_dt = now
+                else:
+                    base_dt = now - timedelta(days=1)
+                trade_date = resolve_latest_trade_date(base_dt)
 
             last_error = None
             df = None

@@ -1187,7 +1187,7 @@ class InvestorSentimentAnalyzer:
 
                 sector_sentiment = None
 
-                if sector_data.get('data') and sector_data['data'].get('diff'):
+                if sector_data and sector_data.get('data') and sector_data['data'].get('diff'):
                     sectors = sector_data['data']['diff']
 
                     # 查找匹配的行业板块

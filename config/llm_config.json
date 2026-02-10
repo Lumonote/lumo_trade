@@ -1,8 +1,5 @@
 {
-  "enabled_models": [
-    "魔搭社区/MiniMax",
-    "魔搭社区/GLM"
-  ],
+  "enabled_models": [],
   "api_keys": {
     "魔搭社区": "sk-3e0134b86d9e4042a58bfbec050513f2",
     "DeepSeek官方": "",
