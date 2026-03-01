@@ -69,10 +69,14 @@ def _generate_selection_reason(stock: Dict) -> str:
         change_1d = float(price_changes.get('change_1d', 0) or 0)
         change_3d = float(price_changes.get('change_3d', 0) or 0)
 
-        if rating == 'A':
+        if rating == 'S':
+            reasons.append("综合评级S级(强烈推荐)")
+        elif rating == 'A+':
+            reasons.append("综合评级A+级(推荐)")
+        elif rating == 'A':
             reasons.append("综合评级A级")
-        elif rating == 'B' and final_score >= 80:
-            reasons.append("综合评分优秀")
+        elif rating == 'B' and final_score >= 75:
+            reasons.append("综合评分尚可")
 
         if tech_score >= 75:
             reasons.append(f"技术面强势({tech_score:.0f}分)")
@@ -246,6 +250,181 @@ class OpportunityReportGenerator:
                 full_analysis = f"{summary_txt}<br>【高级】{advanced_txt}" if advanced_txt and advanced_txt != "—" else summary_txt
                 
                 lines.append(f" | {i} | {code} | {name_txt} | {score:.2f} | {full_analysis} | ")
+
+            # v8.0: 添加置信度分级统计 + 历史回测表现
+            lines.append("\n---\n")
+            lines.append("## 📈 置信度分级 & 历史回测表现\n")
+
+            # 当日推荐的置信度分布
+            tier_counts = {'S': 0, 'A': 0, 'B': 0, 'C': 0}
+            for stock in top_20[:20]:
+                scoring = stock.get('scoring_result') or {}
+                tier = scoring.get('confidence_tier', 'C')
+                if tier in tier_counts:
+                    tier_counts[tier] += 1
+
+            lines.append("### 当日推荐置信度分布\n")
+            lines.append("| 置信度 | 说明 | 数量 |")
+            lines.append("|--------|------|------|")
+            tier_info = [
+                ('S', '强烈推荐(≥85分)'),
+                ('A', '可考虑(≥78分)'),
+                ('B', '谨慎(≥70分)'),
+                ('C', '不建议(<70分)')
+            ]
+            for tier, desc in tier_info:
+                lines.append(f"| {tier} | {desc} | {tier_counts.get(tier, 0)} |")
+
+            # 历史回测统计（使用 v8.0 评分的回测分析数据）
+            try:
+                import os as _os
+                import json as _json
+                import pandas as _pd
+
+                _project_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+                _results_dir = _os.path.join(_project_root, 'results')
+
+                # 优先使用 backtest_rebuilt CSV（最新优化数据 + v11评分）
+                bt_with_returns = None
+                _score_col = 'v8_score'
+
+                _rebuilt_csvs = sorted([
+                    f for f in _os.listdir(_results_dir)
+                    if f.startswith('backtest_rebuilt_') and f.endswith('.csv')
+                ])
+                if _rebuilt_csvs:
+                    _csv_path = _os.path.join(_results_dir, _rebuilt_csvs[-1])
+                    from scripts.simulate_v5_backtest import apply_v8_scoring
+                    _raw_df = _pd.read_csv(_csv_path)
+                    _scored_df = apply_v8_scoring(_raw_df)
+                    bt_with_returns = _scored_df[_scored_df['return_5d'].notna()].copy()
+
+                # 回退到 backtest_analysis CSV
+                if bt_with_returns is None or len(bt_with_returns) < 10:
+                    _analysis_csvs = sorted([
+                        f for f in _os.listdir(_results_dir)
+                        if f.startswith('backtest_analysis_') and f.endswith('.csv')
+                    ])
+                    if _analysis_csvs:
+                        _csv_path = _os.path.join(_results_dir, _analysis_csvs[-1])
+                        from scripts.simulate_v5_backtest import load_backtest_data, apply_v8_scoring as _apply_scoring
+                        _raw_df = load_backtest_data(_csv_path)
+                        _scored_df = _apply_scoring(_raw_df)
+                        bt_with_returns = _scored_df[_scored_df['return_5d'].notna()].copy()
+
+                # 回退到 recommendations.csv（较少数据）
+                if bt_with_returns is None or len(bt_with_returns) < 10:
+                    _bt_csv = _os.path.join(_results_dir, 'backtest', 'recommendations.csv')
+                    if _os.path.exists(_bt_csv):
+                        _rec_df = _pd.read_csv(_bt_csv)
+                        _rec_with_returns = _rec_df[_rec_df['return_5d'].notna()].copy()
+                        if len(_rec_with_returns) >= 10:
+                            bt_with_returns = _rec_with_returns
+                            _score_col = 'score'
+
+                # 自动补充缺失的收益数据
+                if bt_with_returns is not None and len(bt_with_returns) >= 10:
+                    _missing_mask = bt_with_returns['return_10d'].isna() & bt_with_returns['return_5d'].notna()
+                    _missing_count = _missing_mask.sum()
+                    if _missing_count > 0:
+                        try:
+                            _cfg_path = _os.path.join(_project_root, 'config', 'tushare_config.json')
+                            if _os.path.exists(_cfg_path):
+                                with open(_cfg_path, 'r') as _f:
+                                    _cfg = _json.load(_f)
+                                _token = _cfg.get('token', '') or _cfg.get('tushare', {}).get('token', '')
+                                if _token:
+                                    import tushare as _ts
+                                    _ts.set_token(_token)
+                                    _pro = _ts.pro_api()
+                                    _filled = 0
+                                    for _idx in bt_with_returns[_missing_mask].index:
+                                        try:
+                                            _code = str(int(bt_with_returns.at[_idx, 'code'])).zfill(6)
+                                            _rd = str(bt_with_returns.at[_idx, 'report_date']).replace('-', '')
+                                            _ts_code = f"{_code}.SH" if _code.startswith(('6', '9')) else f"{_code}.SZ"
+                                            _price_df = _pro.daily(ts_code=_ts_code, start_date=_rd, end_date='20260315')
+                                            if _price_df is not None and len(_price_df) > 0:
+                                                _price_df = _price_df.sort_values('trade_date').reset_index(drop=True)
+                                                _buy_idx = None
+                                                for _i, _d in enumerate(_price_df['trade_date'].tolist()):
+                                                    if _d > _rd:
+                                                        _buy_idx = _i
+                                                        break
+                                                if _buy_idx is not None and _buy_idx + 10 <= len(_price_df):
+                                                    _bp = _price_df.iloc[_buy_idx]['open']
+                                                    if _bp > 0:
+                                                        _p10 = _price_df.iloc[_buy_idx + 9]['close']
+                                                        bt_with_returns.at[_idx, 'return_10d'] = (_p10 - _bp) / _bp * 100
+                                                        _filled += 1
+                                                        # 同时补充5d如果也缺失
+                                                        if _pd.isna(bt_with_returns.at[_idx, 'return_5d']) and _buy_idx + 5 <= len(_price_df):
+                                                            _p5 = _price_df.iloc[_buy_idx + 4]['close']
+                                                            bt_with_returns.at[_idx, 'return_5d'] = (_p5 - _bp) / _bp * 100
+                                        except Exception:
+                                            pass
+                                    if _filled > 0:
+                                        logger.info(f"自动补充了 {_filled}/{_missing_count} 条缺失的10日收益数据")
+                        except Exception as _fill_err:
+                            logger.debug(f"自动补充收益数据失败: {_fill_err}")
+
+                if bt_with_returns is not None and len(bt_with_returns) >= 10:
+                    lines.append("\n> **备注**: 每月第一个交易日将根据前一个月量化选股结果进行AI自我回测及算法优化，如有需求意见也可在留言中反馈，如有AI相关业务落地咨询的可私聊博主。\n")
+                    lines.append("\n### 历史回测表现（基于已验证数据）\n")
+
+                    lines.append("| 评分区间 | 数量 | 5日均收益 | 5日胜率 | 10日均收益 | 盈亏比 |")
+                    lines.append("|----------|------|-----------|---------|-----------|--------|")
+
+                    score_bins = [
+                        (85, 999, 'S级(≥85)'),
+                        (78, 85, 'A级(78-85)'),
+                        (70, 78, 'B级(70-78)'),
+                        (60, 70, 'C+(60-70)'),
+                        (0, 60, 'C级(<60)')
+                    ]
+
+                    for low, high, label in score_bins:
+                        if high == 999:
+                            subset = bt_with_returns[bt_with_returns[_score_col] >= low]
+                        else:
+                            subset = bt_with_returns[(bt_with_returns[_score_col] >= low) & (bt_with_returns[_score_col] < high)]
+
+                        if len(subset) == 0:
+                            lines.append(f"| {label} | 0 | — | — | — | — |")
+                            continue
+
+                        r5 = subset['return_5d'].dropna()
+                        r10 = subset['return_10d'].dropna()
+                        if len(r5) > 0:
+                            wr = (r5 > 0).mean() * 100
+                            avg5 = r5.mean()
+                            avg10_str = f"{r10.mean():+.2f}%" if len(r10) > 0 else "数据不足"
+                            wins = r5[r5 > 0].sum()
+                            losses = r5[r5 < 0].sum()
+                            pf = abs(wins / losses) if losses != 0 else float('inf')
+                            pf_str = f"{pf:.2f}" if pf != float('inf') else "∞"
+                            lines.append(f"| {label} | {len(subset)} | {avg5:+.2f}% | {wr:.1f}% | {avg10_str} | {pf_str} |")
+                        else:
+                            lines.append(f"| {label} | {len(subset)} | — | — | — | — |")
+
+                    # 关键阈值提示
+                    _above78 = bt_with_returns[bt_with_returns[_score_col] >= 78]
+                    _r5_78 = _above78['return_5d'].dropna()
+                    if len(_r5_78) > 0:
+                        lines.append(f"\n**关键阈值**: 评分≥78共{len(_r5_78)}条 | "
+                                    f"5日胜率: {(_r5_78 > 0).mean()*100:.1f}% | "
+                                    f"5日均收益: {_r5_78.mean():+.2f}%")
+
+                    # 整体统计
+                    total_r5 = bt_with_returns['return_5d'].dropna()
+                    if len(total_r5) > 0:
+                        lines.append(f"\n**整体**: {len(bt_with_returns)}条已验证(去重) | "
+                                    f"5日均收益: {total_r5.mean():+.2f}% | "
+                                    f"5日胜率: {(total_r5 > 0).mean()*100:.1f}% | "
+                                    f"数据范围: {bt_with_returns['report_date'].min()} ~ {bt_with_returns['report_date'].max()}")
+            except Exception as _e:
+                logger.debug(f"回测统计加载失败: {_e}")
+                pass  # 无回测数据时静默跳过
 
             # 添加股吧话题精选（如果有）
             topics = getattr(self, '_latest_global_hot_news', None)
@@ -762,9 +941,9 @@ class OpportunityReportGenerator:
         }
 
         for result in analysis_results:
-            eliminated_at = result.get('eliminated_at_stage', 0)
+            eliminated_at = result.get('eliminated_at_stage', -1)
 
-            if eliminated_at == 0:  # 通过所有阶段（显示至阶段4）
+            if eliminated_at in (0, -1, None):  # v8.0: 通过所有阶段（-1=无淘汰）
                 for stage in range(1, 5):
                     stats[f'stage{stage}']['passed'] += 1
             else:
@@ -1833,7 +2012,7 @@ class OpportunityReportGenerator:
                         <td>
                             <strong>{stock.get('name', '未知')}</strong>
                             <span class="stock-code">({stock.get('stock_code', '')})</span>
-                            <div class="filter-brief">筛选结果: {'全部通过' if stock.get('eliminated_at_stage', 0) in (0, None) else f"阶段{stock.get('eliminated_at_stage')}淘汰"}</div>
+                            <div class="filter-brief">筛选结果: {'全部通过' if stock.get('eliminated_at_stage', -1) in (0, -1, None) else f"阶段{stock.get('eliminated_at_stage')}淘汰"}</div>
                         </td>
                         <td><span class="rating-badge {rating_class}">{rating}</span></td>
                         <td>
@@ -2070,7 +2249,7 @@ class OpportunityReportGenerator:
             events_str = f"评级:{ev_rating}，利好{pos}/利空{neg}，{_fmt_score(ev_score)}分"
 
             suggestion = self._get_recommendation_text(rating)
-            filter_res = '' if eliminated in (0, None) else f'阶段{eliminated}淘汰'
+            filter_res = '' if eliminated in (0, -1, None) else f'阶段{eliminated}淘汰'
 
             # 获取涨幅数据
             price_changes = stock.get('scoring_result', {}).get('details', {}).get('price_changes', {})
@@ -2108,6 +2287,7 @@ class OpportunityReportGenerator:
             
             latest_news = stock.get('latest_news')
             if latest_news:
+                stock_code = stock.get('code', '')
                 def _valid_title(t: str) -> bool:
                     if not t:
                         return False
@@ -2117,6 +2297,22 @@ class OpportunityReportGenerator:
                     bad_keywords = ['上交所', '深交所', '证券交易所']
                     if any(bk in ts for bk in bad_keywords) and len(ts) < 20:
                         return False
+                    # 过滤无关实体代码 (港股gs/指数zssh,zssz/基金of,zo/债券so)
+                    import re
+                    brackets = re.findall(r'[\[\(]([a-zA-Z0-9]+)[\]\)]', ts)
+                    for b_content in brackets:
+                        if not any(c.isdigit() for c in b_content):
+                            continue
+                        clean = b_content.lower()
+                        for prefix in ['zssh', 'zssz', 'gs10', 'gs', 'zo9', 'zo', 'of', 'so', 'sz', 'sh']:
+                            if clean.startswith(prefix):
+                                clean = clean[len(prefix):]
+                                break
+                        if clean.isdigit() and clean != str(stock_code) and len(clean) >= 5:
+                            return False
+                        if b_content.lower() != str(stock_code) and len(b_content) >= 5:
+                            if re.match(r'^(gs\d*|zs|zssh|zssz|zo\d*|of|so|sz|sh)\d+', b_content.lower()):
+                                return False
                     return True
 
                 titles = []

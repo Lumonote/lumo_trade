@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-投资机会漏斗筛选器 v4.1 - 流动性前置优化版
+投资机会评分器 v8.0 - 纯评分无淘汰版
 =====================================
 
-核心设计理念（顶级游资/操盘手思维）:
-1. 前置风控：一票否决机制先行，排除高风险标的
-2. 流动性优先：无流动性则无交易，必须最先检查
-3. 反追涨核心：位置与时机是关键筛选维度
-4. 信号质量：重视信号稀缺性，而非数量堆积
-5. 宁缺毋滥：严格筛选，错过好于套牢
+v8.0核心理念: 不淘汰任何股票，所有风险因子转为扣分/标记，保留全部数据。
+通过评分排序选出Top10，用置信度分级标记推荐强度。
 
-阶段设计（v4.1 流动性前置优化）:
-- 阶段0: 一票否决前置筛选（排除极端风险，含基础流动性门槛）
-- 阶段1: 流动性筛选（确保可交易，游资核心门槛）
-- 阶段2: 位置与时机筛选（反追涨核心）
-- 阶段3: 量化模型初筛（信号质量评估）
-- 阶段4-7: 其他维度评分（仅评分，不筛选）
+设计理念:
+1. 无淘汰: 所有风险条件（RSI过高、追涨、板块过热等）仅记录为风险标记，不做淘汰
+2. 纯评分: 由opportunity_scorer已完成的评分为准，filter不再修改分数
+3. 全数据: 保留所有候选股票，按评分排序Top10推荐
+4. 风险标记: 各阶段检查结果作为风险提示附加到结果中
+5. 置信度分级: S/A/B/C四级，基于最终评分自动标记
+
+阶段设计（全部仅评估/标记，不淘汰）:
+- 阶段0: 风险评估（记录极端风险标记）
+- 阶段1: 流动性评估（记录流动性水平）
+- 阶段2: 位置与时机评估（记录位置风险）
+- 阶段3: 量化模型评估（记录信号质量）
+- 阶段4-7: 其他维度评分（技术/情绪/基本面/消息）
 """
 
 import os
@@ -33,9 +36,9 @@ logger = logging.getLogger(__name__)
 
 
 class OpportunityFilter:
-    """投资机会漏斗筛选器 v4.1 - 流动性前置优化版"""
+    """投资机会评分器 v8.0 - 纯评分无淘汰版（所有股票保留，风险转为标记）"""
 
-    # 筛选阈值配置 (v4.1 流动性前置优化)
+    # 筛选阈值配置 (v8.0 超高胜率网格优化)
     STAGE_THRESHOLDS = {
         # 阶段0: 一票否决规则（最严格，含基础流动性门槛）
         'stage0_veto': {
@@ -44,7 +47,15 @@ class OpportunityFilter:
             'max_distance_from_high': 5,   # 距离年内高点<5%一票否决
             'max_consecutive_up': 7,       # 连涨超7天一票否决
             'min_profit_yoy': -70,         # 利润同比下滑超70%一票否决
-            # 'min_avg_amount_basic': 1000,  # 基础成交额门槛1000万（已移除）
+            'max_rsi': 85,                 # v5.3: RSI>=85一票否决（回测: -7.33%收益）
+            'max_day_change': 20,          # v5.5: 放宽至20%（涨停由条件组合判断，非一刀切）
+            'max_change_5d': 18,           # v5.3: 5日涨幅>18%一票否决（从30%收紧）
+            'max_change_3d': 20,           # v5.3: 3日涨幅>20%一票否决
+            'min_tech_score': 60,          # v5.5: 保持60（回测验证tech>=60最优），但有动量豁免
+            'max_sector_score': 95,        # v5.3: 板块分>=95淘汰（过热反指标）
+            'max_raw_score': 78,           # v7.0: 原始评分>=78淘汰（过拟合反指标，回测: score 80+的5d=-1.65%）
+            'sector_dead_zone_low': 60,    # v7.0: 板块死区下限（回测: sector [60,75)收益极差）
+            'sector_dead_zone_high': 75,   # v7.0: 板块死区上限
         },
         # 阶段1: 流动性筛选（v4.1 前置到阶段1，游资核心门槛）
         'stage1_liquidity': {
@@ -52,10 +63,10 @@ class OpportunityFilter:
             'min_turnover_rate': 0.5,
             'min_circulation_cap': 20,
         },
-        # 阶段2: 位置与时机筛选（反追涨核心）
+        # 阶段2: 位置与时机筛选（反追涨核心，v5.3收紧）
         'stage2_position': {
             'max_position_pct': 0.75,      # 最大允许的位置分位数（75%以下）
-            'max_change_5d': 20,           # 5日涨幅不超过20%
+            'max_change_5d': 18,           # v5.3: 5日涨幅不超过18%（从20%收紧）
             'ideal_drawdown_min': 3,       # 理想回撤区间下限
             'ideal_drawdown_max': 20,      # 理想回撤区间上限
         },
@@ -130,32 +141,26 @@ class OpportunityFilter:
 
     def apply_all_filters(self, stock_data: Dict) -> Dict:
         """
-        应用所有筛选阶段 - v4.1 流动性前置优化版
+        应用所有评估阶段 - v8.0 纯评分无淘汰版
 
-        筛选顺序（按重要性排列，流动性前置）:
-        - 阶段0: 一票否决前置筛选（排除极端风险，含基础流动性门槛）
-        - 阶段1: 流动性筛选（确保可交易，游资核心门槛）
-        - 阶段2: 位置与时机筛选（反追涨核心）
-        - 阶段3: 量化模型初筛（信号质量评估）
-        - 阶段4-7: 其他维度评分（仅评分，不筛选）
+        v8.0核心: 不淘汰任何股票，所有阶段仅评估并记录风险标记。
+        所有股票都会通过(passed=True)，按评分排序选Top10。
 
         Args:
-            stock_data: 股票综合数据，包含:
-                - stock_code: 股票代码
-                - name: 股票名称
-                - scoring_result: OpportunityScorer的评分结果
+            stock_data: 股票综合数据
 
         Returns:
-            筛选结果字典
+            评估结果字典（passed始终为True）
         """
-        logger.info(f"开始筛选: {stock_data.get('stock_code', 'Unknown')}")
+        logger.info(f"开始评估: {stock_data.get('stock_code', 'Unknown')}")
 
         result = {
             'stock_code': stock_data.get('stock_code', ''),
             'name': stock_data.get('name', ''),
-            'passed': False,
-            'eliminated_at_stage': 0,
+            'passed': True,  # v8.0: 始终通过，不淘汰
+            'eliminated_at_stage': -1,  # v8.0: -1表示未被淘汰
             'filter_history': [],
+            'risk_warnings': [],  # v8.0: 风险标记列表
             'final_score': stock_data.get('scoring_result', {}).get('total_score', 0),
             'rating': stock_data.get('scoring_result', {}).get('rating', 'C')
         }
@@ -168,39 +173,35 @@ class OpportunityFilter:
         # 将评分结果透传到最终输出，供报表展示维度分数与权重
         result['scoring_result'] = scoring_result
 
-        # ========== 阶段0: 一票否决前置筛选（仅记录，不淘汰）==========
+        # ========== 阶段0: 风险评估（仅记录风险标记，不淘汰）==========
         stage0_result = self.stage0_veto_check(scoring_result)
         result['filter_history'].append(stage0_result)
-        # 已移除淘汰机制：一票否决条件仅记录，不影响最终筛选结果
         if not stage0_result['passed']:
-            logger.info(f"⚠ {result['stock_code']} 阶段0(一票否决)未通过: {stage0_result['reason']} (仅记录，不淘汰)")
+            # v8.0: 不淘汰，仅记录风险
+            risk_reason = stage0_result.get('reason', '')
+            result['risk_warnings'].append(f"风险提示: {risk_reason}")
+            logger.info(f"⚠ {result['stock_code']} 有风险标记(不淘汰): {risk_reason}")
 
-        #========== 阶段1: 流动性筛选（v4.1 前置，游资核心门槛）==========
+        # ========== 阶段1: 流动性评估（仅记录，不淘汰）==========
         stage1_result = self.stage1_liquidity_check(scoring_result)
-        
-        # 仅在启用淘汰机制时添加到筛选历史，否则隐藏（避免显示无意义的警告）
-        # 用户要求移除流动性筛选报告 (2025-12-08)
         if self.enable_liquidity_elimination:
-             result['filter_history'].append(stage1_result)
+            result['filter_history'].append(stage1_result)
 
-             if not stage1_result['passed']:
-                 result['eliminated_at_stage'] = 1
-                 logger.info(f"✗ {result['stock_code']} 在阶段1(流动性)被淘汰: {stage1_result['reason']}")
-                 return result
-
-        # ========== 阶段2: 位置与时机筛选（仅记录，不淘汰）==========
+        # ========== 阶段2: 位置与时机评估（仅记录风险，不淘汰）==========
         stage2_result = self.stage2_position_timing(scoring_result)
         result['filter_history'].append(stage2_result)
-        # 已移除淘汰机制：位置时机不符合要求仅记录，不影响最终筛选结果
         if not stage2_result['passed']:
-            logger.info(f"⚠ {result['stock_code']} 阶段2(位置时机)未通过: {stage2_result['reason']} (仅记录，不淘汰)")
+            risk_reason = stage2_result.get('reason', '')
+            result['risk_warnings'].append(f"位置风险: {risk_reason}")
+            logger.info(f"⚠ {result['stock_code']} 位置风险(不淘汰): {risk_reason}")
 
-        # ========== 阶段3: 量化模型初筛（仅记录，不淘汰）==========
+        # ========== 阶段3: 量化模型评估（仅记录，不淘汰）==========
         stage3_result = self.stage3_quantitative_models(scoring_result)
         result['filter_history'].append(stage3_result)
-        # 已移除淘汰机制：量化信号不足仅记录，不影响最终筛选结果
         if not stage3_result['passed']:
-            logger.info(f"⚠ {result['stock_code']} 阶段3(量化模型)未通过: {stage3_result['reason']} (仅记录，不淘汰)")
+            risk_reason = stage3_result.get('reason', '')
+            result['risk_warnings'].append(f"信号风险: {risk_reason}")
+            logger.info(f"⚠ {result['stock_code']} 信号风险(不淘汰): {risk_reason}")
 
         # ========== 阶段4-7: 评分阶段（仅评分，不筛选）==========
         # 阶段4: 技术面评分
@@ -219,9 +220,9 @@ class OpportunityFilter:
         stage7_result = self.stage7_events_score(scoring_result)
         result['filter_history'].append(stage7_result)
 
-        # 全部通过
+        # v8.0: 所有股票都通过
         result['passed'] = True
-        logger.info(f"✓ {result['stock_code']} 通过所有筛选！综合得分: {result['final_score']}")
+        logger.info(f"✓ {result['stock_code']} 评估完成 综合得分: {result['final_score']} 风险标记: {len(result['risk_warnings'])}个")
 
         return result
 
@@ -303,6 +304,118 @@ class OpportunityFilter:
             if profit_yoy is not None and isinstance(profit_yoy, (int, float)):
                 if profit_yoy < config['min_profit_yoy']:
                     veto_reasons.append(f"利润同比下滑{abs(profit_yoy):.1f}%")
+
+            # ========== v5.3 新增一票否决条件（回测网格搜索验证）==========
+            tech_details = scoring_result.get('details', {}).get('technical', {})
+
+            # RSI >= 85 一票否决（回测: RSI>=85收益-7.33%，24.2%胜率）
+            current_rsi = tech_details.get('RSI', 50)
+            if isinstance(current_rsi, (int, float)) and current_rsi >= config.get('max_rsi', 85):
+                veto_reasons.append(f"RSI严重超买{current_rsi:.1f}(>={config.get('max_rsi', 85)})")
+
+            # v5.5: 日涨幅>=20%一票否决（放宽: 涨停板不再一票否决，由scorer动量识别处理）
+            # 涨停板(10-20%)改为由scorer中的惩罚+动量识别机制处理
+            price_changes = scoring_result.get('details', {}).get('price_changes', {})
+            day_change = price_changes.get('change_1d', 0) or 0
+            if day_change >= config.get('max_day_change', 20):
+                veto_reasons.append(f"当日涨幅{day_change:.1f}%(>={config.get('max_day_change', 20)}%)")
+            elif day_change >= 9.5:
+                # 涨停板: 在追高风险高 或 买入信号过多时淘汰，否则只警告
+                chase_risk_val = momentum_details.get('chase_risk_score', 0)
+                quant_details = scoring_result.get('details', {}).get('quantitative', {})
+                buy_sig_count = quant_details.get('buy_count', 0)
+                if isinstance(chase_risk_val, (int, float)) and chase_risk_val >= 60:
+                    veto_reasons.append(f"涨停({day_change:.1f}%)+追高风险({chase_risk_val:.0f}>=50)")
+                elif isinstance(buy_sig_count, (int, float)) and buy_sig_count > 8:
+                    veto_reasons.append(f"涨停({day_change:.1f}%)+信号拥挤({buy_sig_count:.0f}>8)")
+                else:
+                    warning_reasons.append(f"涨停板{day_change:.1f}%(chase={chase_risk_val:.0f},由scorer处理)")
+
+            # 5日涨幅 > 18% 一票否决（v5.3从30%收紧至18%）
+            change_5d = momentum_details.get('change_5d', 0)
+            if change_5d and change_5d > config.get('max_change_5d', 18):
+                veto_reasons.append(f"5日涨幅{change_5d:.1f}%(>{config.get('max_change_5d', 18)}%)")
+
+            # 3日涨幅 > 20% 一票否决
+            change_3d = momentum_details.get('change_3d', 0) or price_changes.get('change_3d', 0) or 0
+            if change_3d and change_3d > config.get('max_change_3d', 20):
+                veto_reasons.append(f"3日涨幅{change_3d:.1f}%(>{config.get('max_change_3d', 20)}%)")
+
+            # 技术面评分 < 60 淘汰（v5.5: 保持60门槛，但有动量豁免避免误杀牛股/妖股）
+            scores = scoring_result.get('scores', {})
+            tech_score = scores.get('technical', 50) or 50
+            min_tech = config.get('min_tech_score', 60)
+            if isinstance(tech_score, (int, float)) and tech_score < min_tech:
+                # v5.5 动量豁免机制: 识别到明确牛股/妖股模式时，不因tech分低而淘汰
+                has_momentum_exempt = False
+
+                # 检查scorer产生的动量模式标记
+                momentum_pattern = scoring_result.get('momentum_pattern', [])
+                if momentum_pattern and len(momentum_pattern) >= 2:
+                    has_momentum_exempt = True  # 多个动量信号共振 = 趋势确认
+
+                # 妖股模式: 涨停 + 低追高风险 + 信号不拥挤
+                quant_details = scoring_result.get('details', {}).get('quantitative', {})
+                buy_sig_count = quant_details.get('buy_count', 0)
+                chase_risk_val = momentum_details.get('chase_risk_score', 0)
+                if day_change >= 9.5 and isinstance(chase_risk_val, (int, float)) and chase_risk_val < 50:
+                    if isinstance(buy_sig_count, (int, float)) and buy_sig_count <= 8:
+                        has_momentum_exempt = True  # 首板妖股模式
+
+                # 启动模式: 涨幅3-10% + 低追高风险 + 量化适中
+                quant_score_val = scores.get('quantitative', 50) or 50
+                if 3 <= day_change < 10 and isinstance(chase_risk_val, (int, float)) and chase_risk_val < 50:
+                    if isinstance(quant_score_val, (int, float)) and 55 <= quant_score_val <= 80:
+                        has_momentum_exempt = True  # 底部启动模式
+
+                # 均线多头确认
+                volume_details = scoring_result.get('details', {}).get('volume_health', {})
+                tech_details_local = scoring_result.get('details', {}).get('technical', {})
+                ma_status_local = tech_details_local.get('MA_status', '中性')
+                if '多头排列' in ma_status_local:
+                    has_momentum_exempt = True  # 均线多头 = 趋势确认
+
+                if has_momentum_exempt:
+                    warning_reasons.append(f"技术面评分{tech_score:.0f}(<{min_tech})但有动量豁免")
+                else:
+                    veto_reasons.append(f"技术面评分{tech_score:.0f}(<{min_tech})")
+
+            # 板块过热 >= 95 淘汰（回测: 板块90+为追涨反指标）
+            sector_score = scores.get('sector', 50) or 50
+            if isinstance(sector_score, (int, float)) and sector_score >= config.get('max_sector_score', 95):
+                veto_reasons.append(f"板块过热{sector_score:.0f}(>={config.get('max_sector_score', 95)})")
+
+            # ========== v7.0 新增高胜率筛选条件 ==========
+
+            # 原始评分 >= 78 淘汰（回测: score 80+的5d=-1.65%, wr=21.9%，过拟合信号）
+            total_score_raw = scoring_result.get('total_score', 0)
+            max_raw_score = config.get('max_raw_score', 78)
+            if isinstance(total_score_raw, (int, float)) and total_score_raw >= max_raw_score:
+                veto_reasons.append(f"原始评分过高{total_score_raw:.0f}(>={max_raw_score}，过拟合风险)")
+
+            # 板块死区 [60, 75) 淘汰（回测: sector [65,70) wr=6.2%, [70,75) wr=12.9%）
+            dead_zone_low = config.get('sector_dead_zone_low', 60)
+            dead_zone_high = config.get('sector_dead_zone_high', 75)
+            if isinstance(sector_score, (int, float)) and dead_zone_low <= sector_score < dead_zone_high:
+                veto_reasons.append(f"板块评分死区{sector_score:.0f}([{dead_zone_low},{dead_zone_high}))")
+
+            # ========== v7.0 新增结束 ==========
+
+            # 组合条件: RSI>80 且 3日涨>10%（追涨+超买双重风险）
+            if isinstance(current_rsi, (int, float)) and current_rsi > 80 and change_3d > 10:
+                if f"RSI严重超买" not in str(veto_reasons):
+                    veto_reasons.append(f"RSI{current_rsi:.0f}>80且3日涨{change_3d:.1f}%>10%")
+
+            # 组合条件: 5日涨>15% 且 RSI>72（位置过高+已涨太多）
+            if change_5d and change_5d > 15 and isinstance(current_rsi, (int, float)) and current_rsi > 72:
+                if f"5日涨幅" not in str(veto_reasons):
+                    veto_reasons.append(f"5日涨{change_5d:.1f}%>15%且RSI{current_rsi:.0f}>72")
+
+            # 组合条件: 日涨>=5% 且 RSI>65（当日追涨+偏强）
+            if day_change >= 5 and isinstance(current_rsi, (int, float)) and current_rsi > 65:
+                if f"当日涨幅" not in str(veto_reasons):
+                    warning_reasons.append(f"日涨{day_change:.1f}%>=5%且RSI{current_rsi:.0f}>65(偏高风险)")
+            # ========== v5.3 新增结束 ==========
 
             # 检查 scorer 中已有的排除标���
             exclusion_flags = scoring_result.get('exclusion_flags', [])

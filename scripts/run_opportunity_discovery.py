@@ -428,8 +428,9 @@ class OpportunityDiscovery:
             filter_results.append(filter_result)
 
         # 统计筛选结果
-        passed_count = sum(1 for r in filter_results if r.get('passed', False))
-        logger.info(f"✓ 筛选完成: {passed_count}/{len(filter_results)} 只股票通过")
+        passed_count = len(filter_results)  # v8.0: 所有股票都通过（无淘汰）
+        risk_count = sum(1 for r in filter_results if r.get('risk_warnings', []))
+        logger.info(f"✓ 评估完成: {passed_count} 只股票，其中 {risk_count} 只有风险标记")
 
         # 额外步骤：采集板块相关新闻（按通过股票的板块的板块频次选取Top板块）
         try:
@@ -524,11 +525,14 @@ class OpportunityDiscovery:
                 if llm_config.is_configured():
                     llm_analyzer = LLMAnalyzer(llm_config)
 
-                    # 筛选A级及以上股票(评分≥60分)且未被超大市值过滤
+                    # v8.0: 所有股票都通过（无淘汰），按分数降序选Top进行LLM分析
                     passed_stocks = [
                         r for r in filter_results
-                        if r.get('passed', False) and
-                        r.get('scoring_result', {}).get('total_score', 0) >= 60 and
+                        if (
+                            r.get('scoring_result', {}).get('total_score', 0) >= 65 or
+                            (r.get('scoring_result', {}).get('total_score', 0) >= 60 and
+                             r.get('scoring_result', {}).get('momentum_pattern', []))
+                        ) and
                         '超大市值过滤' not in r.get('scoring_result', {}).get('exclusion_flags', [])
                     ]
                     # 按分数降序排序
@@ -587,8 +591,9 @@ class OpportunityDiscovery:
 
         # 额外步骤：为Top10股票补充具体新闻/入选原因
         logger.info(f"\n步骤3.8: 为Top10股票补充具体新闻/入选原因...")
-        passed_stocks = [r for r in filter_results if r.get('passed', False) and '超大市值过滤' not in r.get('scoring_result', {}).get('exclusion_flags', [])]
-        top_stocks = sorted(passed_stocks, key=lambda x: x.get('final_score', 0), reverse=True)[:10]
+        # v8.0: 所有股票都通过，直接按分数排序选Top10
+        all_stocks = [r for r in filter_results if '超大市值过滤' not in r.get('scoring_result', {}).get('exclusion_flags', [])]
+        top_stocks = sorted(all_stocks, key=lambda x: x.get('final_score', 0), reverse=True)[:10]
 
         for stock in top_stocks:
             try:
@@ -705,8 +710,8 @@ class OpportunityDiscovery:
                         bad_keywords = ['上交所', '深交所', '证券交易所']
                         if any(b in ts for b in bad_keywords) and len(ts) < 20:
                             return False
-                        
-                        # 过滤无关代码，例如 [zo90002031], [of123456]
+
+                        # 过滤无关代码，例如 [zo90002031], [of123456], [gs10002136], [zssh000981]
                         import re
                         # 查找所有 [...] 或 (...) 格式的内容
                         brackets = re.findall(r'[\[\(]([a-zA-Z0-9]+)[\]\)]', ts)
@@ -714,19 +719,24 @@ class OpportunityDiscovery:
                             # 忽略纯文字，只关注包含数字的
                             if not any(c.isdigit() for c in b_content):
                                 continue
-                                
-                            # 归一化：移除 sz/sh 前缀，转小写
-                            clean_content = b_content.lower().replace('sz', '').replace('sh', '')
-                            
-                            # 如果包含数字但不是当前股票代码，且长度超过4位（避免误杀年份等），则认为是无关代码
-                            # 特别处理：如果包含 zo/of 等前缀且数字部分包含当前代码（如 zo90002031 包含 002031），也应过滤
-                            
-                            # 简单策略：如果不等于当前代码，且看起来像个代码(>5位数字或字母数字组合)
-                            if clean_content != str(code) and len(clean_content) >= 5:
-                                # 再次确认是否是 ETF/LOF 等基金代码特征
-                                if re.match(r'^(zo|of|so|sz|sh)?\d+', b_content.lower()):
+
+                            # 归一化：移除已知前缀，转小写
+                            clean = b_content.lower()
+                            # 移除所有已知的东方财富实体类型前缀
+                            # gs=港股, zs/zssh/zssz=指数, of=基金, zo=其他基金, so=债券
+                            for prefix in ['zssh', 'zssz', 'gs10', 'gs', 'zo9', 'zo', 'of', 'so', 'sz', 'sh']:
+                                if clean.startswith(prefix):
+                                    clean = clean[len(prefix):]
+                                    break
+
+                            # 如果去掉前缀后是纯数字且不是当前股票代码，则是无关实体
+                            if clean.isdigit() and clean != str(code) and len(clean) >= 5:
+                                return False
+                            # 原始内容（含前缀）不等于当前代码，且看起来像个代码
+                            if b_content.lower() != str(code) and len(b_content) >= 5:
+                                if re.match(r'^(gs\d*|zs|zssh|zssz|zo\d*|of|so|sz|sh)\d+', b_content.lower()):
                                     return False
-                                    
+
                         return True
 
                     latest_news = [n for n in latest_news if _valid_title(n.get('title', ''))]
@@ -759,6 +769,22 @@ class OpportunityDiscovery:
         logger.info(f"通过筛选: {passed_count} 只")
         logger.info(f"报表路径: {report_path}")
         logger.info("=" * 60)
+
+        # 步骤5: 自动回测 - 保存推荐记录并更新历史收益
+        try:
+            from scripts.auto_backtest import save_recommendations, update_returns, generate_backtest_report
+            logger.info(f"\n步骤5: 自动回测...")
+            # v8.0: 保存Top10推荐（按评分排序，无淘汰）
+            top10_stocks = top_stocks[:10]
+            save_recommendations(top10_stocks)
+            # 更新历史推荐的实际收益
+            update_returns(days_back=30)
+            # 生成回测报告
+            bt_report = generate_backtest_report(days_back=30)
+            if bt_report:
+                logger.info(f"回测报告: {bt_report}")
+        except Exception as bt_e:
+            logger.warning(f"自动回测失败(不影响主流程): {bt_e}")
 
         # 关闭资源
         try:
