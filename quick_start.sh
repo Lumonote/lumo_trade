@@ -240,13 +240,13 @@ while true; do
     echo "4. 获取股票数据 (Tushare)"
     echo "5. 获取股票数据 (爬虫)"
     echo "6. 批量获取数据及预测K线"
-    echo "7. 🔥 投资机会挖掘 (热度榜/资金流向，可自定义条数)"
+    echo "7. 🔥 投资机会挖掘 (多源综合: 热度+超跌反弹+龙虎榜)"
     echo ""
     echo "PREDICT: 预测功能"
     echo "8. 运行预测示例"
     echo ""
     echo "DISCOVERY: 机会挖掘"
-    echo "9. 🔥 投资机会挖掘 (热度榜/资金流向，可自定义条数)"
+    echo "9. 🔥 投资机会挖掘 (多源综合: 热度+超跌反弹+龙虎榜)"
     echo "10. 🔥🔥 重大利好消息挖掘 (从资讯流挖掘)"
     echo ""
 echo "CRAWLER: 爬虫设置"
@@ -323,10 +323,12 @@ echo "16. 退出"
             if [[ "$confirm" != "n" && "$confirm" != "N" ]]; then
                 read -p "请输入分析条数（默认100）: " limit
                 limit=${limit:-100}
-                echo "候选来源：1) 热度榜(默认)  2) 资金流向榜单(moneyflow_dc)"
-                read -p "请选择来源 (1/2): " source_choice
-                source="heat"
+                echo "候选来源：1) 多源综合(默认: 热度+超跌反弹+龙虎榜)  2) 仅热度榜  3) 资金流向榜单"
+                read -p "请选择来源 (1/2/3): " source_choice
+                source="multi"
                 if [[ "$source_choice" == "2" ]]; then
+                    source="heat"
+                elif [[ "$source_choice" == "3" ]]; then
                     source="moneyflow_dc"
                 fi
                 echo "正在启动投资机会挖掘系统..."
@@ -345,10 +347,12 @@ echo "16. 退出"
             if [[ "$confirm" != "n" && "$confirm" != "N" ]]; then
                 read -p "请输入分析条数（默认100）: " limit
                 limit=${limit:-100}
-                echo "候选来源：1) 热度榜(默认)  2) 资金流向榜单(moneyflow_dc)"
-                read -p "请选择来源 (1/2): " source_choice
-                source="heat"
+                echo "候选来源：1) 多源综合(默认: 热度+超跌反弹+龙虎榜)  2) 仅热度榜  3) 资金流向榜单"
+                read -p "请选择来源 (1/2/3): " source_choice
+                source="multi"
                 if [[ "$source_choice" == "2" ]]; then
+                    source="heat"
+                elif [[ "$source_choice" == "3" ]]; then
                     source="moneyflow_dc"
                 fi
                 echo "正在启动投资机会挖掘系统..."

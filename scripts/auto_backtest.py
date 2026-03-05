@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 BACKTEST_DIR = os.path.join(project_root, 'results', 'backtest')
 RECOMMENDATIONS_FILE = os.path.join(BACKTEST_DIR, 'recommendations.csv')
 BACKTEST_REPORT_DIR = os.path.join(BACKTEST_DIR, 'reports')
+SCORING_RUNTIME_CONFIG = os.path.join(project_root, 'config', 'scoring_runtime_config.json')
 
 # 回测基线（v8.0算法优化 - 去重后Top10 + 置信度分级，score>=78阈值）
 BASELINE = {
@@ -52,6 +53,17 @@ def ensure_dirs():
     """确保回测目录存在"""
     os.makedirs(BACKTEST_DIR, exist_ok=True)
     os.makedirs(BACKTEST_REPORT_DIR, exist_ok=True)
+
+
+def _normalize_stock_code(code_value) -> str:
+    text = str(code_value).strip()
+    if not text:
+        return ''
+    if text.endswith('.0'):
+        text = text[:-2]
+    if '.' in text:
+        text = text.split('.')[0]
+    return text.zfill(6)
 
 
 def save_recommendations(passed_stocks: List[Dict], report_date: str = None):
@@ -161,7 +173,7 @@ def update_returns(days_back: int = 30):
 
     updated_count = 0
     for idx, row in needs_update.iterrows():
-        code = str(row['code'])
+        code = _normalize_stock_code(row['code'])
         report_date = row['report_date']
 
         try:
@@ -413,6 +425,244 @@ def generate_backtest_report(days_back: int = None) -> str:
     return report_path
 
 
+def optimize_scoring_config(days_back: int = 120, min_samples: int = 30) -> Dict:
+    ensure_dirs()
+    result = {
+        'applied': False,
+        'samples': 0,
+        'changes': [],
+        'config_path': SCORING_RUNTIME_CONFIG,
+    }
+
+    if not os.path.exists(RECOMMENDATIONS_FILE):
+        result['reason'] = 'no_recommendations'
+        return result
+
+    df = pd.read_csv(RECOMMENDATIONS_FILE)
+    if 'return_5d' not in df.columns:
+        result['reason'] = 'missing_return_column'
+        return result
+
+    cutoff = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
+    df = df[df['report_date'] >= cutoff]
+    df = df[df['return_5d'].notna()].copy()
+    result['samples'] = len(df)
+
+    if len(df) < min_samples:
+        result['reason'] = 'insufficient_samples'
+        return result
+
+    from analysis.opportunity_scorer import OpportunityScorer
+
+    base_weights = dict(OpportunityScorer.DIMENSION_WEIGHTS)
+    base_thresholds = dict(OpportunityScorer.RATING_THRESHOLDS)
+    base_exclusion = dict(OpportunityScorer.EXCLUSION_RULES)
+
+    optimized_weights = dict(base_weights)
+    optimized_thresholds = dict(base_thresholds)
+    optimized_exclusion = dict(base_exclusion)
+    signals = []
+
+    score_corr = 0.0
+    if 'score' in df.columns:
+        valid = df[['score', 'return_5d']].dropna()
+        if len(valid) >= 12:
+            score_corr = float(valid['score'].corr(valid['return_5d']))
+            if score_corr < 0:
+                optimized_weights['position_timing'] = optimized_weights.get('position_timing', 0) + 0.03
+                optimized_weights['quantitative'] = max(0.0, optimized_weights.get('quantitative', 0) - 0.02)
+                optimized_weights['technical'] = max(0.0, optimized_weights.get('technical', 0) - 0.01)
+                signals.append('score_negative_corr')
+            elif score_corr < 0.03:
+                optimized_weights['position_timing'] = optimized_weights.get('position_timing', 0) + 0.01
+                optimized_weights['quantitative'] = max(0.0, optimized_weights.get('quantitative', 0) - 0.01)
+                signals.append('score_weak_corr')
+
+    if 'chase_risk' in df.columns:
+        low = df[df['chase_risk'] <= 35]['return_5d'].dropna()
+        high = df[df['chase_risk'] >= 70]['return_5d'].dropna()
+        if len(low) >= 8 and len(high) >= 8:
+            diff = float(low.mean() - high.mean())
+            if diff > 1.2:
+                optimized_weights['position_timing'] = optimized_weights.get('position_timing', 0) + 0.02
+                optimized_exclusion['max_change_20d'] = max(20, optimized_exclusion.get('max_change_20d', 40) - 2)
+                signals.append('chase_risk_effective')
+
+    if 'rsi' in df.columns:
+        overbought = df[df['rsi'] >= 78]['return_5d'].dropna()
+        neutral = df[(df['rsi'] >= 45) & (df['rsi'] <= 65)]['return_5d'].dropna()
+        if len(overbought) >= 8 and len(neutral) >= 8:
+            if float(neutral.mean() - overbought.mean()) > 0.8:
+                optimized_exclusion['max_consecutive_up'] = max(4, optimized_exclusion.get('max_consecutive_up', 6) - 1)
+                signals.append('rsi_overbought_penalty')
+
+    if 'score' in df.columns:
+        high_score = df[df['score'] >= 85]['return_5d'].dropna()
+        mid_score = df[(df['score'] >= 70) & (df['score'] < 85)]['return_5d'].dropna()
+        if len(high_score) >= 6 and len(mid_score) >= 10:
+            if float(mid_score.mean() - high_score.mean()) > 0.8:
+                optimized_thresholds['S'] = min(95, optimized_thresholds.get('S', 85) + 2)
+                optimized_thresholds['A+'] = min(92, optimized_thresholds.get('A+', 82) + 1)
+                signals.append('high_score_crowded')
+
+    weight_sum = sum(optimized_weights.values())
+    if weight_sum > 0:
+        optimized_weights = {k: v / weight_sum for k, v in optimized_weights.items()}
+
+    if not signals:
+        result['reason'] = 'no_optimization_signal'
+        return result
+
+    def collect_changes(old: Dict, new: Dict, target: str):
+        for key, old_val in old.items():
+            new_val = new.get(key, old_val)
+            if isinstance(old_val, float):
+                if abs(float(new_val) - float(old_val)) > 1e-6:
+                    result['changes'].append({
+                        'target': target,
+                        'key': key,
+                        'old': round(float(old_val), 6),
+                        'new': round(float(new_val), 6),
+                    })
+            else:
+                if new_val != old_val:
+                    result['changes'].append({
+                        'target': target,
+                        'key': key,
+                        'old': old_val,
+                        'new': new_val,
+                    })
+
+    collect_changes(base_weights, optimized_weights, 'dimension_weights')
+    collect_changes(base_thresholds, optimized_thresholds, 'rating_thresholds')
+    collect_changes(base_exclusion, optimized_exclusion, 'exclusion_rules')
+
+    if not result['changes']:
+        result['reason'] = 'no_effective_change'
+        return result
+
+    runtime_config = {
+        'generated_at': datetime.now().isoformat(),
+        'window_days': days_back,
+        'sample_count': len(df),
+        'signals': signals,
+        'score_corr_5d': round(score_corr, 6),
+        'rating_thresholds': optimized_thresholds,
+        'dimension_weights': optimized_weights,
+        'exclusion_rules': optimized_exclusion,
+    }
+
+    os.makedirs(os.path.dirname(SCORING_RUNTIME_CONFIG), exist_ok=True)
+    with open(SCORING_RUNTIME_CONFIG, 'w', encoding='utf-8') as f:
+        json.dump(runtime_config, f, ensure_ascii=False, indent=2)
+
+    result['applied'] = True
+    result['signals'] = signals
+    logger.info(f"自动优化完成，已更新配置: {SCORING_RUNTIME_CONFIG}")
+    return result
+
+
+def run_baostock_smoke_test(days_ago: int = 20, cleanup: bool = True) -> Dict:
+    ensure_dirs()
+    test_name = "__BAOSTOCK_SMOKE_TEST__"
+    result = {
+        'passed': False,
+        'report_generated': False,
+        'updated_rows': 0,
+        'report_path': '',
+        'reason': ''
+    }
+
+    try:
+        import baostock as bs
+    except Exception:
+        result['reason'] = 'baostock_not_installed'
+        return result
+
+    try:
+        login_result = bs.login()
+        if getattr(login_result, 'error_code', '1') != '0':
+            result['reason'] = f"baostock_login_failed:{getattr(login_result, 'error_msg', 'unknown')}"
+            return result
+    except Exception as e:
+        result['reason'] = f'baostock_login_exception:{e}'
+        return result
+
+    try:
+        report_date = (datetime.now() - timedelta(days=max(days_ago, 12))).strftime('%Y-%m-%d')
+        if os.path.exists(RECOMMENDATIONS_FILE):
+            df = pd.read_csv(RECOMMENDATIONS_FILE)
+        else:
+            df = pd.DataFrame()
+
+        if len(df) > 0 and 'name' in df.columns:
+            df = df[df['name'] != test_name].copy()
+
+        test_row = {
+            'report_date': report_date,
+            'rank': 1,
+            'code': '000001',
+            'name': test_name,
+            'score': 80,
+            'chase_risk': 35,
+            'buy_signals': 6,
+            'sell_signals': 1,
+            'rsi': 45,
+            'day_change': 0.5,
+            'change_3d': 1.2,
+            'change_5d': 1.8,
+            'sector_score': 60,
+            'quant_score': 62,
+            'tech_score': 64,
+            'momentum_pattern': '[]',
+            'buy_price': 0,
+            'return_1d': None,
+            'return_3d': None,
+            'return_5d': None,
+            'return_10d': None,
+        }
+        df = pd.concat([df, pd.DataFrame([test_row])], ignore_index=True)
+        df.to_csv(RECOMMENDATIONS_FILE, index=False, encoding='utf-8-sig')
+
+        update_returns(days_back=120)
+
+        after_df = pd.read_csv(RECOMMENDATIONS_FILE)
+        smoke_df = after_df[after_df['name'] == test_name].copy()
+        if len(smoke_df) == 0:
+            result['reason'] = 'smoke_row_missing'
+            return result
+
+        updated = smoke_df[smoke_df['return_1d'].notna() | smoke_df['return_5d'].notna()]
+        result['updated_rows'] = len(updated)
+        if len(updated) == 0:
+            result['reason'] = 'returns_not_updated'
+            return result
+
+        report_path = generate_backtest_report(days_back=120)
+        result['report_path'] = report_path
+        result['report_generated'] = bool(report_path)
+        result['passed'] = bool(report_path)
+        if not result['passed']:
+            result['reason'] = 'report_not_generated'
+    finally:
+        try:
+            bs.logout()
+        except Exception:
+            pass
+
+        if cleanup:
+            try:
+                if os.path.exists(RECOMMENDATIONS_FILE):
+                    clean_df = pd.read_csv(RECOMMENDATIONS_FILE)
+                    if 'name' in clean_df.columns:
+                        clean_df = clean_df[clean_df['name'] != test_name]
+                        clean_df.to_csv(RECOMMENDATIONS_FILE, index=False, encoding='utf-8-sig')
+            except Exception:
+                pass
+
+    return result
+
+
 def main():
     import argparse
 
@@ -420,16 +670,39 @@ def main():
     parser.add_argument('--days', type=int, default=None, help='回溯天数')
     parser.add_argument('--report-only', action='store_true', help='仅生成报告，不更新收益数据')
     parser.add_argument('--update-only', action='store_true', help='仅更新收益数据，不生成报告')
+    parser.add_argument('--optimize', action='store_true', help='执行自动参数优化并写入运行时配置')
+    parser.add_argument('--optimize-days', type=int, default=120, help='自动优化使用的回溯天数')
+    parser.add_argument('--min-samples', type=int, default=30, help='自动优化最少样本数')
+    parser.add_argument('--smoke-test', action='store_true', help='使用baostock执行自动回测冒烟测试')
+    parser.add_argument('--keep-smoke-data', action='store_true', help='冒烟测试后保留测试数据')
 
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    if args.smoke_test:
+        smoke_result = run_baostock_smoke_test(cleanup=not args.keep_smoke_data)
+        if smoke_result.get('passed'):
+            logger.info(f"冒烟测试通过，报告: {smoke_result.get('report_path', '')}")
+        else:
+            logger.warning(f"冒烟测试失败: {smoke_result.get('reason', 'unknown')}")
+        return
 
     if not args.report_only:
         update_returns(days_back=args.days or 30)
 
     if not args.update_only:
         generate_backtest_report(days_back=args.days)
+
+    if args.optimize:
+        optimize_result = optimize_scoring_config(
+            days_back=args.optimize_days,
+            min_samples=args.min_samples
+        )
+        if optimize_result.get('applied'):
+            logger.info(f"自动优化生效，变更项: {len(optimize_result.get('changes', []))}")
+        else:
+            logger.info(f"自动优化未生效: {optimize_result.get('reason', 'unknown')}")
 
 
 if __name__ == '__main__':

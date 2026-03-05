@@ -29,6 +29,7 @@ v5.5基础（保留）:
 
 import os
 import sys
+import json
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, Tuple, List
@@ -178,6 +179,11 @@ class OpportunityScorer:
 
     def __init__(self):
         """初始化打分系统 v4.5"""
+        self.RATING_THRESHOLDS = dict(type(self).RATING_THRESHOLDS)
+        self.DIMENSION_WEIGHTS = dict(type(self).DIMENSION_WEIGHTS)
+        self.EXCLUSION_RULES = dict(type(self).EXCLUSION_RULES)
+        self._load_runtime_config()
+
         if ADVANCED_ANALYSIS_AVAILABLE:
             self.advanced_analyzer = AdvancedAnalyzer()
         else:
@@ -186,6 +192,53 @@ class OpportunityScorer:
         # 初始化共享的数据获取器（复用连接，避免频繁初始化）
         self._data_fetcher = None
         self._init_data_fetcher()
+
+    def _load_runtime_config(self):
+        config_path = os.environ.get(
+            'KRONOS_SCORING_CONFIG',
+            os.path.join(project_root, 'config', 'scoring_runtime_config.json')
+        )
+        if not os.path.exists(config_path):
+            return
+
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+        except Exception as e:
+            logger.warning(f"加载运行时评分配置失败: {e}")
+            return
+
+        try:
+            rating_thresholds = config_data.get('rating_thresholds')
+            if isinstance(rating_thresholds, dict):
+                merged = dict(self.RATING_THRESHOLDS)
+                for key, value in rating_thresholds.items():
+                    if key in merged:
+                        merged[key] = int(value)
+                self.RATING_THRESHOLDS = merged
+
+            dimension_weights = config_data.get('dimension_weights')
+            if isinstance(dimension_weights, dict):
+                merged = dict(self.DIMENSION_WEIGHTS)
+                for key, value in dimension_weights.items():
+                    if key in merged:
+                        merged[key] = float(value)
+                weight_sum = sum(merged.values())
+                if weight_sum > 0:
+                    merged = {k: v / weight_sum for k, v in merged.items()}
+                self.DIMENSION_WEIGHTS = merged
+
+            exclusion_rules = config_data.get('exclusion_rules')
+            if isinstance(exclusion_rules, dict):
+                merged = dict(self.EXCLUSION_RULES)
+                for key, value in exclusion_rules.items():
+                    if key in merged:
+                        merged[key] = float(value)
+                self.EXCLUSION_RULES = merged
+
+            logger.info(f"✓ 已加载运行时评分配置: {config_path}")
+        except Exception as e:
+            logger.warning(f"应用运行时评分配置失败: {e}")
 
     def _init_data_fetcher(self):
         """初始化共享数据获取器"""
@@ -302,6 +355,17 @@ class OpportunityScorer:
             result['scores']['quantitative'] = quant_score
             result['details']['quantitative'] = quant_details
 
+            # 早期跳过: 量化买入信号 < 卖出信号，直接返回低分，省去后续分析
+            quant_buy = quant_details.get('buy_count', 0)
+            quant_sell = quant_details.get('sell_count', 0)
+            if quant_buy < quant_sell:
+                logger.info(f"{stock_code} 量化信号不佳(买{quant_buy}<卖{quant_sell})，跳过后续分析")
+                result['total_score'] = 0.0
+                result['rating'] = 'C'
+                result['recommendation'] = f'量化信号不佳(买入{quant_buy}/卖出{quant_sell})，跳过'
+                result['skip_reason'] = 'quant_buy_lt_sell'
+                return result
+
             # 3. 技术分析评分 (12%)
             tech_score, tech_details = self._score_technical_analysis(stock_code, historical_data)
             result['scores']['technical'] = tech_score
@@ -399,12 +463,12 @@ class OpportunityScorer:
                 logger.info(f"{stock_code} 量化评分过低({quant_score})，触发总分封顶限制")
                 quant_cap_limit = 60.0
             
-            if quant_sell_count >= quant_buy_count and quant_sell_count > 0:
+            if quant_sell_count > quant_buy_count and quant_sell_count > 0:
                 penalty = 15
                 if quant_sell_count > 3:
                     penalty += 15
                 total_score -= penalty
-                logger.info(f"{stock_code} 卖出信号({quant_sell_count}) >= 买入信号({quant_buy_count})，总分扣除 {penalty} 分")
+                logger.info(f"{stock_code} 卖出信号({quant_sell_count}) > 买入信号({quant_buy_count})，总分扣除 {penalty} 分")
 
             # [新增] 量化买入信号额外加权
             # 如果买入信号占主导，额外奖励总分，确保好股票能被选出
@@ -497,23 +561,26 @@ class OpportunityScorer:
                     rsi_penalty = 15
                     v54_total_penalty += rsi_penalty
                     logger.info(f"{stock_code} RSI超买惩罚: RSI={current_rsi:.1f}>80, 扣{rsi_penalty}分")
-                # v9优化: RSI 75-80恢复轻度扣分
-                elif current_rsi > 75:
-                    rsi_penalty = 3
-                    v54_total_penalty += rsi_penalty
-                    logger.info(f"{stock_code} RSI偏高惩罚: RSI={current_rsi:.1f}>75, 扣{rsi_penalty}分")
+                # v13优化: RSI 75-80轻度惩罚移除(回测验证无效)
+                # elif current_rsi > 75:
+                #     rsi_penalty = 3
 
-            # 3. 当日涨幅惩罚（回测: 涨停5日收益-3.56%）
+            # 3. 当日涨幅惩罚
+            # v14优化: 涨停+3日<15%不惩罚(回测53.8%胜率+1.73%),只惩罚连板/暴涨
             price_changes = result.get('details', {}).get('price_changes', {})
             today_change = price_changes.get('change_1d', 0) or 0
+            change_3d_for_limit = price_changes.get('change_3d', 0) or 0
             if today_change >= 19.5:
                 limit_penalty = 20
                 v54_total_penalty += limit_penalty
                 logger.info(f"{stock_code} 大涨惩罚: 当日涨幅{today_change:.1f}%>=19.5%, 扣{limit_penalty}分")
             elif today_change >= 9.5:
-                limit_penalty = 3  # v8.0优化: 从5降至3（涨停板不应过度惩罚）
-                v54_total_penalty += limit_penalty
-                logger.info(f"{stock_code} 涨停惩罚: 当日涨幅{today_change:.1f}%>=9.5%, 扣{limit_penalty}分")
+                if change_3d_for_limit >= 15:
+                    limit_penalty = 5  # v14: 连板涨停(3日>=15%)才惩罚
+                    v54_total_penalty += limit_penalty
+                    logger.info(f"{stock_code} 连板涨停惩罚: 涨幅{today_change:.1f}%+3日{change_3d_for_limit:.1f}%>=15%, 扣{limit_penalty}分")
+                else:
+                    logger.info(f"{stock_code} 涨停首板: 涨幅{today_change:.1f}%+3日{change_3d_for_limit:.1f}%<15%, 不惩罚")
             # v9优化: 7%涨幅轻度扣分
             elif today_change >= 7:
                 limit_penalty = 3
@@ -536,7 +603,7 @@ class OpportunityScorer:
                 v54_total_penalty += surge_penalty
                 logger.info(f"{stock_code} 短期急涨惩罚: 3日涨幅{change_3d:.1f}%>15%, 扣{surge_penalty}分")
             elif change_3d > 10:
-                surge_penalty = 15  # v11优化: 12→15
+                surge_penalty = 12  # v13优化: 15→12
                 v54_total_penalty += surge_penalty
                 logger.info(f"{stock_code} 短期温涨惩罚: 3日涨幅{change_3d:.1f}%>10%, 扣{surge_penalty}分")
 
@@ -560,18 +627,28 @@ class OpportunityScorer:
 
             # 8. 正向奖励: RSI超卖
             if isinstance(current_rsi, (int, float)) and current_rsi < 35:
-                rsi_oversold_bonus = 10  # v12优化: 5→10
+                rsi_oversold_bonus = 5  # v13优化: 10→5
                 v54_total_bonus += rsi_oversold_bonus
                 logger.info(f"{stock_code} RSI超卖奖励: RSI={current_rsi:.1f}<35, 加{rsi_oversold_bonus}分")
 
-            # v11新增: RSI黄金区间奖励 (45-55在B级胜率最高73.3%)
-            if isinstance(current_rsi, (int, float)) and 45 <= current_rsi <= 55:
-                rsi_golden_bonus = 5  # v11新增
+            # v15优化: RSI黄金区间收窄 (40-50胜率52.5%/+2.79%)
+            if isinstance(current_rsi, (int, float)) and 40 <= current_rsi <= 50:
+                rsi_golden_bonus = 4  # v15优化: 3→4, 区间42-53→40-50
                 v54_total_bonus += rsi_golden_bonus
-                logger.info(f"{stock_code} RSI黄金区奖励: RSI={current_rsi:.1f}在45-55区间, 加{rsi_golden_bonus}分")
+                logger.info(f"{stock_code} RSI黄金区奖励: RSI={current_rsi:.1f}在40-50区间, 加{rsi_golden_bonus}分")
 
             # 9. 正向奖励: 买入信号占优 — v10优化: 移除（全量回测验证无效，buy_signals与收益负相关）
             # if quant_buy_count >= 5 and quant_buy_count >= quant_sell_count * 2:
+
+            # v15新增: 零卖出信号奖励 (sell=0: 53.8%胜率/+5.02%)
+            if quant_sell_count == 0:
+                sell0_bonus = 4
+                if today_change >= 9.5:
+                    sell0_bonus = 8  # 涨停+sell=0超强组合 (66.7%胜率/+10.97%)
+                    logger.info(f"{stock_code} 涨停+零卖出奖励: 加{sell0_bonus}分")
+                else:
+                    logger.info(f"{stock_code} 零卖出信号奖励: 加{sell0_bonus}分")
+                v54_total_bonus += sell0_bonus
 
             # 10. v9优化: 量化适中奖励 — 移除（全量回测验证无效）
             # if 55 <= quant_score <= 80:
@@ -650,11 +727,11 @@ class OpportunityScorer:
 
             # Pattern 7: 涨停板首板 + 低追高风险 = 妖股起点 (+12分)
             if today_change >= 9.5 and chase_risk_score < 50:
-                momentum_bonus += 12  # v11优化: 10→12
-                momentum_signals.append(f'首板涨停(chase={chase_risk_score:.0f}<50):+12')
+                momentum_bonus += 10  # v13优化: 12→10
+                momentum_signals.append(f'首板涨停(chase={chase_risk_score:.0f}<50):+10')
             elif today_change >= 7 and chase_risk_score < 40:
-                momentum_bonus += 15  # v9优化: 10→15
-                momentum_signals.append(f'强势涨幅(涨{today_change:.1f}%+chase={chase_risk_score:.0f}):+15')
+                momentum_bonus += 12  # v13优化: 15→12
+                momentum_signals.append(f'强势涨幅(涨{today_change:.1f}%+chase={chase_risk_score:.0f}):+12')
 
             # 应用动量奖励（上限25分）
             momentum_bonus = min(25, momentum_bonus)
@@ -711,11 +788,11 @@ class OpportunityScorer:
                 total_score -= tech_high_penalty
                 logger.info(f"{stock_code} 技术面虚高惩罚: tech_score={tech_score:.0f}>=80, 扣{tech_high_penalty}分")
 
-            # v9优化: 评分过高反指标
-            if total_score >= 72:
-                score_high_penalty = 25  # v11优化: 19→25
+            # v14优化: 评分过高反指标(阈值74→78, 惩罚25→15, 回测验证74-80区间胜率55%)
+            if total_score >= 78:
+                score_high_penalty = 20  # v14优化: 25→20
                 total_score -= score_high_penalty
-                logger.info(f"{stock_code} 评分过高反指标: {total_score + score_high_penalty:.0f}>=72, 扣{score_high_penalty}分")
+                logger.info(f"{stock_code} 评分过高反指标: {total_score + score_high_penalty:.0f}>=78, 扣{score_high_penalty}分")
 
             # v11新增: 评分极高额外惩罚 (score>=76在B级亏损,胜率仅18.2%)
             if total_score >= 76:
@@ -1866,6 +1943,84 @@ class OpportunityScorer:
             else:
                 score -= 5   # 大幅下跌，可能趋势走坏
 
+            next_day_risk_score = 35.0
+            close_strength = 0.5
+            upper_shadow_ratio = 0.0
+            rebound_setup = False
+            rebound_signal_count = 0
+            current_vol = float(volume.iloc[-1]) if len(volume) > 0 else 0.0
+
+            if {'open', 'high', 'low'}.issubset(historical_data.columns):
+                try:
+                    today_open = float(historical_data['open'].iloc[-1])
+                    today_high = float(historical_data['high'].iloc[-1])
+                    today_low = float(historical_data['low'].iloc[-1])
+                    day_range = max(today_high - today_low, current_price * 0.001)
+                    close_strength = (current_price - today_low) / day_range
+                    upper_shadow_ratio = (today_high - current_price) / day_range
+
+                    high_series = historical_data['high']
+                    low_series = historical_data['low']
+                    if len(high_series) >= 10 and len(low_series) >= 10:
+                        avg_amp_10 = float(((high_series.iloc[-10:] - low_series.iloc[-10:]) /
+                                            low_series.iloc[-10:].replace(0, np.nan)).mean())
+                    else:
+                        avg_amp_10 = 0.0
+                    today_amp = (today_high - today_low) / today_low if today_low > 0 else 0.0
+
+                    avg_vol_10 = float(volume.iloc[-11:-1].mean()) if len(volume) >= 11 else float(volume.mean())
+                    vol_ratio_10 = current_vol / avg_vol_10 if avg_vol_10 > 0 else 1.0
+
+                    if close_strength >= 0.72 and upper_shadow_ratio <= 0.25:
+                        score += 8
+                        rebound_signal_count += 1
+                        signals.append('收盘接近全天高位')
+                    elif close_strength < 0.35 or upper_shadow_ratio > 0.55:
+                        score -= 12
+                        next_day_risk_score += 22
+                        signals.append('冲高回落，隔日承压')
+
+                    if avg_amp_10 > 0 and today_amp > avg_amp_10 * 1.8 and close_strength < 0.55:
+                        score -= 8
+                        next_day_risk_score += 10
+                        signals.append('当日波动过大，隔日分歧风险')
+
+                    if vol_ratio_10 >= 1.2 and close_strength >= 0.65:
+                        next_day_risk_score -= 8
+                except Exception:
+                    pass
+
+            try:
+                rsi_series = TechnicalAnalysis.calculate_rsi(close, 14)
+                if len(rsi_series.dropna()) >= 3:
+                    rsi_now = float(rsi_series.iloc[-1])
+                    rsi_prev = float(rsi_series.iloc[-2])
+                    rsi_prev2 = float(rsi_series.iloc[-3])
+                    if rsi_prev < 30 and rsi_now > rsi_prev:
+                        score += 10
+                        rebound_signal_count += 1
+                        signals.append('RSI超卖回升')
+                    if rsi_prev2 < 30 and rsi_now > rsi_prev and rsi_prev > rsi_prev2:
+                        score += 8
+                        rebound_signal_count += 1
+                        signals.append('RSI连续抬升')
+                    if rsi_now > 78:
+                        next_day_risk_score += 12
+            except Exception:
+                pass
+
+            if len(close) >= 4:
+                is_price_turn = float(close.iloc[-1]) > float(close.iloc[-2]) and float(close.iloc[-2]) <= float(close.iloc[-3])
+                if is_price_turn and position_pct <= 0.45:
+                    score += 8
+                    rebound_signal_count += 1
+                    signals.append('短线止跌拐点')
+
+            rebound_setup = rebound_signal_count >= 2
+            if rebound_setup:
+                next_day_risk_score -= 10
+            next_day_risk_score = max(0.0, min(100.0, next_day_risk_score))
+
             # 近20日涨幅 - 中期涨幅惩罚
             change_20d = (current_price / float(close.iloc[-21]) - 1) * 100 if len(close) >= 21 else 0
             if change_20d > 50:
@@ -2077,8 +2232,13 @@ class OpportunityScorer:
                     break
 
             if consecutive_down >= 3:
-                score -= 20
-                signals.append(f'连续下跌{consecutive_down}天，趋势偏弱')
+                if rebound_setup:
+                    downtrend_penalty = 8 if consecutive_down == 3 else 12
+                    score -= downtrend_penalty
+                    signals.append(f'连续下跌{consecutive_down}天但出现止跌信号')
+                else:
+                    score -= 20
+                    signals.append(f'连续下跌{consecutive_down}天，趋势偏弱')
 
             # ========== 8. [v4.5] 追高风险综合评估 ==========
             # 综合考虑：位置+涨幅+连涨天数，给出追高风险等级
@@ -2145,6 +2305,12 @@ class OpportunityScorer:
             # 确保分数在合理范围内
             score = max(0, min(100, score))
 
+            next_day_risk_level = 'low'
+            if next_day_risk_score >= 70:
+                next_day_risk_level = 'high'
+            elif next_day_risk_score >= 50:
+                next_day_risk_level = 'medium'
+
             details = {
                 'position_pct': round(position_pct, 2),
                 'distance_from_high': round(distance_from_high, 2),
@@ -2160,6 +2326,12 @@ class OpportunityScorer:
                 'chase_risk_score': chase_risk_score,
                 'chase_risk_level': chase_risk_level,
                 'chase_risk_factors': chase_risk_factors,
+                'next_day_risk_score': round(next_day_risk_score, 2),
+                'next_day_risk_level': next_day_risk_level,
+                'close_strength': round(close_strength, 2),
+                'upper_shadow_ratio': round(upper_shadow_ratio, 2),
+                'rebound_setup': rebound_setup,
+                'rebound_signal_count': rebound_signal_count,
                 'signals': signals,
                 'scoring_method': 'v4.5_anti_chasing_enhanced'
             }

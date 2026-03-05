@@ -223,7 +223,237 @@ class OpportunityDiscovery:
         logger.info(f"✓ 获取资金流向榜单成功，日期: {selected_date}，共{len(results)}只股票")
         return results
 
-    def run(self, limit: int = 100, test_codes: List[str] = None, source: str = 'heat') -> str:
+    def _fetch_oversold_rebound_stocks(self, limit: int = 30) -> List[Dict]:
+        """
+        超跌反弹筛选：寻找近期大幅下跌但出现反转信号的股票
+        筛选条件:
+        - 近10日跌幅 >= 10%（超跌）
+        - 当日或近2日出现放量反弹（成交量放大+收阳线）
+        - RSI < 35 或从超卖区回升
+        """
+        try:
+            import tushare as ts
+            import pandas as pd
+        except ImportError:
+            logger.warning("Tushare/Pandas未安装，无法筛选超跌反弹")
+            return []
+
+        token = self._load_tushare_token()
+        if not token:
+            return []
+
+        try:
+            pro = ts.pro_api(token)
+        except Exception:
+            return []
+
+        trade_date = self._resolve_latest_trade_date(pro, datetime.now())
+
+        try:
+            # 获取全市场日线数据（当日）
+            df_today = pro.daily(trade_date=trade_date,
+                                 fields='ts_code,close,open,high,low,vol,amount,pct_chg,pre_close')
+            if df_today is None or df_today.empty:
+                return []
+
+            # 过滤ST、退市、北交所
+            df_today = df_today[~df_today['ts_code'].str.contains('BJ')]
+            df_today = df_today[df_today['vol'] > 0]  # 排除停牌
+
+            # 获取近10日交易日
+            cal = pro.trade_cal(exchange='SSE', end_date=trade_date, is_open='1', limit=12)
+            trade_days = sorted(cal['cal_date'].tolist())
+            if len(trade_days) < 11:
+                return []
+            day_10_ago = trade_days[-11]
+            prev_day = trade_days[-2]
+
+            candidates = []
+            # 批量处理：先获取10日前的收盘价
+            df_10d = pro.daily(trade_date=day_10_ago,
+                               fields='ts_code,close')
+            if df_10d is None or df_10d.empty:
+                return []
+
+            price_10d = dict(zip(df_10d['ts_code'], df_10d['close']))
+            df_prev = pro.daily(trade_date=prev_day,
+                                fields='ts_code,close,pct_chg,vol')
+            prev_close_map = {}
+            prev_pct_map = {}
+            prev_vol_map = {}
+            if df_prev is not None and not df_prev.empty:
+                prev_close_map = dict(zip(df_prev['ts_code'], df_prev['close']))
+                prev_pct_map = dict(zip(df_prev['ts_code'], df_prev['pct_chg']))
+                prev_vol_map = dict(zip(df_prev['ts_code'], df_prev['vol']))
+
+            for _, row in df_today.iterrows():
+                ts_code = row['ts_code']
+                close = row['close']
+                pct_chg = row['pct_chg']
+                vol = row['vol']
+
+                # 计算10日跌幅
+                old_price = price_10d.get(ts_code)
+                if old_price is None or old_price <= 0:
+                    continue
+                chg_10d = (close - old_price) / old_price * 100
+
+                # 条件1: 近10日跌幅 >= 8%
+                if chg_10d > -8:
+                    continue
+
+                prev_close = prev_close_map.get(ts_code, 0)
+                prev_pct = prev_pct_map.get(ts_code, 0)
+                prev_vol = prev_vol_map.get(ts_code, 0)
+                vol_ratio = vol / prev_vol if prev_vol and prev_vol > 0 else 1.0
+
+                is_yang = close > row['open']
+                is_bounce = pct_chg > -0.5
+                is_stop_fall = prev_pct <= -2 and pct_chg > prev_pct + 1.5
+                is_break_prev_close = prev_close > 0 and close > prev_close
+
+                reversal_score = 0
+                if is_yang:
+                    reversal_score += 2
+                if is_bounce:
+                    reversal_score += 1
+                if is_stop_fall:
+                    reversal_score += 2
+                if is_break_prev_close:
+                    reversal_score += 1
+                if vol_ratio >= 1.1:
+                    reversal_score += 1
+
+                if reversal_score < 2:
+                    continue
+
+                candidates.append({
+                    'ts_code': ts_code,
+                    'close': close,
+                    'pct_chg': pct_chg,
+                    'chg_10d': round(chg_10d, 2),
+                    'vol': vol,
+                    'is_yang': is_yang,
+                    'reversal_score': reversal_score,
+                    'vol_ratio': round(vol_ratio, 2),
+                    'is_stop_fall': is_stop_fall
+                })
+
+            # 按反转质量优先，再按超跌幅度排序
+            candidates.sort(key=lambda x: (-x['reversal_score'], x['chg_10d']))
+
+            results = []
+            for idx, c in enumerate(candidates[:limit], start=1):
+                ts_code = c['ts_code']
+                code = ts_code.split('.')[0]
+                results.append({
+                    'code': code,
+                    'name': '',
+                    'price': c['close'],
+                    'change_pct': c['pct_chg'],
+                    'source': 'oversold_rebound',
+                    'source_detail': (
+                        f"10日跌{c['chg_10d']:.1f}%，"
+                        f"{'收阳反弹' if c['is_yang'] else '跌幅收窄'}，"
+                        f"反转强度{c['reversal_score']}/7，量比{c['vol_ratio']:.1f}"
+                    ),
+                    'popularity_score': max(0, 100 - idx + 1)
+                })
+
+            logger.info(f"✓ 超跌反弹筛选完成，找到{len(results)}只候选股")
+            return results
+
+        except Exception as e:
+            logger.warning(f"超跌反弹筛选失败: {e}")
+            return []
+
+    def _fetch_dragon_tiger_stocks(self, limit: int = 30) -> List[Dict]:
+        """
+        龙虎榜机构净买入筛选：寻找机构资金大举买入的股票
+        筛选条件:
+        - 近3个交易日上过龙虎榜
+        - 机构席位净买入金额 > 0
+        - 按机构净买入金额排序
+        """
+        try:
+            import tushare as ts
+            import pandas as pd
+        except ImportError:
+            logger.warning("Tushare/Pandas未安装，无法获取龙虎榜")
+            return []
+
+        token = self._load_tushare_token()
+        if not token:
+            return []
+
+        try:
+            pro = ts.pro_api(token)
+        except Exception:
+            return []
+
+        trade_date = self._resolve_latest_trade_date(pro, datetime.now())
+
+        try:
+            # 获取近3个交易日
+            cal = pro.trade_cal(exchange='SSE', end_date=trade_date, is_open='1', limit=4)
+            recent_days = sorted(cal['cal_date'].tolist())[-3:]
+
+            all_inst = []
+            for td in recent_days:
+                try:
+                    # 龙虎榜机构交易明细
+                    inst_df = pro.top_inst(trade_date=td,
+                                           fields='trade_date,ts_code,exalter,buy,sell,net_buy')
+                    if inst_df is not None and not inst_df.empty:
+                        all_inst.append(inst_df)
+                    time.sleep(0.1)
+                except Exception:
+                    continue
+
+            if not all_inst:
+                logger.info("龙虎榜无机构数据")
+                return []
+
+            inst_all = pd.concat(all_inst, ignore_index=True)
+
+            # 按股票汇总机构净买入
+            inst_all['net_buy'] = pd.to_numeric(inst_all['net_buy'], errors='coerce').fillna(0)
+            inst_all['buy'] = pd.to_numeric(inst_all['buy'], errors='coerce').fillna(0)
+
+            stock_summary = inst_all.groupby('ts_code').agg(
+                total_net_buy=('net_buy', 'sum'),
+                total_buy=('buy', 'sum'),
+                inst_count=('exalter', 'nunique'),
+                latest_date=('trade_date', 'max')
+            ).reset_index()
+
+            # 只取机构净买入 > 0 的
+            stock_summary = stock_summary[stock_summary['total_net_buy'] > 0]
+            stock_summary = stock_summary.sort_values('total_net_buy', ascending=False)
+
+            results = []
+            for idx, (_, row) in enumerate(stock_summary.head(limit).iterrows(), start=1):
+                ts_code = row['ts_code']
+                code = ts_code.split('.')[0]
+                net_buy_wan = round(row['total_net_buy'] / 10000, 2)  # 转万元
+                results.append({
+                    'code': code,
+                    'name': '',
+                    'price': 0,
+                    'change_pct': 0,
+                    'source': 'dragon_tiger',
+                    'source_detail': f"机构净买{net_buy_wan:.0f}万，{int(row['inst_count'])}家机构",
+                    'popularity_score': max(0, 100 - idx + 1)
+                })
+
+            logger.info(f"✓ 龙虎榜机构买入筛选完成，找到{len(results)}只候选股")
+            return results
+
+        except Exception as e:
+            logger.warning(f"龙虎榜筛选失败: {e}")
+            return []
+
+    def run(self, limit: int = 100, test_codes: List[str] = None, source: str = 'multi') -> str:
         """
         运行完整的投资机会挖掘流程
 
@@ -260,6 +490,40 @@ class OpportunityDiscovery:
                     logger.warning("资金流向榜单获取失败，回退使用热度榜")
                     logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
                     hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
+            elif source == 'multi':
+                # 多源融合: 热股100 + 超跌反弹 + 龙虎榜机构
+                logger.info(f"\n步骤1: 多源融合选股模式")
+
+                logger.info(f"  [1/3] 获取热门股票 TOP {limit}...")
+                hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
+                if not hot_stocks:
+                    hot_stocks = []
+                for s in hot_stocks:
+                    if not s.get('source'):
+                        s['source'] = 'heat'
+                logger.info(f"  ✓ 热股: {len(hot_stocks)}只")
+
+                logger.info(f"  [2/3] 筛选超跌反弹候选...")
+                oversold = self._fetch_oversold_rebound_stocks(limit=30)
+                logger.info(f"  ✓ 超跌反弹: {len(oversold)}只")
+
+                logger.info(f"  [3/3] 获取龙虎榜机构买入...")
+                dragon = self._fetch_dragon_tiger_stocks(limit=30)
+                logger.info(f"  ✓ 龙虎榜机构: {len(dragon)}只")
+
+                # 去重合并（以code为准，热股优先保留）
+                seen_codes = set(s['code'] for s in hot_stocks)
+                for s in oversold + dragon:
+                    if s['code'] not in seen_codes:
+                        hot_stocks.append(s)
+                        seen_codes.add(s['code'])
+
+                source_counts = {}
+                for s in hot_stocks:
+                    src = s.get('source', 'heat')
+                    source_counts[src] = source_counts.get(src, 0) + 1
+                logger.info(f"  合并去重后: {len(hot_stocks)}只 | " +
+                           " | ".join(f"{k}:{v}" for k, v in source_counts.items()))
             else:
                 logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
                 # 强制直接采集，避免使用缓存或本地回退
@@ -269,7 +533,7 @@ class OpportunityDiscovery:
             logger.error("✗ 获取热门股票失败，程序终止")
             return ""
 
-        if source != 'moneyflow_dc':
+        if source not in ('moneyflow_dc', 'multi'):
             # 检查是否使用了 fallback 数据（静态备用数据，非实时热股）
             fallback_count = sum(1 for s in hot_stocks if s.get('source') == 'fallback')
             if fallback_count > 0:
@@ -772,17 +1036,30 @@ class OpportunityDiscovery:
 
         # 步骤5: 自动回测 - 保存推荐记录并更新历史收益
         try:
-            from scripts.auto_backtest import save_recommendations, update_returns, generate_backtest_report
+            from scripts.auto_backtest import (
+                save_recommendations,
+                update_returns,
+                generate_backtest_report,
+                optimize_scoring_config
+            )
             logger.info(f"\n步骤5: 自动回测...")
-            # v8.0: 保存Top10推荐（按评分排序，无淘汰）
             top10_stocks = top_stocks[:10]
             save_recommendations(top10_stocks)
-            # 更新历史推荐的实际收益
             update_returns(days_back=30)
-            # 生成回测报告
             bt_report = generate_backtest_report(days_back=30)
             if bt_report:
                 logger.info(f"回测报告: {bt_report}")
+
+            auto_optimize_disabled = os.environ.get('KRONOS_SKIP_AUTO_OPTIMIZE', '').strip().lower() in ('1', 'true', 'yes', 'on')
+            if auto_optimize_disabled:
+                logger.info("⏭️ KRONOS_SKIP_AUTO_OPTIMIZE=1，跳过自动参数优化")
+            else:
+                logger.info("步骤6: 自动参数优化...")
+                optimize_result = optimize_scoring_config(days_back=120, min_samples=30)
+                if optimize_result.get('applied'):
+                    logger.info(f"✓ 自动优化已生效，变更项: {len(optimize_result.get('changes', []))}")
+                else:
+                    logger.info(f"⏭️ 自动优化未生效: {optimize_result.get('reason', 'unknown')}")
         except Exception as bt_e:
             logger.warning(f"自动回测失败(不影响主流程): {bt_e}")
 
@@ -933,6 +1210,8 @@ class OpportunityDiscovery:
                 'exchange': hot_stock.get('exchange', 'UNKNOWN'),
                 'popularity_score': hot_stock.get('popularity_score', 0),
                 'change_pct': hot_stock.get('change_pct', 0),
+                'source': hot_stock.get('source', 'heat'),
+                'source_detail': hot_stock.get('source_detail', ''),
                 'scoring_result': scoring_result
             }
 
@@ -1307,7 +1586,7 @@ class OpportunityDiscovery:
 def main():
     parser = argparse.ArgumentParser(description='投资机会挖掘系统')
     parser.add_argument('--limit', type=int, default=100, help='获取热门股票的数量（默认100）')
-    parser.add_argument('--source', type=str, default='heat', choices=['heat', 'moneyflow_dc'], help='候选来源：heat(热度榜) / moneyflow_dc(资金流向榜单)')
+    parser.add_argument('--source', type=str, default='multi', choices=['heat', 'moneyflow_dc', 'multi'], help='候选来源：multi(多源融合,默认) / heat(热度榜) / moneyflow_dc(资金流向榜单)')
     parser.add_argument('--workers', type=int, default=10, help='并发处理线程数（默认10）')
     parser.add_argument('--test-codes', type=str, help='指定测试股票代码，逗号分隔')
 

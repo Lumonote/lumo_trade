@@ -162,7 +162,9 @@ class OpportunityFilter:
             'filter_history': [],
             'risk_warnings': [],  # v8.0: 风险标记列表
             'final_score': stock_data.get('scoring_result', {}).get('total_score', 0),
-            'rating': stock_data.get('scoring_result', {}).get('rating', 'C')
+            'rating': stock_data.get('scoring_result', {}).get('rating', 'C'),
+            'source': stock_data.get('source', ''),
+            'source_detail': stock_data.get('source_detail', '')
         }
 
         scoring_result = stock_data.get('scoring_result', {})
@@ -617,6 +619,8 @@ class OpportunityFilter:
             drawdown_from_recent = momentum_details.get('drawdown_from_recent', 0)
             entry_timing = momentum_details.get('entry_timing', '观望')
             signals = momentum_details.get('signals', [])
+            next_day_risk_score = momentum_details.get('next_day_risk_score', 35)
+            rebound_setup = momentum_details.get('rebound_setup', False)
 
             # 检测低位启动信号
             low_pos_start = scoring_result.get('details', {}).get('low_position_start', {})
@@ -633,15 +637,20 @@ class OpportunityFilter:
             ideal_min = config['ideal_drawdown_min']
             ideal_max = config['ideal_drawdown_max']
             drawdown_ok = (ideal_min <= drawdown_from_recent <= ideal_max) or position_pct <= 0.35
+            next_day_risk_ok = next_day_risk_score <= 68
 
             # 低位启动可豁免部分条件
             if has_low_pos_signal:
                 # 底部启动信号可适当放宽位置要求
                 position_ok = position_pct <= 0.85
                 change_5d_ok = change_5d <= 25  # 底部放量可容忍更大涨幅
+                next_day_risk_ok = next_day_risk_score <= 75
+
+            if rebound_setup and position_pct <= 0.45:
+                next_day_risk_ok = next_day_risk_score <= 75
 
             # 综合判断
-            passed = position_ok and change_5d_ok and drawdown_ok
+            passed = position_ok and change_5d_ok and drawdown_ok and next_day_risk_ok
 
             stage_result['passed'] = passed
             stage_result['details'] = {
@@ -655,6 +664,9 @@ class OpportunityFilter:
                 'distance_from_high': distance_from_high,
                 'drawdown_from_recent': drawdown_from_recent,
                 'drawdown_ok': drawdown_ok,
+                'next_day_risk_score': next_day_risk_score,
+                'next_day_risk_ok': next_day_risk_ok,
+                'rebound_setup': rebound_setup,
                 'entry_timing': entry_timing,
                 'has_low_pos_signal': has_low_pos_signal,
                 'signals': signals[:5]
@@ -674,6 +686,8 @@ class OpportunityFilter:
 
                 if has_low_pos_signal:
                     reason_parts.append("🔥 底部启动信号")
+                if rebound_setup:
+                    reason_parts.append("超跌反转结构")
 
                 stage_result['reason'] = f"✓ " + ", ".join(reason_parts)
             else:
@@ -687,6 +701,8 @@ class OpportunityFilter:
                         fail_reasons.append(f"回撤不足({drawdown_from_recent:.1f}%<{ideal_min}%)，等待回调")
                     else:
                         fail_reasons.append(f"回撤过深({drawdown_from_recent:.1f}%>{ideal_max}%)")
+                if not next_day_risk_ok:
+                    fail_reasons.append(f"隔日承压风险偏高({next_day_risk_score:.0f})")
 
                 stage_result['reason'] = f"✗ " + ", ".join(fail_reasons)
 

@@ -198,6 +198,8 @@ def _build_sector_sentiment_from_ind_row(sector_name: str, row: Dict, trade_date
         change_pct = 0.0
     change_pct = round(change_pct, 2)
 
+    turnover_rate = 0
+
     sentiment_score = round(50 + (change_pct / 5.0) * 50, 1)
     sentiment_score = max(0, min(100, sentiment_score))
 
@@ -232,7 +234,7 @@ def _build_sector_sentiment_from_ind_row(sector_name: str, row: Dict, trade_date
         'sentiment_score': sentiment_score,
         'overall': overall,
         'change_pct': change_pct,
-        'turnover_rate': 0,
+        'turnover_rate': turnover_rate,
         'emotion': emotion,
         'data_source': 'tushare_moneyflow_ind_dc',
         'trade_date': trade_date,
@@ -456,7 +458,8 @@ def _pick_sector_name_from_stock_data(stock_data: Dict, fields_to_try: list[str]
 def get_stock_sector_info(stock_code: str) -> Dict:
     """
     获取股票所属板块信息
-    优化策略: 个股API失败时,使用反向查询方法
+    优化策略: 优先从tushare缓存获取(稳定且只需一次API调用),
+    失败时才回退到东方财富/新浪/腾讯等网页API
 
     Args:
         stock_code: 股票代码 (例如: '688343', '000001')
@@ -464,6 +467,11 @@ def get_stock_sector_info(stock_code: str) -> Dict:
     Returns:
         dict: 板块信息数据
     """
+    # 优先从tushare缓存获取 (稳定,无需额外网络请求)
+    tushare_result = _get_industry_from_tushare(stock_code)
+    if tushare_result:
+        return tushare_result
+
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
@@ -640,6 +648,76 @@ def get_stock_sector_info(stock_code: str) -> Dict:
             'industry': '未知',
             'concept_sectors': []
         }
+
+
+# ===== Tushare行业缓存 (一次加载,全局复用) =====
+_TUSHARE_INDUSTRY_CACHE = {}  # {stock_code: {'industry': '...', 'name': '...'}}
+_TUSHARE_INDUSTRY_LOADED = False
+
+
+def _load_tushare_industry_cache() -> bool:
+    """
+    从tushare stock_basic一次性加载所有股票的行业信息到全局缓存
+    只调用一次,后续直接从缓存读取,避免重复API请求
+    """
+    global _TUSHARE_INDUSTRY_CACHE, _TUSHARE_INDUSTRY_LOADED
+
+    if _TUSHARE_INDUSTRY_LOADED:
+        return bool(_TUSHARE_INDUSTRY_CACHE)
+
+    pro = _get_tushare_pro()
+    if not pro:
+        _TUSHARE_INDUSTRY_LOADED = True
+        return False
+
+    try:
+        # 一次性获取所有上市股票的行业信息
+        df = pro.stock_basic(
+            exchange='',
+            list_status='L',
+            fields='ts_code,symbol,name,industry'
+        )
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                code = str(row.get('symbol', ''))
+                industry = str(row.get('industry', '') or '')
+                name = str(row.get('name', '') or '')
+                if code and industry and industry not in ('', 'nan', 'None', 'N/A'):
+                    _TUSHARE_INDUSTRY_CACHE[code] = {
+                        'industry': industry,
+                        'name': name
+                    }
+            print(f"   ✅ Tushare行业缓存加载完成: {len(_TUSHARE_INDUSTRY_CACHE)}只股票")
+    except Exception as e:
+        print(f"   ⚠️ Tushare行业缓存加载失败: {e}")
+
+    _TUSHARE_INDUSTRY_LOADED = True
+    return bool(_TUSHARE_INDUSTRY_CACHE)
+
+
+def _get_industry_from_tushare(stock_code: str) -> Optional[Dict]:
+    """
+    从tushare缓存中查询股票行业信息
+    首次调用时自动加载缓存
+
+    Returns:
+        dict with sector_name, stock_name, industry or None
+    """
+    if not _TUSHARE_INDUSTRY_LOADED:
+        _load_tushare_industry_cache()
+
+    info = _TUSHARE_INDUSTRY_CACHE.get(stock_code)
+    if info and info['industry']:
+        return {
+            'success': True,
+            'data_source': 'tushare_stock_basic',
+            'sector_name': info['industry'],
+            'stock_name': info['name'],
+            'current_price': 0,
+            'industry': info['industry'],
+            'concept_sectors': [info['industry']]
+        }
+    return None
 
 
 # 全局缓存板块列表，避免重复请求
@@ -1410,7 +1488,7 @@ def _get_industry_from_web(stock_code: str) -> Optional[str]:
 def get_stock_sector_info_multi_source(stock_code: str) -> Dict:
     """
     多数据源获取板块信息(自动切换)
-    优先级: 东方财富 -> 新浪财经 -> 腾讯财经
+    优先级: 缓存 -> Tushare -> 东方财富 -> 新浪财经 -> 腾讯财经
 
     Args:
         stock_code: 股票代码
@@ -1429,6 +1507,15 @@ def get_stock_sector_info_multi_source(stock_code: str) -> Dict:
             'industry': cached_name,
             'concept_sectors': [cached_name]
         }
+
+    # 优先从tushare缓存获取 (稳定,一次加载全部)
+    tushare_result = _get_industry_from_tushare(stock_code)
+    if tushare_result:
+        sector_name = tushare_result.get('sector_name', '')
+        if sector_name and sector_name != '未知':
+            cache_manager.set('sector_name', sector_name, stock_code)
+            print(f"   ✅ Tushare行业缓存命中: {sector_name}")
+        return tushare_result
 
     print(f"   🔄 尝试多数据源获取板块信息...")
 

@@ -78,11 +78,10 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
                 penalty += 25
                 details.append(f'RSI极端{rsi:.0f}:-25')
             elif rsi > 80:
-                penalty += 15
+                penalty += 15  # v15: 保持15(RSI80惩罚加大无效果)
                 details.append(f'RSI超买{rsi:.0f}:-15')
             elif rsi > 75:
-                penalty += 3  # v9优化: 恢复轻度扣分（全量数据验证有效）
-                details.append(f'RSI偏高{rsi:.0f}:-3')
+                pass  # v13优化: 移除RSI 75-80轻度惩罚
 
         # 日涨幅风险
         if pd.notna(day_chg):
@@ -90,16 +89,12 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
                 penalty += 25
                 details.append(f'暴涨{day_chg:.0f}%:-25')
             elif day_chg >= 9.5:
-                # 涨停板: 看追高风险决定扣分力度
-                if pd.notna(chase) and chase >= 50:
-                    penalty += 12  # v9优化: 20→12
-                    details.append(f'涨停+高追{chase:.0f}:-12')
-                elif pd.notna(buy_sig) and buy_sig > 8:
-                    penalty += 14  # v9优化: 15→14
-                    details.append(f'涨停+信号挤{buy_sig:.0f}:-14')
+                # v14优化: 涨停首板(3日<15%)不惩罚(回测53.8%胜率+1.73%)
+                if pd.notna(chg_3d) and chg_3d >= 15:
+                    penalty += 5  # v14: 连板涨停才惩罚
+                    details.append(f'连板涨停{day_chg:.0f}%+3d{chg_3d:.0f}%:-5')
                 else:
-                    penalty += 3
-                    details.append(f'涨停{day_chg:.0f}%:-3')
+                    details.append(f'涨停首板{day_chg:.0f}%:不惩罚')
             elif day_chg >= 7:
                 penalty += 3  # v9: 轻度扣分
                 details.append(f'中涨{day_chg:.0f}%:-3')
@@ -123,8 +118,8 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
                 penalty += 16  # v9优化: 10→16
                 details.append(f'3日涨{chg_3d:.0f}%:-16')
             elif chg_3d > 10:
-                penalty += 15  # v11优化: 12→15
-                details.append(f'3日涨{chg_3d:.0f}%:-15')
+                penalty += 12  # v13优化: 15→12
+                details.append(f'3日涨{chg_3d:.0f}%:-12')
 
         # 追高风险
         if pd.notna(chase):
@@ -161,13 +156,13 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
                 penalty += 12  # v12优化: 10→12
                 details.append(f'板块过热{sector:.0f}:-12')
             elif 60 <= sector < 75:
-                penalty += 5   # v12优化: 3→5
-                details.append(f'板块死区{sector:.0f}:-5')
+                penalty += 5   # v15: 保持5(加大无正面效果)
+                details.append(f'板块死区{sector:.0f}:-8')
 
         # 原始评分过高（过拟合反指标）
-        if score >= 72:
-            penalty += 25  # v11优化: 19→25
-            details.append(f'评分过高{score:.0f}:-25')
+        if score >= 78:  # v14优化: 74→78
+            penalty += 20  # v14优化: 25→20
+            details.append(f'评分过高{score:.0f}:-20')
 
         # v11新增: 原始评分极高额外惩罚
         if score >= 76:
@@ -203,18 +198,26 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
 
         # ========== 利好加分 ==========
 
-        # 低买入信号（稀缺性）— v8优化: 移除（回测验证无正向效果）
-        # if pd.notna(buy_sig) and buy_sig <= 3:
+        # v15新增: 零卖出信号奖励 (sell=0: 53.8%胜率/+5.02%)
+        if pd.notna(sell_sig) and sell_sig == 0:
+            sell0_bonus = 4
+            # 涨停+sell=0超强组合 (66.7%胜率/+10.97%)
+            if pd.notna(day_chg) and day_chg >= 9.5:
+                sell0_bonus = 8
+                details.append(f'涨停+零卖出:+{sell0_bonus}')
+            else:
+                details.append(f'零卖出信号:+{sell0_bonus}')
+            bonus += sell0_bonus
 
         # RSI超卖
         if pd.notna(rsi) and rsi < 35:
-            bonus += 10  # v12优化: 5→10
-            details.append(f'RSI超卖{rsi:.0f}:+10')
+            bonus += 5   # v13优化: 10→5
+            details.append(f'RSI超卖{rsi:.0f}:+5')
 
-        # v11新增: RSI黄金区间奖励 (45-55在B级胜率最高)
-        if pd.notna(rsi) and 45 <= rsi <= 55:
-            bonus += 5   # v11新增
-            details.append(f'RSI黄金区{rsi:.0f}:+5')
+        # v15优化: RSI黄金区间收窄 (40-50胜率52.5%/+2.79%, 50-60急剧恶化36.7%)
+        if pd.notna(rsi) and 40 <= rsi <= 50:
+            bonus += 4   # v15优化: 3→4, 区间42-53→40-50
+            details.append(f'RSI黄金区{rsi:.0f}:+4')
 
         # 买入信号占优 — v10优化: 移除（全量回测验证无效，buy_signals与收益负相关）
         # if pd.notna(buy_sig) and pd.notna(sell_sig) and buy_sig >= 5 and sell_sig > 0 and buy_sig >= sell_sig * 2:
@@ -222,11 +225,11 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
         # 涨停+低追高 = 妖股起点
         if pd.notna(day_chg) and day_chg >= 9.5 and pd.notna(chase) and chase < 50:
             if not (pd.notna(buy_sig) and buy_sig > 8):  # 非信号拥挤
-                bonus += 12  # v11优化: 10→12
-                details.append(f'首板低chase{chase:.0f}:+12')
+                bonus += 10  # v13优化: 12→10
+                details.append(f'首板低chase{chase:.0f}:+10')
         elif pd.notna(day_chg) and day_chg >= 7 and pd.notna(chase) and chase < 40:
-            bonus += 15  # v9优化: 10→15
-            details.append(f'强势低chase{chase:.0f}:+15')
+            bonus += 12  # v13优化: 15→12
+            details.append(f'强势低chase{chase:.0f}:+12')
 
         # 动量启动
         if pd.notna(day_chg) and 3 <= day_chg < 10 and pd.notna(chase) and chase < 50:
@@ -431,7 +434,10 @@ def main():
 
     results_dir = os.path.join(project_root, 'results')
 
-    csv_files = sorted([f for f in os.listdir(results_dir) if f.startswith('backtest_analysis_') and f.endswith('.csv')])
+    # 优先使用rebuilt数据，其次使用analysis数据
+    csv_files = sorted([f for f in os.listdir(results_dir) if f.startswith('backtest_rebuilt_') and f.endswith('.csv')])
+    if not csv_files:
+        csv_files = sorted([f for f in os.listdir(results_dir) if f.startswith('backtest_analysis_') and f.endswith('.csv')])
     if not csv_files:
         print("未找到回测数据CSV文件")
         return

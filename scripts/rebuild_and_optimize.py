@@ -359,7 +359,7 @@ DEFAULT_PARAMS = {
     'chg5d_18_pen': 25,          # v9: 20→25
     'chg3d_20_pen': 20,
     'chg3d_15_pen': 16,          # v9: 10→16
-    'chg3d_10_pen': 15,          # v11: 12→15
+    'chg3d_10_pen': 12,          # v13: 15→12
 
     # 追高风险
     'chase_80_pen': 20,          # v9: 15→20
@@ -373,8 +373,8 @@ DEFAULT_PARAMS = {
     'sector_dead_pen': 5,        # v12: 3→5
 
     # 评分过高
-    'score_high_threshold': 72,  # 保持v9
-    'score_high_pen': 25,        # v11: 19→25
+    'score_high_threshold': 78,  # v14: 74→78
+    'score_high_pen': 20,        # v14: 25→20
 
     # 组合风险
     'rsi80_3d10_pen': 10,
@@ -391,10 +391,10 @@ DEFAULT_PARAMS = {
     'chase_rsi_combo_pen': 0,    # v10: 3→0 (移除)
 
     # === 奖励 ===
-    'rsi_oversold_bonus': 10,    # v12: 5→10
+    'rsi_oversold_bonus': 5,     # v13: 10→5
     'buy_dominance_bonus': 0,    # v10: 5→0 (移除)
-    'zt_low_chase_bonus': 12,    # v11: 10→12
-    'strong_low_chase_bonus': 15, # v9: 10→15
+    'zt_low_chase_bonus': 10,    # v13: 12→10
+    'strong_low_chase_bonus': 12, # v13: 15→12
     'momentum_start_bonus': 5,   # v9: 8→5
     'quant_moderate_bonus': 0,   # v9: 2→0 (移除)
     'low_risk_momentum_bonus': 8, # v12: 5→8
@@ -403,9 +403,13 @@ DEFAULT_PARAMS = {
     'tech_high_pen': 3,          # v11: 技术面>=80虚高惩罚
     'score_very_high_pen': 3,    # v11: 原始评分>=76额外惩罚
     'score_very_high_threshold': 76,
-    'rsi_golden_bonus': 5,       # v11: RSI 45-55黄金区间奖励
-    'rsi_golden_low': 45,
-    'rsi_golden_high': 55,
+    'rsi_golden_bonus': 4,       # v15: 3→4
+    'rsi_golden_low': 40,        # v15: 42→40
+    'rsi_golden_high': 50,       # v15: 53→50
+
+    # v15新增
+    'sell0_bonus': 4,            # v15: 零卖出信号奖励
+    'sell0_zt_bonus': 8,         # v15: 涨停+零卖出奖励
 
     # 甜蜜区
     'sweet_low': 63,
@@ -449,12 +453,10 @@ def score_row(row, params):
         if day_chg >= 20:
             penalty += params['day_chg_20_pen']
         elif day_chg >= 9.5:
-            if pd.notna(chase) and chase >= 50:
-                penalty += params['zt_chase_pen']
-            elif pd.notna(buy_sig) and buy_sig > 8:
-                penalty += params['zt_signal_pen']
-            else:
-                penalty += params['zt_base_pen']
+            # v14: 涨停首板(3日<15%)不惩罚
+            if pd.notna(chg_3d) and chg_3d >= 15:
+                penalty += params['zt_base_pen']  # 连板涨停才惩罚
+            # 首板不惩罚
         elif day_chg >= 7:
             penalty += params['chg7_pen']
         elif day_chg >= 5:
@@ -535,8 +537,15 @@ def score_row(row, params):
         bonus += params['rsi_oversold_bonus']
 
     # v11: RSI黄金区间
-    if pd.notna(rsi) and params.get('rsi_golden_low', 45) <= rsi <= params.get('rsi_golden_high', 55):
+    if pd.notna(rsi) and params.get('rsi_golden_low', 40) <= rsi <= params.get('rsi_golden_high', 50):
         bonus += params.get('rsi_golden_bonus', 0)
+
+    # v15: 零卖出信号奖励
+    if pd.notna(sell_sig) and sell_sig == 0:
+        if pd.notna(day_chg) and day_chg >= 9.5:
+            bonus += params.get('sell0_zt_bonus', 8)
+        else:
+            bonus += params.get('sell0_bonus', 4)
 
     # 买入占优
     if pd.notna(buy_sig) and pd.notna(sell_sig) and buy_sig >= 5 and sell_sig > 0 and buy_sig >= sell_sig * 2:

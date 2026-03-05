@@ -297,7 +297,7 @@ class OpportunityReportGenerator:
                     from scripts.simulate_v5_backtest import apply_v8_scoring
                     _raw_df = _pd.read_csv(_csv_path)
                     _scored_df = apply_v8_scoring(_raw_df)
-                    bt_with_returns = _scored_df[_scored_df['return_5d'].notna()].copy()
+                    bt_with_returns = _scored_df.copy()
 
                 # 回退到 backtest_analysis CSV
                 if bt_with_returns is None or len(bt_with_returns) < 10:
@@ -310,7 +310,7 @@ class OpportunityReportGenerator:
                         from scripts.simulate_v5_backtest import load_backtest_data, apply_v8_scoring as _apply_scoring
                         _raw_df = load_backtest_data(_csv_path)
                         _scored_df = _apply_scoring(_raw_df)
-                        bt_with_returns = _scored_df[_scored_df['return_5d'].notna()].copy()
+                        bt_with_returns = _scored_df.copy()
 
                 # 回退到 recommendations.csv（较少数据）
                 if bt_with_returns is None or len(bt_with_returns) < 10:
@@ -417,11 +417,71 @@ class OpportunityReportGenerator:
 
                     # 整体统计
                     total_r5 = bt_with_returns['return_5d'].dropna()
+                    _total_rows = len(bt_with_returns)
+                    _verified_rows = len(total_r5)
+                    _date_min = bt_with_returns['report_date'].min()
+                    _date_max = bt_with_returns['report_date'].max()
                     if len(total_r5) > 0:
-                        lines.append(f"\n**整体**: {len(bt_with_returns)}条已验证(去重) | "
+                        _pending = _total_rows - _verified_rows
+                        _pending_str = f"(其中{_pending}条待验证)" if _pending > 0 else ""
+                        lines.append(f"\n**整体**: {_total_rows}条{_pending_str} | "
+                                    f"已验证{_verified_rows}条 | "
                                     f"5日均收益: {total_r5.mean():+.2f}% | "
                                     f"5日胜率: {(total_r5 > 0).mean()*100:.1f}% | "
-                                    f"数据范围: {bt_with_returns['report_date'].min()} ~ {bt_with_returns['report_date'].max()}")
+                                    f"数据范围: {_date_min} ~ {_date_max}")
+
+                    # 分档收益分布
+                    lines.append("\n### 收益分档分布\n")
+                    _return_col = 'return_5d'
+                    _valid = bt_with_returns.dropna(subset=[_return_col])
+                    if len(_valid) > 0:
+                        _tiers = [
+                            (50, '≥50%'),
+                            (30, '≥30%'),
+                            (10, '≥10%'),
+                            (0, '≥0%(盈利)'),
+                            (-10, '-10%~0%'),
+                            (-9999, '<-10%'),
+                        ]
+                        lines.append("| 5日收益区间 | 数量 | 占比 | 代表个股 |")
+                        lines.append("|------------|------|------|----------|")
+
+                        _has_name = 'name' in _valid.columns
+                        _has_date = 'report_date' in _valid.columns
+
+                        for _ti, (_threshold, _label) in enumerate(_tiers):
+                            if _threshold == -9999:
+                                _tier_df = _valid[_valid[_return_col] < -10]
+                            elif _threshold == 0:
+                                _tier_df = _valid[(_valid[_return_col] >= 0) & (_valid[_return_col] < 10)]
+                            elif _threshold == -10:
+                                _tier_df = _valid[(_valid[_return_col] >= -10) & (_valid[_return_col] < 0)]
+                            else:
+                                _next_t = _tiers[_ti - 1][0] if _ti > 0 else 9999
+                                if _next_t == 9999:
+                                    _tier_df = _valid[_valid[_return_col] >= _threshold]
+                                else:
+                                    _tier_df = _valid[(_valid[_return_col] >= _threshold) & (_valid[_return_col] < _next_t)]
+
+                            _cnt = len(_tier_df)
+                            _pct = _cnt / len(_valid) * 100
+
+                            # 代表个股: 取收益最高的前3只
+                            _examples = ""
+                            if _cnt > 0:
+                                _top = _tier_df.nlargest(min(3, _cnt), _return_col)
+                                _parts = []
+                                for _, _row in _top.iterrows():
+                                    _sname = _row.get('name', _row.get('code', ''))
+                                    _sdate = str(_row.get('report_date', ''))[:10] if _has_date else ''
+                                    _sret = _row[_return_col]
+                                    if _sdate:
+                                        _parts.append(f"{_sname}({_sdate},{_sret:+.1f}%)")
+                                    else:
+                                        _parts.append(f"{_sname}({_sret:+.1f}%)")
+                                _examples = " ".join(_parts)
+
+                            lines.append(f"| {_label} | {_cnt} | {_pct:.1f}% | {_examples} |")
             except Exception as _e:
                 logger.debug(f"回测统计加载失败: {_e}")
                 pass  # 无回测数据时静默跳过
@@ -2127,12 +2187,12 @@ class OpportunityReportGenerator:
             sec_overall = sec.get('overall') or '中性'
             sec_score = scores.get('sector')
             
-            # 判断板块数据是否有效：如果板块未知，或者涨跌和换手都是0.0%且分数为50，则认为无效
+            # 判断板块数据是否有效：如果板块未知，或者涨跌为0且分数为50，则认为无效
             is_valid_sector = True
-            if sector_name == '未知' or (sec.get('change_pct') == 0 and sec.get('turnover_rate') == 0 and sec_score == 50):
+            if sector_name == '未知' or (sec.get('change_pct') == 0 and sec_score == 50):
                 is_valid_sector = False
                 
-            sec_str = f"{sector_name}({sec_chg}, 换手{sec_turn}, {sec_overall}, {_fmt_score(sec_score)}分)"
+            sec_str = f"{sector_name}({sec_chg}, {sec_overall}, {_fmt_score(sec_score)}分)"
 
             # 2. 量化
             qd = details.get('quantitative') or {}
@@ -2283,7 +2343,15 @@ class OpportunityReportGenerator:
 
             # 新增：入选原因与最新动态
             reason = _generate_selection_reason(stock)
-            parts.append(f"【入选原因】{reason if reason else '无'}")
+            # 添加数据来源标签
+            _stock_source = stock.get('source', '')
+            _source_detail = stock.get('source_detail', '')
+            _source_tag = ''
+            if _stock_source == 'oversold_rebound':
+                _source_tag = f'[超跌反弹] {_source_detail}；' if _source_detail else '[超跌反弹] '
+            elif _stock_source == 'dragon_tiger':
+                _source_tag = f'[龙虎榜机构] {_source_detail}；' if _source_detail else '[龙虎榜机构] '
+            parts.append(f"【入选原因】{_source_tag}{reason if reason else '无'}")
             
             latest_news = stock.get('latest_news')
             if latest_news:
@@ -2738,7 +2806,7 @@ class OpportunityReportGenerator:
                     meta = (
                         f"股民 {scores.get('sentiment', 0):.1f}分 · 权重 {wpct('sentiment')} · 综情 {inv_score_str} · {inv_sent or '中性'}"
                         f" · 资金 {cf_trend or '未知'}({cf_strength or '未知'}) · 净额 {cf_amt_str}；"
-                        f"板块 {scores.get('sector', 0):.1f}分 · 权重 {wpct('sector')} · {sec_name or '所属板块'} {sec_chg_str} · 换手 {sec_turn_str} · {sec_overall or '中性'}"
+                        f"板块 {scores.get('sector', 0):.1f}分 · 权重 {wpct('sector')} · {sec_name or '所属板块'} {sec_chg_str} · {sec_overall or '中性'}"
                         f" · 龙虎榜 {dt_signal or '中性'}(净额{_fmt_money(dt.get('net_buy_amount'))}){'' if not dt_date else f'({dt_date})'}"
                     )
                 elif stage_num == 4:
