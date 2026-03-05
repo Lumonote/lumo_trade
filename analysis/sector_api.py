@@ -198,6 +198,8 @@ def _build_sector_sentiment_from_ind_row(sector_name: str, row: Dict, trade_date
         change_pct = 0.0
     change_pct = round(change_pct, 2)
 
+    turnover_rate = 0
+
     sentiment_score = round(50 + (change_pct / 5.0) * 50, 1)
     sentiment_score = max(0, min(100, sentiment_score))
 
@@ -232,7 +234,7 @@ def _build_sector_sentiment_from_ind_row(sector_name: str, row: Dict, trade_date
         'sentiment_score': sentiment_score,
         'overall': overall,
         'change_pct': change_pct,
-        'turnover_rate': 0,
+        'turnover_rate': turnover_rate,
         'emotion': emotion,
         'data_source': 'tushare_moneyflow_ind_dc',
         'trade_date': trade_date,
