@@ -257,9 +257,22 @@ class OpportunityReportGenerator:
 
             # 当日推荐的置信度分布
             tier_counts = {'S': 0, 'A': 0, 'B': 0, 'C': 0}
+
+            def _resolve_tier_by_display_score(stock_item: Dict) -> str:
+                try:
+                    score_val = float(stock_item.get('final_score', 0) or 0)
+                except Exception:
+                    score_val = 0.0
+                if score_val >= 85:
+                    return 'S'
+                if score_val >= 78:
+                    return 'A'
+                if score_val >= 70:
+                    return 'B'
+                return 'C'
+
             for stock in top_20[:20]:
-                scoring = stock.get('scoring_result') or {}
-                tier = scoring.get('confidence_tier', 'C')
+                tier = _resolve_tier_by_display_score(stock)
                 if tier in tier_counts:
                     tier_counts[tier] += 1
 
@@ -2440,6 +2453,23 @@ class OpportunityReportGenerator:
                 f"【情绪资金】{sent_str}",
                 f"【消息】{events_str}"
             ])
+
+            score_adjustments = scoring.get('score_adjustments') or []
+            if score_adjustments:
+                wanted_keywords = (
+                    '量化评分过低', '追高风险惩罚', 'RSI超买惩罚', 'RSI严重超买惩罚',
+                    '连板涨停惩罚', '短期急涨惩罚', '短期暴涨惩罚', '惩罚触及上限',
+                    '牛股动量识别', '板块死区惩罚'
+                )
+                selected_adjustments = []
+                for item in score_adjustments:
+                    txt = str(item).strip()
+                    if not txt:
+                        continue
+                    if any(k in txt for k in wanted_keywords):
+                        selected_adjustments.append(txt)
+                if selected_adjustments:
+                    parts.append(f"【关键加减分】{'；'.join(selected_adjustments[:10])}")
 
             # 新增：入选原因与最新动态
             reason = _generate_selection_reason(stock)

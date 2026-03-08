@@ -223,6 +223,28 @@ class OpportunityDiscovery:
         logger.info(f"✓ 获取资金流向榜单成功，日期: {selected_date}，共{len(results)}只股票")
         return results
 
+    def _trim_deep_heat_rank_candidates(self, stocks: List[Dict], limit: int) -> List[Dict]:
+        if not stocks:
+            return stocks
+        heat_like_sources = {
+            'eastmoney_guba', 'eastmoney_stockpicker', 'eastmoney', 'eastmoney_vip',
+            'eastmoney_enhanced', 'tonghuashun', 'heat'
+        }
+        max_rank = max(300, int(limit) * 2)
+        trimmed = []
+        dropped = 0
+        for s in stocks:
+            src = str(s.get('source') or '').lower()
+            rank_raw = s.get('rank')
+            if src in heat_like_sources and isinstance(rank_raw, (int, float)):
+                if int(rank_raw) > max_rank:
+                    dropped += 1
+                    continue
+            trimmed.append(s)
+        if dropped > 0:
+            logger.info(f"候选清洗：移除热榜深位排名股票 {dropped} 只（阈值 rank<={max_rank}）")
+        return trimmed
+
     def _fetch_oversold_rebound_stocks(self, limit: int = 30) -> List[Dict]:
         """
         超跌反弹筛选：寻找近期大幅下跌但出现反转信号的股票
@@ -544,8 +566,25 @@ class OpportunityDiscovery:
                            " | ".join(f"{k}:{v}" for k, v in source_counts.items()))
             else:
                 logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
-                # 强制直接采集，避免使用缓存或本地回退
                 hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
+                if len(hot_stocks) < limit:
+                    deficit = limit - len(hot_stocks)
+                    topup_limit = max(deficit * 2, deficit + 30)
+                    logger.info(f"热度榜不足{limit}只，补充资金流向候选 TOP {topup_limit}...")
+                    moneyflow_candidates = self._fetch_moneyflow_dc_stocks(limit=topup_limit)
+                    seen_hot_codes = set(str(s.get('code') or '') for s in hot_stocks if s.get('code'))
+                    added = 0
+                    for s in moneyflow_candidates:
+                        code = str(s.get('code') or '')
+                        if not code or code in seen_hot_codes:
+                            continue
+                        s['source_detail'] = (s.get('source_detail') or '') + ('；热度榜补位' if s.get('source_detail') else '热度榜补位')
+                        hot_stocks.append(s)
+                        seen_hot_codes.add(code)
+                        added += 1
+                        if len(hot_stocks) >= limit:
+                            break
+                    logger.info(f"资金流向补充新增: {added}只（当前候选: {len(hot_stocks)}只）")
 
         if not hot_stocks:
             logger.warning("热度榜获取失败，回退到资金流向榜单...")
@@ -563,6 +602,8 @@ class OpportunityDiscovery:
                     merged.append(s)
                     seen_codes.add(code)
             hot_stocks = merged[:limit]
+
+        hot_stocks = self._trim_deep_heat_rank_candidates(hot_stocks, limit)
 
         if not hot_stocks:
             logger.error("✗ 候选股票获取失败，程序终止")

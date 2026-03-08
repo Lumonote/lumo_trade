@@ -313,7 +313,8 @@ class OpportunityScorer:
                 'dragon_tiger': 0.0
             },
             'details': {},
-            'exclusion_flags': []       # 一票否决标记
+            'exclusion_flags': [],
+            'score_adjustments': []
         }
 
         try:
@@ -458,9 +459,11 @@ class OpportunityScorer:
             quant_buy_count = quant_details.get('buy_count', 0)
 
             quant_cap_limit = None
+            score_adjustments = result.get('score_adjustments', [])
             
             if quant_score < 45:
                 logger.info(f"{stock_code} 量化评分过低({quant_score})，触发总分封顶限制")
+                score_adjustments.append(f"量化评分过低({quant_score:.1f})，触发总分封顶限制")
                 quant_cap_limit = 60.0
             
             if quant_sell_count > quant_buy_count and quant_sell_count > 0:
@@ -545,10 +548,12 @@ class OpportunityScorer:
                 chase_penalty = 20  # v9优化: 15→20
                 v54_total_penalty += chase_penalty
                 logger.info(f"{stock_code} 追高风险惩罚: 风险分={chase_risk_score}, 扣{chase_penalty}分")
+                score_adjustments.append(f"追高风险惩罚: 风险分={chase_risk_score}, 扣{chase_penalty}分")
             elif chase_risk_score >= 60:
                 chase_penalty = 3   # v11优化: 6→3
                 v54_total_penalty += chase_penalty
                 logger.info(f"{stock_code} 追高风险惩罚: 风险分={chase_risk_score}, 扣{chase_penalty}分")
+                score_adjustments.append(f"追高风险惩罚: 风险分={chase_risk_score}, 扣{chase_penalty}分")
 
             # 2. RSI超买惩罚（回测: RSI>=85收益-7.33%, RSI>80收益-6.22%）
             current_rsi = tech_details.get('RSI', 50)
@@ -557,10 +562,12 @@ class OpportunityScorer:
                     rsi_penalty = 20
                     v54_total_penalty += rsi_penalty
                     logger.info(f"{stock_code} RSI严重超买惩罚: RSI={current_rsi:.1f}>=85, 扣{rsi_penalty}分")
+                    score_adjustments.append(f"RSI严重超买惩罚: RSI={current_rsi:.1f}>=85, 扣{rsi_penalty}分")
                 elif current_rsi > 80:
                     rsi_penalty = 15
                     v54_total_penalty += rsi_penalty
                     logger.info(f"{stock_code} RSI超买惩罚: RSI={current_rsi:.1f}>80, 扣{rsi_penalty}分")
+                    score_adjustments.append(f"RSI超买惩罚: RSI={current_rsi:.1f}>80, 扣{rsi_penalty}分")
                 # v13优化: RSI 75-80轻度惩罚移除(回测验证无效)
                 # elif current_rsi > 75:
                 #     rsi_penalty = 3
@@ -579,6 +586,7 @@ class OpportunityScorer:
                     limit_penalty = 5  # v14: 连板涨停(3日>=15%)才惩罚
                     v54_total_penalty += limit_penalty
                     logger.info(f"{stock_code} 连板涨停惩罚: 涨幅{today_change:.1f}%+3日{change_3d_for_limit:.1f}%>=15%, 扣{limit_penalty}分")
+                    score_adjustments.append(f"连板涨停惩罚: 涨幅{today_change:.1f}%+3日{change_3d_for_limit:.1f}%>=15%, 扣{limit_penalty}分")
                 else:
                     logger.info(f"{stock_code} 涨停首板: 涨幅{today_change:.1f}%+3日{change_3d_for_limit:.1f}%<15%, 不惩罚")
             # v9优化: 7%涨幅轻度扣分
@@ -598,14 +606,17 @@ class OpportunityScorer:
                 surge_penalty = 25  # v9优化: 15→25
                 v54_total_penalty += surge_penalty
                 logger.info(f"{stock_code} 短期暴涨惩罚: 5日涨幅{change_5d:.1f}%>25%, 扣{surge_penalty}分")
+                score_adjustments.append(f"短期暴涨惩罚: 5日涨幅{change_5d:.1f}%>25%, 扣{surge_penalty}分")
             elif change_3d > 15:
                 surge_penalty = 16  # v9优化: 10→16
                 v54_total_penalty += surge_penalty
                 logger.info(f"{stock_code} 短期急涨惩罚: 3日涨幅{change_3d:.1f}%>15%, 扣{surge_penalty}分")
+                score_adjustments.append(f"短期急涨惩罚: 3日涨幅{change_3d:.1f}%>15%, 扣{surge_penalty}分")
             elif change_3d > 10:
                 surge_penalty = 12  # v13优化: 15→12
                 v54_total_penalty += surge_penalty
                 logger.info(f"{stock_code} 短期温涨惩罚: 3日涨幅{change_3d:.1f}%>10%, 扣{surge_penalty}分")
+                score_adjustments.append(f"短期温涨惩罚: 3日涨幅{change_3d:.1f}%>10%, 扣{surge_penalty}分")
 
             # 5. 信号拥挤惩罚
             if quant_buy_count >= 15:
@@ -621,6 +632,7 @@ class OpportunityScorer:
             actual_penalty = min(v54_total_penalty, V54_PENALTY_CAP)
             if v54_total_penalty > V54_PENALTY_CAP:
                 logger.info(f"{stock_code} 惩罚触及上限: 原始惩罚{v54_total_penalty}分, 实际扣除{actual_penalty}分(上限{V54_PENALTY_CAP})")
+                score_adjustments.append(f"惩罚触及上限: 原始惩罚{v54_total_penalty}分, 实际扣除{actual_penalty}分(上限{V54_PENALTY_CAP})")
             total_score -= actual_penalty
 
             # 7. 低买入信号奖励 — 已移除(v8.0优化): 回测验证无正向效果
@@ -747,6 +759,7 @@ class OpportunityScorer:
             if momentum_signals:
                 result['momentum_pattern'] = momentum_signals
                 logger.info(f"{stock_code} 牛股动量识别: {', '.join(momentum_signals)} (总+{momentum_bonus + penalty_recovery}分)")
+                score_adjustments.append(f"牛股动量识别: {', '.join(momentum_signals)} (总+{momentum_bonus + penalty_recovery}分)")
 
             # ========== v5.6 回测新因子优化 ==========
             # 基于13824组合网格搜索发现的新有效因子
@@ -780,6 +793,7 @@ class OpportunityScorer:
                 sector_dead_penalty = 5  # v12优化: 3→5
                 total_score -= sector_dead_penalty
                 logger.info(f"{stock_code} 板块死区惩罚: sector_score={sector_score:.0f}在60-75区间, 扣{sector_dead_penalty}分")
+                score_adjustments.append(f"板块死区惩罚: sector_score={sector_score:.0f}在60-75区间, 扣{sector_dead_penalty}分")
 
             # v11新增: 技术面虚高惩罚 (B级中tech>=80表现最差,胜率仅34.6%)
             tech_score = result.get('dimension_scores', {}).get('technical', 50)
@@ -850,6 +864,9 @@ class OpportunityScorer:
                     result['combined_rating'] = self._get_rating(combined_score)
                     
                     logger.info(f"{stock_code} 高级分析完成: 基础{result['total_score']}分 + 高级{adv_score}分 = 综合{combined_score}分")
+                    result.get('score_adjustments', []).append(
+                        f"高级分析完成: 基础{result['total_score']:.2f}分 + 高级{float(adv_score):.2f}分 = 综合{combined_score:.3f}分"
+                    )
                 except Exception as adv_e:
                     logger.warning(f"{stock_code} 高级分析失败: {adv_e}")
 

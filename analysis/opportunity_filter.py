@@ -161,8 +161,8 @@ class OpportunityFilter:
             'eliminated_at_stage': -1,  # v8.0: -1表示未被淘汰
             'filter_history': [],
             'risk_warnings': [],  # v8.0: 风险标记列表
-            'final_score': stock_data.get('scoring_result', {}).get('total_score', 0),
-            'rating': stock_data.get('scoring_result', {}).get('rating', 'C'),
+            'final_score': stock_data.get('scoring_result', {}).get('combined_score', stock_data.get('scoring_result', {}).get('total_score', 0)),
+            'rating': stock_data.get('scoring_result', {}).get('combined_rating', stock_data.get('scoring_result', {}).get('rating', 'C')),
             'source': stock_data.get('source', ''),
             'source_detail': stock_data.get('source_detail', '')
         }
