@@ -57,12 +57,14 @@ logger = logging.getLogger(__name__)
 
 _INDUSTRY_COMPARISON_CACHE = {}
 _INDUSTRY_COMPARISON_CACHE_TTL = 3600
+_COMPREHENSIVE_DATA_CACHE = {}
+_COMPREHENSIVE_DATA_CACHE_TTL = 900
 
 
 class FundamentalDataCollector:
     """基本面财务数据采集器"""
 
-    def __init__(self, stock_code):
+    def __init__(self, stock_code, minimal_api_mode: bool = None):
         """
         初始化基本面数据采集器
 
@@ -70,6 +72,10 @@ class FundamentalDataCollector:
             stock_code: 股票代码 (例如: '688343', '000001')
         """
         self.stock_code = stock_code
+        if minimal_api_mode is None:
+            env_flag = os.environ.get('KRONOS_MINIMAL_FUNDAMENTAL_API', '1').strip().lower()
+            minimal_api_mode = env_flag in {'1', 'true', 'yes', 'on'}
+        self.minimal_api_mode = bool(minimal_api_mode)
         self.headers = {
             'User-Agent': 'curl/8.6.0',
             'Connection': 'close'
@@ -141,7 +147,13 @@ class FundamentalDataCollector:
             dict: 财务指标数据
         """
         try:
-            # 1. 尝试使用 stock/get 接口 (最准确)
+            # 1. 先使用腾讯接口（稳定、低失败率）
+            tencent_data = self._get_financial_indicators_tencent()
+            if tencent_data:
+                print(f"✅ 通过腾讯财经接口获取指标成功")
+                return tencent_data
+
+            # 2. 再尝试 stock/get 接口
             url = "https://push2.eastmoney.com/api/qt/stock/get"
             secid = f"{self._get_market_id()}.{self.stock_code}"
             
@@ -172,7 +184,7 @@ class FundamentalDataCollector:
             except Exception as e:
                 print(f"⚠️ stock/get接口请求失败: {e}")
 
-            # 2. 尝试备用方案: ulist.np (统一列表)
+            # 3. 尝试备用方案: ulist.np/clist (统一列表)
             return self._get_financial_indicators_fallback()
 
         except Exception as e:
@@ -182,13 +194,7 @@ class FundamentalDataCollector:
     def _get_financial_indicators_fallback(self):
         """备用方案：使用腾讯接口、ulist或clist获取"""
         try:
-            # 尝试方案A: 腾讯财经接口 (最优先备用，稳定且包含PE/PB/市值)
-            tencent_data = self._get_financial_indicators_tencent()
-            if tencent_data:
-                print(f"✅ 通过腾讯财经接口获取指标成功")
-                return tencent_data
-
-            # 尝试方案B: ulist.np (指定股票代码)
+            # 尝试方案A: ulist.np (指定股票代码)
             url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
             params = {
                 'fltt': '2',
@@ -417,10 +423,10 @@ class FundamentalDataCollector:
                     if net_profit is not None:
                         reports['net_profit'] = round(float(net_profit) / 100000000, 2)
 
-                    # 经营现金流 - 从现金流量表API获取
-                    cash_flow = self._get_cash_flow_data()
-                    if cash_flow != 'N/A':
-                        reports['cash_flow'] = cash_flow
+                    if not self.minimal_api_mode:
+                        cash_flow = self._get_cash_flow_data()
+                        if cash_flow != 'N/A':
+                            reports['cash_flow'] = cash_flow
 
                     # 同比增长率（接口提供）
                     revenue_yoy = latest.get('YSTZ')  # 营收同比增长
@@ -696,6 +702,11 @@ class FundamentalDataCollector:
         Returns:
             dict: 综合基本面数据
         """
+        cache_key = f"{self.stock_code}:{int(self.minimal_api_mode)}"
+        cached = _COMPREHENSIVE_DATA_CACHE.get(cache_key)
+        if cached and time.time() - cached['timestamp'] < _COMPREHENSIVE_DATA_CACHE_TTL:
+            return cached['data']
+
         logger.info(f"📊 正在采集 {self.stock_code} 的基本面数据...")
 
         try:
@@ -731,23 +742,29 @@ class FundamentalDataCollector:
                 logger.warning(f"财务报告采集失败: {e}")
                 data['financial_reports'] = {}
 
-            # 股东信息
-            try:
-                shareholder = self.get_shareholder_info()
-                data['shareholder_info'] = shareholder
-            except Exception as e:
-                logger.warning(f"股东信息采集失败: {e}")
-                data['shareholder_info'] = {}
+            if self.minimal_api_mode:
+                data['shareholder_info'] = self._get_default_shareholder_info()
+                data['industry_comparison'] = self._get_default_industry_comparison()
+            else:
+                try:
+                    shareholder = self.get_shareholder_info()
+                    data['shareholder_info'] = shareholder
+                except Exception as e:
+                    logger.warning(f"股东信息采集失败: {e}")
+                    data['shareholder_info'] = {}
 
-            # 行业对比
-            try:
-                industry = self.get_industry_comparison()
-                data['industry_comparison'] = industry
-            except Exception as e:
-                logger.warning(f"行业对比采集失败: {e}")
-                data['industry_comparison'] = {}
+                try:
+                    industry = self.get_industry_comparison()
+                    data['industry_comparison'] = industry
+                except Exception as e:
+                    logger.warning(f"行业对比采集失败: {e}")
+                    data['industry_comparison'] = {}
 
             logger.info(f"✅ 基本面数据采集完成")
+            _COMPREHENSIVE_DATA_CACHE[cache_key] = {
+                'timestamp': time.time(),
+                'data': data
+            }
             return data
 
         except Exception as e:

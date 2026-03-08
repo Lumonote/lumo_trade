@@ -242,7 +242,7 @@ class OpportunityReportGenerator:
 
             for i, stock in enumerate(top_20[:20], 1):
                 code = stock.get('stock_code') or stock.get('code') or '未知'
-                name_txt = stock.get('name', '未知')
+                name_txt = stock.get('name') or stock.get('stock_name') or str(code)
                 score = float(stock.get('final_score', 0) or 0)
 
                 summary_txt = self._build_full_indicator_summary(stock)
@@ -518,6 +518,8 @@ class OpportunityReportGenerator:
             # 按板块分组所有股票，存储板块涨幅
             sector_stocks = {}
             sector_change_candidates = {}
+            sector_name_by_code = {}
+            stock_name_by_code = {}
 
             def _is_numeric_text(text) -> bool:
                 try:
@@ -563,18 +565,116 @@ class OpportunityReportGenerator:
                     freq[v] = freq.get(v, 0) + 1
                 best = max(freq.items(), key=lambda x: (x[1], abs(x[0])))[0]
                 return float(best)
-            for stock in analysis_results:
-                details = stock.get('scoring_result', {}).get('details', {})
+
+            def _to_float_or_none(v):
+                if v is None or isinstance(v, bool):
+                    return None
+                if isinstance(v, (int, float)):
+                    return float(v)
+                if isinstance(v, str):
+                    s = v.strip().replace('%', '')
+                    if not s:
+                        return None
+                    try:
+                        return float(s)
+                    except Exception:
+                        return None
+                return None
+
+            def _is_valid_sector_name(name: str) -> bool:
+                if name is None:
+                    return False
+                s = str(name).strip()
+                if not s:
+                    return False
+                if s in ('未知', 'unknown', 'Unknown', 'N/A', 'None', 'nan'):
+                    return False
+                if _is_numeric_text(s):
+                    return False
+                return True
+
+            def _load_sector_from_tushare(code: str):
+                if not code:
+                    return None
+                if code in sector_name_by_code:
+                    return sector_name_by_code.get(code)
+                try:
+                    from analysis.sector_api import _get_industry_from_tushare
+                    info = _get_industry_from_tushare(code)
+                    if info:
+                        sec = str(info.get('sector_name') or '').strip()
+                        nm = str(info.get('stock_name') or '').strip()
+                        if _is_valid_sector_name(sec):
+                            sector_name_by_code[code] = sec
+                        if nm:
+                            stock_name_by_code[code] = nm
+                except Exception:
+                    pass
+                return sector_name_by_code.get(code)
+
+            def _resolve_sector_and_change(stock: Dict):
+                scoring_result = stock.get('scoring_result') or {}
+                details = scoring_result.get('details') or {}
                 sector = details.get('sector') or {}
-                sector_name = sector.get('sector_name', '')
-                sector_chg = sector.get('change_pct', None)
+                advanced = stock.get('advanced_analysis') or scoring_result.get('advanced_analysis') or {}
+                dimensions = advanced.get('dimensions', {}) if isinstance(advanced, dict) else {}
+                adv_sector = (dimensions.get('sector') or {}).get('details', {}) if isinstance(dimensions, dict) else {}
+                adv_cn_sector = advanced.get('板块联动', {}) if isinstance(advanced, dict) else {}
 
-                if sector_name is not None:
-                    sector_name = str(sector_name).strip()
+                candidates = [
+                    sector.get('sector_name'),
+                    adv_sector.get('sector_name'),
+                    adv_cn_sector.get('sector_name'),
+                    adv_cn_sector.get('所属板块'),
+                    stock.get('sector_name'),
+                    stock.get('industry')
+                ]
+                sector_name = ''
+                for cand in candidates:
+                    if _is_valid_sector_name(cand):
+                        sector_name = str(cand).strip()
+                        break
 
-                # 将未知板块归类为"其他"
-                if (not sector_name) or sector_name == '未知' or _is_numeric_text(sector_name):
+                change_candidates = [
+                    sector.get('change_pct'),
+                    sector.get('sector_change'),
+                    adv_sector.get('change_pct'),
+                    adv_sector.get('sector_change'),
+                    adv_cn_sector.get('change_pct'),
+                    adv_cn_sector.get('板块涨跌')
+                ]
+                sector_chg = None
+                for cand in change_candidates:
+                    val = _to_float_or_none(cand)
+                    if val is not None:
+                        sector_chg = val
+                        break
+
+                code = str(stock.get('stock_code') or stock.get('code') or '').strip()
+                if not _is_valid_sector_name(sector_name):
+                    cached_sector = _load_sector_from_tushare(code)
+                    if _is_valid_sector_name(cached_sector):
+                        sector_name = cached_sector
+
+                if not _is_valid_sector_name(sector_name):
                     sector_name = '其他'
+
+                return sector_name, sector_chg
+
+            def _resolve_stock_name(stock: Dict):
+                code = str(stock.get('stock_code') or stock.get('code') or '').strip()
+                name = str(stock.get('name') or stock.get('stock_name') or '').strip()
+                if name and name not in ('未知', code):
+                    return name
+                if code:
+                    _load_sector_from_tushare(code)
+                    cached_name = stock_name_by_code.get(code)
+                    if cached_name:
+                        return cached_name
+                return name or code or '未知'
+
+            for stock in analysis_results:
+                sector_name, sector_chg = _resolve_sector_and_change(stock)
 
                 if sector_name not in sector_stocks:
                     sector_stocks[sector_name] = []
@@ -605,7 +705,7 @@ class OpportunityReportGenerator:
                     stock_parts = []
                     for stock in stocks:
                         code = stock.get('stock_code') or stock.get('code') or '未知'
-                        name = stock.get('name', '未知')
+                        name = _resolve_stock_name(stock)
                         price_changes = stock.get('scoring_result', {}).get('details', {}).get('price_changes', {})
                         change_pct = price_changes.get('change_1d') if price_changes else None
                         

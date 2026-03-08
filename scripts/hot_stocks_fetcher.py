@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 class HotStocksFetcher:
     """热门股票获取器 - 从多个数据源获取市场热度TOP股票 (v4.0 游资思维优化版)"""
+    _stock_name_cache: Dict[str, str] = {}
+    _stock_name_cache_loaded: bool = False
 
     def __init__(self, cache_dir: str = None, disable_cache: bool = None):
         """
@@ -67,6 +69,8 @@ class HotStocksFetcher:
             env_disable = os.environ.get("KRONOS_DISABLE_HOT_CACHE", "0").strip().lower()
             disable_cache = env_disable in {"1", "true", "yes"}
         self.disable_cache = bool(disable_cache)
+        self.enable_tonghuashun = os.environ.get("KRONOS_ENABLE_TONGHUASHUN", "0").strip().lower() in {"1", "true", "yes", "on"}
+        self.enable_browser_fallback = os.environ.get("KRONOS_ENABLE_HOT_BROWSER_FALLBACK", "0").strip().lower() in {"1", "true", "yes", "on"}
 
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -85,6 +89,41 @@ class HotStocksFetcher:
         # 【优化5】数据源健康状态缓存（避免重复检查）
         self._source_health_cache = {}
         self._health_check_timeout = 3  # 健康检查超时时间（秒）
+
+    def _ensure_stock_name_cache(self):
+        if HotStocksFetcher._stock_name_cache_loaded:
+            return
+        HotStocksFetcher._stock_name_cache_loaded = True
+        try:
+            import tushare as ts
+            token = os.environ.get('TUSHARE_TOKEN', '').strip()
+            if not token:
+                cfg_path = os.path.join(os.getcwd(), 'config', 'tushare_config.json')
+                if os.path.exists(cfg_path):
+                    with open(cfg_path, 'r', encoding='utf-8') as f:
+                        cfg = json.load(f)
+                    token = str((cfg.get('tushare') or {}).get('token') or '').strip()
+            if not token:
+                return
+            pro = ts.pro_api(token)
+            df = pro.stock_basic(exchange='', list_status='L', fields='symbol,name')
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    code = str(row.get('symbol') or '').strip()
+                    name = str(row.get('name') or '').strip()
+                    if code and name:
+                        HotStocksFetcher._stock_name_cache[code] = name
+        except Exception:
+            return
+
+    def _get_stock_name(self, code: str) -> str:
+        c = str(code or '').strip()
+        if not c:
+            return ''
+        if c in HotStocksFetcher._stock_name_cache:
+            return HotStocksFetcher._stock_name_cache[c]
+        self._ensure_stock_name_cache()
+        return HotStocksFetcher._stock_name_cache.get(c, c)
 
     def get_hot_stocks(self, limit: int = 100, force_refresh: bool = False) -> List[Dict]:
         """
@@ -127,6 +166,32 @@ class HotStocksFetcher:
                 logger.info("检测到缓存来源非直接采集（可能为fallback/未知），忽略缓存，改为直接采集")
 
         stocks = []
+        seen_codes = set()
+
+        def _append_unique(items: List[Dict], source_name: str) -> int:
+            if not items:
+                return 0
+            added = 0
+            for item in items:
+                code = str(item.get('code') or '').strip()
+                if not code or code in seen_codes:
+                    continue
+                stocks.append(item)
+                seen_codes.add(code)
+                added += 1
+            if added > 0:
+                logger.info(f"  + {source_name} 新增 {added} 只（累计 {len(stocks)}）")
+            return added
+
+        def _need_more() -> bool:
+            return len(stocks) < limit
+
+        def _request_size(multiplier: float = 1.5, minimum: int = 80, maximum: int = 400) -> int:
+            deficit = max(0, limit - len(stocks))
+            if deficit <= 0:
+                return minimum
+            req = int(deficit * multiplier)
+            return max(minimum, min(req, maximum))
 
         # 【优化5】数据源健康检查：优先使用健康的数据源
         logger.info("正在检查数据源健康状态...")
@@ -139,60 +204,56 @@ class HotStocksFetcher:
 
         try:
             logger.info("尝试东方财富股吧人气榜(优先)...")
-            guba_stocks = self._fetch_from_guba_rank(limit=limit)
-            if guba_stocks:
-                stocks = guba_stocks
-                logger.info(f"✓ 东方财富股吧人气榜获取成功: {len(guba_stocks)} 只股票")
+            guba_stocks = self._fetch_from_guba_rank(limit=_request_size(multiplier=1.8, minimum=min(120, limit)))
+            _append_unique(guba_stocks, "股吧人气榜")
         except Exception as e:
             logger.warning(f"东方财富股吧人气榜获取失败: {e}")
 
-        if not stocks:
+        if _need_more():
             try:
                 logger.info("尝试东方财富VIP接口...")
-                vip_stocks = self._fetch_from_eastmoney_vip(limit=limit)
-                if vip_stocks:
-                    stocks = vip_stocks
-                    logger.info(f"✓ 东方财富VIP获取成功: {len(vip_stocks)} 只股票")
+                vip_stocks = self._fetch_from_eastmoney_vip(limit=_request_size(multiplier=2.0, minimum=100))
+                _append_unique(vip_stocks, "东方财富VIP")
             except Exception as e:
                 logger.warning(f"东方财富VIP获取失败: {e}")
 
-        if not stocks:
+        if _need_more():
             try:
-                logger.info("正在从同花顺获取热度榜...")
-                tonghuashun_stocks = self._fetch_from_tonghuashun(limit=limit)
-                if tonghuashun_stocks:
-                    stocks = tonghuashun_stocks[:limit]
-                    logger.info(f"✓ 同花顺获取成功: {len(tonghuashun_stocks)} 只股票")
+                logger.info("尝试东方财富选股器接口...")
+                picker_stocks = self._fetch_from_eastmoney_stockpicker(limit=_request_size(multiplier=2.0, minimum=120))
+                _append_unique(picker_stocks, "东方财富选股器")
             except Exception as e:
-                logger.warning(f"同花顺获取失败: {e}")
+                logger.warning(f"东方财富选股器获取失败: {e}")
 
-        if not stocks:
+        if _need_more():
             try:
                 logger.info("尝试东方财富增强热榜接口（支持>100只股票）...")
-                enhanced_stocks = self._fetch_from_eastmoney_enhanced(limit=limit)
-                if enhanced_stocks:
-                    stocks = enhanced_stocks
-                    logger.info(f"✓ 东方财富增强热榜获取成功: {len(enhanced_stocks)} 只股票")
+                enhanced_stocks = self._fetch_from_eastmoney_enhanced(limit=_request_size(multiplier=2.2, minimum=150, maximum=500))
+                _append_unique(enhanced_stocks, "东方财富增强热榜")
             except Exception as e:
                 logger.warning(f"东方财富增强热榜获取失败: {e}")
 
-        if not stocks:
+        if _need_more():
             try:
                 logger.info("正在从东方财富API接口获取热度榜(备用)...")
-                eastmoney_stocks = self._fetch_from_eastmoney(limit=limit)
-                if eastmoney_stocks:
-                    stocks = eastmoney_stocks
-                    logger.info(f"✓ 东方财富API获取成功: {len(eastmoney_stocks)} 只股票")
+                eastmoney_stocks = self._fetch_from_eastmoney(limit=_request_size(multiplier=2.0, minimum=120))
+                _append_unique(eastmoney_stocks, "东方财富API")
             except Exception as e:
                 logger.warning(f"东方财富API获取失败: {e}")
 
-        if not stocks:
+        if _need_more() and self.enable_tonghuashun:
+            try:
+                logger.info("正在从同花顺获取热度榜...")
+                tonghuashun_stocks = self._fetch_from_tonghuashun(limit=_request_size(multiplier=2.0, minimum=120))
+                _append_unique(tonghuashun_stocks, "同花顺热榜")
+            except Exception as e:
+                logger.warning(f"同花顺获取失败: {e}")
+
+        if _need_more() and self.enable_browser_fallback:
             try:
                 logger.info("尝试东方财富备用入口...")
-                alt_stocks = self._fetch_from_eastmoney_alt(limit=limit)
-                if alt_stocks:
-                    stocks = alt_stocks
-                    logger.info(f"✓ 东方财富备用入口获取成功: {len(alt_stocks)} 只股票")
+                alt_stocks = self._fetch_from_eastmoney_alt(limit=_request_size(multiplier=2.0, minimum=100))
+                _append_unique(alt_stocks, "东方财富备用入口")
             except Exception as e:
                 logger.warning(f"东方财富备用入口获取失败: {e}")
 
@@ -211,8 +272,11 @@ class HotStocksFetcher:
                 first_stock = stocks[0]
                 if 'pe_ratio' in first_stock and 'pb_ratio' in first_stock and 'total_market_cap' in first_stock:
                     has_fundamental = True
+            rank_only_mode = bool(stocks) and all(s.get('rank_only') for s in stocks)
             
-            if not has_fundamental:
+            if rank_only_mode:
+                logger.info("当前为简版排名数据，跳过基本面补充")
+            elif not has_fundamental:
                 try:
                     logger.info("正在批量补充基本面数据(PE/PB)...")
                     stocks_with_fund = self._batch_enrich_fundamental_data(stocks[:limit])
@@ -560,13 +624,6 @@ class HotStocksFetcher:
         stocks = []
         try:
             url = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList"
-            payload = {
-                "appId": "appId01",
-                "globalId": "786e4c21-70dc-435a-93bb-38",
-                "marketType": "",
-                "pageNo": 1,
-                "pageSize": limit
-            }
             headers = {
                 "User-Agent": self.headers['User-Agent'],
                 "Content-Type": "application/json",
@@ -575,22 +632,47 @@ class HotStocksFetcher:
                 "Referer": "https://guba.eastmoney.com/rank/"
             }
 
-            response = requests.post(url, json=payload, headers=headers, timeout=10)
-            if response.status_code != 200:
-                logger.warning(f"股吧人气榜API请求失败: {response.status_code}")
-                return []
+            rank_items = []
+            page_no = 1
+            page_size = 100
+            while len(rank_items) < limit and page_no <= 10:
+                payload = {
+                    "appId": "appId01",
+                    "globalId": "786e4c21-70dc-435a-93bb-38",
+                    "marketType": "",
+                    "pageNo": page_no,
+                    "pageSize": page_size
+                }
+                response = requests.post(url, json=payload, headers=headers, timeout=10)
+                if response.status_code != 200:
+                    logger.warning(f"股吧人气榜API请求失败: {response.status_code}")
+                    break
 
-            data = response.json()
-            if not data.get('data'):
-                logger.warning("股吧人气榜API返回数据为空")
-                return []
+                try:
+                    data = response.json()
+                except Exception:
+                    logger.warning("股吧人气榜API响应非JSON，视为无数据")
+                    break
 
-            # 解析排名数据
-            rank_items = data['data']
+                items = data.get('data') or []
+                if not items:
+                    if page_no == 1:
+                        logger.warning("股吧人气榜API返回数据为空")
+                    break
+
+                rank_items.extend(items)
+                if len(items) < page_size:
+                    break
+                page_no += 1
+
+            rank_items = rank_items[:limit]
+            if not rank_items:
+                return []
             secids = []
             rank_map = {}  # code -> rank_item
 
             for item in rank_items:
+                sc = item.get('sc', '')  # e.g. SZ000063
                 sc = item.get('sc', '')  # e.g. SZ000063
                 if not sc or len(sc) < 3:
                     continue
@@ -617,6 +699,7 @@ class HotStocksFetcher:
             
             # 分批查询，每批50个
             batch_size = 50
+            failed_batches = 0
             for i in range(0, len(secids), batch_size):
                 batch_secids = secids[i:i+batch_size]
                 secids_str = ",".join(batch_secids)
@@ -686,8 +769,31 @@ class HotStocksFetcher:
                                     stocks.append(stock_info)
                                     
                 except Exception as e:
+                    failed_batches += 1
                     logger.warning(f"获取详情批次失败: {e}")
             
+            if not stocks and rank_map:
+                logger.warning(f"详情接口不可用，回退为简版人气榜数据（失败批次: {failed_batches}）")
+                simplified = []
+                for code, rk_info in rank_map.items():
+                    rank = rk_info.get('rank') or 999
+                    simplified.append({
+                        'code': code,
+                        'name': self._get_stock_name(code),
+                        'exchange': rk_info.get('exchange', 'SZ'),
+                        'rank': rank,
+                        'source': 'eastmoney_guba',
+                        'latest_price': 0.0,
+                        'change_pct': 0.0,
+                        'turnover_rate': 0.0,
+                        'volume': 0,
+                        'amount': 0.0,
+                        'popularity_score': max(0, 100 - int(rank) + 1) if isinstance(rank, int) else 50.0,
+                        'rank_only': True
+                    })
+                simplified.sort(key=lambda x: x['rank'])
+                return simplified[:limit]
+
             # 按排名排序
             stocks.sort(key=lambda x: x['rank'])
             return stocks[:limit]
@@ -1401,13 +1507,10 @@ class HotStocksFetcher:
 
         # 同花顺人气榜URL（多个备选）
         urls_to_try = [
-            # 人气榜（按关注度排序）
-            "https://data.10jqka.com.cn/rank/lhb/board/all/field/lbhy/order/desc/page/1/ajax/1/",
-            "https://data.10jqka.com.cn/rank/cjl/board/all/field/hs/order/desc/page/1/ajax/1/",  # 换手率榜
-            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/page/1/ajax/1/",  # 成交额榜
-            # 不带ajax参数的备用URL
-            "https://data.10jqka.com.cn/rank/lhb/board/all/field/lbhy/order/desc/page/1/",
-            "https://data.10jqka.com.cn/rank/cjl/board/all/field/hs/order/desc/page/1/",
+            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/",
+            "https://data.10jqka.com.cn/rank/cjl/",
+            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/page/1/",
+            "https://data.10jqka.com.cn/rank/cjl/board/all/field/hs/order/desc/",
         ]
 
         headers = {
@@ -1594,10 +1697,10 @@ class HotStocksFetcher:
     async def _fetch_tonghuashun_via_browser_async(self, limit: int = 100) -> List[Dict]:
         # 尝试多个同花顺URL
         urls_to_try = [
-            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/page/1/ajax/1/",
-            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/page/1/",
             "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/",
-            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/page/1/ajax/1"
+            "https://data.10jqka.com.cn/rank/cjl/",
+            "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/page/1/",
+            "https://data.10jqka.com.cn/rank/cjl/board/all/field/hs/order/desc/"
         ]
         
         extra_headers = {
@@ -1617,7 +1720,7 @@ class HotStocksFetcher:
                     for url in urls_to_try:
                         try:
                             logger.info(f"浏览器尝试同花顺URL: {url}")
-                            resp = await page.goto(url, wait_until='networkidle', timeout=15000)
+                            resp = await page.goto(url, wait_until='domcontentloaded', timeout=20000)
                             if not resp or resp.status != 200:
                                 logger.warning(f"同花顺浏览器请求失败，状态码: {resp.status if resp else 'None'}")
                                 continue
@@ -1808,15 +1911,16 @@ class HotStocksFetcher:
                 'check': lambda: self._quick_check_eastmoney_vip(),
                 'name': '东方财富VIP'
             },
-            'tonghuashun': {
-                'check': lambda: self._quick_check_tonghuashun(),
-                'name': '同花顺'
-            },
             'eastmoney_api': {
                 'check': lambda: self._quick_check_eastmoney_api(),
                 'name': '东方财富API'
             }
         }
+        if self.enable_tonghuashun:
+            sources_to_check['tonghuashun'] = {
+                'check': lambda: self._quick_check_tonghuashun(),
+                'name': '同花顺'
+            }
         
         # 并发检查各数据源（快速检查）
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1894,17 +1998,26 @@ class HotStocksFetcher:
         try:
             import time as time_module
             start = time_module.time()
-            # 简单的连接测试
-            response = requests.get(
-                "http://q.10jqka.com.cn",
-                headers=self.headers,
-                timeout=self._health_check_timeout
-            )
+            test_urls = [
+                "https://data.10jqka.com.cn/rank/cjl/board/all/field/amount/order/desc/",
+                "https://data.10jqka.com.cn/rank/cjl/"
+            ]
+            response = None
+            last_status = None
+            for test_url in test_urls:
+                try:
+                    response = requests.get(test_url, headers=self.headers, timeout=self._health_check_timeout)
+                    last_status = response.status_code
+                    if response.status_code == 200 and response.text and len(response.text) > 200:
+                        break
+                except Exception:
+                    response = None
             latency = time_module.time() - start
+            is_healthy = bool(response and response.status_code == 200 and response.text and len(response.text) > 200)
             return {
-                'healthy': response.status_code in [200, 301, 302],
+                'healthy': is_healthy,
                 'latency': latency,
-                'error': '' if response.status_code in [200, 301, 302] else f'HTTP {response.status_code}'
+                'error': '' if is_healthy else f'HTTP {last_status or "N/A"}'
             }
         except Exception as e:
             return {'healthy': False, 'latency': 999, 'error': str(e)}

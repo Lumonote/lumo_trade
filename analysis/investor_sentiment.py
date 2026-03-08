@@ -5,6 +5,7 @@
 分析股吧评论、社交媒体讨论等股民情绪指标
 """
 
+import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -65,6 +66,8 @@ class InvestorSentimentAnalyzer:
 
         # 使用全局缓存管理器
         self.global_cache = get_sentiment_cache()
+        flag = os.environ.get('KRONOS_DISABLE_PLAYWRIGHT_GUBA', '1').strip().lower()
+        self.disable_playwright_guba = flag in {'1', 'true', 'yes', 'on'}
 
         # 轻量缓存目录（用于网络不稳定时的短期回退）
         try:
@@ -1493,11 +1496,11 @@ class InvestorSentimentAnalyzer:
         Returns:
             dict: 股吧情绪数据
         """
-        # 首先尝试使用Playwright爬取动态网页
-        posts = DynamicCrawler.crawl_guba_posts(self.stock_code, limit)
+        posts = []
+        if not self.disable_playwright_guba:
+            posts = DynamicCrawler.crawl_guba_posts(self.stock_code, limit)
 
         if not posts:
-            print(f"   ⚠️  Playwright爬取失败,尝试API接口")
             return self._get_guba_from_api(limit)
 
         # 标题规范化工具（全角转半角，去除多余空白）
@@ -1796,7 +1799,12 @@ class InvestorSentimentAnalyzer:
             }
 
             response = requests.get(url, params=params, headers=self.headers, timeout=10)
-            data = response.json()
+            if response.status_code != 200 or not response.text or not response.text.strip():
+                return self._get_default_guba_sentiment()
+            try:
+                data = response.json()
+            except Exception:
+                return self._get_default_guba_sentiment()
 
             if data and data.get('data') and data['data'].get('list'):
                 posts = data['data']['list']
@@ -1844,8 +1852,8 @@ class InvestorSentimentAnalyzer:
 
                 return guba_sentiment
 
-        except Exception as e:
-            print(f"⚠️ API获取股吧情绪失败: {str(e)}")
+        except Exception:
+            return self._get_default_guba_sentiment()
 
         return self._get_default_guba_sentiment()
 

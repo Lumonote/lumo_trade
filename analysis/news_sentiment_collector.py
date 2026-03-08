@@ -69,6 +69,8 @@ class NewsSentimentCollector:
             stock_code: 股票代码 (例如: '688343', '000001')
         """
         self.stock_code = stock_code
+        flag = os.environ.get('KRONOS_DISABLE_PLAYWRIGHT_NEWS', '1').strip().lower()
+        self.disable_playwright_news = flag in {'1', 'true', 'yes', 'on'}
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': 'http://quote.eastmoney.com/'
@@ -89,8 +91,9 @@ class NewsSentimentCollector:
         Returns:
             list: 公告列表
         """
-        # 首先尝试使用Playwright爬取
-        announcements = DynamicCrawler.crawl_announcements(self.stock_code, limit)
+        announcements = []
+        if not self.disable_playwright_news:
+            announcements = DynamicCrawler.crawl_announcements(self.stock_code, limit)
 
         if announcements:
             # 统一字段命名与补充，避免后续分析出现空日期/链接
@@ -114,8 +117,6 @@ class NewsSentimentCollector:
             print(f"   ✅ Playwright成功获取{len(normalized)}条公告")
             return normalized
 
-        # Playwright失败，尝试API
-        print(f"   ⚠️  Playwright爬取失败,尝试API接口")
         try:
             # 东方财富公告API
             url = "http://np-anotice-stock.eastmoney.com/api/security/ann"
@@ -137,7 +138,12 @@ class NewsSentimentCollector:
                 if idx == 1:
                     pass  # 静默尝试，减少日志噪音
                 response = requests.get(url, params=params, headers=self.headers, timeout=10)
-                data = response.json()
+                if response.status_code != 200 or not response.text or not response.text.strip():
+                    continue
+                try:
+                    data = response.json()
+                except Exception:
+                    continue
 
                 if data.get('data') and data['data'].get('list'):
                     for item in data['data']['list']:
@@ -248,8 +254,9 @@ class NewsSentimentCollector:
         Returns:
             list: 新闻列表
         """
-        # 首先尝试使用Playwright爬取
-        news_list = DynamicCrawler.crawl_news_list(self.stock_code, limit)
+        news_list = []
+        if not self.disable_playwright_news:
+            news_list = DynamicCrawler.crawl_news_list(self.stock_code, limit)
 
         if news_list:
             # 归一化日期字段，并添加情感分析
@@ -265,8 +272,6 @@ class NewsSentimentCollector:
             print(f"   ✅ Playwright成功获取{len(news_list)}条新闻")
             return news_list
 
-        # Playwright失败，尝试API
-        print(f"   ⚠️  Playwright爬取失败,尝试API接口")
         try:
             # 现阶段新闻API不稳定，先回退至网页爬取
             print(f"   ⚠️  API未返回新闻数据或不稳定,回退网页爬取")

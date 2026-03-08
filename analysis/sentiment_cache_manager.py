@@ -8,6 +8,7 @@
 import os
 import json
 import time
+import re
 from pathlib import Path
 from typing import Dict, Optional, Any
 from threading import Lock
@@ -81,6 +82,11 @@ class SentimentCacheManager:
             return f"{cache_type}_{identifier}"
         return cache_type
 
+    def _get_cache_file(self, cache_key: str) -> Path:
+        safe_key = cache_key.replace('/', '_').replace('\\', '_')
+        safe_key = re.sub(r'[^\w\-.]', '_', safe_key)
+        return self.cache_dir / f"{safe_key}.json"
+
     def get(self, cache_type: str, identifier: str = '') -> Optional[Dict]:
         """
         获取缓存数据
@@ -105,7 +111,7 @@ class SentimentCacheManager:
                 del self._memory_cache[cache_key]
 
         # 2. 尝试文件缓存
-        cache_file = self.cache_dir / f"{cache_key}.json"
+        cache_file = self._get_cache_file(cache_key)
         if cache_file.exists():
             try:
                 with cache_file.open('r', encoding='utf-8') as f:
@@ -145,7 +151,7 @@ class SentimentCacheManager:
 
         # 2. 写入文件缓存
         try:
-            cache_file = self.cache_dir / f"{cache_key}.json"
+            cache_file = self._get_cache_file(cache_key)
             with cache_file.open('w', encoding='utf-8') as f:
                 json.dump(cached, f, ensure_ascii=False, indent=2)
             logger.debug(f"✓ 缓存已保存: {cache_key}")

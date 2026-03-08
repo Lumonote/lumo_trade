@@ -503,6 +503,24 @@ class OpportunityDiscovery:
                         s['source'] = 'heat'
                 logger.info(f"  ✓ 热股: {len(hot_stocks)}只")
 
+                if len(hot_stocks) < limit:
+                    deficit = limit - len(hot_stocks)
+                    topup_limit = max(deficit * 2, deficit + 30)
+                    logger.info(f"  [1.5/3] 热股不足{limit}只，补充资金流向候选 TOP {topup_limit}...")
+                    moneyflow_candidates = self._fetch_moneyflow_dc_stocks(limit=topup_limit)
+                    seen_hot_codes = set(str(s.get('code') or '') for s in hot_stocks if s.get('code'))
+                    added = 0
+                    for s in moneyflow_candidates:
+                        code = str(s.get('code') or '')
+                        if not code or code in seen_hot_codes:
+                            continue
+                        hot_stocks.append(s)
+                        seen_hot_codes.add(code)
+                        added += 1
+                        if len(hot_stocks) >= limit:
+                            break
+                    logger.info(f"  ✓ 资金流向补充新增: {added}只（当前热股候选: {len(hot_stocks)}只）")
+
                 logger.info(f"  [2/3] 筛选超跌反弹候选...")
                 oversold = self._fetch_oversold_rebound_stocks(limit=30)
                 logger.info(f"  ✓ 超跌反弹: {len(oversold)}只")
@@ -530,7 +548,24 @@ class OpportunityDiscovery:
                 hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
 
         if not hot_stocks:
-            logger.error("✗ 获取热门股票失败，程序终止")
+            logger.warning("热度榜获取失败，回退到资金流向榜单...")
+            hot_stocks = self._fetch_moneyflow_dc_stocks(limit=limit)
+
+        if not hot_stocks:
+            logger.warning("资金流向榜单获取失败，回退到超跌反弹+龙虎榜候选...")
+            oversold = self._fetch_oversold_rebound_stocks(limit=max(10, min(30, limit)))
+            dragon = self._fetch_dragon_tiger_stocks(limit=max(10, min(30, limit)))
+            merged = []
+            seen_codes = set()
+            for s in oversold + dragon:
+                code = s.get('code')
+                if code and code not in seen_codes:
+                    merged.append(s)
+                    seen_codes.add(code)
+            hot_stocks = merged[:limit]
+
+        if not hot_stocks:
+            logger.error("✗ 候选股票获取失败，程序终止")
             return ""
 
         if source not in ('moneyflow_dc', 'multi'):
@@ -858,11 +893,14 @@ class OpportunityDiscovery:
         # v8.0: 所有股票都通过，直接按分数排序选Top10
         all_stocks = [r for r in filter_results if '超大市值过滤' not in r.get('scoring_result', {}).get('exclusion_flags', [])]
         top_stocks = sorted(all_stocks, key=lambda x: x.get('final_score', 0), reverse=True)[:10]
+        news_fail_streak = 0
+        news_collection_disabled = False
 
         for stock in top_stocks:
             try:
                 code = stock.get('stock_code') or stock.get('code')
                 if not code: continue
+                display_name = stock.get('name') or stock.get('stock_name') or code
 
                 # 构造入选原因 (优化版：优先热点与强信号)
                 reasons = []
@@ -954,11 +992,19 @@ class OpportunityDiscovery:
                 
                 # 如果 events 中没有新闻，才尝试重新采集
                 if not latest_news:
-                    logger.info(f"正在补充采集 {stock.get('name')} ({code}) 的最新新闻...")
-                    # 复用 NewsSentimentCollector, 注意它初始化需要code
-                    news_collector = NewsSentimentCollector(code)
-                    # 获取3条最新新闻
-                    latest_news = news_collector.get_latest_news(limit=3)
+                    if not news_collection_disabled:
+                        logger.info(f"正在补充采集 {display_name} ({code}) 的最新新闻...")
+                        news_collector = NewsSentimentCollector(code)
+                        latest_news = news_collector.get_latest_news(limit=3)
+                        if latest_news:
+                            news_fail_streak = 0
+                        else:
+                            news_fail_streak += 1
+                            if news_fail_streak >= 3:
+                                news_collection_disabled = True
+                                logger.info("新闻源连续失败，后续股票跳过逐只补采以减少无效接口调用")
+                    else:
+                        latest_news = []
                 else:
                      # 确保新闻数据格式一致 (只需 title)
                      # events.news_list 通常是 [{'title':..., 'date':...}, ...]
@@ -1005,10 +1051,23 @@ class OpportunityDiscovery:
 
                     latest_news = [n for n in latest_news if _valid_title(n.get('title', ''))]
 
+                if not latest_news:
+                    hot_fallback = events_data.get('hot_news_matches', [])
+                    if hot_fallback:
+                        top_item = hot_fallback[0]
+                        title = top_item.get('title', '')
+                        if title:
+                            latest_news = [{
+                                'title': title,
+                                'source': top_item.get('source', '热门新闻'),
+                                'date': top_item.get('publish_time', ''),
+                                'url': top_item.get('url', '')
+                            }]
+
                 stock['latest_news'] = latest_news
                 
             except Exception as e:
-                logger.warning(f"为 {stock.get('name')} 补充信息失败: {e}")
+                logger.warning(f"为 {display_name} 补充信息失败: {e}")
 
         # 步骤4: 生成报表
         logger.info(f"\n步骤4: 正在生成投资机会挖掘报表...")

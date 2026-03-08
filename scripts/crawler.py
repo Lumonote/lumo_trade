@@ -67,7 +67,8 @@ class CrawlerManager:
         )
 
         # 域名级并发与滑动窗口节流（管理器级，支持配置化）
-        self.domain_semaphores: Dict[str, asyncio.Semaphore] = {}
+        self.domain_semaphores: Dict[str, Dict[str, Any]] = {}
+        self.domain_concurrency: Dict[str, int] = {}
         self.domain_windows: Dict[str, Dict[str, Any]] = {}
         domain_limits_cfg = self.config.get('domain_limits', {})
         if domain_limits_cfg:
@@ -76,7 +77,7 @@ class CrawlerManager:
                     concurrency = max(1, int(lim.get('concurrency', 1)))
                 except Exception:
                     concurrency = 1
-                self.domain_semaphores[domain] = asyncio.Semaphore(concurrency)
+                self.domain_concurrency[domain] = concurrency
 
                 try:
                     max_per_minute = int(lim.get('max_per_minute', 6))
@@ -103,7 +104,7 @@ class CrawlerManager:
                 'qt.gtimg.cn': {'concurrency': 2, 'max_per_minute': 20, 'window_seconds': 60},
             }
             for domain, lim in defaults.items():
-                self.domain_semaphores[domain] = asyncio.Semaphore(lim['concurrency'])
+                self.domain_concurrency[domain] = lim['concurrency']
                 self.domain_windows[domain] = {
                     'max': lim['max_per_minute'],
                     'window': float(lim['window_seconds']),
@@ -819,7 +820,18 @@ class CrawlerManager:
     async def _acquire_domain_slot(self, domain: str) -> None:
         """获取域名级并发与滑动窗口许可"""
         # 并发控制
-        sem = self.domain_semaphores.get(domain)
+        sem = None
+        sem_holder = self.domain_semaphores.get(domain)
+        current_loop = asyncio.get_running_loop()
+        if sem_holder and sem_holder.get('loop_id') == id(current_loop):
+            sem = sem_holder.get('sem')
+        else:
+            concurrency = max(1, int(self.domain_concurrency.get(domain, 1)))
+            sem = asyncio.Semaphore(concurrency)
+            self.domain_semaphores[domain] = {
+                'loop_id': id(current_loop),
+                'sem': sem
+            }
         if sem:
             await sem.acquire()
 
@@ -847,7 +859,8 @@ class CrawlerManager:
             times: deque = win['times']
             times.append(now)
         # 释放并发信号量
-        sem = self.domain_semaphores.get(domain)
+        sem_holder = self.domain_semaphores.get(domain)
+        sem = sem_holder.get('sem') if sem_holder else None
         if sem:
             try:
                 sem.release()

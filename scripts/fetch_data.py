@@ -72,6 +72,8 @@ class TushareDataFetcher:
         """初始化Tushare API"""
         self.config = config
         self.token = config.get('tushare', {}).get('token', '')
+        self._init_error = ''
+        self._unavailable_warned = False
 
         # 尝试从环境变量获取
         if not self.token or self.token == "your_tushare_token_here":
@@ -83,15 +85,17 @@ class TushareDataFetcher:
 
         if self.token and TUSHARE_AVAILABLE:
             try:
-                ts.set_token(self.token)
-                self.pro = ts.pro_api()
+                self.pro = ts.pro_api(self.token)
                 print("✅ Tushare API已连接")
             except Exception as e:
+                self._init_error = str(e)
                 print(f"⚠️  Tushare连接失败: {e}")
         else:
             if not TUSHARE_AVAILABLE:
+                self._init_error = "Tushare模块未安装"
                 print("⚠️  Tushare模块未安装")
             else:
+                self._init_error = "未找到Tushare Token"
                 print("⚠️  未找到Tushare Token，请配置config/tushare_config.json或设置TUSHARE_TOKEN环境变量")
 
     def _rate_limit_wait(self):
@@ -127,7 +131,12 @@ class TushareDataFetcher:
                          freq: str = '5min', adj: str = 'qfq') -> Optional[pd.DataFrame]:
         """从Tushare获取股票数据"""
         if not self.pro:
-            print("❌ Tushare未初始化，无法获取数据")
+            if not self._unavailable_warned:
+                if self._init_error:
+                    print(f"⚠️  Tushare不可用，已跳过: {self._init_error}")
+                else:
+                    print("⚠️  Tushare不可用，已跳过")
+                self._unavailable_warned = True
             return None
 
         ts_code = self._convert_symbol_format(symbol)
@@ -436,7 +445,10 @@ class MultiSourceDataFetcher:
             try:
                 self.config = self._load_config(self.config_path)
                 self.tushare_fetcher = TushareDataFetcher(self.config)
-                print("✅ Tushare数据源已初始化")
+                if self.tushare_fetcher and getattr(self.tushare_fetcher, 'pro', None):
+                    print("✅ Tushare数据源已初始化")
+                else:
+                    print("⚠️  Tushare数据源不可用，自动跳过")
             except Exception as e:
                 print(f"⚠️  Tushare初始化失败: {e}")
                 self.config = {'data_settings': {'output_dir': './data/'}}
@@ -471,7 +483,7 @@ class MultiSourceDataFetcher:
     def get_available_sources(self) -> List[str]:
         """获取可用的数据源列表"""
         sources = []
-        if self.tushare_fetcher:
+        if self.tushare_fetcher and getattr(self.tushare_fetcher, 'pro', None):
             sources.append('tushare')
         if self.baostock_fetcher:
             sources.append('baostock')
