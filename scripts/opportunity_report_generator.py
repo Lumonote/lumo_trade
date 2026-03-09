@@ -263,8 +263,10 @@ class OpportunityReportGenerator:
 
             lines = []
             lines.append("## 🏆 综合排名 TOP20")
-            lines.append("| 排名 | 代码 | 股票名称 | 综合得分 | 详细分析 |")
-            lines.append("|:-:|:-:|:-:|:-:|:--|")
+            lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
+            lines.append('<colgroup><col style="width: 8%;"><col style="width: 12%;"><col style="width: 15%;"><col style="width: 10%;"><col></colgroup>')
+            lines.append('<thead><tr><th>排名</th><th>代码</th><th>股票名称</th><th>综合得分</th><th>详细分析</th></tr></thead>')
+            lines.append('<tbody>')
 
             for i, stock in enumerate(top_20[:20], 1):
                 code = stock.get('stock_code') or stock.get('code') or '未知'
@@ -275,7 +277,9 @@ class OpportunityReportGenerator:
                 advanced_txt = self._build_advanced_analysis_summary(stock)
                 full_analysis = f"{summary_txt}；【高级】{advanced_txt}" if advanced_txt and advanced_txt != "—" else summary_txt
                 
-                lines.append(f"| {i} | {code} | {name_txt} | {score:.2f} | {full_analysis} |")
+                lines.append(f'<tr><td style="text-align: center;">{i}</td><td style="text-align: center;">{code}</td><td>{name_txt}</td><td style="text-align: center;">{score:.2f}</td><td>{full_analysis}</td></tr>')
+
+            lines.append('</tbody></table>')
 
             # v8.0: 添加置信度分级统计 + 历史回测表现
             lines.append("\n---\n")
@@ -303,8 +307,10 @@ class OpportunityReportGenerator:
                     tier_counts[tier] += 1
 
             lines.append("### 当日推荐置信度分布\n")
-            lines.append("| 置信度 | 说明 | 数量 |")
-            lines.append("|--------|------|------|")
+            lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
+            lines.append('<colgroup><col style="width: 15%;"><col><col style="width: 15%;"></colgroup>')
+            lines.append('<thead><tr><th>置信度</th><th>说明</th><th>数量</th></tr></thead>')
+            lines.append('<tbody>')
             tier_info = [
                 ('S', '强烈推荐(≥85分)'),
                 ('A', '可考虑(≥78分)'),
@@ -312,7 +318,9 @@ class OpportunityReportGenerator:
                 ('C', '不建议(<70分)')
             ]
             for tier, desc in tier_info:
-                lines.append(f"| {tier} | {desc} | {tier_counts.get(tier, 0)} |")
+                count = tier_counts.get(tier, 0)
+                lines.append(f'<tr><td style="text-align: center; font-weight: bold;">{tier}</td><td>{desc}</td><td style="text-align: center;">{count}</td></tr>')
+            lines.append('</tbody></table>')
 
             # 历史回测统计（使用 v8.0 评分的回测分析数据）
             try:
@@ -410,9 +418,10 @@ class OpportunityReportGenerator:
                 if bt_with_returns is not None and len(bt_with_returns) >= 10:
                     lines.append("\n> **备注**: 每月第一个交易日将根据前一个月量化选股结果进行AI自我回测及算法优化，如有需求意见也可在留言中反馈，如有AI相关业务落地咨询的可私聊博主。\n")
                     lines.append("\n### 历史回测表现（基于已验证数据）\n")
-
-                    lines.append("| 评分区间 | 数量 | 5日均收益 | 5日胜率 | 10日均收益 | 盈亏比 |")
-                    lines.append("|----------|------|-----------|---------|-----------|--------|")
+                    lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
+                    lines.append('<colgroup><col style="width: 15%;"><col style="width: 10%;"><col style="width: 15%;"><col style="width: 12%;"><col style="width: 15%;"><col style="width: 12%;"></colgroup>')
+                    lines.append('<thead><tr><th>评分区间</th><th>数量</th><th>5日均收益</th><th>5日胜率</th><th>10日均收益</th><th>盈亏比</th></tr></thead>')
+                    lines.append('<tbody>')
 
                     score_bins = [
                         (85, 999, 'S级(≥85)'),
@@ -429,7 +438,7 @@ class OpportunityReportGenerator:
                             subset = bt_with_returns[(bt_with_returns[_score_col] >= low) & (bt_with_returns[_score_col] < high)]
 
                         if len(subset) == 0:
-                            lines.append(f"| {label} | 0 | — | — | — | — |")
+                            lines.append(f'<tr><td style="font-weight: bold;">{label}</td><td style="text-align: center;">0</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
                             continue
 
                         r5 = subset['return_5d'].dropna()
@@ -442,9 +451,10 @@ class OpportunityReportGenerator:
                             losses = r5[r5 < 0].sum()
                             pf = abs(wins / losses) if losses != 0 else float('inf')
                             pf_str = f"{pf:.2f}" if pf != float('inf') else "∞"
-                            lines.append(f"| {label} | {len(subset)} | {avg5:+.2f}% | {wr:.1f}% | {avg10_str} | {pf_str} |")
+                            lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td style="text-align: center;">{avg5:+.2f}%</td><td style="text-align: center;">{wr:.1f}%</td><td style="text-align: center;">{avg10_str}</td><td style="text-align: center;">{pf_str}</td></tr>')
                         else:
-                            lines.append(f"| {label} | {len(subset)} | — | — | — | — |")
+                            lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
+                    lines.append('</tbody></table>')
 
                     # 关键阈值提示
                     _above78 = bt_with_returns[bt_with_returns[_score_col] >= 78]
@@ -473,54 +483,56 @@ class OpportunityReportGenerator:
                     lines.append("\n### 收益分档分布\n")
                     _return_col = 'return_5d'
                     _valid = bt_with_returns.dropna(subset=[_return_col])
-                    if len(_valid) > 0:
-                        _tiers = [
-                            (50, '≥50%'),
-                            (30, '≥30%'),
-                            (10, '≥10%'),
-                            (0, '≥0%(盈利)'),
-                            (-10, '-10%~0%'),
-                            (-9999, '<-10%'),
-                        ]
-                        lines.append("| 5日收益区间 | 数量 | 占比 | 代表个股 |")
-                        lines.append("|:-:|:-:|:-:|:--|")
+                    _has_name = 'name' in _valid.columns
+                    _has_date = 'report_date' in _valid.columns
 
-                        _has_name = 'name' in _valid.columns
-                        _has_date = 'report_date' in _valid.columns
+                    lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
+                    lines.append('<colgroup><col style="width: 18%;"><col style="width: 10%;"><col style="width: 12%;"><col></colgroup>')
+                    lines.append('<thead><tr><th>5日收益区间</th><th>数量</th><th>占比</th><th>代表个股</th></tr></thead>')
+                    lines.append('<tbody>')
 
-                        for _ti, (_threshold, _label) in enumerate(_tiers):
-                            if _threshold == -9999:
-                                _tier_df = _valid[_valid[_return_col] < -10]
-                            elif _threshold == 0:
-                                _tier_df = _valid[(_valid[_return_col] >= 0) & (_valid[_return_col] < 10)]
-                            elif _threshold == -10:
-                                _tier_df = _valid[(_valid[_return_col] >= -10) & (_valid[_return_col] < 0)]
+                    _tiers = [
+                        (50, '≥50%'),
+                        (30, '≥30%'),
+                        (10, '≥10%'),
+                        (0, '≥0%(盈利)'),
+                        (-10, '-10%~0%'),
+                        (-9999, '<-10%'),
+                    ]
+
+                    for _ti, (_threshold, _label) in enumerate(_tiers):
+                        if _threshold == -9999:
+                            _tier_df = _valid[_valid[_return_col] < -10]
+                        elif _threshold == 0:
+                            _tier_df = _valid[(_valid[_return_col] >= 0) & (_valid[_return_col] < 10)]
+                        elif _threshold == -10:
+                            _tier_df = _valid[(_valid[_return_col] >= -10) & (_valid[_return_col] < 0)]
+                        else:
+                            _next_t = _tiers[_ti - 1][0] if _ti > 0 else 9999
+                            if _next_t == 9999:
+                                _tier_df = _valid[_valid[_return_col] >= _threshold]
                             else:
-                                _next_t = _tiers[_ti - 1][0] if _ti > 0 else 9999
-                                if _next_t == 9999:
-                                    _tier_df = _valid[_valid[_return_col] >= _threshold]
+                                _tier_df = _valid[(_valid[_return_col] >= _threshold) & (_valid[_return_col] < _next_t)]
+
+                        _cnt = len(_tier_df)
+                        _pct = _cnt / len(_valid) * 100
+
+                        _examples = ""
+                        if _cnt > 0:
+                            _top = _tier_df.nlargest(min(3, _cnt), _return_col)
+                            _parts = []
+                            for _, _row in _top.iterrows():
+                                _sname = _row.get('name', _row.get('code', ''))
+                                _sdate = str(_row.get('report_date', ''))[:10] if _has_date else ''
+                                _sret = _row[_return_col]
+                                if _sdate:
+                                    _parts.append(f"{_sname}({_sdate},{_sret:+.1f}%)")
                                 else:
-                                    _tier_df = _valid[(_valid[_return_col] >= _threshold) & (_valid[_return_col] < _next_t)]
+                                    _parts.append(f"{_sname}({_sret:+.1f}%)")
+                            _examples = " ".join(_parts)
 
-                            _cnt = len(_tier_df)
-                            _pct = _cnt / len(_valid) * 100
-
-                            # 代表个股: 取收益最高的前3只
-                            _examples = ""
-                            if _cnt > 0:
-                                _top = _tier_df.nlargest(min(3, _cnt), _return_col)
-                                _parts = []
-                                for _, _row in _top.iterrows():
-                                    _sname = _row.get('name', _row.get('code', ''))
-                                    _sdate = str(_row.get('report_date', ''))[:10] if _has_date else ''
-                                    _sret = _row[_return_col]
-                                    if _sdate:
-                                        _parts.append(f"{_sname}({_sdate},{_sret:+.1f}%)")
-                                    else:
-                                        _parts.append(f"{_sname}({_sret:+.1f}%)")
-                                _examples = " ".join(_parts)
-
-                            lines.append(f"| {_label} | {_cnt} | {_pct:.1f}% | {_examples} |")
+                        lines.append(f'<tr><td style="font-weight: bold; text-align: center;">{_label}</td><td style="text-align: center;">{_cnt}</td><td style="text-align: center;">{_pct:.1f}%</td><td>{_examples}</td></tr>')
+                    lines.append('</tbody></table>')
             except Exception as _e:
                 logger.debug(f"回测统计加载失败: {_e}")
                 pass  # 无回测数据时静默跳过
@@ -545,8 +557,10 @@ class OpportunityReportGenerator:
             # 添加板块分组股票表格
             lines.append("\n---\n")
             lines.append("## 📊 热点股票板块分布\n")
-            lines.append("| 所属板块 | 股票列表 |")
-            lines.append("|:-:|:--|")
+            lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
+            lines.append('<colgroup><col style="width: 30%;"><col></colgroup>')
+            lines.append('<thead><tr><th>所属板块</th><th>股票列表</th></tr></thead>')
+            lines.append('<tbody>')
 
             # 按板块分组所有股票，存储板块涨幅
             sector_stocks = {}
@@ -749,7 +763,9 @@ class OpportunityReportGenerator:
                             stock_parts.append(f"**{name}({code})**")
 
                     stocks_str = " ".join(stock_parts)
-                    lines.append(f"| {sector_header} | {stocks_str} |")
+                    lines.append(f'<tr><td style="font-weight: bold;">{sector_header}</td><td>{stocks_str}</td></tr>')
+
+            lines.append('</tbody></table>')
 
             # 添加个股资金流向（流入前20 + 流出前20）
             try:
@@ -770,8 +786,10 @@ class OpportunityReportGenerator:
                     inflow = top_list_data.get('inflow', [])
                     if inflow:
                         lines.append("### 🔴 主力净流入 TOP 20\n")
-                        lines.append("| # | 股票 | 最新价 | 涨跌幅 | 主力净流入 | 净占比 | 超大单净流入 | 大单净流入 |")
-                        lines.append("|---|------|--------|--------|-----------|--------|------------|----------|")
+                        lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
+                        lines.append('<colgroup><col style="width: 8%;"><col style="width: 25%;"><col></colgroup>')
+                        lines.append('<thead><tr><th>#</th><th>股票</th><th>资金流向明细</th></tr></thead>')
+                        lines.append('<tbody>')
                         for idx, item in enumerate(inflow, 1):
                             code = item.get('code', '')
                             name = item.get('name', '')
@@ -781,15 +799,22 @@ class OpportunityReportGenerator:
                             net_rate = item.get('net_amount_rate', 0)
                             elg = item.get('buy_elg_amount', 0)
                             lg = item.get('buy_lg_amount', 0)
-                            lines.append(f"| {idx} | **{name}**({code}) | {close:.2f} | {pct:+.2f}% | {fmt_amount(net)} | {net_rate:+.1f}% | {fmt_amount(elg)} | {fmt_amount(lg)} |")
+                            pct_str = f"{pct:+.2f}%" if pct >= 0 else f"{pct:.2f}%"
+                            net_str = f"{net/10000:.2f}亿" if abs(net) >= 10000 else f"{net:.0f}万"
+                            elg_str = f"{elg/10000:.2f}亿" if abs(elg) >= 10000 else f"{elg:.0f}万"
+                            lg_str = f"{lg/10000:.2f}亿" if abs(lg) >= 10000 else f"{lg:.0f}万"
+                            lines.append(f'<tr><td style="text-align: center;">{idx}</td><td><strong>{name}</strong>({code})</td><td>最新价: {close:.2f} | 涨跌幅: {pct_str} | 主力净流入: {net_str} | 净占比: {net_rate:+.1f}% | 超大单净流入: {elg_str} | 大单净流入: {lg_str}</td></tr>')
+                        lines.append('</tbody></table>')
                         lines.append("")
 
                     # 流出前20
                     outflow = top_list_data.get('outflow', [])
                     if outflow:
                         lines.append("### 🟢 主力净流出 TOP 20\n")
-                        lines.append("| # | 股票 | 最新价 | 涨跌幅 | 主力净流出 | 净占比 | 超大单净流入 | 大单净流入 |")
-                        lines.append("|---|------|--------|--------|-----------|--------|------------|----------|")
+                        lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
+                        lines.append('<colgroup><col style="width: 8%;"><col style="width: 25%;"><col></colgroup>')
+                        lines.append('<thead><tr><th>#</th><th>股票</th><th>资金流向明细</th></tr></thead>')
+                        lines.append('<tbody>')
                         for idx, item in enumerate(outflow, 1):
                             code = item.get('code', '')
                             name = item.get('name', '')
@@ -799,7 +824,12 @@ class OpportunityReportGenerator:
                             net_rate = item.get('net_amount_rate', 0)
                             elg = item.get('buy_elg_amount', 0)
                             lg = item.get('buy_lg_amount', 0)
-                            lines.append(f"| {idx} | **{name}**({code}) | {close:.2f} | {pct:+.2f}% | {fmt_amount(net)} | {net_rate:+.1f}% | {fmt_amount(elg)} | {fmt_amount(lg)} |")
+                            pct_str = f"{pct:+.2f}%" if pct >= 0 else f"{pct:.2f}%"
+                            net_str = f"{net/10000:.2f}亿" if abs(net) >= 10000 else f"{net:.0f}万"
+                            elg_str = f"{elg/10000:.2f}亿" if abs(elg) >= 10000 else f"{elg:.0f}万"
+                            lg_str = f"{lg/10000:.2f}亿" if abs(lg) >= 10000 else f"{lg:.0f}万"
+                            lines.append(f'<tr><td style="text-align: center;">{idx}</td><td><strong>{name}</strong>({code})</td><td>最新价: {close:.2f} | 涨跌幅: {pct_str} | 主力净流出: {net_str} | 净占比: {net_rate:+.1f}% | 超大单净流入: {elg_str} | 大单净流入: {lg_str}</td></tr>')
+                        lines.append('</tbody></table>')
                         lines.append("")
             except Exception as e:
                 logger.warning(f"生成资金流向Markdown失败: {e}")
@@ -1069,12 +1099,14 @@ class OpportunityReportGenerator:
                         <td style="padding: 8px;">
                             <strong>{name}</strong><span style="color: #64748b; font-size: 12px;">({code})</span>
                         </td>
-                        <td style="padding: 8px; text-align: right;">{close:.2f}</td>
-                        <td style="padding: 8px; text-align: right; color: {pct_color}; font-weight: bold;">{pct:+.2f}%</td>
-                        <td style="padding: 8px; text-align: right; color: {net_color}; font-weight: bold;">{fmt_amount(net)}</td>
-                        <td style="padding: 8px; text-align: right; color: {net_color};">{net_rate:+.1f}%</td>
-                        <td style="padding: 8px; text-align: right;">{fmt_amount(elg)}</td>
-                        <td style="padding: 8px; text-align: right;">{fmt_amount(lg)}</td>
+                        <td style="padding: 8px; text-align: left;">
+                            <div>最新价: <span style="font-weight: bold;">{close:.2f}</span></div>
+                            <div style="color: {pct_color}; font-weight: bold;">涨跌幅: {pct:+.2f}%</div>
+                            <div style="color: {net_color}; font-weight: bold;">主力净流入: {fmt_amount(net)}</div>
+                            <div style="color: {net_color};">净占比: {net_rate:+.1f}%</div>
+                            <div>超大单净流入: {fmt_amount(elg)}</div>
+                            <div>大单净流入: {fmt_amount(lg)}</div>
+                        </td>
                     </tr>
                 ''')
 
@@ -1084,14 +1116,9 @@ class OpportunityReportGenerator:
                     <table class="top10-table" style="width: 100%;">
                         <thead>
                             <tr>
-                                <th style="width: 40px;">#</th>
-                                <th style="width: 140px;">股票</th>
-                                <th style="width: 80px;">最新价</th>
-                                <th style="width: 80px;">涨跌幅</th>
-                                <th style="width: 100px;">主力净流入</th>
-                                <th style="width: 80px;">净占比</th>
-                                <th style="width: 100px;">超大单净流入</th>
-                                <th style="width: 100px;">大单净流入</th>
+                                <th style="width: 50px;">#</th>
+                                <th style="width: 120px;">股票</th>
+                                <th>资金流向明细</th>
                             </tr>
                         </thead>
                         <tbody>
