@@ -166,21 +166,44 @@ class HotStocksFetcher:
                 logger.info("检测到缓存来源非直接采集（可能为fallback/未知），忽略缓存，改为直接采集")
 
         stocks = []
-        seen_codes = set()
+        code_to_index = {}
+
+        def _safe_popularity(item: Dict) -> float:
+            try:
+                return float(item.get('popularity_score', 0) or 0)
+            except Exception:
+                return 0.0
+
+        def _safe_rank(item: Dict) -> int:
+            try:
+                val = int(item.get('rank', 0) or 0)
+                return val if val > 0 else 999999
+            except Exception:
+                return 999999
 
         def _append_unique(items: List[Dict], source_name: str) -> int:
             if not items:
                 return 0
             added = 0
+            replaced = 0
             for item in items:
                 code = str(item.get('code') or '').strip()
-                if not code or code in seen_codes:
+                if not code:
                     continue
+                if code in code_to_index:
+                    old_idx = code_to_index[code]
+                    old_item = stocks[old_idx]
+                    new_key = (-_safe_popularity(item), _safe_rank(item))
+                    old_key = (-_safe_popularity(old_item), _safe_rank(old_item))
+                    if new_key < old_key:
+                        stocks[old_idx] = item
+                        replaced += 1
+                    continue
+                code_to_index[code] = len(stocks)
                 stocks.append(item)
-                seen_codes.add(code)
                 added += 1
-            if added > 0:
-                logger.info(f"  + {source_name} 新增 {added} 只（累计 {len(stocks)}）")
+            if added > 0 or replaced > 0:
+                logger.info(f"  + {source_name} 新增 {added} 只，替换 {replaced} 只（累计 {len(stocks)}）")
             return added
 
         def _need_more() -> bool:
@@ -301,6 +324,10 @@ class HotStocksFetcher:
         except Exception:
             # 严格避免因缓存失败影响主流程
             pass
+
+        stocks.sort(key=lambda x: (-_safe_popularity(x), _safe_rank(x)))
+        for idx, stock in enumerate(stocks, start=1):
+            stock['rank'] = idx
 
         logger.info(f"✓ 热门股票获取完成: {len(stocks)} 只股票")
         return stocks[:limit]
