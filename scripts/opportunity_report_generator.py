@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import json
 import logging
+from urllib.parse import quote
 
 # 添加项目根目录到路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -138,6 +139,37 @@ class OpportunityReportGenerator:
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
+    def _normalize_topic_url(self, raw_url: str, title: str = '') -> str:
+        url = (raw_url or '').strip()
+        if url.startswith('http://') or url.startswith('https://'):
+            return url
+        if url:
+            base = 'https://gubatopic.eastmoney.com/'
+            if url.startswith('/'):
+                return base.rstrip('/') + url
+            return base.rstrip('/') + '/' + url
+        if title:
+            return f"https://so.eastmoney.com/search.htm?q={quote(title)}"
+        return "https://gubatopic.eastmoney.com/"
+
+    def _append_html_table_start(self, lines: List[str], headers: List[str], col_widths: List[str]):
+        lines.append('<table style="width:100%; table-layout:fixed;">')
+        lines.append("<colgroup>")
+        for w in col_widths:
+            lines.append(f'<col style="width:{w};">')
+        lines.append("</colgroup>")
+        lines.append("<thead>")
+        lines.append("<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>")
+        lines.append("</thead>")
+        lines.append("<tbody>")
+
+    def _append_html_table_row(self, lines: List[str], cells: List[str]):
+        lines.append("<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
+
+    def _append_html_table_end(self, lines: List[str]):
+        lines.append("</tbody>")
+        lines.append("</table>")
+
     def generate_report(self, analysis_results: List[Dict],
                        report_title: str = "投资机会挖掘报告",
                        global_hot_news: List[Dict] = None,
@@ -232,13 +264,12 @@ class OpportunityReportGenerator:
             }
 
             lines = []
-            lines.append("# 投资机会挖掘 TOP20 报告")
-            lines.append(f"\n生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-
-            # 综合排名 TOP20
             lines.append("## 🏆 综合排名 TOP20")
-            lines.append(" | 排名 | 代码 | 股票名称 | 综合得分 | 详细分析 | ")
-            lines.append(" |------|------|----------|----------|----------| ")
+            self._append_html_table_start(
+                lines,
+                headers=["排名", "代码", "股票名称", "综合得分", "详细分析"],
+                col_widths=["5%", "8%", "12%", "8%", "67%"]
+            )
 
             for i, stock in enumerate(top_20[:20], 1):
                 code = stock.get('stock_code') or stock.get('code') or '未知'
@@ -249,7 +280,9 @@ class OpportunityReportGenerator:
                 advanced_txt = self._build_advanced_analysis_summary(stock)
                 full_analysis = f"{summary_txt}<br>【高级】{advanced_txt}" if advanced_txt and advanced_txt != "—" else summary_txt
                 
-                lines.append(f" | {i} | {code} | {name_txt} | {score:.2f} | {full_analysis} | ")
+                self._append_html_table_row(lines, [str(i), str(code), str(name_txt), f"{score:.2f}", full_analysis])
+
+            self._append_html_table_end(lines)
 
             # v8.0: 添加置信度分级统计 + 历史回测表现
             lines.append("\n---\n")
@@ -456,8 +489,11 @@ class OpportunityReportGenerator:
                             (-10, '-10%~0%'),
                             (-9999, '<-10%'),
                         ]
-                        lines.append("| 5日收益区间 | 数量 | 占比 | 代表个股 |")
-                        lines.append("|------------|------|------|----------|")
+                        self._append_html_table_start(
+                            lines,
+                            headers=["5日收益区间", "数量", "占比", "代表个股"],
+                            col_widths=["14%", "8%", "8%", "70%"]
+                        )
 
                         _has_name = 'name' in _valid.columns
                         _has_date = 'report_date' in _valid.columns
@@ -494,7 +530,8 @@ class OpportunityReportGenerator:
                                         _parts.append(f"{_sname}({_sret:+.1f}%)")
                                 _examples = " ".join(_parts)
 
-                            lines.append(f"| {_label} | {_cnt} | {_pct:.1f}% | {_examples} |")
+                            self._append_html_table_row(lines, [str(_label), str(_cnt), f"{_pct:.1f}%", _examples])
+                        self._append_html_table_end(lines)
             except Exception as _e:
                 logger.debug(f"回测统计加载失败: {_e}")
                 pass  # 无回测数据时静默跳过
@@ -510,23 +547,20 @@ class OpportunityReportGenerator:
                     if not title or '【有奖】' in title:
                         continue
                     raw_url = t.get('url', '') or ''
-                    if raw_url.startswith('http'):
-                        url = raw_url
-                    else:
-                        base = 'https://gubatopic.eastmoney.com/'
-                        if raw_url.startswith('/'):
-                            url = base.rstrip('/') + raw_url
-                        else:
-                            url = base.rstrip('/') + '/' + raw_url
+                    url = self._normalize_topic_url(raw_url, title)
                     heat = t.get('heat', 0)
-                    lines.append(f"{idx}. [{title}]({url}) - 热度: {heat}")
+                    safe_title = title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    lines.append(f'{idx}. <a href="{url}" target="_blank">{safe_title}</a> - 热度: {heat}')
                     idx += 1
 
             # 添加板块分组股票表格
             lines.append("\n---\n")
             lines.append("## 📊 热点股票板块分布\n")
-            lines.append(" | 所属板块 | 股票列表 |")
-            lines.append(" |-------------------|----------|")
+            self._append_html_table_start(
+                lines,
+                headers=["所属板块", "股票列表"],
+                col_widths=["18%", "82%"]
+            )
 
             # 按板块分组所有股票，存储板块涨幅
             sector_stocks = {}
@@ -697,7 +731,7 @@ class OpportunityReportGenerator:
 
             # 如果没有板块数据，提示用户
             if not sector_stocks:
-                lines.append(" | 暂无板块数据 | — |")
+                self._append_html_table_row(lines, ["暂无板块数据", "—"])
             else:
                 # 按股票数量降序排序，相同数量的按涨幅降序排序
                 sorted_sectors = sorted(
@@ -729,7 +763,8 @@ class OpportunityReportGenerator:
                             stock_parts.append(f"**{name}({code})**")
 
                     stocks_str = " ".join(stock_parts)
-                    lines.append(f" | {sector_header} | {stocks_str} |")
+                    self._append_html_table_row(lines, [sector_header, stocks_str])
+            self._append_html_table_end(lines)
 
             # 添加个股资金流向（流入前20 + 流出前20）
             try:
@@ -1212,7 +1247,8 @@ class OpportunityReportGenerator:
         # 构建热门新闻关联股票映射
         related_map = {}
         def _mk_key(item):
-            url = (item.get('url') or '').strip()
+            item_title = (item.get('title') or '').strip()
+            url = self._normalize_topic_url((item.get('url') or '').strip(), item_title)
             if url:
                 return url
             return f"{(item.get('source') or '').strip()}|{(item.get('title') or '').strip()}"
@@ -1262,7 +1298,7 @@ class OpportunityReportGenerator:
             key = _mk_key(item)
             stocks = related_map.get(key, [])[:8]
             title = (item.get('title') or '').replace('"', '&quot;')
-            url = (item.get('url') or '').strip()
+            url = self._normalize_topic_url((item.get('url') or '').strip(), title)
             source = item.get('source') or ''
             publish_time = item.get('publish_time') or ''
             heat = item.get('heat') or ''
