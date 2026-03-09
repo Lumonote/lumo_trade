@@ -156,11 +156,11 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
                 penalty += 12  # v12优化: 10→12
                 details.append(f'板块过热{sector:.0f}:-12')
             elif 60 <= sector < 75:
-                penalty += 5   # v15: 保持5(加大无正面效果)
-                details.append(f'板块死区{sector:.0f}:-8')
+                penalty += 10  # v16: 5→10(B+胜率+4.9%,收益+0.70%)
+                details.append(f'板块死区{sector:.0f}:-10')
 
         # 原始评分过高（过拟合反指标）
-        if score >= 78:  # v14优化: 74→78
+        if score >= 76:  # v16优化: 78→76(B+胜率51.9→56.8%)
             penalty += 20  # v14优化: 25→20
             details.append(f'评分过高{score:.0f}:-20')
 
@@ -184,8 +184,8 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
 
         # 信号拥挤
         if pd.notna(buy_sig) and buy_sig >= 15:
-            penalty += 1   # v9优化: 10→1
-            details.append(f'信号拥挤{buy_sig:.0f}:-1')
+            penalty += 8   # v16优化: 1→8(信号拥挤惩罚加大)
+            details.append(f'信号拥挤{buy_sig:.0f}:-8')
 
         # 卖出占优 — v9优化: 移除（回测验证无效）
         # if pd.notna(sell_sig) and pd.notna(buy_sig) and sell_sig > buy_sig:

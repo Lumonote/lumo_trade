@@ -731,51 +731,58 @@ class OpportunityReportGenerator:
                     stocks_str = " ".join(stock_parts)
                     lines.append(f" | {sector_header} | {stocks_str} |")
 
-            # 添加龙虎榜机构成交明细（按股票去重，显示关联营业部）
+            # 添加个股资金流向（流入前20 + 流出前20）
             try:
                 top_list_data = self._fetch_top_list()
                 if top_list_data:
                     lines.append("\n---\n")
-                    lines.append("## 🐉 龙虎榜机构成交明细\n")
+                    td = top_list_data.get('trade_date', '')
+                    date_display = f"{td[:4]}-{td[4:6]}-{td[6:]}" if len(td) == 8 else td
+                    lines.append(f"## 💰 个股资金流向（{date_display}）\n")
 
                     def fmt_amount(val):
-                        if abs(val) >= 100000000:
-                            return f"{val/100000000:.2f}亿"
-                        elif abs(val) >= 10000:
-                            return f"{val/10000:.2f}万"
+                        if abs(val) >= 10000:
+                            return f"{val/10000:.2f}亿"
                         else:
-                            return f"{val:.2f}"
+                            return f"{val:.0f}万"
 
-                    # 按股票聚合，去重
-                    stock_map = {}  # code -> {name, net_buy, exalters}
-                    for exalter, stocks in top_list_data.items():
-                        for item in stocks:
+                    # 流入前20
+                    inflow = top_list_data.get('inflow', [])
+                    if inflow:
+                        lines.append("### 🔴 主力净流入 TOP 20\n")
+                        lines.append("| # | 股票 | 最新价 | 涨跌幅 | 主力净流入 | 净占比 | 超大单净流入 | 大单净流入 |")
+                        lines.append("|---|------|--------|--------|-----------|--------|------------|----------|")
+                        for idx, item in enumerate(inflow, 1):
                             code = item.get('code', '')
-                            if code not in stock_map:
-                                stock_map[code] = {
-                                    'name': item.get('name', ''),
-                                    'net_buy': 0,
-                                    'exalters': []
-                                }
-                            stock_map[code]['net_buy'] += item.get('net_buy', 0)
-                            if exalter not in stock_map[code]['exalters']:
-                                stock_map[code]['exalters'].append(exalter)
+                            name = item.get('name', '')
+                            close = item.get('close', 0)
+                            pct = item.get('pct_change', 0)
+                            net = item.get('net_amount', 0)
+                            net_rate = item.get('net_amount_rate', 0)
+                            elg = item.get('buy_elg_amount', 0)
+                            lg = item.get('buy_lg_amount', 0)
+                            lines.append(f"| {idx} | **{name}**({code}) | {close:.2f} | {pct:+.2f}% | {fmt_amount(net)} | {net_rate:+.1f}% | {fmt_amount(elg)} | {fmt_amount(lg)} |")
+                        lines.append("")
 
-                    # 按净成交排序
-                    sorted_stocks = sorted(stock_map.items(), key=lambda x: x[1]['net_buy'], reverse=True)
-
-                    lines.append(" | 股票 | 净成交 | 关联营业部 |")
-                    lines.append(" |------|--------|------------|")
-
-                    for code, data in sorted_stocks:
-                        name = data['name']
-                        net_buy = data['net_buy']
-                        exalters = data['exalters']
-                        net_color = '+' if net_buy > 0 else '' if net_buy == 0 else ''
-                        exalter_str = "、".join(exalters)  # 显示所有营业部
-                        lines.append(f" | **{name}({code})** | {net_color}{fmt_amount(net_buy)} | {exalter_str} |")
+                    # 流出前20
+                    outflow = top_list_data.get('outflow', [])
+                    if outflow:
+                        lines.append("### 🟢 主力净流出 TOP 20\n")
+                        lines.append("| # | 股票 | 最新价 | 涨跌幅 | 主力净流出 | 净占比 | 超大单净流入 | 大单净流入 |")
+                        lines.append("|---|------|--------|--------|-----------|--------|------------|----------|")
+                        for idx, item in enumerate(outflow, 1):
+                            code = item.get('code', '')
+                            name = item.get('name', '')
+                            close = item.get('close', 0)
+                            pct = item.get('pct_change', 0)
+                            net = item.get('net_amount', 0)
+                            net_rate = item.get('net_amount_rate', 0)
+                            elg = item.get('buy_elg_amount', 0)
+                            lg = item.get('buy_lg_amount', 0)
+                            lines.append(f"| {idx} | **{name}**({code}) | {close:.2f} | {pct:+.2f}% | {fmt_amount(net)} | {net_rate:+.1f}% | {fmt_amount(elg)} | {fmt_amount(lg)} |")
+                        lines.append("")
             except Exception as e:
-                logger.warning(f"生成龙虎榜Markdown失败: {e}")
+                logger.warning(f"生成资金流向Markdown失败: {e}")
 
             # 添加LLM智能分析结果
             llm_stocks = [s for s in top_20[:20] if s.get('llm_analysis')]
@@ -869,22 +876,21 @@ class OpportunityReportGenerator:
             logger.warning(f"生成TOP20 Markdown失败: {e}")
         return filepath
 
-    def _fetch_top_list(self, trade_date: str = None) -> Optional[Dict[str, List[Dict]]]:
+    def _fetch_top_list(self, trade_date: str = None) -> Optional[Dict]:
         """
-        获取龙虎榜机构专用数据 (Tushare top_inst接口)
-        按营业部名称分组，展示买卖情况
+        获取个股资金流向数据 (Tushare moneyflow_dc接口)
+        返回流入前20和流出前20
 
         Args:
             trade_date: 交易日期，格式YYYYMMDD，默认获取最近一个有数据的交易日
 
         Returns:
-            按营业部名称分组的龙虎榜数据，获取失败返回None
-            格式: {'营业部名称': [{'code', 'name', 'buy', 'sell', 'net_buy', 'reason'}, ...], ...}
+            {'inflow': [...], 'outflow': [...], 'trade_date': '20260308'}，获取失败返回None
         """
         try:
             import tushare as ts
         except ImportError:
-            logger.warning("Tushare未安装，无法获取龙虎榜数据")
+            logger.warning("Tushare未安装，无法获取资金流向数据")
             return None
 
         # 加载Tushare配置
@@ -898,11 +904,15 @@ class OpportunityReportGenerator:
             return None
 
         if not token:
-            logger.debug("Tushare Token未配置，跳过龙虎榜数据获取")
+            logger.debug("Tushare Token未配置，跳过资金流向数据获取")
             return None
 
         try:
             pro = ts.pro_api(token)
+
+            if not hasattr(pro, 'moneyflow_dc'):
+                logger.warning("Tushare接口不支持moneyflow_dc，需要5000积分")
+                return None
 
             max_back_days = 14
 
@@ -919,7 +929,6 @@ class OpportunityReportGenerator:
                             return open_dates[-1]
                 except Exception as e:
                     logger.debug(f"trade_cal不可用，回退使用日期回溯: {e}")
-
                 candidate = base_dt
                 for _ in range(max_back_days):
                     if candidate.weekday() < 5:
@@ -935,81 +944,71 @@ class OpportunityReportGenerator:
                     base_dt = now - timedelta(days=1)
                 trade_date = resolve_latest_trade_date(base_dt)
 
-            last_error = None
+            import pandas as pd
+
             df = None
             base_try_dt = datetime.strptime(trade_date, '%Y%m%d')
             for i in range(max_back_days):
                 try_date = (base_try_dt - timedelta(days=i)).strftime('%Y%m%d')
                 try:
-                    df = pro.top_inst(trade_date=try_date)
+                    df = pro.moneyflow_dc(trade_date=try_date)
                     if df is not None and not df.empty:
                         trade_date = try_date
                         break
-                except Exception as e:
-                    last_error = e
+                except Exception:
+                    continue
             else:
-                if last_error:
-                    raise last_error
-                logger.debug(f"龙虎榜数据为空，回溯{max_back_days}天仍无数据，起始日期: {trade_date}")
+                logger.debug(f"资金流向数据为空，回溯{max_back_days}天仍无数据")
                 return None
 
-            # 获取所有股票代码列表，用于查询名称
-            ts_codes = df['ts_code'].unique().tolist()
-            code_name_map = {}
-            if ts_codes:
-                try:
-                    # 批量查询股票名称
-                    stock_df = pro.stock_basic(ts_code=','.join(ts_codes[:500]), fields='ts_code,name')
-                    if stock_df is not None and not stock_df.empty:
-                        for _, srow in stock_df.iterrows():
-                            code_name_map[srow.get('ts_code', '')] = srow.get('name', '')
-                except Exception as e:
-                    logger.warning(f"批量查询股票名称失败: {e}")
+            if df is None or df.empty:
+                return None
 
-            # 按营业部名称分组
-            result = {}
-            for _, row in df.iterrows():
-                ts_code = row.get('ts_code', '')
-                code = ts_code.split('.')[0] if ts_code else ''
-                # 优先使用stock_basic查询的名称，否则从接口返回的name字段获取
-                name = code_name_map.get(ts_code, row.get('name', ''))
-                exalter = row.get('exalter', '未知营业部')
-                side = row.get('side', '')
-                buy = row.get('buy', 0) or 0
-                sell = row.get('sell', 0) or 0
-                net_buy = row.get('net_buy', 0) or 0
-                reason = row.get('reason', '')
+            df['net_amount'] = pd.to_numeric(df['net_amount'], errors='coerce').fillna(0)
+            df['pct_change'] = pd.to_numeric(df.get('pct_change'), errors='coerce').fillna(0)
+            df['close'] = pd.to_numeric(df.get('close'), errors='coerce').fillna(0)
+            df['net_amount_rate'] = pd.to_numeric(df.get('net_amount_rate'), errors='coerce').fillna(0)
+            df['buy_elg_amount'] = pd.to_numeric(df.get('buy_elg_amount'), errors='coerce').fillna(0)
+            df['buy_lg_amount'] = pd.to_numeric(df.get('buy_lg_amount'), errors='coerce').fillna(0)
 
-                if exalter not in result:
-                    result[exalter] = []
+            # 流入前20
+            top_inflow = df.nlargest(20, 'net_amount')
+            # 流出前20
+            top_outflow = df.nsmallest(20, 'net_amount')
 
-                result[exalter].append({
-                    'code': code,
-                    'name': name,
-                    'buy': buy,
-                    'sell': sell,
-                    'net_buy': net_buy,
-                    'side': side,
-                    'reason': reason,
-                })
+            def row_to_dict(row):
+                ts_code = str(row.get('ts_code', ''))
+                return {
+                    'code': ts_code.split('.')[0] if ts_code else '',
+                    'name': str(row.get('name', '')),
+                    'close': float(row.get('close', 0)),
+                    'pct_change': float(row.get('pct_change', 0)),
+                    'net_amount': float(row['net_amount']),
+                    'net_amount_rate': float(row.get('net_amount_rate', 0)),
+                    'buy_elg_amount': float(row.get('buy_elg_amount', 0)),
+                    'buy_lg_amount': float(row.get('buy_lg_amount', 0)),
+                }
 
-            # 每组按净成交额排序
-            for exalter in result:
-                result[exalter] = sorted(result[exalter], key=lambda x: abs(x.get('net_buy', 0)), reverse=True)
+            inflow_list = [row_to_dict(row) for _, row in top_inflow.iterrows()]
+            outflow_list = [row_to_dict(row) for _, row in top_outflow.iterrows()]
 
-            logger.info(f"✓ 获取龙虎榜数据成功，日期: {trade_date}，共{len(result)}个营业部")
-            return result
+            logger.info(f"✓ 获取资金流向数据成功，日期: {trade_date}，流入{len(inflow_list)}只/流出{len(outflow_list)}只")
+            return {
+                'inflow': inflow_list,
+                'outflow': outflow_list,
+                'trade_date': trade_date
+            }
 
         except Exception as e:
-            logger.warning(f"获取龙虎榜数据失败: {e}")
+            logger.warning(f"获取资金流向数据失败: {e}")
             return None
 
-    def _generate_top_list_html(self, top_list_data: Dict[str, List[Dict]]) -> str:
+    def _generate_top_list_html(self, top_list_data: Dict) -> str:
         """
-        生成龙虎榜HTML表格（按股票去重，显示关联营业部）
+        生成个股资金流向HTML表格（流入前20 + 流出前20）
 
         Args:
-            top_list_data: 按营业部名称分组的龙虎榜数据
+            top_list_data: {'inflow': [...], 'outflow': [...], 'trade_date': '...'}
 
         Returns:
             HTML字符串，如果数据为空返回空字符串
@@ -1018,78 +1017,77 @@ class OpportunityReportGenerator:
             return ''
 
         def fmt_amount(val):
-            if abs(val) >= 100000000:
-                return f"{val/100000000:.2f}亿"
-            elif abs(val) >= 10000:
-                return f"{val/10000:.2f}万"
+            if abs(val) >= 10000:
+                return f"{val/10000:.2f}亿"
             else:
-                return f"{val:.2f}"
+                return f"{val:.0f}万"
 
-        # 按股票聚合，去重
-        stock_map = {}  # code -> {name, net_buy, exalters}
-        code_to_name = {}
-        for exalter, stocks in top_list_data.items():
-            for item in stocks:
+        trade_date = top_list_data.get('trade_date', '')
+        date_display = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}" if len(trade_date) == 8 else trade_date
+
+        def build_table(stocks, title_icon, title_text):
+            if not stocks:
+                return ''
+            rows = []
+            for idx, item in enumerate(stocks, 1):
                 code = item.get('code', '')
-                code_to_name[code] = item.get('name', '')
-                if code not in stock_map:
-                    stock_map[code] = {
-                        'net_buy': 0,
-                        'exalters': []
-                    }
-                stock_map[code]['net_buy'] += item.get('net_buy', 0)
-                if exalter not in stock_map[code]['exalters']:
-                    stock_map[code]['exalters'].append(exalter)
+                name = item.get('name', '')
+                close = item.get('close', 0)
+                pct = item.get('pct_change', 0)
+                net = item.get('net_amount', 0)
+                net_rate = item.get('net_amount_rate', 0)
+                elg = item.get('buy_elg_amount', 0)
+                lg = item.get('buy_lg_amount', 0)
 
-        # 按净成交排序
-        sorted_stocks = sorted(stock_map.items(), key=lambda x: x[1]['net_buy'], reverse=True)
+                pct_color = '#ef5350' if pct > 0 else '#66bb6a' if pct < 0 else '#b0bec5'
+                net_color = '#ef5350' if net > 0 else '#66bb6a' if net < 0 else '#b0bec5'
 
-        rows = []
-        for code, data in sorted_stocks:
-            name = code_to_name.get(code, '')
-            net_buy = data['net_buy']
-            exalters = data['exalters']
-            net_color = '#ef5350' if net_buy > 0 else '#66bb6a' if net_buy < 0 else '#b0bec5'
-            net_prefix = '+' if net_buy > 0 else ''
-
-            # 构建营业部标签
-            exalter_tags = []
-            for ex in exalters:
-                exalter_tags.append(f'<span style="display: inline-block; margin: 2px 4px; padding: 2px 6px; background: #e0f2fe; border-radius: 4px; font-size: 12px;">{ex}</span>')
-
-            rows.append(f'''
-                <tr>
-                    <td style="vertical-align: middle; padding: 12px;">
-                        <strong>{name}</strong><span style="color: #64748b; font-size: 12px;">({code})</span>
-                    </td>
-                    <td style="vertical-align: middle; padding: 12px;">
-                        <span style="color: {net_color}; font-weight: bold; font-size: 14px;">{net_prefix}{fmt_amount(net_buy)}</span>
-                    </td>
-                    <td style="vertical-align: middle; padding: 12px;">
-                        <div>{"".join(exalter_tags)}</div>
-                    </td>
-                </tr>
-            ''')
-
-        html = f'''
-            <table class="top10-table" style="width: 100%;">
-                <thead>
+                rows.append(f'''
                     <tr>
-                        <th style="width: 150px;">股票</th>
-                        <th style="width: 120px;">净成交</th>
-                        <th>关联营业部</th>
+                        <td style="padding: 8px; text-align: center;">{idx}</td>
+                        <td style="padding: 8px;">
+                            <strong>{name}</strong><span style="color: #64748b; font-size: 12px;">({code})</span>
+                        </td>
+                        <td style="padding: 8px; text-align: right;">{close:.2f}</td>
+                        <td style="padding: 8px; text-align: right; color: {pct_color}; font-weight: bold;">{pct:+.2f}%</td>
+                        <td style="padding: 8px; text-align: right; color: {net_color}; font-weight: bold;">{fmt_amount(net)}</td>
+                        <td style="padding: 8px; text-align: right; color: {net_color};">{net_rate:+.1f}%</td>
+                        <td style="padding: 8px; text-align: right;">{fmt_amount(elg)}</td>
+                        <td style="padding: 8px; text-align: right;">{fmt_amount(lg)}</td>
                     </tr>
-                </thead>
-                <tbody>
-                    {"".join(rows)}
-                </tbody>
-            </table>
-        '''
+                ''')
+
+            return f'''
+                <div style="margin-bottom: 20px;">
+                    <h4 style="margin: 10px 0; color: #334155;">{title_icon} {title_text}</h4>
+                    <table class="top10-table" style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th style="width: 40px;">#</th>
+                                <th style="width: 140px;">股票</th>
+                                <th style="width: 80px;">最新价</th>
+                                <th style="width: 80px;">涨跌幅</th>
+                                <th style="width: 100px;">主力净流入</th>
+                                <th style="width: 80px;">净占比</th>
+                                <th style="width: 100px;">超大单净流入</th>
+                                <th style="width: 100px;">大单净流入</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {"".join(rows)}
+                        </tbody>
+                    </table>
+                </div>
+            '''
+
+        inflow_html = build_table(top_list_data.get('inflow', []), '🔴', '主力净流入 TOP 20')
+        outflow_html = build_table(top_list_data.get('outflow', []), '🟢', '主力净流出 TOP 20')
 
         full_html = f'''
         <div class="section">
-            <div class="section-title">🐉 龙虎榜机构成交明细</div>
-            {html}
+            <div class="section-title">💰 个股资金流向（{date_display}）</div>
+            {inflow_html}
+            {outflow_html}
         </div>
         '''
         return full_html
@@ -2130,18 +2128,18 @@ class OpportunityReportGenerator:
 
         {sector_section_html}
 
-        <!-- 龙虎榜机构成交明细 -->
+        <!-- 个股资金流向 -->
 '''
-        # 获取龙虎榜数据
+        # 获取资金流向数据
         top_list_data = self._fetch_top_list()
         if top_list_data:
             html += self._generate_top_list_html(top_list_data)
         else:
-            logger.warning("龙虎榜数据获取失败或为空")
+            logger.warning("资金流向数据获取失败或为空")
             html += '''
             <div style="text-align: center; color: #6b7280; padding: 20px;">
-                暂无可用龙虎榜数据<br>
-                <small>可能原因：Tushare Token未配置、接口无权限、昨日为非交易日</small>
+                暂无可用资金流向数据<br>
+                <small>可能原因：Tushare Token未配置、积分不足(需5000)、昨日为非交易日</small>
             </div>
 '''
 
@@ -2479,8 +2477,8 @@ class OpportunityReportGenerator:
             _source_tag = ''
             if _stock_source == 'oversold_rebound':
                 _source_tag = f'[超跌反弹] {_source_detail}；' if _source_detail else '[超跌反弹] '
-            elif _stock_source == 'dragon_tiger':
-                _source_tag = f'[龙虎榜机构] {_source_detail}；' if _source_detail else '[龙虎榜机构] '
+            elif _stock_source in ('capital_flow_in', 'capital_flow_out', 'dragon_tiger'):
+                _source_tag = f'[资金流向] {_source_detail}；' if _source_detail else '[资金流向] '
             parts.append(f"【入选原因】{_source_tag}{reason if reason else '无'}")
             
             latest_news = stock.get('latest_news')

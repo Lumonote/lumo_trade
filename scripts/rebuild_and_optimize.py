@@ -370,10 +370,10 @@ DEFAULT_PARAMS = {
 
     # 板块
     'sector_hot_pen': 12,        # v12: 10→12
-    'sector_dead_pen': 5,        # v12: 3→5
+    'sector_dead_pen': 10,       # v16: 5→10(B+胜率+0.3%,收益+0.16%)
 
     # 评分过高
-    'score_high_threshold': 78,  # v14: 74→78
+    'score_high_threshold': 76,  # v16: 78→76(B+胜率+4.9%)
     'score_high_pen': 20,        # v14: 25→20
 
     # 组合风险
@@ -381,7 +381,7 @@ DEFAULT_PARAMS = {
     'chg5d15_rsi72_pen': 10,
 
     # 信号拥挤
-    'signal_crowd_pen': 1,       # 保持v9
+    'signal_crowd_pen': 8,       # v16: 1→8(B+胜率+0.9%)
 
     # 卖出信号 (v9移除)
     'sell_dom_pen': 0,

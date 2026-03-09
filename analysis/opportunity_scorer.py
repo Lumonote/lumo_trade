@@ -255,7 +255,14 @@ class OpportunityScorer:
         if self._data_fetcher:
             try:
                 import asyncio
-                asyncio.run(self._data_fetcher.close())
+                try:
+                    asyncio.run(self._data_fetcher.close())
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    try:
+                        loop.run_until_complete(self._data_fetcher.close())
+                    finally:
+                        loop.close()
             except Exception:
                 pass
             self._data_fetcher = None
@@ -909,14 +916,17 @@ class OpportunityScorer:
                 )
 
             # 在同步环境中运行异步获取
+            # 注意: 不能使用 asyncio.set_event_loop() + loop.close()，
+            # 这会破坏线程的事件循环状态，导致后续 Playwright sync_playwright() 崩溃
             try:
                 df = asyncio.run(_run())
             except RuntimeError:
-                # 若已有事件循环，使用新循环
+                # 若已有事件循环（如在线程池中），创建独立循环但不设为全局
                 loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                df = loop.run_until_complete(_run())
-                loop.close()
+                try:
+                    df = loop.run_until_complete(_run())
+                finally:
+                    loop.close()
             except asyncio.TimeoutError:
                 logger.warning(f"{stock_code}: 历史数据获取超时({timeout_seconds}s)")
                 return None
@@ -1075,17 +1085,18 @@ class OpportunityScorer:
             score = 55.0  # v5.4: 基准分从45提升至55，避免惩罚后分数过低导致筛选结果过少
             signals = []
 
-            # 定义信号权重���按模型类型分组，避免同质化信号重复计分）
+            # 定义信号权重（按模型类型分组，避免同质化信号重复计分）
+            # 注意: 键名必须与 technical_analysis.py 中 self.signals[] 的英文键一致
             # 趋势类模型（相关性高，取最佳信号）
-            trend_models = ['海龟交易', 'CTA趋势', '均线共振', '多排突破', 'ATR动量']
+            trend_models = ['turtle_trading_system', 'cta_trend_strategy', 'ma_resonance', 'multi_breakthrough', 'atr_momentum']
             # 量价类模型
-            volume_models = ['均量双动', '放量突破', '资金趋势', '主力支撑', '量价趋势']
+            volume_models = ['balance_dual_moving', 'volume_breakthrough', 'capital_trend', 'support_resistance', 'volume_price_trend']
             # 震荡类模型
-            oscillator_models = ['超跌反弹', 'RSI背离', 'KDJ金叉', '随机动量']
+            oscillator_models = ['super_reversal', 'rsi_divergence', 'stochastic_momentum', 'macd_axis_golden_cross']
             # 高级量化模型（独立权重）
-            advanced_models = ['机器学习RF', '多因子Alpha', '配对套利', '高频微观结构']
+            advanced_models = ['machine_learning_rf', 'multi_factor_alpha', 'pairs_trading_arbitrage', 'hft_microstructure']
             # 经典模型
-            classic_models = ['一目均衡云', '布林挤压', '抛物转向', 'VWAP偏离', '分形自适应均线']
+            classic_models = ['ichimoku_cloud', 'bollinger_squeeze', 'parabolic_sar', 'vwap_deviation', 'fractal_adaptive_ma']
 
             # 分组统计买入信号
             trend_buy = sum(1 for m in trend_models if current_signals.get(m) == '买入')

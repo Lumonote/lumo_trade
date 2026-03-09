@@ -204,6 +204,12 @@ class DynamicCrawler:
             print(f"   ⚠️  Playwright未安装")
             print(f"   💡 请运行: pip install playwright && playwright install chromium")
             return []
+        except RuntimeError as e:
+            if 'Event loop is closed' in str(e):
+                print(f"   ⚠️  Playwright事件循环已关闭，跳过股吧爬取")
+            else:
+                print(f"   ⚠️  Playwright运行时错误: {e}")
+            return []
         except Exception as e:
             print(f"   ⚠️  Playwright爬取失败: {e}")
             return []
@@ -534,6 +540,12 @@ class DynamicCrawler:
         except ImportError:
             print(f"   ⚠️  Playwright未安装")
             return []
+        except RuntimeError as e:
+            if 'Event loop is closed' in str(e):
+                print(f"   ⚠️  Playwright事件循环已关闭，跳过新闻爬取")
+            else:
+                print(f"   ⚠️  Playwright运行时错误(新闻): {e}")
+            return []
         except Exception as e:
             print(f"   ⚠️  Playwright爬取新闻失败: {e}")
             return []
@@ -715,6 +727,12 @@ class DynamicCrawler:
 
         except ImportError:
             print(f"   ⚠️  Playwright未安装")
+            return []
+        except RuntimeError as e:
+            if 'Event loop is closed' in str(e):
+                print(f"   ⚠️  Playwright事件循环已关闭，跳过公告爬取")
+            else:
+                print(f"   ⚠️  Playwright运行时错误(公告): {e}")
             return []
         except Exception as e:
             print(f"   ⚠️  Playwright爬取公告失败: {e}")

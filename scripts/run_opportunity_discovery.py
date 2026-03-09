@@ -11,7 +11,7 @@ import argparse
 import logging
 import json
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from typing import List, Dict, Optional
 import time
 import requests
@@ -79,6 +79,8 @@ class OpportunityDiscovery:
         self.global_hot_news = []
         self.sector_hot_news = []
         self.max_workers = max_workers
+        # 单只股票分析超时（秒），防止Playwright卡死导致整体挂起
+        self.per_stock_timeout = int(os.environ.get('KRONOS_STOCK_TIMEOUT', '180'))
 
     def _load_tushare_token(self) -> str:
         config_path = os.path.join(project_root, 'config', 'tushare_config.json')
@@ -389,19 +391,19 @@ class OpportunityDiscovery:
             logger.warning(f"超跌反弹筛选失败: {e}")
             return []
 
-    def _fetch_dragon_tiger_stocks(self, limit: int = 30) -> List[Dict]:
+    def _fetch_capital_flow_stocks(self, limit: int = 40) -> List[Dict]:
         """
-        龙虎榜机构净买入筛选：寻找机构资金大举买入的股票
+        个股资金流向筛选：获取主力净流入前20 + 主力净流出前20
+        数据来源: Tushare moneyflow_dc (东财个股资金流向)
         筛选条件:
-        - 近3个交易日上过龙虎榜
-        - 机构席位净买入金额 > 0
-        - 按机构净买入金额排序
+        - 最近交易日的资金流向数据
+        - 主力净流入额排序，取前20（流入）和后20（流出）
         """
         try:
             import tushare as ts
             import pandas as pd
         except ImportError:
-            logger.warning("Tushare/Pandas未安装，无法获取龙虎榜")
+            logger.warning("Tushare/Pandas未安装，无法获取资金流向")
             return []
 
         token = self._load_tushare_token()
@@ -413,66 +415,105 @@ class OpportunityDiscovery:
         except Exception:
             return []
 
+        if not hasattr(pro, 'moneyflow_dc'):
+            logger.warning("Tushare接口不支持moneyflow_dc，需要5000积分")
+            return []
+
         trade_date = self._resolve_latest_trade_date(pro, datetime.now())
 
         try:
-            # 获取近3个交易日
-            cal = pro.trade_cal(exchange='SSE', end_date=trade_date, is_open='1', limit=4)
-            recent_days = sorted(cal['cal_date'].tolist())[-3:]
-
-            all_inst = []
-            for td in recent_days:
+            # 回溯查找有数据的交易日
+            df = None
+            selected_date = trade_date
+            for i in range(7):
+                try_date = (datetime.strptime(trade_date, '%Y%m%d') - timedelta(days=i)).strftime('%Y%m%d')
                 try:
-                    # 龙虎榜机构交易明细
-                    inst_df = pro.top_inst(trade_date=td,
-                                           fields='trade_date,ts_code,exalter,buy,sell,net_buy')
-                    if inst_df is not None and not inst_df.empty:
-                        all_inst.append(inst_df)
-                    time.sleep(0.1)
+                    df = pro.moneyflow_dc(trade_date=try_date)
+                    if df is not None and not df.empty:
+                        selected_date = try_date
+                        break
                 except Exception:
                     continue
 
-            if not all_inst:
-                logger.info("龙虎榜无机构数据")
+            if df is None or df.empty:
+                logger.info("个股资金流向无数据")
                 return []
 
-            inst_all = pd.concat(all_inst, ignore_index=True)
+            # 确保net_amount为数值
+            df['net_amount'] = pd.to_numeric(df['net_amount'], errors='coerce').fillna(0)
+            df['pct_change'] = pd.to_numeric(df.get('pct_change'), errors='coerce').fillna(0)
 
-            # 按股票汇总机构净买入
-            inst_all['net_buy'] = pd.to_numeric(inst_all['net_buy'], errors='coerce').fillna(0)
-            inst_all['buy'] = pd.to_numeric(inst_all['buy'], errors='coerce').fillna(0)
-
-            stock_summary = inst_all.groupby('ts_code').agg(
-                total_net_buy=('net_buy', 'sum'),
-                total_buy=('buy', 'sum'),
-                inst_count=('exalter', 'nunique'),
-                latest_date=('trade_date', 'max')
-            ).reset_index()
-
-            # 只取机构净买入 > 0 的
-            stock_summary = stock_summary[stock_summary['total_net_buy'] > 0]
-            stock_summary = stock_summary.sort_values('total_net_buy', ascending=False)
+            # 主力净流入前20
+            top_inflow = df.nlargest(20, 'net_amount')
+            # 主力净流出前20
+            top_outflow = df.nsmallest(20, 'net_amount')
 
             results = []
-            for idx, (_, row) in enumerate(stock_summary.head(limit).iterrows(), start=1):
-                ts_code = row['ts_code']
-                code = ts_code.split('.')[0]
-                net_buy_wan = round(row['total_net_buy'] / 10000, 2)  # 转万元
+
+            # 流入前20作为候选
+            for idx, (_, row) in enumerate(top_inflow.iterrows(), start=1):
+                ts_code = str(row.get('ts_code', ''))
+                code = ts_code.split('.')[0] if ts_code else ''
+                name = str(row.get('name', ''))
+                net_wan = float(row['net_amount'])  # 已经是万元
+                net_rate = float(row.get('net_amount_rate', 0) or 0)
+                pct = float(row.get('pct_change', 0) or 0)
+                elg = float(row.get('buy_elg_amount', 0) or 0)
+                lg = float(row.get('buy_lg_amount', 0) or 0)
+
+                # 构建详情描述
+                if abs(net_wan) >= 10000:
+                    net_str = f"{net_wan/10000:.1f}亿"
+                else:
+                    net_str = f"{net_wan:.0f}万"
+
                 results.append({
                     'code': code,
-                    'name': '',
-                    'price': 0,
-                    'change_pct': 0,
-                    'source': 'dragon_tiger',
-                    'source_detail': f"机构净买{net_buy_wan:.0f}万，{int(row['inst_count'])}家机构",
-                    'popularity_score': max(0, 100 - idx + 1)
+                    'name': name,
+                    'price': float(row.get('close', 0) or 0),
+                    'change_pct': pct,
+                    'source': 'capital_flow_in',
+                    'source_detail': f"主力净流入{net_str}({net_rate:+.1f}%)",
+                    'popularity_score': max(0, 100 - idx + 1),
+                    'net_amount_wan': net_wan,
+                    'net_amount_rate': net_rate,
+                    'buy_elg_amount': elg,
+                    'buy_lg_amount': lg,
                 })
 
-            logger.info(f"✓ 龙虎榜机构买入筛选完成，找到{len(results)}只候选股")
-            return results
+            # 流出前20也记录（用于风险提示和报告展示，不作为主要候选）
+            for idx, (_, row) in enumerate(top_outflow.iterrows(), start=1):
+                ts_code = str(row.get('ts_code', ''))
+                code = ts_code.split('.')[0] if ts_code else ''
+                name = str(row.get('name', ''))
+                net_wan = float(row['net_amount'])
+                net_rate = float(row.get('net_amount_rate', 0) or 0)
+                pct = float(row.get('pct_change', 0) or 0)
+
+                if abs(net_wan) >= 10000:
+                    net_str = f"{abs(net_wan)/10000:.1f}亿"
+                else:
+                    net_str = f"{abs(net_wan):.0f}万"
+
+                results.append({
+                    'code': code,
+                    'name': name,
+                    'price': float(row.get('close', 0) or 0),
+                    'change_pct': pct,
+                    'source': 'capital_flow_out',
+                    'source_detail': f"主力净流出{net_str}({net_rate:+.1f}%)",
+                    'popularity_score': max(0, 50 - idx + 1),  # 流出股票优先级低
+                    'net_amount_wan': net_wan,
+                    'net_amount_rate': net_rate,
+                })
+
+            inflow_count = len(top_inflow)
+            outflow_count = len(top_outflow)
+            logger.info(f"✓ 个股资金流向筛选完成({selected_date})，流入{inflow_count}只 + 流出{outflow_count}只")
+            return results[:limit]  # 默认优先返回流入股票
 
         except Exception as e:
-            logger.warning(f"龙虎榜筛选失败: {e}")
+            logger.warning(f"个股资金流向筛选失败: {e}")
             return []
 
     def run(self, limit: int = 100, test_codes: List[str] = None, source: str = 'multi') -> str:
@@ -513,7 +554,7 @@ class OpportunityDiscovery:
                     logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
                     hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
             elif source == 'multi':
-                # 多源融合: 热股100 + 超跌反弹 + 龙虎榜机构
+                # 多源融合: 热股100 + 超跌反弹 + 资金流向
                 logger.info(f"\n步骤1: 多源融合选股模式")
 
                 logger.info(f"  [1/3] 获取热门股票 TOP {limit}...")
@@ -547,9 +588,9 @@ class OpportunityDiscovery:
                 oversold = self._fetch_oversold_rebound_stocks(limit=30)
                 logger.info(f"  ✓ 超跌反弹: {len(oversold)}只")
 
-                logger.info(f"  [3/3] 获取龙虎榜机构买入...")
-                dragon = self._fetch_dragon_tiger_stocks(limit=30)
-                logger.info(f"  ✓ 龙虎榜机构: {len(dragon)}只")
+                logger.info(f"  [3/3] 获取个股资金流向...")
+                dragon = self._fetch_capital_flow_stocks(limit=40)
+                logger.info(f"  ✓ 资金流向: {len(dragon)}只")
 
                 # 去重合并（以code为准，热股优先保留）
                 seen_codes = set(s['code'] for s in hot_stocks)
@@ -591,9 +632,9 @@ class OpportunityDiscovery:
             hot_stocks = self._fetch_moneyflow_dc_stocks(limit=limit)
 
         if not hot_stocks:
-            logger.warning("资金流向榜单获取失败，回退到超跌反弹+龙虎榜候选...")
+            logger.warning("资金流向榜单获取失败，回退到超跌反弹+资金流向候选...")
             oversold = self._fetch_oversold_rebound_stocks(limit=max(10, min(30, limit)))
-            dragon = self._fetch_dragon_tiger_stocks(limit=max(10, min(30, limit)))
+            dragon = self._fetch_capital_flow_stocks(limit=max(10, min(40, limit)))
             merged = []
             seen_codes = set()
             for s in oversold + dragon:
@@ -670,7 +711,7 @@ class OpportunityDiscovery:
                     for future in as_completed(future_to_stock):
                         stock = future_to_stock[future]
                         try:
-                            result = future.result()
+                            result = future.result(timeout=self.per_stock_timeout)
                             if result:
                                 scored_stocks.append(result)
                             else:
@@ -685,6 +726,19 @@ class OpportunityDiscovery:
                                         'error': '分析失败'
                                     }
                                 })
+                        except FuturesTimeoutError:
+                            logger.warning(f"分析 {stock.get('code')} ({stock.get('name')}) 超时({self.per_stock_timeout}s)，跳过")
+                            scored_stocks.append({
+                                'stock_code': stock.get('code', ''),
+                                'name': stock.get('name', '未知'),
+                                'exchange': stock.get('exchange', 'UNKNOWN'),
+                                'popularity_score': stock.get('popularity_score', 0),
+                                'scoring_result': {
+                                    'total_score': 0,
+                                    'rating': 'C',
+                                    'error': f'分析超时({self.per_stock_timeout}s)'
+                                }
+                            })
                         except Exception as e:
                             logger.error(f"分析 {stock.get('code')} 失败: {e}")
                             scored_stocks.append({
@@ -715,7 +769,7 @@ class OpportunityDiscovery:
                 for future in as_completed(future_to_stock):
                     stock = future_to_stock[future]
                     try:
-                        result = future.result()
+                        result = future.result(timeout=self.per_stock_timeout)
                         if result:
                             scored_stocks.append(result)
                         else:
@@ -731,6 +785,20 @@ class OpportunityDiscovery:
                                     'error': '分析失败'
                                 }
                             })
+                    except FuturesTimeoutError:
+                        logger.warning(f"分析 {stock.get('code')} ({stock.get('name')}) 超时({self.per_stock_timeout}s)，跳过")
+                        scored_stocks.append({
+                            'stock_code': stock.get('code', ''),
+                            'name': stock.get('name', '未知'),
+                            'exchange': stock.get('exchange', 'UNKNOWN'),
+                            'popularity_score': stock.get('popularity_score', 0),
+                            'change_pct': stock.get('change_pct', 0),
+                            'scoring_result': {
+                                'total_score': 0,
+                                'rating': 'C',
+                                'error': f'分析超时({self.per_stock_timeout}s)'
+                            }
+                        })
                     except Exception as e:
                         logger.error(f"分析 {stock.get('code')} 失败: {e}")
                         scored_stocks.append({
@@ -959,14 +1027,14 @@ class OpportunityDiscovery:
                         short_title = title[:20] + '...' if len(title) > 20 else title
                         reasons.append(f"热点关联: {short_title}")
 
-                # 2. 龙虎榜大额净买入 (资金强信号)
+                # 2. 资金流向大额净流入 (资金强信号)
                 dt = score_details.get('dragon_tiger', {})
                 net_buy = dt.get('net_buy_amount', 0)
                 if net_buy and isinstance(net_buy, (int, float)):
                     if net_buy > 100000000: # 1亿
-                        reasons.append("龙虎榜净买入超1亿")
+                        reasons.append("主力净流入超1亿")
                     elif net_buy > 30000000: # 3000万
-                        reasons.append("龙虎榜大额净买入")
+                        reasons.append("主力大额净流入")
                 
                 # 3. 底部启动/突破 (形态强信号)
                 low_pos = score_details.get('low_position_start', {})
