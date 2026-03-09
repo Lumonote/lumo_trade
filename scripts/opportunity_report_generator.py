@@ -264,7 +264,6 @@ class OpportunityReportGenerator:
             lines = []
             lines.append("## 🏆 综合排名 TOP20")
             lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
-            lines.append('<colgroup><col style="width: 8%;"><col style="width: 12%;"><col style="width: 15%;"><col style="width: 10%;"><col></colgroup>')
             lines.append('<thead><tr><th>排名</th><th>代码</th><th>股票名称</th><th>综合得分</th><th>详细分析</th></tr></thead>')
             lines.append('<tbody>')
 
@@ -308,7 +307,6 @@ class OpportunityReportGenerator:
 
             lines.append("### 当日推荐置信度分布\n")
             lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
-            lines.append('<colgroup><col style="width: 15%;"><col><col style="width: 15%;"></colgroup>')
             lines.append('<thead><tr><th>置信度</th><th>说明</th><th>数量</th></tr></thead>')
             lines.append('<tbody>')
             tier_info = [
@@ -419,19 +417,18 @@ class OpportunityReportGenerator:
                     lines.append("\n> **备注**: 每月第一个交易日将根据前一个月量化选股结果进行AI自我回测及算法优化，如有需求意见也可在留言中反馈，如有AI相关业务落地咨询的可私聊博主。\n")
                     lines.append("\n### 历史回测表现（基于已验证数据）\n")
                     lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
-                    lines.append('<colgroup><col style="width: 15%;"><col style="width: 10%;"><col style="width: 15%;"><col style="width: 12%;"><col style="width: 15%;"><col style="width: 12%;"></colgroup>')
                     lines.append('<thead><tr><th>评分区间</th><th>数量</th><th>5日均收益</th><th>5日胜率</th><th>10日均收益</th><th>盈亏比</th></tr></thead>')
                     lines.append('<tbody>')
 
                     score_bins = [
-                        (85, 999, 'S级(≥85)'),
-                        (78, 85, 'A级(78-85)'),
-                        (70, 78, 'B级(70-78)'),
-                        (60, 70, 'C+(60-70)'),
-                        (0, 60, 'C级(<60)')
+                        (85, 999, 'S级(≥85)', '#e53935'),
+                        (78, 85, 'A级(78-85)', '#ff6f00'),
+                        (70, 78, 'B级(70-78)', '#1565c0'),
+                        (60, 70, 'C+(60-70)', '#757575'),
+                        (0, 60, 'C级(<60)', '#9e9e9e')
                     ]
 
-                    for low, high, label in score_bins:
+                    for low, high, label, color in score_bins:
                         if high == 999:
                             subset = bt_with_returns[bt_with_returns[_score_col] >= low]
                         else:
@@ -487,7 +484,6 @@ class OpportunityReportGenerator:
                     _has_date = 'report_date' in _valid.columns
 
                     lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
-                    lines.append('<colgroup><col style="width: 18%;"><col style="width: 10%;"><col style="width: 12%;"><col></colgroup>')
                     lines.append('<thead><tr><th>5日收益区间</th><th>数量</th><th>占比</th><th>代表个股</th></tr></thead>')
                     lines.append('<tbody>')
 
@@ -558,7 +554,6 @@ class OpportunityReportGenerator:
             lines.append("\n---\n")
             lines.append("## 📊 热点股票板块分布\n")
             lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
-            lines.append('<colgroup><col style="width: 30%;"><col></colgroup>')
             lines.append('<thead><tr><th>所属板块</th><th>股票列表</th></tr></thead>')
             lines.append('<tbody>')
 
@@ -787,7 +782,6 @@ class OpportunityReportGenerator:
                     if inflow:
                         lines.append("### 🔴 主力净流入 TOP 20\n")
                         lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
-                        lines.append('<colgroup><col style="width: 8%;"><col style="width: 25%;"><col></colgroup>')
                         lines.append('<thead><tr><th>#</th><th>股票</th><th>资金流向明细</th></tr></thead>')
                         lines.append('<tbody>')
                         for idx, item in enumerate(inflow, 1):
@@ -812,7 +806,6 @@ class OpportunityReportGenerator:
                     if outflow:
                         lines.append("### 🟢 主力净流出 TOP 20\n")
                         lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
-                        lines.append('<colgroup><col style="width: 8%;"><col style="width: 25%;"><col></colgroup>')
                         lines.append('<thead><tr><th>#</th><th>股票</th><th>资金流向明细</th></tr></thead>')
                         lines.append('<tbody>')
                         for idx, item in enumerate(outflow, 1):
@@ -2193,8 +2186,6 @@ class OpportunityReportGenerator:
 '''
 
         html += '''
-
-        </div>
 
         <!-- TOP 推荐（默认展示10个，支持滚动到末尾） -->
         <div class="section">

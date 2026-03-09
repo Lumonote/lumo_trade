@@ -125,13 +125,14 @@ class HotStocksFetcher:
         self._ensure_stock_name_cache()
         return HotStocksFetcher._stock_name_cache.get(c, c)
 
-    def get_hot_stocks(self, limit: int = 100, force_refresh: bool = False) -> List[Dict]:
+    def get_hot_stocks(self, limit: int = 100, force_refresh: bool = False, heat_only: bool = False) -> List[Dict]:
         """
         获取热门股票TOP100
 
         Args:
             limit: 返回股票数量，默认100
             force_refresh: 是否忽略缓存，强制直接采集（默认否）
+            heat_only: 仅使用纯热度排名，不使用增强热榜（按资金流入/换手率等多维度补充）
 
         Returns:
             list: [{
@@ -147,7 +148,7 @@ class HotStocksFetcher:
                 'source': 'eastmoney'  # 数据来源
             }, ...]
         """
-        logger.info(f"开始获取热门股票 TOP{limit}")
+        logger.info(f"开始获取热门股票 TOP{limit}" + ("（纯热度模式）" if heat_only else ""))
 
         # 环境变量可强制刷新
         env_force = os.environ.get('KRONOS_FORCE_REFRESH') == '1'
@@ -232,7 +233,7 @@ class HotStocksFetcher:
         except Exception as e:
             logger.warning(f"东方财富股吧人气榜获取失败: {e}")
 
-        if _need_more():
+        if _need_more() and not heat_only:
             try:
                 logger.info("尝试东方财富VIP接口...")
                 vip_stocks = self._fetch_from_eastmoney_vip(limit=_request_size(multiplier=2.0, minimum=100))
@@ -240,7 +241,7 @@ class HotStocksFetcher:
             except Exception as e:
                 logger.warning(f"东方财富VIP获取失败: {e}")
 
-        if _need_more():
+        if _need_more() and not heat_only:
             try:
                 logger.info("尝试东方财富选股器接口...")
                 picker_stocks = self._fetch_from_eastmoney_stockpicker(limit=_request_size(multiplier=2.0, minimum=120))
@@ -248,7 +249,7 @@ class HotStocksFetcher:
             except Exception as e:
                 logger.warning(f"东方财富选股器获取失败: {e}")
 
-        if _need_more():
+        if _need_more() and not heat_only:
             try:
                 logger.info("尝试东方财富增强热榜接口（支持>100只股票）...")
                 enhanced_stocks = self._fetch_from_eastmoney_enhanced(limit=_request_size(multiplier=2.2, minimum=150, maximum=500))
@@ -256,7 +257,7 @@ class HotStocksFetcher:
             except Exception as e:
                 logger.warning(f"东方财富增强热榜获取失败: {e}")
 
-        if _need_more():
+        if _need_more() and not heat_only:
             try:
                 logger.info("正在从东方财富API接口获取热度榜(备用)...")
                 eastmoney_stocks = self._fetch_from_eastmoney(limit=_request_size(multiplier=2.0, minimum=120))
@@ -264,7 +265,7 @@ class HotStocksFetcher:
             except Exception as e:
                 logger.warning(f"东方财富API获取失败: {e}")
 
-        if _need_more() and self.enable_tonghuashun:
+        if _need_more() and (heat_only or self.enable_tonghuashun):
             try:
                 logger.info("正在从同花顺获取热度榜...")
                 tonghuashun_stocks = self._fetch_from_tonghuashun(limit=_request_size(multiplier=2.0, minimum=120))
@@ -272,7 +273,7 @@ class HotStocksFetcher:
             except Exception as e:
                 logger.warning(f"同花顺获取失败: {e}")
 
-        if _need_more() and self.enable_browser_fallback:
+        if _need_more() and not heat_only and self.enable_browser_fallback:
             try:
                 logger.info("尝试东方财富备用入口...")
                 alt_stocks = self._fetch_from_eastmoney_alt(limit=_request_size(multiplier=2.0, minimum=100))

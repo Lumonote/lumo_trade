@@ -79,8 +79,8 @@ class OpportunityDiscovery:
         self.global_hot_news = []
         self.sector_hot_news = []
         self.max_workers = max_workers
-        # 单只股票分析超时（秒），防止Playwright卡死导致整体挂起
-        self.per_stock_timeout = int(os.environ.get('KRONOS_STOCK_TIMEOUT', '180'))
+        # 单只股票分析超时（秒），防止慢API或Playwright卡死导致整体挂起
+        self.per_stock_timeout = int(os.environ.get('KRONOS_STOCK_TIMEOUT', '60'))
 
     def _load_tushare_token(self) -> str:
         config_path = os.path.join(project_root, 'config', 'tushare_config.json')
@@ -606,26 +606,9 @@ class OpportunityDiscovery:
                 logger.info(f"  合并去重后: {len(hot_stocks)}只 | " +
                            " | ".join(f"{k}:{v}" for k, v in source_counts.items()))
             else:
-                logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
-                hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
-                if len(hot_stocks) < limit:
-                    deficit = limit - len(hot_stocks)
-                    topup_limit = max(deficit * 2, deficit + 30)
-                    logger.info(f"热度榜不足{limit}只，补充资金流向候选 TOP {topup_limit}...")
-                    moneyflow_candidates = self._fetch_moneyflow_dc_stocks(limit=topup_limit)
-                    seen_hot_codes = set(str(s.get('code') or '') for s in hot_stocks if s.get('code'))
-                    added = 0
-                    for s in moneyflow_candidates:
-                        code = str(s.get('code') or '')
-                        if not code or code in seen_hot_codes:
-                            continue
-                        s['source_detail'] = (s.get('source_detail') or '') + ('；热度榜补位' if s.get('source_detail') else '热度榜补位')
-                        hot_stocks.append(s)
-                        seen_hot_codes.add(code)
-                        added += 1
-                        if len(hot_stocks) >= limit:
-                            break
-                    logger.info(f"资金流向补充新增: {added}只（当前候选: {len(hot_stocks)}只）")
+                # source='heat': 纯热度模式，只使用热度排名，不补充资金流向
+                logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}（纯热度模式）...")
+                hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True, heat_only=True)
 
         if not hot_stocks:
             logger.warning("热度榜获取失败，回退到资金流向榜单...")
@@ -1605,7 +1588,7 @@ class OpportunityDiscovery:
 - 板块情绪: {scores.get('sector', 0):.1f}分
 - 基本面: {scores.get('fundamental', 0):.1f}分
 - 消息面: {scores.get('events', 0):.1f}分
-- 龙虎榜: {scores.get('dragon_tiger', 0):.1f}分
+- 资金流向: {scores.get('dragon_tiger', 0):.1f}分
 """
 
         return stock_data
