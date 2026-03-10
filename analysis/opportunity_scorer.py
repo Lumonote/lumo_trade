@@ -87,10 +87,10 @@ class OpportunityScorer:
     #   - 板块90+收益-4.29%，但80-90收益+11.54% - 非线性关系
     # 权重总和=1.0
     DIMENSION_WEIGHTS = {
-        'position_timing': 0.32, # 【核心】位置与时机（追高风险是最有效的负向预测因子）
+        'position_timing': 0.22, # 【v19调整】位置与时机（追高风险，降权让出给量化模型）
         'volume_health': 0.22,   # 【提升】量价结构（量价验证主力行为）
         'technical': 0.08,       # 技术分析（RSI超卖+6.64%，超买-7.33%，有效但非线性）
-        'quantitative': 0.15,    # 【继续降权】量化模型（分数90+反而最差-4.29%，信号拥挤负效应）
+        'quantitative': 0.25,    # 【v19提权】量化模型（买入信号梯度奖励，提高30模型占比）
         'liquidity': 0.05,       # 流动性
         'sector': 0.05,          # 板块强度（90+追涨无效，但80-90有效）
         'dragon_tiger': 0.06,    # 龙虎榜
@@ -117,12 +117,12 @@ class OpportunityScorer:
     #   - RSI 85+是最强负向因子(-7.33%/5d)
     #   - 3日涨幅>=15%后5日收益-4.99%(18.6%胜率), 需要强力过滤
     DYNAMIC_WEIGHT_PROFILES = {
-        # 基础模板 (v5.1 深度回测优化)
+        # 基础模板 (v19 提权量化模型)
         'base': {
-            'position_timing': 0.32,
+            'position_timing': 0.22,
             'volume_health': 0.22,
             'technical': 0.08,
-            'quantitative': 0.15,
+            'quantitative': 0.25,
             'liquidity': 0.05,
             'sector': 0.05,
             'dragon_tiger': 0.06,
@@ -130,12 +130,12 @@ class OpportunityScorer:
             'events': 0.03,
             'sentiment': 0.00,
         },
-        # 底部启动模板：极致强化低位+量价
+        # 底部启动模板：强化低位+量价，量化适度提权
         'bottom_start': {
-            'position_timing': 0.36,
+            'position_timing': 0.28,
             'volume_health': 0.26,
             'technical': 0.10,
-            'quantitative': 0.10,
+            'quantitative': 0.18,
             'liquidity': 0.04,
             'sector': 0.04,
             'dragon_tiger': 0.04,
@@ -143,12 +143,12 @@ class OpportunityScorer:
             'events': 0.02,
             'sentiment': 0.00,
         },
-        # 趋势接力模板
+        # 趋势接力模板：量化提权
         'trend_continuation': {
-            'position_timing': 0.28,
+            'position_timing': 0.20,
             'volume_health': 0.20,
             'technical': 0.10,
-            'quantitative': 0.18,
+            'quantitative': 0.26,
             'liquidity': 0.04,
             'sector': 0.05,
             'dragon_tiger': 0.06,
@@ -156,12 +156,12 @@ class OpportunityScorer:
             'events': 0.05,
             'sentiment': 0.00,
         },
-        # 消息驱动模板
+        # 消息驱动模板：量化适度提权
         'news_driven': {
-            'position_timing': 0.26,
+            'position_timing': 0.20,
             'volume_health': 0.18,
             'technical': 0.08,
-            'quantitative': 0.14,
+            'quantitative': 0.20,
             'liquidity': 0.04,
             'sector': 0.06,
             'dragon_tiger': 0.06,
@@ -545,14 +545,14 @@ class OpportunityScorer:
 
             v54_total_penalty = 0  # 追踪v5.4惩罚累计值
             v54_total_bonus = 0    # 追踪v5.4奖励累计值
-            V54_PENALTY_CAP = 30   # 惩罚累计上限
+            V54_PENALTY_CAP = 25   # v20优化: 30→25 (更稳健, 避免过度惩罚)
 
             # 1. 追高风险直接惩罚（回测校准: chase_risk与5日收益相关-0.14）
             chase_risk_score = result.get('advanced_analysis', {}).get('overall_score', {}).get('risk_metrics', {}).get('chase_risk_score', 0)
             if chase_risk_score == 0:
                 chase_risk_score = result.get('details', {}).get('momentum', {}).get('chase_risk_score', 0)
             if chase_risk_score >= 80:
-                chase_penalty = 20  # v9优化: 15→20
+                chase_penalty = 15  # v20优化: 20→15 (保留风控但不一票否决)
                 v54_total_penalty += chase_penalty
                 logger.info(f"{stock_code} 追高风险惩罚: 风险分={chase_risk_score}, 扣{chase_penalty}分")
                 score_adjustments.append(f"追高风险惩罚: 风险分={chase_risk_score}, 扣{chase_penalty}分")
@@ -606,34 +606,56 @@ class OpportunityScorer:
                 v54_total_penalty += limit_penalty
                 logger.info(f"{stock_code} 轻涨惩罚: 当日涨幅{today_change:.1f}%>=5%, 扣{limit_penalty}分")
 
-            # 4. 短期涨幅过大惩罚
+            # 4. 短期涨幅过大惩罚 (v17: 修复5d BUG+降低3d惩罚)
             change_3d = price_changes.get('change_3d', 0) or 0
             change_5d = price_changes.get('change_5d', 0) or 0
             if change_5d > 25:
-                surge_penalty = 25  # v9优化: 15→25
+                surge_penalty = 25
                 v54_total_penalty += surge_penalty
                 logger.info(f"{stock_code} 短期暴涨惩罚: 5日涨幅{change_5d:.1f}%>25%, 扣{surge_penalty}分")
                 score_adjustments.append(f"短期暴涨惩罚: 5日涨幅{change_5d:.1f}%>25%, 扣{surge_penalty}分")
+            elif change_5d > 20:
+                surge_penalty = 10  # v20优化: 阈值18→20, 惩罚15→10
+                v54_total_penalty += surge_penalty
+                logger.info(f"{stock_code} 短期急涨惩罚: 5日涨幅{change_5d:.1f}%>20%, 扣{surge_penalty}分")
+                score_adjustments.append(f"短期急涨惩罚: 5日涨幅{change_5d:.1f}%>20%, 扣{surge_penalty}分")
+            if change_3d > 20:
+                surge_penalty = 15  # v17优化: 20→15
+                v54_total_penalty += surge_penalty
+                logger.info(f"{stock_code} 3日暴涨惩罚: 3日涨幅{change_3d:.1f}%>20%, 扣{surge_penalty}分")
+                score_adjustments.append(f"3日暴涨惩罚: 3日涨幅{change_3d:.1f}%>20%, 扣{surge_penalty}分")
             elif change_3d > 15:
-                surge_penalty = 16  # v9优化: 10→16
+                surge_penalty = 10  # v17优化: 16→10
                 v54_total_penalty += surge_penalty
-                logger.info(f"{stock_code} 短期急涨惩罚: 3日涨幅{change_3d:.1f}%>15%, 扣{surge_penalty}分")
-                score_adjustments.append(f"短期急涨惩罚: 3日涨幅{change_3d:.1f}%>15%, 扣{surge_penalty}分")
+                logger.info(f"{stock_code} 3日急涨惩罚: 3日涨幅{change_3d:.1f}%>15%, 扣{surge_penalty}分")
+                score_adjustments.append(f"3日急涨惩罚: 3日涨幅{change_3d:.1f}%>15%, 扣{surge_penalty}分")
             elif change_3d > 10:
-                surge_penalty = 12  # v13优化: 15→12
+                surge_penalty = 8   # v17优化: 12→8
                 v54_total_penalty += surge_penalty
-                logger.info(f"{stock_code} 短期温涨惩罚: 3日涨幅{change_3d:.1f}%>10%, 扣{surge_penalty}分")
-                score_adjustments.append(f"短期温涨惩罚: 3日涨幅{change_3d:.1f}%>10%, 扣{surge_penalty}分")
+                logger.info(f"{stock_code} 3日温涨惩罚: 3日涨幅{change_3d:.1f}%>10%, 扣{surge_penalty}分")
+                score_adjustments.append(f"3日温涨惩罚: 3日涨幅{change_3d:.1f}%>10%, 扣{surge_penalty}分")
 
             # 5. 信号拥挤惩罚
             if quant_buy_count >= 15:
-                crowd_penalty = 1   # v9优化: 10→1
+                crowd_penalty = 8   # v16优化: 1→8 (信号拥挤惩罚加大)
                 v54_total_penalty += crowd_penalty
                 logger.info(f"{stock_code} 信号拥挤惩罚: {quant_buy_count}个买入信号(>=15), 扣{crowd_penalty}分")
 
             # 6. 量化分反转惩罚 — 已移除(v8.0)
             # 原因: 与"买入信号主导奖励"矛盾。买入信号多→量化分高→又因量化分高被扣分，
             # 左手加右手减，逻辑不自洽。信号拥挤已有单独惩罚(条件5)，无需重复。
+
+            # v18新增: 卖出信号>=3惩罚 (sell<2: 48.3%wr vs sell>=2: 36.9%wr)
+            if quant_sell_count >= 3:
+                sell_high_penalty = 5
+                v54_total_penalty += sell_high_penalty
+                logger.info(f"{stock_code} 卖出信号多惩罚: {quant_sell_count}个卖出信号(>=3), 扣{sell_high_penalty}分")
+
+            # v18新增: 量化分极高惩罚 (qs>=90: 33%wr/-3.53%, 强反指标)
+            if quant_score >= 90:
+                qs_high_penalty = 5
+                v54_total_penalty += qs_high_penalty
+                logger.info(f"{stock_code} 量化分极高惩罚: qs={quant_score:.0f}>=90, 扣{qs_high_penalty}分")
 
             # === 应用惩罚（含上限保护） ===
             actual_penalty = min(v54_total_penalty, V54_PENALTY_CAP)
@@ -671,6 +693,23 @@ class OpportunityScorer:
 
             # 10. v9优化: 量化适中奖励 — 移除（全量回测验证无效）
             # if 55 <= quant_score <= 80:
+
+            # v18新增: 量化分偏低奖励 (qs<50: 59.7%wr/+3.71%, 少数模型看好=超额收益)
+            if quant_score < 50:
+                qs_low_bonus = 5
+                v54_total_bonus += qs_low_bonus
+                logger.info(f"{stock_code} 量化分低奖励: qs={quant_score:.0f}<50, 加{qs_low_bonus}分")
+
+            # v20强化: 量化买入信号梯度奖励 - 买入越多分数越高, 无sell限制
+            buy_bonus_val = 0
+            if quant_buy_count >= 12: buy_bonus_val = 20
+            elif quant_buy_count >= 10: buy_bonus_val = 16
+            elif quant_buy_count >= 8: buy_bonus_val = 12
+            elif quant_buy_count >= 6: buy_bonus_val = 8
+            elif quant_buy_count >= 4: buy_bonus_val = 4
+            if buy_bonus_val > 0:
+                v54_total_bonus += buy_bonus_val
+                logger.info(f"{stock_code} 买入信号梯度奖励: buy={quant_buy_count}, 加{buy_bonus_val}分")
 
             total_score += v54_total_bonus
 
@@ -744,10 +783,14 @@ class OpportunityScorer:
                 momentum_bonus += 6
                 momentum_signals.append(f'MACD金叉+RSI黄金区({current_rsi:.0f}):+6')
 
-            # Pattern 7: 涨停板首板 + 低追高风险 = 妖股起点 (+12分)
+            # Pattern 7: 涨停板首板 + 低追高风险 = 妖股起点 (+10分)
             if today_change >= 9.5 and chase_risk_score < 50:
                 momentum_bonus += 10  # v13优化: 12→10
                 momentum_signals.append(f'首板涨停(chase={chase_risk_score:.0f}<50):+10')
+            elif today_change >= 9.5 and chase_risk_score >= 50:
+                # v17新增: 涨停首板+高chase也有正收益(51.0%wr)
+                momentum_bonus += 8
+                momentum_signals.append(f'首板涨停高chase(chase={chase_risk_score:.0f}>=50):+8')
             elif today_change >= 7 and chase_risk_score < 40:
                 momentum_bonus += 12  # v13优化: 15→12
                 momentum_signals.append(f'强势涨幅(涨{today_change:.1f}%+chase={chase_risk_score:.0f}):+12')
@@ -755,10 +798,11 @@ class OpportunityScorer:
             # 应用动量奖励（上限25分）
             momentum_bonus = min(25, momentum_bonus)
 
-            # 动量识别后的惩罚回收: 如果动量分>=10，回收部分惩罚
+            # v20优化: 动量回收严格限制在已扣分的50%以内
+            # 防止高风险票通过动量回收净加分, 导致排序不稳定
             penalty_recovery = 0
             if momentum_bonus >= 10 and actual_penalty > 0:
-                penalty_recovery = min(actual_penalty // 2, 15)  # 回收最多15分或一半惩罚
+                penalty_recovery = min(actual_penalty // 2, 12)  # v20: 回收上限15→12, 且不超过已扣分50%
                 momentum_signals.append(f'惩罚回收(动量抵消):+{penalty_recovery}')
 
             total_score += momentum_bonus + penalty_recovery
@@ -797,7 +841,7 @@ class OpportunityScorer:
 
             # v10优化: 板块死区惩罚（大幅降低）
             if 60 <= sector_score < 75:
-                sector_dead_penalty = 5  # v12优化: 3→5
+                sector_dead_penalty = 10  # v19验证: sd=10比sd=5的B+质量更高(57.1%>56.1%)
                 total_score -= sector_dead_penalty
                 logger.info(f"{stock_code} 板块死区惩罚: sector_score={sector_score:.0f}在60-75区间, 扣{sector_dead_penalty}分")
                 score_adjustments.append(f"板块死区惩罚: sector_score={sector_score:.0f}在60-75区间, 扣{sector_dead_penalty}分")
@@ -809,17 +853,11 @@ class OpportunityScorer:
                 total_score -= tech_high_penalty
                 logger.info(f"{stock_code} 技术面虚高惩罚: tech_score={tech_score:.0f}>=80, 扣{tech_high_penalty}分")
 
-            # v14优化: 评分过高反指标(阈值74→78, 惩罚25→15, 回测验证74-80区间胜率55%)
-            if total_score >= 78:
-                score_high_penalty = 20  # v14优化: 25→20
-                total_score -= score_high_penalty
-                logger.info(f"{stock_code} 评分过高反指标: {total_score + score_high_penalty:.0f}>=78, 扣{score_high_penalty}分")
-
-            # v11新增: 评分极高额外惩罚 (score>=76在B级亏损,胜率仅18.2%)
+            # v18优化: 渐进式评分过高惩罚 (score>=90仅25%wr,越高越差)
             if total_score >= 76:
-                score_very_high_penalty = 3  # v11新增
-                total_score -= score_very_high_penalty
-                logger.info(f"{stock_code} 评分极高惩罚: {total_score + score_very_high_penalty:.0f}>=76, 扣{score_very_high_penalty}分")
+                score_high_penalty = max(15, int((total_score - 76) * 1.2))
+                total_score -= score_high_penalty
+                logger.info(f"{stock_code} 评分过高反指标: {total_score + score_high_penalty:.0f}>=76, 扣{score_high_penalty}分(渐进)")
 
             # 2. 评分甜蜜区奖励 — v10优化: 移除（回测验证无正向效果）
             # if 63 <= total_score <= 69:

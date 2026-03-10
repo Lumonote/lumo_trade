@@ -305,7 +305,7 @@ class OpportunityReportGenerator:
                 if tier in tier_counts:
                     tier_counts[tier] += 1
 
-            lines.append("### 当日推荐置信度分布\n")
+            lines.append("### 当日推荐置信度分布")
             lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
             lines.append('<thead><tr><th>置信度</th><th>说明</th><th>数量</th></tr></thead>')
             lines.append('<tbody>')
@@ -415,7 +415,7 @@ class OpportunityReportGenerator:
 
                 if bt_with_returns is not None and len(bt_with_returns) >= 10:
                     lines.append("\n> **备注**: 每月第一个交易日将根据前一个月量化选股结果进行AI自我回测及算法优化，如有需求意见也可在留言中反馈，如有AI相关业务落地咨询的可私聊博主。\n")
-                    lines.append("\n### 历史回测表现（基于已验证数据）\n")
+                    lines.append("\n### 历史回测表现（基于已验证数据）")
                     lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
                     lines.append('<thead><tr><th>评分区间</th><th>数量</th><th>5日均收益</th><th>5日胜率</th><th>10日均收益</th><th>盈亏比</th></tr></thead>')
                     lines.append('<tbody>')
@@ -477,7 +477,7 @@ class OpportunityReportGenerator:
                                     f"数据范围: {_date_min} ~ {_date_max}")
 
                     # 分档收益分布
-                    lines.append("\n### 收益分档分布\n")
+                    lines.append("\n### 收益分档分布")
                     _return_col = 'return_5d'
                     _valid = bt_with_returns.dropna(subset=[_return_col])
                     _has_name = 'name' in _valid.columns
@@ -552,7 +552,7 @@ class OpportunityReportGenerator:
 
             # 添加板块分组股票表格
             lines.append("\n---\n")
-            lines.append("## 📊 热点股票板块分布\n")
+            lines.append("## 📊 热点股票板块分布")
             lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
             lines.append('<thead><tr><th>所属板块</th><th>股票列表</th></tr></thead>')
             lines.append('<tbody>')
@@ -769,7 +769,7 @@ class OpportunityReportGenerator:
                     lines.append("\n---\n")
                     td = top_list_data.get('trade_date', '')
                     date_display = f"{td[:4]}-{td[4:6]}-{td[6:]}" if len(td) == 8 else td
-                    lines.append(f"## 💰 个股资金流向（{date_display}）\n")
+                    lines.append(f"## 💰 个股资金流向（{date_display}）")
 
                     def fmt_amount(val):
                         if abs(val) >= 10000:
@@ -780,7 +780,7 @@ class OpportunityReportGenerator:
                     # 流入前20
                     inflow = top_list_data.get('inflow', [])
                     if inflow:
-                        lines.append("### 🔴 主力净流入 TOP 20\n")
+                        lines.append("### 🔴 主力净流入 TOP 20")
                         lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
                         lines.append('<thead><tr><th>#</th><th>股票</th><th>资金流向明细</th></tr></thead>')
                         lines.append('<tbody>')
@@ -804,7 +804,7 @@ class OpportunityReportGenerator:
                     # 流出前20
                     outflow = top_list_data.get('outflow', [])
                     if outflow:
-                        lines.append("### 🟢 主力净流出 TOP 20\n")
+                        lines.append("### 🟢 主力净流出 TOP 20")
                         lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
                         lines.append('<thead><tr><th>#</th><th>股票</th><th>资金流向明细</th></tr></thead>')
                         lines.append('<tbody>')

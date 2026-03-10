@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-v8.0 纯评分算法模拟回测 - 无淘汰版
+v20 纯评分算法模拟回测 - 无淘汰版
 ====================
-基于已有的回测数据(backtest_analysis CSV)，模拟应用v8.0的纯评分规则，
+基于已有的回测数据(backtest_analysis CSV)，模拟应用v20的纯评分规则，
 对比优化前后的收益表现。
 
-v8.0核心理念: 不淘汰任何数据，所有风险因子转为扣分，保留全部数据。
-- 所有风险条件（RSI过高、追涨、板块过热等）统一转为扣分
-- 所有利好因素（低RSI、低追高、动量启动等）统一转为加分
-- 最终按评分排序，每日Top10推荐
-- 置信度分级标记: S/A/B/C
+v20核心变更(vs v19):
+- 追高风险惩罚降低: chase>=80: -20→-15 (回测零影响, live减少误杀)
+- 5日急涨阈值放宽: >18%/-15→>20%/-10 (回测零影响, live减少错过主升)
+- 板块死区保持flat -10 (回测验证: 分段8/5/3会破坏A>B排序)
+- [仅live] 惩罚上限: 30→25, 动量回收上限: 15→12
+
+v19核心变更(vs v18):
+- 新增量化买入信号梯度奖励(仅sell=0, 黄金信号57.8%wr/+5.03%):
+  buy>=4:+4, >=6:+6, >=8:+8, >=10:+10 (sell>=1不奖励)
 """
 
 import os
@@ -102,48 +106,38 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
                 penalty += 5  # v9优化: 3→5
                 details.append(f'小涨{day_chg:.0f}%:-5')
 
-        # 短期涨幅风险
-        if pd.notna(chg_5d) and chg_5d > 18:
-            penalty += 25  # v9优化: 20→25
+        # 短期涨幅风险 (v17: 修复>25判断永远不触发的BUG, v20: >18→>20, 15→10)
+        if pd.notna(chg_5d) and chg_5d > 25:
+            penalty += 25
             details.append(f'5日暴涨{chg_5d:.0f}%:-25')
-        elif pd.notna(chg_5d) and chg_5d > 25:
-            penalty += 15
-            details.append(f'5日涨{chg_5d:.0f}%:-15')
+        elif pd.notna(chg_5d) and chg_5d > 20:
+            penalty += 10  # v20优化: 阈值18→20, 惩罚15→10
+            details.append(f'5日涨{chg_5d:.0f}%:-10')
 
         if pd.notna(chg_3d):
             if chg_3d > 20:
-                penalty += 20
-                details.append(f'3日暴涨{chg_3d:.0f}%:-20')
+                penalty += 15  # v17优化: 20→15
+                details.append(f'3日暴涨{chg_3d:.0f}%:-15')
             elif chg_3d > 15:
-                penalty += 16  # v9优化: 10→16
-                details.append(f'3日涨{chg_3d:.0f}%:-16')
+                penalty += 10  # v17优化: 16→10
+                details.append(f'3日涨{chg_3d:.0f}%:-10')
             elif chg_3d > 10:
-                penalty += 12  # v13优化: 15→12
-                details.append(f'3日涨{chg_3d:.0f}%:-12')
+                penalty += 8   # v17优化: 12→8
+                details.append(f'3日涨{chg_3d:.0f}%:-8')
 
-        # 追高风险
+        # 追高风险 (v20: 20→15, 保留风控但不过度一票否决)
         if pd.notna(chase):
             if chase >= 80:
-                penalty += 20  # v9优化: 15→20
-                details.append(f'追高极端{chase:.0f}:-20')
+                penalty += 15  # v20优化: 20→15
+                details.append(f'追高极端{chase:.0f}:-15')
             elif chase >= 60:
                 penalty += 3   # v11优化: 6→3
                 details.append(f'追高偏高{chase:.0f}:-3')
 
-        # 技术面偏低（原淘汰→扣分，有动量豁免）
-        if pd.notna(tech) and tech < 60:
-            has_exempt = False
-            # 妖股豁免
-            if pd.notna(day_chg) and day_chg >= 9.5 and day_chg < 20:
-                if pd.notna(chase) and chase < 50 and pd.notna(buy_sig) and buy_sig <= 8:
-                    has_exempt = True
-            # 启动豁免
-            if pd.notna(day_chg) and 3 <= day_chg < 10:
-                if pd.notna(chase) and chase < 50 and pd.notna(qs) and 55 <= qs <= 80:
-                    has_exempt = True
-            if not has_exempt:
-                penalty += 8   # v11优化: 10→8
-                details.append(f'技术面低{tech:.0f}:-8')
+        # 技术面偏低 — v18移除（回测验证反效果: 被罚wr=43.2% > 未罚40.0%）
+        # tech<60惩罚实际打击了趋势启动阶段的股票，移除后B+增加39%
+        # if pd.notna(tech) and tech < 60:
+        #     ...penalty += 8
 
         # v11新增: 技术面虚高惩罚 (B级中tech>=80表现最差)
         if pd.notna(tech) and tech >= 80:
@@ -156,18 +150,15 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
                 penalty += 12  # v12优化: 10→12
                 details.append(f'板块过热{sector:.0f}:-12')
             elif 60 <= sector < 75:
-                penalty += 10  # v16: 5→10(B+胜率+4.9%,收益+0.70%)
+                penalty += 10  # v20验证: 分段惩罚破坏A>B排序, 保持flat10
                 details.append(f'板块死区{sector:.0f}:-10')
 
-        # 原始评分过高（过拟合反指标）
-        if score >= 76:  # v16优化: 78→76(B+胜率51.9→56.8%)
-            penalty += 20  # v14优化: 25→20
-            details.append(f'评分过高{score:.0f}:-20')
-
-        # v11新增: 原始评分极高额外惩罚
+        # 原始评分过高（v18: 渐进惩罚，高分扣更多）
+        # 回测: score>=90仅25%wr，越高越差，渐进惩罚防止高分股污染A级
         if score >= 76:
-            penalty += 3   # v11新增: 高分反向指标
-            details.append(f'评分极高{score:.0f}:-3')
+            score_pen = max(15, int((score - 76) * 1.2))
+            penalty += score_pen
+            details.append(f'评分过高{score:.0f}:-{score_pen}')
 
         # 组合风险: RSI>80 + 3d>10%
         if pd.notna(rsi) and pd.notna(chg_3d) and rsi > 80 and chg_3d > 10:
@@ -186,6 +177,16 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
         if pd.notna(buy_sig) and buy_sig >= 15:
             penalty += 8   # v16优化: 1→8(信号拥挤惩罚加大)
             details.append(f'信号拥挤{buy_sig:.0f}:-8')
+
+        # v18新增: 卖出信号>=3惩罚 (sell<2: 48.3%wr vs sell>=2: 36.9%wr, delta=-11.4%)
+        if pd.notna(sell_sig) and sell_sig >= 3:
+            penalty += 5
+            details.append(f'卖出信号多{sell_sig:.0f}:-5')
+
+        # v18新增: 量化分极高惩罚 (qs>=90: 33.0%wr/-3.53%, 强反指标)
+        if pd.notna(qs) and qs >= 90:
+            penalty += 5
+            details.append(f'量化分极高{qs:.0f}:-5')
 
         # 卖出占优 — v9优化: 移除（回测验证无效）
         # if pd.notna(sell_sig) and pd.notna(buy_sig) and sell_sig > buy_sig:
@@ -227,6 +228,10 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
             if not (pd.notna(buy_sig) and buy_sig > 8):  # 非信号拥挤
                 bonus += 10  # v13优化: 12→10
                 details.append(f'首板低chase{chase:.0f}:+10')
+        elif pd.notna(day_chg) and day_chg >= 9.5 and pd.notna(chase) and chase >= 50:
+            # v17新增: 涨停首板+高chase也有正收益(51.0%wr)
+            bonus += 8
+            details.append(f'首板高chase{chase:.0f}:+8')
         elif pd.notna(day_chg) and day_chg >= 7 and pd.notna(chase) and chase < 40:
             bonus += 12  # v13优化: 15→12
             details.append(f'强势低chase{chase:.0f}:+12')
@@ -238,6 +243,24 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
 
         # 量化适中 — v9优化: 移除（全量回测验证无效）
         # if pd.notna(qs) and 55 <= qs <= 80:
+
+        # v18新增: 量化分偏低奖励 (qs<50: 59.7%wr/+3.71%, 少数模型看好=超额收益)
+        if pd.notna(qs) and qs < 50:
+            bonus += 5
+            details.append(f'量化分低{qs:.0f}:+5')
+
+        # v20强化: 量化买入信号梯度奖励 - 买入越多分数越高, 无sell限制
+        if pd.notna(buy_sig):
+            buy_bonus_val = 0
+            if buy_sig >= 12: buy_bonus_val = 20
+            elif buy_sig >= 10: buy_bonus_val = 16
+            elif buy_sig >= 8: buy_bonus_val = 12
+            elif buy_sig >= 6: buy_bonus_val = 8
+            elif buy_sig >= 4: buy_bonus_val = 4
+            if buy_bonus_val > 0:
+                bonus += buy_bonus_val
+                details.append(f'买入信号{buy_sig:.0f}:+{buy_bonus_val}')
+                details.append(f'买入信号{buy_sig:.0f}(s0):+{buy_bonus_val}')
 
         # v8.0: 低追高+低RSI组合
         if pd.notna(chase) and pd.notna(rsi) and chase < 25 and rsi < 50:
