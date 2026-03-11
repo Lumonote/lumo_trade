@@ -633,13 +633,20 @@ def evaluate(df, params, threshold=78, top_n=10):
 
 
 def objective(result, min_n=5):
-    """目标函数: 兼顾胜率、收益和样本量"""
+    """目标函数: 兼顾胜率、收益和样本量，同时优化A级和B级"""
     if result['n'] < min_n:
         return -999
     # 主目标: 高胜率 + 正收益
-    # 加入样本量的对数权重避免过拟合到极小样本
+    # 优化目标:
+    # - A级(≥78): 高胜率
+    # - B级(≥70): 正收益
+    # - 整体: 正收益
     n_weight = min(1.0, np.log(result['n'] + 1) / np.log(50))
-    return result['wr'] * 0.5 + result['avg'] * 0.3 + result['top_wr'] * 0.1 + result['top_avg'] * 0.1 * n_weight
+    base_obj = result['wr'] * 0.4 + result['avg'] * 0.3 + result['top_wr'] * 0.15 + result['top_avg'] * 0.15 * n_weight
+    # 增加B级权重（样本更多，更有参考价值）
+    b_weight = min(1.0, result.get('b_n', 20) / 50)
+    b_bonus = result.get('b_avg', 0) * 0.5 * b_weight + result.get('b_wr', 0) * 0.2 * b_weight
+    return base_obj + b_bonus
 
 
 # ========== 第四部分: 多轮优化 ==========

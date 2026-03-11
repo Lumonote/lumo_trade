@@ -87,14 +87,14 @@ class OpportunityScorer:
     #   - 板块90+收益-4.29%，但80-90收益+11.54% - 非线性关系
     # 权重总和=1.0
     DIMENSION_WEIGHTS = {
-        'position_timing': 0.15, # 【v21降权】真回测:高位股反而好(pos>=0.7: 49.1%wr/+2.57%)
-        'volume_health': 0.22,   # 量价结构（量价验证主力行为）
-        'technical': 0.08,       # 技术分析
-        'quantitative': 0.35,    # 【v21提权】真回测:买入信号越多越好(buy>=10: 55%wr/+2.16%)
+        'position_timing': 0.12, # 【v22微调】从0.15降至0.12，减少对位置的依赖
+        'volume_health': 0.24,   # 【v22提高】量价结构验证主力行为，提高权重
+        'technical': 0.12,       # 【v22提高】技术分析，S级高分收益好
+        'quantitative': 0.30,    # 【v22微降】买入信号多=胜率高，保留高权重
         'liquidity': 0.05,       # 流动性
-        'sector': 0.05,          # 板块强度
+        'sector': 0.08,          # 【v22提高】板块强度有区分度
         'dragon_tiger': 0.06,    # 龙虎榜
-        'fundamental': 0.04,     # 基本面
+        'fundamental': 0.03,     # 【v22降低】基本面权重降低
         'events': 0.00,          # 【v21归零】回测中返回中性值,无实际贡献
         'sentiment': 0.00,       # 情绪面
     }
@@ -574,13 +574,27 @@ class OpportunityScorer:
                 score_adjustments.append(f"动量奖励: chase={chase_risk_score}>=50, 加{chase_bonus}分")
 
             # 2. v21重构: RSI超买惩罚移除,改为RSI强势区奖励
-            # 真回测: RSI>=80=48.1%/+2.53%, RSI 60-70=46.0%/+1.81%, RSI 40-50=41.7%/-1.04%
+            # v22增强: 基于真回测优化
+            #   - RSI>=80是毁灭性信号(23.8%wr/-8.77%)，需重罚
+            #   - RSI 40-50是黄金区(52.5%wr/+2.79%)，需奖励
             current_rsi = tech_details.get('RSI', 50)
             if isinstance(current_rsi, (int, float)):
-                if 60 <= current_rsi <= 80:
-                    rsi_strong_bonus = 2  # v21: RSI强势区(60-80)奖励
+                if current_rsi >= 80:
+                    # v22新增: RSI>=80重罚（真回测23.8%wr/-8.77%）
+                    rsi_extreme_pen = 15
+                    v54_total_penalty += rsi_extreme_pen
+                    logger.info(f"{stock_code} RSI极端超买惩罚: RSI={current_rsi:.1f}>=80, 扣{rsi_extreme_pen}分")
+                    score_adjustments.append(f"RSI极端超买: RSI={current_rsi:.1f}>=80, 扣{rsi_extreme_pen}分")
+                elif 60 <= current_rsi < 80:
+                    rsi_strong_bonus = 3  # v22提高: 2→3
                     v54_total_bonus += rsi_strong_bonus
                     logger.info(f"{stock_code} RSI强势区奖励: RSI={current_rsi:.1f}在60-80, 加{rsi_strong_bonus}分")
+                elif 40 <= current_rsi < 50:
+                    # v22新增: RSI黄金区奖励（真回测52.5%wr/+2.79%）
+                    rsi_golden_bonus = 4
+                    v54_total_bonus += rsi_golden_bonus
+                    logger.info(f"{stock_code} RSI黄金区奖励: RSI={current_rsi:.1f}在40-50, 加{rsi_golden_bonus}分")
+                    score_adjustments.append(f"RSI黄金区: RSI={current_rsi:.1f}在40-50, 加{rsi_golden_bonus}分")
 
             # 3. 当日涨幅惩罚
             # v14优化: 涨停+3日<15%不惩罚(回测53.8%胜率+1.73%),只惩罚连板/暴涨
@@ -1069,6 +1083,12 @@ class OpportunityScorer:
         dominance = buy_count - sell_count
         bonus = dominance * 2.5 + max(0, buy_count - 3) * 1.0  # v5.4: 提升奖励系数(2.0→2.5, 0.5→1.0)
         bonus = min(18.0, bonus)  # v5.4: 上限从12提升至18
+
+        # v22新增: sell=0是最强正向信号（真回测53.8%wr/+5.02%）
+        if sell_count == 0:
+            bonus += 5
+            logger.info(f"卖出信号为0，增加额外奖励+5分")
+
         if score < 45:
             bonus = min(5.0, bonus)  # v5.4: 低分时也给更多奖励(3→5)
         return round(float(bonus), 2)
