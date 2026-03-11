@@ -249,17 +249,18 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
             bonus += 5
             details.append(f'量化分低{qs:.0f}:+5')
 
-        # v20强化: 量化买入信号梯度奖励 - 买入越多分数越高, 无sell限制
-        if pd.notna(buy_sig):
+        # v20强化: 量化净买入信号梯度奖励 - (买入-卖出)越多分数越高
+        if pd.notna(buy_sig) and pd.notna(sell_sig):
+            net_buy = buy_sig - sell_sig
             buy_bonus_val = 0
-            if buy_sig >= 12: buy_bonus_val = 20
-            elif buy_sig >= 10: buy_bonus_val = 16
-            elif buy_sig >= 8: buy_bonus_val = 12
-            elif buy_sig >= 6: buy_bonus_val = 8
-            elif buy_sig >= 4: buy_bonus_val = 4
+            if net_buy >= 12: buy_bonus_val = 16
+            elif net_buy >= 10: buy_bonus_val = 12
+            elif net_buy >= 8: buy_bonus_val = 8
+            elif net_buy >= 6: buy_bonus_val = 5
+            elif net_buy >= 4: buy_bonus_val = 3
             if buy_bonus_val > 0:
                 bonus += buy_bonus_val
-                details.append(f'买入信号{buy_sig:.0f}:+{buy_bonus_val}')
+                details.append(f'净买入{net_buy:.0f}(b{buy_sig:.0f}-s{sell_sig:.0f}):+{buy_bonus_val}')
                 details.append(f'买入信号{buy_sig:.0f}(s0):+{buy_bonus_val}')
 
         # v8.0: 低追高+低RSI组合
