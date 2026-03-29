@@ -1060,19 +1060,27 @@ elseif ($Choice -eq "6") {
     if (-not $daysEnv) { $daysEnv = '365' }
 
     # Normalize parameters
-    $symbolsParam = $symbolsEnv -replace ',', ' '
+    $symbolList = @($symbolsEnv -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if (-not $symbolList -or $symbolList.Count -eq 0) {
+        Write-Host "ERROR: 未解析到有效股票代码" -ForegroundColor Red
+        exit 1
+    }
+    $cleanCodes = @($symbolList | ForEach-Object { $_ -replace '\..*$', '' } | Where-Object { $_ })
     $validSources = @('auto','tushare','crawler')
     if (-not ($validSources -contains $sourceEnv)) { $sourceEnv = 'auto' }
 
     Write-Host "Batch fetching data for $symbolsEnv (source: $sourceEnv, days: $daysEnv)..." -ForegroundColor Green
     # Execute batch data fetching
-    Invoke-Python -Script 'scripts/batch_fetch.py' -Args @('--symbols', $symbolsParam, '--min-days', $daysEnv, '--config', 'config/tushare_config.json')
+    Invoke-Python -Script 'scripts/batch_fetch.py' -Args (@('--symbols') + $symbolList + @('--min-days', $daysEnv, '--config', 'config/tushare_config.json'))
 
     # Auto select first stock for prediction demo
-    $firstSymbol = ($symbolsEnv -split ',')[0]
-    $cleanSymbol = $firstSymbol -replace '\..*$', ''
+    $cleanSymbol = $cleanCodes[0]
     Write-Host "PREDICT: Starting prediction ($cleanSymbol)" -ForegroundColor Green
     Invoke-Python -Script 'examples/prediction_batch_example.py' -Args @('--stock-code', $cleanSymbol)
+
+    $testCodes = $cleanCodes -join ','
+    Write-Host "RANK: 启动7式综合评分排名详细分析 ($($cleanCodes.Count)只股票)" -ForegroundColor Green
+    Invoke-Python -Script 'scripts/run_opportunity_discovery.py' -Args @('--test-codes', $testCodes, '--workers', '10')
 }
 elseif ($Choice -eq "7") {
     Write-Host "🔥 投资机会挖掘 - 分析热门股票（可自定义数量）" -ForegroundColor Blue

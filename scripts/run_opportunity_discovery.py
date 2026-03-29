@@ -10,8 +10,9 @@ import sys
 import argparse
 import logging
 import json
+import threading
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
 import time
 import requests
@@ -687,54 +688,21 @@ class OpportunityDiscovery:
 
                 with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                     future_to_stock = {
-                        executor.submit(self._analyze_single_stock, stock): stock
+                        executor.submit(self._analyze_single_stock_with_timeout, stock): stock
                         for stock in hot_stocks
                     }
 
                     for future in as_completed(future_to_stock):
                         stock = future_to_stock[future]
                         try:
-                            result = future.result(timeout=self.per_stock_timeout)
+                            result = future.result()
                             if result:
                                 scored_stocks.append(result)
                             else:
-                                scored_stocks.append({
-                                    'stock_code': stock.get('code', ''),
-                                    'name': stock.get('name', '未知'),
-                                    'exchange': stock.get('exchange', 'UNKNOWN'),
-                                    'popularity_score': stock.get('popularity_score', 0),
-                                    'scoring_result': {
-                                        'total_score': 0,
-                                        'rating': 'C',
-                                        'error': '分析失败'
-                                    }
-                                })
-                        except FuturesTimeoutError:
-                            logger.warning(f"分析 {stock.get('code')} ({stock.get('name')}) 超时({self.per_stock_timeout}s)，跳过")
-                            scored_stocks.append({
-                                'stock_code': stock.get('code', ''),
-                                'name': stock.get('name', '未知'),
-                                'exchange': stock.get('exchange', 'UNKNOWN'),
-                                'popularity_score': stock.get('popularity_score', 0),
-                                'scoring_result': {
-                                    'total_score': 0,
-                                    'rating': 'C',
-                                    'error': f'分析超时({self.per_stock_timeout}s)'
-                                }
-                            })
+                                scored_stocks.append(self._build_failed_stock_result(stock, '分析失败'))
                         except Exception as e:
                             logger.error(f"分析 {stock.get('code')} 失败: {e}")
-                            scored_stocks.append({
-                                'stock_code': stock.get('code', ''),
-                                'name': stock.get('name', '未知'),
-                                'exchange': stock.get('exchange', 'UNKNOWN'),
-                                'popularity_score': stock.get('popularity_score', 0),
-                                'scoring_result': {
-                                    'total_score': 0,
-                                    'rating': 'C',
-                                    'error': f'分析异常: {str(e)}'
-                                }
-                            })
+                            scored_stocks.append(self._build_failed_stock_result(stock, f'分析异常: {str(e)}'))
 
                         completed_count += 1
                         progress.update(
@@ -746,56 +714,20 @@ class OpportunityDiscovery:
             
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 future_to_stock = {
-                    executor.submit(self._analyze_single_stock, stock): stock
+                    executor.submit(self._analyze_single_stock_with_timeout, stock): stock
                     for stock in hot_stocks
                 }
                 for future in as_completed(future_to_stock):
                     stock = future_to_stock[future]
                     try:
-                        result = future.result(timeout=self.per_stock_timeout)
+                        result = future.result()
                         if result:
                             scored_stocks.append(result)
                         else:
-                            scored_stocks.append({
-                                'stock_code': stock.get('code', ''),
-                                'name': stock.get('name', '未知'),
-                                'exchange': stock.get('exchange', 'UNKNOWN'),
-                                'popularity_score': stock.get('popularity_score', 0),
-                                'change_pct': stock.get('change_pct', 0),
-                                'scoring_result': {
-                                    'total_score': 0,
-                                    'rating': 'C',
-                                    'error': '分析失败'
-                                }
-                            })
-                    except FuturesTimeoutError:
-                        logger.warning(f"分析 {stock.get('code')} ({stock.get('name')}) 超时({self.per_stock_timeout}s)，跳过")
-                        scored_stocks.append({
-                            'stock_code': stock.get('code', ''),
-                            'name': stock.get('name', '未知'),
-                            'exchange': stock.get('exchange', 'UNKNOWN'),
-                            'popularity_score': stock.get('popularity_score', 0),
-                            'change_pct': stock.get('change_pct', 0),
-                            'scoring_result': {
-                                'total_score': 0,
-                                'rating': 'C',
-                                'error': f'分析超时({self.per_stock_timeout}s)'
-                            }
-                        })
+                            scored_stocks.append(self._build_failed_stock_result(stock, '分析失败'))
                     except Exception as e:
                         logger.error(f"分析 {stock.get('code')} 失败: {e}")
-                        scored_stocks.append({
-                            'stock_code': stock.get('code', ''),
-                            'name': stock.get('name', '未知'),
-                            'exchange': stock.get('exchange', 'UNKNOWN'),
-                            'popularity_score': stock.get('popularity_score', 0),
-                            'change_pct': stock.get('change_pct', 0),
-                            'scoring_result': {
-                                'total_score': 0,
-                                'rating': 'C',
-                                'error': f'分析异常: {str(e)}'
-                            }
-                        })
+                        scored_stocks.append(self._build_failed_stock_result(stock, f'分析异常: {str(e)}'))
 
                     completed_count += 1
                     progress = (completed_count / total_count) * 100
@@ -1369,6 +1301,68 @@ class OpportunityDiscovery:
         except Exception as e:
             logger.error(f"分析 {stock_code} ({stock_name}) 失败: {e}")
             return None
+
+    def _build_failed_stock_result(self, hot_stock: Dict, error_message: str) -> Dict:
+        """构造统一的失败结果，避免单股异常拖垮整体流程。"""
+        return {
+            'stock_code': hot_stock.get('code', ''),
+            'name': hot_stock.get('name', '未知'),
+            'exchange': hot_stock.get('exchange', 'UNKNOWN'),
+            'popularity_score': hot_stock.get('popularity_score', 0),
+            'change_pct': hot_stock.get('change_pct', 0),
+            'source': hot_stock.get('source', 'heat'),
+            'source_detail': hot_stock.get('source_detail', ''),
+            'scoring_result': {
+                'total_score': 0,
+                'rating': 'C',
+                'error': error_message
+            }
+        }
+
+    def _analyze_single_stock_with_timeout(self, hot_stock: Dict) -> Dict:
+        """
+        给单股分析增加真正的超时边界。
+
+        注意：`as_completed()` 会无限等待未完成的 future，单纯对 `future.result(timeout=...)`
+        设置超时并不能防止最后一只股票卡死。这里额外套一层 daemon 线程 + join(timeout)，
+        超时后直接返回失败结果，让批次可以继续推进。
+        """
+        result_holder = {'result': None, 'error': None}
+        stock_code = hot_stock.get('code', '')
+        stock_name = hot_stock.get('name', '未知')
+
+        def worker():
+            try:
+                result_holder['result'] = self._analyze_single_stock(hot_stock)
+            except Exception as exc:
+                result_holder['error'] = exc
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"kronos-stock-{stock_code or 'unknown'}",
+            daemon=True
+        )
+        thread.start()
+        thread.join(timeout=self.per_stock_timeout)
+
+        if thread.is_alive():
+            logger.warning(f"分析 {stock_code} ({stock_name}) 超时({self.per_stock_timeout}s)，跳过")
+            return self._build_failed_stock_result(
+                hot_stock,
+                f'分析超时({self.per_stock_timeout}s)'
+            )
+
+        if result_holder['error'] is not None:
+            logger.error(f"分析 {stock_code} ({stock_name}) 异常: {result_holder['error']}")
+            return self._build_failed_stock_result(
+                hot_stock,
+                f"分析异常: {result_holder['error']}"
+            )
+
+        if result_holder['result']:
+            return result_holder['result']
+
+        return self._build_failed_stock_result(hot_stock, '分析失败')
 
     def _process_single_llm_task(self, llm_analyzer: LLMAnalyzer, stock_result: Dict) -> bool:
         """

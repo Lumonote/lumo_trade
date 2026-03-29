@@ -55,7 +55,7 @@ echo.
 echo DATA: 数据获取
 echo 4. 获取股票数据 (Tushare)
 echo 5. 获取股票数据 (爬虫)
-echo 6. 批量获取数据及预测K线
+echo 6. 批量获取数据、预测K线及综合排名分析
 echo 7. 🔥 投资机会挖掘 (TOP100热门股票)
 echo.
 echo PREDICT: 预测功能
@@ -300,7 +300,7 @@ pause
 goto main_menu
 
 :batch_fetch
-echo CHART: 批量获取数据及预测K线
+echo CHART: 批量获取数据、预测K线及综合排名分析
 echo.
 
 REM 股票代码输入
@@ -340,8 +340,11 @@ if "%days%"=="" set days=365
 echo.
 echo 正在批量获取 %symbols% 的数据（使用 %source% 数据源，获取 %days% 天数据）...
 
+set "symbols_no_space=%symbols: =%"
+set "symbols_args=%symbols_no_space:,= %"
+
 REM 批量获取数据
-%PYTHON_CMD% scripts/batch_fetch.py --symbols %symbols% --min-days %days% --config config/tushare_config.json
+%PYTHON_CMD% scripts/batch_fetch.py --symbols %symbols_args% --min-days %days% --config config/tushare_config.json
 if errorlevel 1 (
     echo ERROR: 数据获取失败
     pause
@@ -351,7 +354,7 @@ if errorlevel 1 (
 echo OK: 数据获取完成！
 
 REM 从输入的股票代码中提取第一个进行预测演示
-for /f "tokens=1 delims=," %%a in ("%symbols%") do set first_symbol=%%a
+for /f "tokens=1 delims=," %%a in ("%symbols_no_space%") do set first_symbol=%%a
 
 REM 移除交易所后缀，只保留股票代码部分
 for /f "tokens=1 delims=." %%b in ("%first_symbol%") do set clean_symbol=%%b
@@ -367,6 +370,28 @@ if errorlevel 1 (
 ) else (
     echo OK: 批量预测完成！
     echo REPORT: HTML分析报告已自动生成到results目录
+)
+
+echo.
+echo RANK: 开始运行 7 式综合评分排名详细分析...
+set "clean_codes="
+for %%s in (%symbols_args%) do (
+    for /f "tokens=1 delims=." %%c in ("%%s") do (
+        if defined clean_codes (
+            set "clean_codes=!clean_codes!,%%c"
+        ) else (
+            set "clean_codes=%%c"
+        )
+    )
+)
+
+if defined clean_codes (
+    %PYTHON_CMD% scripts/run_opportunity_discovery.py --test-codes !clean_codes! --workers 10
+    if errorlevel 1 (
+        echo WARN: 综合评分排名详细分析执行失败
+    ) else (
+        echo REPORT: 综合评分排名详细分析报告已生成到results目录
+    )
 )
 
 pause

@@ -3362,7 +3362,8 @@ class OpportunityScorer:
                     'overall': sector_sentiment.get('overall', '中性'),
                     'change_pct': sector_sentiment.get('change_pct', 0),
                     'turnover_rate': sector_sentiment.get('turnover_rate', 0),
-                    'leader_stock': sector_sentiment.get('leader_stock', {})
+                    'leader_stock': sector_sentiment.get('leader_stock', {}),
+                    'data_source': sector_sentiment.get('data_source', '')
                 }
                 return float(score), details
             return 50.0, {'error': '无板块数据'}

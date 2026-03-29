@@ -34,6 +34,105 @@ def _fmt_money(num):
         return '—'
 
 
+def _to_float_safe(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip().replace('%', '')
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except Exception:
+            return None
+    return None
+
+
+def _is_missing_display_value(value) -> bool:
+    if value is None:
+        return True
+    try:
+        if value != value:
+            return True
+    except Exception:
+        pass
+    text = str(value).strip()
+    if not text:
+        return True
+    if text.lower() in ('nan', 'none', 'null', 'n/a', 'na', 'unknown'):
+        return True
+    if text in ('未知', 'N/A', 'None'):
+        return True
+    return False
+
+
+def _normalize_stock_code(value) -> str:
+    if _is_missing_display_value(value):
+        return ''
+    if isinstance(value, int):
+        return str(value).zfill(6)
+    if isinstance(value, float):
+        try:
+            if value.is_integer():
+                return str(int(value)).zfill(6)
+        except Exception:
+            pass
+    text = str(value).strip()
+    if text.endswith('.0') and text[:-2].isdigit():
+        return text[:-2].zfill(6)
+    if '.' in text:
+        left, right = text.split('.', 1)
+        if left.isdigit() and right.isalpha():
+            return left.zfill(6)
+    if text.isdigit():
+        return text.zfill(6)
+    return text
+
+
+def _pick_display_text(*values, default='未知') -> str:
+    for value in values:
+        if _is_missing_display_value(value):
+            continue
+        return str(value).strip()
+    return default
+
+
+def _pick_stock_display_name(name=None, stock_name=None, code=None, default='未知') -> str:
+    return _pick_display_text(name, stock_name, _normalize_stock_code(code), default=default)
+
+
+def _get_displayable_sector_change(
+    change_value,
+    turnover_value=None,
+    score=None,
+    overall=None,
+    data_source=None,
+    leader_stock=None
+):
+    change = _to_float_safe(change_value)
+    if change is None:
+        return None
+
+    turnover = _to_float_safe(turnover_value)
+    score_num = _to_float_safe(score)
+    overall_text = str(overall or '').strip()
+    source_text = str(data_source or '').strip().lower()
+    leader = leader_stock if isinstance(leader_stock, dict) else {}
+    has_leader = any(str(leader.get(key) or '').strip() for key in ('name', 'code'))
+
+    if abs(change) < 1e-9:
+        if source_text in ('', 'default', 'none'):
+            return None
+        if overall_text in ('', '未知', 'N/A', 'Unknown', '数据不足'):
+            return None
+        if turnover in (None, 0.0) and (score_num is None or abs(score_num - 50.0) < 1e-9) and not has_leader:
+            return None
+
+    return change
+
+
 def _generate_selection_reason(stock: Dict) -> str:
     """
     根据股票的评分数据生成有意义的入选原因
@@ -54,7 +153,16 @@ def _generate_selection_reason(stock: Dict) -> str:
 
         sec = details.get('sector') or {}
         sector_name = sec.get('sector_name', '')
-        sector_chg = float(sec.get('change_pct', 0) or 0)
+        sector_chg = _get_displayable_sector_change(
+            sec.get('change_pct'),
+            turnover_value=sec.get('turnover_rate'),
+            score=sector_score,
+            overall=sec.get('overall'),
+            data_source=sec.get('data_source'),
+            leader_stock=sec.get('leader_stock')
+        )
+        if sector_chg is None:
+            sector_chg = 0.0
 
         cf = details.get('sentiment', {}).get('capital_flow') or {}
         cf_trend = cf.get('trend', '')
@@ -268,8 +376,12 @@ class OpportunityReportGenerator:
             lines.append('<tbody>')
 
             for i, stock in enumerate(top_20[:20], 1):
-                code = stock.get('stock_code') or stock.get('code') or '未知'
-                name_txt = stock.get('name') or stock.get('stock_name') or str(code)
+                code = _normalize_stock_code(stock.get('stock_code') or stock.get('code') or '未知') or '未知'
+                name_txt = _pick_stock_display_name(
+                    stock.get('name'),
+                    stock.get('stock_name'),
+                    code
+                )
                 score = float(stock.get('final_score', 0) or 0)
 
                 summary_txt = (self._build_full_indicator_summary(stock) or "").replace('<br>', '；')
@@ -518,7 +630,12 @@ class OpportunityReportGenerator:
                             _top = _tier_df.nlargest(min(3, _cnt), _return_col)
                             _parts = []
                             for _, _row in _top.iterrows():
-                                _sname = _row.get('name', _row.get('code', ''))
+                                _sname = _pick_stock_display_name(
+                                    _row.get('name'),
+                                    _row.get('stock_name'),
+                                    _row.get('code'),
+                                    default='未知'
+                                )
                                 _sdate = str(_row.get('report_date', ''))[:10] if _has_date else ''
                                 _sret = _row[_return_col]
                                 if _sdate:
@@ -678,16 +795,61 @@ class OpportunityReportGenerator:
                         break
 
                 change_candidates = [
-                    sector.get('change_pct'),
-                    sector.get('sector_change'),
-                    adv_sector.get('change_pct'),
-                    adv_sector.get('sector_change'),
-                    adv_cn_sector.get('change_pct'),
-                    adv_cn_sector.get('板块涨跌')
+                    {
+                        'change': sector.get('change_pct'),
+                        'turnover': sector.get('turnover_rate'),
+                        'score': scoring_result.get('scores', {}).get('sector'),
+                        'overall': sector.get('overall'),
+                        'data_source': sector.get('data_source'),
+                        'leader_stock': sector.get('leader_stock')
+                    },
+                    {
+                        'change': sector.get('sector_change'),
+                        'turnover': sector.get('turnover_rate'),
+                        'score': scoring_result.get('scores', {}).get('sector'),
+                        'overall': sector.get('overall'),
+                        'data_source': sector.get('data_source'),
+                        'leader_stock': sector.get('leader_stock')
+                    },
+                    {
+                        'change': adv_sector.get('change_pct'),
+                        'turnover': adv_sector.get('turnover_rate'),
+                        'overall': adv_sector.get('overall'),
+                        'data_source': adv_sector.get('data_source'),
+                        'leader_stock': adv_sector.get('leader_stock')
+                    },
+                    {
+                        'change': adv_sector.get('sector_change'),
+                        'turnover': adv_sector.get('turnover_rate'),
+                        'overall': adv_sector.get('overall'),
+                        'data_source': adv_sector.get('data_source'),
+                        'leader_stock': adv_sector.get('leader_stock')
+                    },
+                    {
+                        'change': adv_cn_sector.get('change_pct'),
+                        'turnover': adv_cn_sector.get('turnover_rate'),
+                        'overall': adv_cn_sector.get('overall'),
+                        'data_source': adv_cn_sector.get('data_source'),
+                        'leader_stock': adv_cn_sector.get('leader_stock')
+                    },
+                    {
+                        'change': adv_cn_sector.get('板块涨跌'),
+                        'turnover': adv_cn_sector.get('换手率'),
+                        'overall': adv_cn_sector.get('板块情绪'),
+                        'data_source': adv_cn_sector.get('data_source'),
+                        'leader_stock': adv_cn_sector.get('龙头股')
+                    }
                 ]
                 sector_chg = None
                 for cand in change_candidates:
-                    val = _to_float_or_none(cand)
+                    val = _get_displayable_sector_change(
+                        cand.get('change'),
+                        turnover_value=cand.get('turnover'),
+                        score=cand.get('score'),
+                        overall=cand.get('overall'),
+                        data_source=cand.get('data_source'),
+                        leader_stock=cand.get('leader_stock')
+                    )
                     if val is not None:
                         sector_chg = val
                         break
@@ -704,16 +866,16 @@ class OpportunityReportGenerator:
                 return sector_name, sector_chg
 
             def _resolve_stock_name(stock: Dict):
-                code = str(stock.get('stock_code') or stock.get('code') or '').strip()
-                name = str(stock.get('name') or stock.get('stock_name') or '').strip()
+                code = _normalize_stock_code(stock.get('stock_code') or stock.get('code') or '')
+                name = _pick_display_text(stock.get('name'), stock.get('stock_name'), default='')
                 if name and name not in ('未知', code):
                     return name
                 if code:
                     _load_sector_from_tushare(code)
                     cached_name = stock_name_by_code.get(code)
-                    if cached_name:
-                        return cached_name
-                return name or code or '未知'
+                    if not _is_missing_display_value(cached_name):
+                        return str(cached_name).strip()
+                return _pick_stock_display_name(name, None, code)
 
             for stock in analysis_results:
                 sector_name, sector_chg = _resolve_sector_and_change(stock)
@@ -1024,7 +1186,7 @@ class OpportunityReportGenerator:
                 ts_code = str(row.get('ts_code', ''))
                 return {
                     'code': ts_code.split('.')[0] if ts_code else '',
-                    'name': str(row.get('name', '')),
+                    'name': _pick_display_text(row.get('name'), default=''),
                     'close': float(row.get('close', 0)),
                     'pct_change': float(row.get('pct_change', 0)),
                     'net_amount': float(row['net_amount']),
@@ -2333,14 +2495,24 @@ class OpportunityReportGenerator:
             # 1. 板块
             sec = details.get('sector') or {}
             sector_name = sec.get('sector_name') or '未知'
-            sec_chg = _fmt_pct(sec.get('change_pct'))
+            sec_score = scores.get('sector')
+            sec_change_value = _get_displayable_sector_change(
+                sec.get('change_pct'),
+                turnover_value=sec.get('turnover_rate'),
+                score=sec_score,
+                overall=sec.get('overall'),
+                data_source=sec.get('data_source'),
+                leader_stock=sec.get('leader_stock')
+            )
+            sec_chg = _fmt_pct(sec_change_value)
             sec_turn = _fmt_pct(sec.get('turnover_rate'))
             sec_overall = sec.get('overall') or '中性'
-            sec_score = scores.get('sector')
             
-            # 判断板块数据是否有效：如果板块未知，或者涨跌为0且分数为50，则认为无效
+            # 判断板块数据是否有效：至少要有有效板块名，且存在真实涨跌/换手/明确情绪信息之一
             is_valid_sector = True
-            if sector_name == '未知' or (sec.get('change_pct') == 0 and sec_score == 50):
+            has_turnover = _to_float_safe(sec.get('turnover_rate')) not in (None, 0.0)
+            has_overall = sec_overall not in ('', '未知', 'N/A', 'Unknown', '数据不足')
+            if sector_name == '未知' or (sec_change_value is None and not has_turnover and not has_overall):
                 is_valid_sector = False
                 
             sec_str = f"{sector_name}({sec_chg}, {sec_overall}, {_fmt_score(sec_score)}分)"
@@ -2467,7 +2639,14 @@ class OpportunityReportGenerator:
             change_1d = price_changes.get('change_1d') if price_changes else None
             change_3d = price_changes.get('change_3d') if price_changes else None
             change_5d = price_changes.get('change_5d') if price_changes else None
-            sector_chg = sec.get('change_pct', 0)
+            sector_chg = _get_displayable_sector_change(
+                sec.get('change_pct'),
+                turnover_value=sec.get('turnover_rate'),
+                score=sec_score,
+                overall=sec.get('overall'),
+                data_source=sec.get('data_source'),
+                leader_stock=sec.get('leader_stock')
+            )
 
             change_1d_str = f"{change_1d:+.2f}%" if change_1d is not None else "—"
             change_3d_str = f"{change_3d:+.2f}%" if change_3d is not None else "—"
@@ -2669,7 +2848,7 @@ class OpportunityReportGenerator:
                     if conc_num not in (None, 0.0):
                         chip_parts.append(f"集中度{conc_num:.1f}%")
                     if control_num not in (None, 0.0):
-                        chip_parts.append(f"控盘{control_num:.1f}")
+                        chip_parts.append(f"控盘评分{control_num:.1f}/100")
                     if lock_str and lock_str != '无': chip_parts.append(lock_str)
                     
                     if chip_parts:
@@ -2697,7 +2876,8 @@ class OpportunityReportGenerator:
                 capital = dimensions.get('capital_flow', {}).get('details', {}) or advanced.get('资金流向', {})
                 if capital:
                     cont_dict = capital.get('continuity', {})
-                    main_cont = cont_dict.get('consecutive_inflow_days', 0) if isinstance(cont_dict, dict) else capital.get('主力连续性', 0)
+                    inflow_cont = cont_dict.get('consecutive_inflow_days', 0) if isinstance(cont_dict, dict) else capital.get('主力连续流入天数', capital.get('主力连续性', 0))
+                    outflow_cont = cont_dict.get('consecutive_outflow_days', 0) if isinstance(cont_dict, dict) else capital.get('主力连续流出天数', 0)
                     cont_trend = cont_dict.get('trend', '') if isinstance(cont_dict, dict) else capital.get('trend', '')
                     retail = capital.get('retail_ratio') or capital.get('散户占比', 0)
 
@@ -2743,13 +2923,33 @@ class OpportunityReportGenerator:
                         return ''
                     
                     cap_parts = []
+                    inflow_days = int(_num(inflow_cont, default=0) or 0)
+                    outflow_days = int(_num(outflow_cont, default=0) or 0)
+                    main_cont = inflow_days if inflow_days > 0 else outflow_days
                     if main_cont > 0:
                         direction = _infer_main_force_direction()
-                        direction_str = f"({direction})" if direction else ""
-                        cap_parts.append(f"主力连续{main_cont}天{direction_str}")
+                        if direction == '买入':
+                            cap_parts.append(f"主力连续净流入{main_cont}天")
+                        elif direction == '卖出':
+                            cap_parts.append(f"主力连续净流出{main_cont}天")
+                        elif inflow_days > 0 and outflow_days <= 0:
+                            cap_parts.append(f"主力连续净流入{inflow_days}天")
+                        elif outflow_days > 0 and inflow_days <= 0:
+                            cap_parts.append(f"主力连续净流出{outflow_days}天")
+                        else:
+                            cap_parts.append(f"主力连续{main_cont}天")
                     retail_num = _num(retail, default=None)
                     if retail_num is not None and retail_num > 0 and abs(retail_num - 50.0) > 0.1:
-                        cap_parts.append(f"散户{retail_num:.1f}%")
+                        ds = capital.get('data_source', '') or (dimensions.get('capital_flow', {}).get('details', {}).get('data_source', ''))
+                        retail_tags = []
+                        if retail_num > 70:
+                            retail_tags.append('偏高')
+                        elif retail_num < 30:
+                            retail_tags.append('偏低')
+                        if ds and ds != 'synthetic':
+                            retail_tags.append(ds)
+                        retail_tag = f"({'/'.join(retail_tags)})" if retail_tags else ""
+                        cap_parts.append(f"散户成交额占比{retail_num:.1f}%{retail_tag}")
                     
                     if cap_parts:
                         parts.append(f"资金: {', '.join(cap_parts)}")
@@ -2908,7 +3108,14 @@ class OpportunityReportGenerator:
             # 板块情绪
             secd = (scoring_result.get('details', {}).get('sector') or {})
             sec_name = secd.get('sector_name', None)
-            sec_chg = secd.get('change_pct', None)
+            sec_chg = _get_displayable_sector_change(
+                secd.get('change_pct'),
+                turnover_value=secd.get('turnover_rate'),
+                score=scores.get('sector'),
+                overall=secd.get('overall'),
+                data_source=secd.get('data_source'),
+                leader_stock=secd.get('leader_stock')
+            )
             sec_turn = secd.get('turnover_rate', None)
             sec_overall = secd.get('overall', None)
             sec_chg_str = _fmt_pct(sec_chg, 2, default='')

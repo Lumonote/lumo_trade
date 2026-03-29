@@ -24,6 +24,69 @@ pause() {
     read -p "Press Enter to continue..."
 }
 
+run_batch_predict_and_rank_analysis() {
+    local symbols_input="$1"
+    local days_input="${2:-365}"
+    local -a raw_symbols=()
+    local -a batch_symbols=()
+    local -a clean_codes=()
+    local symbol=""
+    local trimmed=""
+    local clean_code=""
+    local first_symbol=""
+    local test_codes=""
+
+    IFS=',' read -r -a raw_symbols <<< "$symbols_input"
+
+    for symbol in "${raw_symbols[@]}"; do
+        trimmed=$(echo "$symbol" | tr -d '[:space:]')
+        if [[ -z "$trimmed" ]]; then
+            continue
+        fi
+        batch_symbols+=("$trimmed")
+        clean_code="${trimmed%%.*}"
+        if [[ -n "$clean_code" ]]; then
+            clean_codes+=("$clean_code")
+        fi
+    done
+
+    if [[ ${#batch_symbols[@]} -eq 0 ]]; then
+        echo "ERROR: 未解析到有效股票代码"
+        return 1
+    fi
+
+    echo "正在批量获取..."
+    "$PYTHON_CMD" scripts/batch_fetch.py --symbols "${batch_symbols[@]}" --min-days "$days_input" --config config/tushare_config.json
+    local fetch_status=$?
+    if [[ $fetch_status -ne 0 ]]; then
+        return $fetch_status
+    fi
+
+    first_symbol="${clean_codes[0]}"
+    if [[ -n "$first_symbol" ]]; then
+        echo "PREDICT: 开始运行预测演示 ($first_symbol)..."
+        "$PYTHON_CMD" examples/prediction_batch_example.py --stock-code "$first_symbol"
+        local predict_status=$?
+        if [[ $predict_status -ne 0 ]]; then
+            echo "WARN: 首只股票预测运行失败，但将继续执行综合评分排名分析"
+        fi
+    fi
+
+    if [[ ${#clean_codes[@]} -gt 0 ]]; then
+        test_codes=$(IFS=,; echo "${clean_codes[*]}")
+        echo "RANK: 开始运行 7 式综合评分排名详细分析 (${#clean_codes[@]}只股票)..."
+        "$PYTHON_CMD" scripts/run_opportunity_discovery.py --test-codes "$test_codes" --workers 10
+        local rank_status=$?
+        if [[ $rank_status -ne 0 ]]; then
+            echo "WARN: 综合评分排名详细分析执行失败"
+        else
+            echo "REPORT: 综合评分排名详细分析报告已生成到 results 目录"
+        fi
+    fi
+
+    return 0
+}
+
 # Check for python command - 智能选择 Python 3.11+
 find_python() {
     # 尝试找到 Python 3.11+
@@ -138,7 +201,7 @@ if [[ "$BATCH_MODE" == "true" && -n "$MENU_CHOICE" ]]; then
             exit 0
             ;;
         6)
-            echo "CHART: 批量获取数据及预测K线"
+            echo "CHART: 批量获取数据、预测K线及综合排名分析"
             # 非交互模式：从环境变量获取参数
             if [[ "$BATCH_MODE" == "true" ]]; then
                 symbols="${KRONOS_SYMBOLS:-}"
@@ -153,15 +216,7 @@ if [[ "$BATCH_MODE" == "true" && -n "$MENU_CHOICE" ]]; then
                 read -p "请输入要获取的天数（默认365天）: " days
                 days=${days:-365}
             fi
-            echo "正在批量获取..."
-            $PYTHON_CMD scripts/batch_fetch.py --symbols "$symbols" --min-days "$days" --config config/tushare_config.json
-
-            # Extract first symbol for prediction example
-            first_symbol=$(echo $symbols | cut -d',' -f1)
-            clean_symbol=$(echo $first_symbol | cut -d'.' -f1)
-
-            echo "PREDICT: 开始运行预测演示 ($clean_symbol)..."
-            $PYTHON_CMD examples/prediction_batch_example.py --stock-code "$clean_symbol"
+            run_batch_predict_and_rank_analysis "$symbols" "$days"
             exit 0
             ;;
         7)
@@ -239,7 +294,7 @@ while true; do
     echo "DATA: 数据获取"
     echo "4. 获取股票数据 (Tushare)"
     echo "5. 获取股票数据 (爬虫)"
-    echo "6. 批量获取数据及预测K线"
+    echo "6. 批量获取数据、预测K线及综合排名分析"
     echo "7. 🔥 投资机会挖掘 (多源综合: 热度+超跌反弹+资金流向)"
     echo ""
     echo "PREDICT: 预测功能"
@@ -301,19 +356,11 @@ echo "16. 退出"
             pause
             ;;
         6)
-            echo "CHART: 批量获取数据及预测K线"
+            echo "CHART: 批量获取数据、预测K线及综合排名分析"
             read -p "请输入股票代码（多个代码用逗号分隔）: " symbols
             read -p "请输入要获取的天数（默认365天）: " days
             days=${days:-365}
-            echo "正在批量获取..."
-            $PYTHON_CMD scripts/batch_fetch.py --symbols "$symbols" --min-days "$days" --config config/tushare_config.json
-
-            # Extract first symbol for prediction example
-            first_symbol=$(echo $symbols | cut -d',' -f1)
-            clean_symbol=$(echo $first_symbol | cut -d'.' -f1)
-
-            echo "PREDICT: 开始运行预测演示 ($clean_symbol)..."
-            $PYTHON_CMD examples/prediction_batch_example.py --stock-code "$clean_symbol"
+            run_batch_predict_and_rank_analysis "$symbols" "$days"
 
             pause
             ;;

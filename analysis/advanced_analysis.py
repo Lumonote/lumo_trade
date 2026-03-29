@@ -840,123 +840,296 @@ class SentimentCycleAnalyzer:
 
 
 class CapitalFlowAnalyzer:
-    """资金流向分析器"""
-    
+    """资金流向分析器 - 接入真实Tushare/东方财富资金流向数据"""
+
+    _moneyflow_cache: Dict = {}  # class-level cache: {stock_code: (timestamp, DataFrame)}
+    _tushare_pro = None
+    _tushare_token: Optional[str] = None
+    _last_api_call: float = 0
+
+    @classmethod
+    def _get_tushare_pro(cls):
+        """懒加载 Tushare Pro API"""
+        if cls._tushare_pro is not None:
+            return cls._tushare_pro
+        try:
+            import tushare as ts
+        except ImportError:
+            logger.debug("Tushare未安装")
+            return None
+        if cls._tushare_token is None:
+            import os, json
+            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                       'config', 'tushare_config.json')
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                cls._tushare_token = config.get('tushare', {}).get('token', '')
+            except Exception:
+                cls._tushare_token = ''
+        if not cls._tushare_token:
+            logger.debug("Tushare Token未配置")
+            return None
+        try:
+            import tushare as ts
+            cls._tushare_pro = ts.pro_api(cls._tushare_token)
+            return cls._tushare_pro
+        except Exception as e:
+            logger.warning(f"Tushare Pro API初始化失败: {e}")
+            return None
+
+    @staticmethod
+    def _to_ts_code(stock_code: str) -> str:
+        """股票代码转Tushare格式: 000001 -> 000001.SZ"""
+        code = stock_code.strip().split('.')[0]
+        if code.startswith(('6',)):
+            return f"{code}.SH"
+        return f"{code}.SZ"
+
+    def _fetch_tushare_moneyflow(self, stock_code: str, days: int = 20) -> Optional[pd.DataFrame]:
+        """从Tushare获取个股资金流向数据"""
+        import time as _time
+
+        cache_key = stock_code
+        now = _time.time()
+        if cache_key in self._moneyflow_cache:
+            ts_cached, df_cached = self._moneyflow_cache[cache_key]
+            if now - ts_cached < 3600:
+                return df_cached
+
+        pro = self._get_tushare_pro()
+        if pro is None:
+            return None
+
+        # 速率限制: 0.3s间隔
+        elapsed = now - self.__class__._last_api_call
+        if elapsed < 0.3:
+            _time.sleep(0.3 - elapsed)
+
+        ts_code = self._to_ts_code(stock_code)
+        end_date = datetime.now().strftime('%Y%m%d')
+        start_date = (datetime.now() - timedelta(days=days + 15)).strftime('%Y%m%d')  # 多取15天buffer应对节假日
+
+        try:
+            self.__class__._last_api_call = _time.time()
+            df = pro.moneyflow(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            if df is not None and not df.empty:
+                df = df.sort_values('trade_date', ascending=False).head(days).reset_index(drop=True)
+                self._moneyflow_cache[cache_key] = (_time.time(), df)
+                return df
+        except Exception as e:
+            logger.debug(f"Tushare moneyflow获取失败({ts_code}): {e}")
+
+        self._moneyflow_cache[cache_key] = (_time.time(), None)
+        return None
+
+    def _fetch_eastmoney_capital_flow(self, stock_code: str) -> Optional[Dict]:
+        """东方财富资金流向数据回退"""
+        try:
+            from analysis.investor_sentiment import InvestorSentimentAnalyzer
+            analyzer = InvestorSentimentAnalyzer(stock_code)
+            cf = analyzer.get_capital_flow()
+            if not cf or (cf.get('trend') == '未知' and cf.get('main_inflow', 0) == 0):
+                return None
+            return {
+                'super_large_net': cf.get('super_large_inflow', 0),
+                'large_net': cf.get('large_inflow', 0),
+                'medium_net': cf.get('medium_inflow', 0),
+                'small_net': cf.get('small_inflow', 0),
+                'main_net_inflow': cf.get('main_inflow', 0),
+                'retail_net_inflow': cf.get('retail_inflow', 0),
+                'data_source': 'eastmoney',
+            }
+        except Exception as e:
+            logger.debug(f"东方财富资金流向获取失败({stock_code}): {e}")
+            return None
+
     def analyze(self, stock_code: str, historical_data: pd.DataFrame) -> Dict:
         """
         分析资金流向
-        
-        核心分析：
-        - 超大单/大单/中单/小单
-        - 主力净流入连续性
-        - 散户资金占比
+
+        数据来源优先级: Tushare moneyflow > 东方财富API > 合成估算(兜底)
         """
         result = {
             'score': 50.0,
             'signals': [],
             'details': {}
         }
-        
+
         if historical_data is None or len(historical_data) < 5:
             return result
-        
+
         try:
-            order_analysis = self._analyze_order_sizes(historical_data)
+            order_analysis = self._analyze_order_sizes(stock_code, historical_data)
             result['details']['order_analysis'] = order_analysis
-            
-            continuity = self._analyze_main_force_continuity(historical_data)
+
+            continuity = self._analyze_main_force_continuity(stock_code, historical_data)
             result['details']['continuity'] = continuity
-            
+
             retail_ratio = self._estimate_retail_ratio(order_analysis)
             result['details']['retail_ratio'] = retail_ratio
-            
+            result['details']['data_source'] = order_analysis.get('data_source', 'synthetic')
+
             score = 50.0
-            
+
+            # Tushare/东方财富数据单位是元, 阈值用万元级别判断
             main_net = order_analysis.get('main_net_inflow', 0)
-            if main_net > 5000:
+            data_source = order_analysis.get('data_source', 'synthetic')
+
+            # 真实数据(tushare/eastmoney)阈值: 5000万=大幅, 1000万=中等
+            if data_source in ('tushare', 'eastmoney'):
+                thresh_high = 50000000   # 5000万
+                thresh_low = 10000000    # 1000万
+                def _fmt(v): return f"{abs(v)/100000000:.2f}亿" if abs(v) >= 100000000 else f"{abs(v)/10000:.0f}万"
+            else:
+                # 合成数据保留原有阈值(成交额比例,量级较小)
+                thresh_high = 5000
+                thresh_low = 1000
+                def _fmt(v): return f"{abs(v)/10000:.1f}万"
+
+            if main_net > thresh_high:
                 score += 25
-                result['signals'].append(f'🔥 主力大幅净流入{main_net/10000:.1f}万')
-            elif main_net > 1000:
+                result['signals'].append(f'🔥 主力大幅净流入{_fmt(main_net)}')
+            elif main_net > thresh_low:
                 score += 15
-                result['signals'].append(f'主力净流入{main_net/10000:.1f}万')
-            elif main_net < -5000:
+                result['signals'].append(f'主力净流入{_fmt(main_net)}')
+            elif main_net < -thresh_high:
                 score -= 25
-                result['signals'].append(f'🚨 主力大幅净流出{abs(main_net)/10000:.1f}万')
-            elif main_net < -1000:
+                result['signals'].append(f'🚨 主力大幅净流出{_fmt(main_net)}')
+            elif main_net < -thresh_low:
                 score -= 15
-                result['signals'].append(f'⚠️ 主力净流出{abs(main_net)/10000:.1f}万')
-            
+                result['signals'].append(f'⚠️ 主力净流出{_fmt(main_net)}')
+
             if continuity.get('consecutive_inflow_days', 0) >= 5:
                 score += 20
                 result['signals'].append(f"🔥 连续{continuity['consecutive_inflow_days']}日主力净流入")
             elif continuity.get('consecutive_outflow_days', 0) >= 5:
                 score -= 20
                 result['signals'].append(f"🚨 连续{continuity['consecutive_outflow_days']}日主力净流出")
-            
+
             if retail_ratio > 70:
                 score -= 15
                 result['signals'].append(f'⚠️ 散户占比过高({retail_ratio:.0f}%)')
             elif retail_ratio < 30:
                 score += 10
                 result['signals'].append(f'主力主导({100-retail_ratio:.0f}%)')
-            
+
             result['score'] = max(0, min(100, score))
-            
+
         except Exception as e:
             logger.error(f"资金流向分析错误: {e}")
             result['error'] = str(e)
-        
+
         return result
-    
-    def _analyze_order_sizes(self, data: pd.DataFrame) -> Dict:
-        """分析不同大小订单"""
-        result = {
+
+    def _analyze_order_sizes(self, stock_code: str, data: pd.DataFrame) -> Dict:
+        """分析不同大小订单 - 优先真实数据"""
+        default = {
             'super_large_net': 0,
             'large_net': 0,
             'medium_net': 0,
             'small_net': 0,
             'main_net_inflow': 0,
-            'retail_net_inflow': 0
+            'retail_net_inflow': 0,
+            'data_source': 'synthetic',
         }
-        
-        if 'amount' not in data.columns:
-            return result
-        
-        amounts = data['amount'].values
-        volumes = data['volume'].values if 'volume' in data.columns else np.ones(len(amounts))
-        close = data['close'].values
-        
-        total_amount = amounts[-1] if len(amounts) > 0 else 0
-        avg_amount = np.mean(amounts[-20:]) if len(amounts) >= 20 else np.mean(amounts)
-        
-        if avg_amount > 0:
-            result['super_large_net'] = total_amount * 0.3 * (1 if close[-1] > close[-2] else -1) if len(close) > 1 else 0
-            result['large_net'] = total_amount * 0.25 * (1 if close[-1] > close[-2] else -1) if len(close) > 1 else 0
-            result['medium_net'] = total_amount * 0.25 * (0.5 if close[-1] > close[-2] else -0.5) if len(close) > 1 else 0
-            result['small_net'] = total_amount * 0.2 * (-0.3 if close[-1] > close[-2] else 0.3) if len(close) > 1 else 0
-            
+
+        # 1) Tushare moneyflow (优先)
+        df = self._fetch_tushare_moneyflow(stock_code, days=20)
+        if df is not None and not df.empty:
+            latest = df.iloc[0]  # 最新一天
+            # Tushare moneyflow 金额单位: 千元, 转为元
+            result = dict(default)
+            buy_elg = float(latest.get('buy_elg_amount', 0) or 0) * 1000
+            sell_elg = float(latest.get('sell_elg_amount', 0) or 0) * 1000
+            buy_lg = float(latest.get('buy_lg_amount', 0) or 0) * 1000
+            sell_lg = float(latest.get('sell_lg_amount', 0) or 0) * 1000
+            buy_md = float(latest.get('buy_md_amount', 0) or 0) * 1000
+            sell_md = float(latest.get('sell_md_amount', 0) or 0) * 1000
+            buy_sm = float(latest.get('buy_sm_amount', 0) or 0) * 1000
+            sell_sm = float(latest.get('sell_sm_amount', 0) or 0) * 1000
+
+            result['super_large_net'] = buy_elg - sell_elg
+            result['large_net'] = buy_lg - sell_lg
+            result['medium_net'] = buy_md - sell_md
+            result['small_net'] = buy_sm - sell_sm
             result['main_net_inflow'] = result['super_large_net'] + result['large_net']
             result['retail_net_inflow'] = result['medium_net'] + result['small_net']
-        
+            # 成交额(买+卖)用于计算散户占比(净额因总和恒为0无法区分)
+            result['main_turnover'] = buy_elg + sell_elg + buy_lg + sell_lg
+            result['retail_turnover'] = buy_md + sell_md + buy_sm + sell_sm
+            result['data_source'] = 'tushare'
+            return result
+
+        # 2) 东方财富回退
+        em = self._fetch_eastmoney_capital_flow(stock_code)
+        if em:
+            return em
+
+        # 3) 兜底: 合成估算(保留原逻辑)
+        result = dict(default)
+        if 'amount' not in data.columns:
+            return result
+        amounts = data['amount'].values
+        close = data['close'].values
+        avg_amount = np.mean(amounts[-20:]) if len(amounts) >= 20 else np.mean(amounts)
+        if avg_amount > 0 and len(close) > 1:
+            direction = 1 if close[-1] > close[-2] else -1
+            total_amount = amounts[-1]
+            result['super_large_net'] = total_amount * 0.3 * direction
+            result['large_net'] = total_amount * 0.25 * direction
+            result['medium_net'] = total_amount * 0.25 * (0.5 * direction)
+            result['small_net'] = total_amount * 0.2 * (-0.3 * direction)
+            result['main_net_inflow'] = result['super_large_net'] + result['large_net']
+            result['retail_net_inflow'] = result['medium_net'] + result['small_net']
         return result
-    
-    def _analyze_main_force_continuity(self, data: pd.DataFrame) -> Dict:
-        """分析主力资金连续性"""
+
+    def _analyze_main_force_continuity(self, stock_code: str, data: pd.DataFrame) -> Dict:
+        """分析主力资金连续性 - 优先用Tushare真实数据"""
         result = {
             'consecutive_inflow_days': 0,
             'consecutive_outflow_days': 0,
             'trend': 'neutral'
         }
-        
+
+        # 尝试用Tushare真实数据(已缓存)
+        df = self._fetch_tushare_moneyflow(stock_code, days=20)
+        if df is not None and len(df) >= 3:
+            inflow_days = 0
+            outflow_days = 0
+            # df已按trade_date降序排列, iloc[0]是最新
+            for i in range(len(df)):
+                net_mf = float(df.iloc[i].get('net_mf_amount', 0) or 0)
+                if net_mf > 0:
+                    if outflow_days == 0:
+                        inflow_days += 1
+                    else:
+                        break
+                elif net_mf < 0:
+                    if inflow_days == 0:
+                        outflow_days += 1
+                    else:
+                        break
+                else:
+                    break
+            result['consecutive_inflow_days'] = inflow_days
+            result['consecutive_outflow_days'] = outflow_days
+            if inflow_days >= 3:
+                result['trend'] = 'inflow'
+            elif outflow_days >= 3:
+                result['trend'] = 'outflow'
+            return result
+
+        # 回退: 原有close/volume近似逻辑
         if len(data) < 5:
             return result
-        
+
         close = data['close'].values
         volume = data['volume'].values
-        
+
         inflow_days = 0
         outflow_days = 0
-        
+
         for i in range(1, min(20, len(close))):
             idx = -i
             if close[idx] > close[idx-1] and volume[idx] > volume[idx-1]:
@@ -971,22 +1144,29 @@ class CapitalFlowAnalyzer:
                     break
             else:
                 break
-        
+
         result['consecutive_inflow_days'] = inflow_days
         result['consecutive_outflow_days'] = outflow_days
-        
+
         if inflow_days >= 3:
             result['trend'] = 'inflow'
         elif outflow_days >= 3:
             result['trend'] = 'outflow'
-        
+
         return result
-    
+
     def _estimate_retail_ratio(self, order_analysis: Dict) -> float:
-        """估算散户资金占比"""
+        """计算散户资金占比 - 优先用成交额占比(真实数据), 回退用净额占比"""
+        # 真实数据: 用成交额(买+卖)占比, 因为净额四类加总恒为0
+        main_turnover = order_analysis.get('main_turnover', 0)
+        retail_turnover = order_analysis.get('retail_turnover', 0)
+        total_turnover = main_turnover + retail_turnover
+        if total_turnover > 0:
+            return retail_turnover / total_turnover * 100
+
+        # 回退: 合成数据用净额占比
         main_net = abs(order_analysis.get('main_net_inflow', 0))
         retail_net = abs(order_analysis.get('retail_net_inflow', 0))
-        
         total = main_net + retail_net
         if total > 0:
             return retail_net / total * 100

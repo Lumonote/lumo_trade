@@ -3119,7 +3119,7 @@ class KronosMacOSGUI:
         self.get_stock_input_and_run("crawler", "请输入股票代码 (格式: 000001):")
 
     def batch_predict(self):
-        """批量获取数据及预测K线"""
+        """批量获取数据、预测K线及综合排名分析"""
         self.get_batch_input_and_run()
 
     def opportunity_discovery(self):
@@ -3518,7 +3518,7 @@ class KronosMacOSGUI:
     def get_batch_input_and_run(self):
         """获取批量输入并执行"""
         dialog = tk.Toplevel(self.root)
-        dialog.title("批量获取数据及预测")
+        dialog.title("批量获取数据、预测及综合排名分析")
         dialog.geometry("550x550")  # 增加高度从450到550
         dialog.configure(bg="#FFFFFF")
         dialog.transient(self.root)
@@ -3548,13 +3548,13 @@ class KronosMacOSGUI:
         icon_label.pack(pady=(0, 10))
 
         # 标题
-        title_label = tk.Label(header_frame, text="批量获取数据及预测",
+        title_label = tk.Label(header_frame, text="批量获取数据、预测及综合排名分析",
                                font=("SF Pro Display", 18, "bold"),
                                fg="#1F2937", bg="#FFFFFF")
         title_label.pack()
 
         # 描述
-        desc_label = tk.Label(header_frame, text="批量获取多个股票的数据并进行AI预测分析",
+        desc_label = tk.Label(header_frame, text="批量获取多个股票的数据，并追加7式综合评分排名详细分析",
                               font=("SF Pro Display", 13, "normal"),
                               fg="#6B7280", bg="#FFFFFF")
         desc_label.pack(pady=(5, 0))
