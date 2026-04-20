@@ -232,7 +232,7 @@ def fetch_missing_returns(df):
             if os.path.exists(config_path):
                 with open(config_path) as f:
                     cfg = json.load(f)
-                token = cfg.get('token', '')
+                token = cfg.get('tushare', {}).get('token', '')
                 if token:
                     ts.set_token(token)
                     ts_api = ts.pro_api()

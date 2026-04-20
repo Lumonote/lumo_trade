@@ -7,6 +7,8 @@
 
 import os
 import sys
+import re
+import calendar
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import json
@@ -246,6 +248,9 @@ class OpportunityReportGenerator:
         """
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
+        self._recent_repeat_cache = {}
+        self._price_history_cache = {}
+        self._historical_stock_name_cache = None
 
     def _normalize_topic_url(self, raw_url: str, title: str = '') -> str:
         url = (raw_url or '').strip()
@@ -259,6 +264,327 @@ class OpportunityReportGenerator:
         if title:
             return f"https://so.eastmoney.com/search.htm?q={quote(title)}"
         return "https://gubatopic.eastmoney.com/"
+
+    def _parse_opportunity_report_datetime(self, filename: str) -> Optional[datetime]:
+        match = re.match(r'^opportunity_top10_(\d{8})_(\d{6})\.md$', filename)
+        if not match:
+            return None
+        try:
+            return datetime.strptime(''.join(match.groups()), '%Y%m%d%H%M%S')
+        except Exception:
+            return None
+
+    def _extract_ranked_stocks_from_markdown(self, filepath: str, report_date: str) -> List[Dict]:
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except Exception:
+            return []
+
+        table_match = re.search(
+            r'## 🏆 综合排名 TOP20.*?<tbody>(.*?)</tbody></table>',
+            content,
+            flags=re.S
+        )
+        if not table_match:
+            return []
+
+        row_pattern = re.compile(
+            r'<tr><td[^>]*>\s*(\d+)\s*</td><td[^>]*>\s*([0-9A-Za-z]+)\s*</td><td>(.*?)</td><td[^>]*>\s*([0-9.]+)\s*</td>',
+            flags=re.S
+        )
+
+        stocks = []
+        for rank_text, code_text, name_text, score_text in row_pattern.findall(table_match.group(1)):
+            try:
+                stocks.append({
+                    'rank': int(rank_text),
+                    'code': _normalize_stock_code(code_text),
+                    'name': re.sub(r'<[^>]+>', '', str(name_text)).strip(),
+                    'score': float(score_text),
+                    'report_date': report_date
+                })
+            except Exception:
+                continue
+        return stocks
+
+    def _sanitize_stock_name(self, raw_name, code: str = '') -> str:
+        name = re.sub(r'<[^>]+>', '', str(raw_name or ''))
+        name = name.replace('&nbsp;', ' ').strip()
+        if _is_missing_display_value(name):
+            return ''
+        normalized_code = _normalize_stock_code(code)
+        if normalized_code and name == normalized_code:
+            return ''
+        return name
+
+    def _load_stock_name_cache_from_reports(self) -> Dict[str, str]:
+        if self._historical_stock_name_cache is not None:
+            return self._historical_stock_name_cache
+
+        name_by_code = {}
+        report_files = []
+
+        try:
+            filenames = os.listdir(self.output_dir)
+        except Exception:
+            filenames = []
+
+        for filename in filenames:
+            report_dt = self._parse_opportunity_report_datetime(filename)
+            if report_dt is None:
+                continue
+            report_files.append((report_dt, os.path.join(self.output_dir, filename)))
+
+        pattern_specs = [
+            (
+                re.compile(r'^\s*\|\s*\d+\s*\|\s*(\d{6})\s*\|\s*([^|]+?)\s*\|', flags=re.M),
+                'code_first'
+            ),
+            (
+                re.compile(r'<td[^>]*>\s*(\d{6})\s*</td><td[^>]*>\s*([^<]+?)\s*</td>', flags=re.S),
+                'code_first'
+            ),
+            (
+                re.compile(r'###\s*([^()\n]+?)\((\d{6})\)\s*-\s*', flags=re.M),
+                'name_first'
+            ),
+            (
+                re.compile(r'\*\*([^()\n]+?)\((\d{6})\)\*\*'),
+                'name_first'
+            ),
+            (
+                re.compile(r'<strong>\s*([^<()\n]+?)\s*</strong>\((\d{6})\)'),
+                'name_first'
+            ),
+        ]
+
+        for _, filepath in sorted(report_files, key=lambda item: item[0], reverse=True):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except Exception:
+                continue
+
+            for pattern, order in pattern_specs:
+                for match in pattern.finditer(content):
+                    if order == 'code_first':
+                        code, raw_name = match.group(1), match.group(2)
+                    else:
+                        raw_name, code = match.group(1), match.group(2)
+
+                    code = _normalize_stock_code(code)
+                    name = self._sanitize_stock_name(raw_name, code)
+                    if code and name and code not in name_by_code:
+                        name_by_code[code] = name
+
+        self._historical_stock_name_cache = name_by_code
+        return name_by_code
+
+    def _resolve_stock_display_name_from_reports(
+        self,
+        code=None,
+        name=None,
+        stock_name=None,
+        default='未知'
+    ) -> str:
+        normalized_code = _normalize_stock_code(code)
+        display_name = self._sanitize_stock_name(
+            _pick_display_text(name, stock_name, default=''),
+            normalized_code
+        )
+        if display_name:
+            return display_name
+
+        cached_name = self._load_stock_name_cache_from_reports().get(normalized_code, '')
+        cached_name = self._sanitize_stock_name(cached_name, normalized_code)
+        return _pick_stock_display_name(None, cached_name, normalized_code, default=default)
+
+    def _load_price_history(self, stock_code: str):
+        code = _normalize_stock_code(stock_code)
+        if not code:
+            return None
+        if code in self._price_history_cache:
+            return self._price_history_cache[code]
+
+        df = None
+
+        try:
+            from data.cache.data_cache import get_ohlcv, fetch_and_cache_ohlcv
+            df = get_ohlcv(code, min_rows=2, max_age_seconds=43200)
+            if df is None or df.empty:
+                if fetch_and_cache_ohlcv(code):
+                    df = get_ohlcv(code, min_rows=2)
+        except Exception:
+            df = None
+
+        if df is None or getattr(df, 'empty', True):
+            try:
+                import tushare as ts
+                import pandas as pd
+
+                config_path = os.path.join(project_root, 'config', 'tushare_config.json')
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                token = config.get('tushare', {}).get('token', '') or config.get('token', '')
+                if token:
+                    pro = ts.pro_api(token)
+                    ts_code = f"{code}.SH" if code.startswith(('5', '6', '9')) else f"{code}.SZ"
+                    start_date = (datetime.now() - timedelta(days=90)).strftime('%Y%m%d')
+                    end_date = (datetime.now() + timedelta(days=1)).strftime('%Y%m%d')
+                    df = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+                    if df is not None and not df.empty:
+                        df = df.rename(columns={'trade_date': 'timestamps'})
+                        df['timestamps'] = pd.to_datetime(df['timestamps'])
+                        df = df.sort_values('timestamps').reset_index(drop=True)
+            except Exception:
+                df = None
+
+        if df is not None and not getattr(df, 'empty', True):
+            try:
+                import pandas as pd
+
+                normalized = df.copy()
+                if 'timestamp' in normalized.columns and 'timestamps' not in normalized.columns:
+                    normalized = normalized.rename(columns={'timestamp': 'timestamps'})
+                normalized['timestamps'] = pd.to_datetime(normalized['timestamps'])
+                normalized = normalized.sort_values('timestamps').reset_index(drop=True)
+                self._price_history_cache[code] = normalized
+                return normalized
+            except Exception:
+                pass
+
+        self._price_history_cache[code] = None
+        return None
+
+    def _calculate_post_selection_return(self, stock_code: str, report_date: str) -> Optional[float]:
+        try:
+            import pandas as pd
+
+            price_df = self._load_price_history(stock_code)
+            if price_df is None or price_df.empty or 'timestamps' not in price_df.columns:
+                return None
+
+            report_dt = pd.to_datetime(report_date).normalize()
+            normalized_df = price_df.copy()
+            normalized_df['trade_date'] = pd.to_datetime(normalized_df['timestamps']).dt.normalize()
+            future_data = normalized_df[normalized_df['trade_date'] > report_dt].copy()
+            if future_data.empty:
+                return None
+
+            buy_price = _to_float_safe(future_data.iloc[0].get('open'))
+            latest_close = _to_float_safe(future_data.iloc[-1].get('close'))
+            if buy_price in (None, 0) or latest_close is None:
+                return None
+
+            return (latest_close - buy_price) / buy_price * 100
+        except Exception:
+            return None
+
+    def _collect_recent_repeat_entries(
+        self,
+        target_codes: List[str],
+        current_report_dt: datetime,
+        window_days: Optional[int] = None
+    ) -> Dict[str, List[Dict]]:
+        normalized_codes = sorted({
+            _normalize_stock_code(code)
+            for code in (target_codes or [])
+            if _normalize_stock_code(code)
+        })
+        if not normalized_codes:
+            return {}
+
+        cache_key = (
+            tuple(normalized_codes),
+            current_report_dt.strftime('%Y-%m-%d'),
+            window_days
+        )
+        cached = self._recent_repeat_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        recent_files_by_day = {}
+        window_start = None
+        if window_days is not None:
+            window_start = current_report_dt.date() - timedelta(days=window_days)
+
+        try:
+            filenames = os.listdir(self.output_dir)
+        except Exception:
+            filenames = []
+
+        for filename in filenames:
+            report_dt = self._parse_opportunity_report_datetime(filename)
+            if report_dt is None:
+                continue
+            report_day = report_dt.date()
+            if report_day >= current_report_dt.date():
+                continue
+            if window_start is not None and report_day < window_start:
+                continue
+
+            current_best = recent_files_by_day.get(report_day)
+            if current_best is None or report_dt > current_best['report_dt']:
+                recent_files_by_day[report_day] = {
+                    'report_dt': report_dt,
+                    'path': os.path.join(self.output_dir, filename)
+                }
+
+        history_by_code = {}
+        for report_day in sorted(recent_files_by_day.keys(), reverse=True):
+            report_path = recent_files_by_day[report_day]['path']
+            report_date = report_day.strftime('%Y-%m-%d')
+            stocks = self._extract_ranked_stocks_from_markdown(report_path, report_date)
+
+            for stock in stocks:
+                code = stock.get('code')
+                if code not in normalized_codes:
+                    continue
+
+                if code not in history_by_code:
+                    history_by_code[code] = []
+
+                history_by_code[code].append({
+                    'report_date': report_date,
+                    'rank': stock.get('rank'),
+                    'score': stock.get('score'),
+                    'return_since_buy': self._calculate_post_selection_return(code, report_date)
+                })
+
+        self._recent_repeat_cache[cache_key] = history_by_code
+        return history_by_code
+
+    def _build_recent_repeat_selection_summary(
+        self,
+        stock_code: str,
+        repeat_entries: Optional[List[Dict]],
+        window_days: Optional[int] = None
+    ) -> str:
+        code = _normalize_stock_code(stock_code)
+        entries = repeat_entries or []
+        if not code or not entries:
+            return ""
+
+        parts = []
+        for entry in entries:
+            return_value = entry.get('return_since_buy')
+            if return_value is None:
+                return_text = "待更新"
+            else:
+                return_text = f"{return_value:+.2f}%"
+
+            parts.append(
+                f"{entry.get('report_date', '未知日期')}"
+                f"(第{entry.get('rank', '—')}名/{float(entry.get('score', 0) or 0):.2f}分，"
+                f"入选后买入涨幅{return_text})"
+            )
+
+        if window_days is None:
+            prefix = "【历史重复入选】"
+        else:
+            prefix = f"【近{window_days}日重复入选】"
+        return f"{prefix}共{len(entries)}次：" + "；".join(parts) + "；"
 
     def _append_html_table_start(self, lines: List[str], headers: List[str], col_widths: List[str]):
         lines.append('<table style="width:100%; table-layout:fixed;">')
@@ -277,6 +603,151 @@ class OpportunityReportGenerator:
     def _append_html_table_end(self, lines: List[str]):
         lines.append("</tbody>")
         lines.append("</table>")
+
+    def _load_trade_days_until(self, report_dt: datetime, lookback_days: int = 120) -> List[str]:
+        base_str = report_dt.strftime('%Y%m%d')
+        freshness_floor = (report_dt - timedelta(days=20)).strftime('%Y%m%d')
+
+        try:
+            from data.cache.data_cache import get_trade_calendar
+
+            trade_days = sorted(str(day) for day in get_trade_calendar() if str(day) <= base_str)
+            if trade_days and trade_days[-1] >= freshness_floor:
+                return trade_days
+        except Exception:
+            pass
+
+        try:
+            import tushare as ts
+
+            config_path = os.path.join(project_root, 'config', 'tushare_config.json')
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            token = config.get('tushare', {}).get('token', '') or config.get('token', '')
+            if token:
+                pro = ts.pro_api(token)
+                start_str = (report_dt - timedelta(days=lookback_days)).strftime('%Y%m%d')
+                cal_df = pro.trade_cal(
+                    exchange='SSE',
+                    start_date=start_str,
+                    end_date=base_str,
+                    fields='cal_date,is_open'
+                )
+                if cal_df is not None and not cal_df.empty:
+                    cal_df = cal_df[cal_df['is_open'] == 1].copy()
+                    if not cal_df.empty:
+                        return sorted(cal_df['cal_date'].astype(str).tolist())
+        except Exception:
+            pass
+
+        trade_days = []
+        current = report_dt
+        floor_dt = report_dt - timedelta(days=lookback_days)
+        while current >= floor_dt:
+            if current.weekday() < 5:
+                trade_days.append(current.strftime('%Y%m%d'))
+            current -= timedelta(days=1)
+        return sorted(trade_days)
+
+    def _compute_backtest_report_cutoff(self, report_dt: datetime, reserve_trade_days: int = 10) -> Optional[datetime]:
+        trade_days = self._load_trade_days_until(report_dt)
+        if len(trade_days) <= reserve_trade_days:
+            return None
+
+        cutoff_ymd = trade_days[-(reserve_trade_days + 1)]
+        try:
+            return datetime.strptime(cutoff_ymd, '%Y%m%d')
+        except Exception:
+            return None
+
+    def _shift_one_month_back(self, anchor_dt: datetime) -> datetime:
+        year = anchor_dt.year
+        month = anchor_dt.month - 1
+        if month == 0:
+            year -= 1
+            month = 12
+        day = min(anchor_dt.day, calendar.monthrange(year, month)[1])
+        return anchor_dt.replace(year=year, month=month, day=day)
+
+    def _prepare_backtest_history(
+        self,
+        current_report_dt: datetime,
+        lookback_days: int = 30,
+        reserve_trade_days: int = 10
+    ):
+        import os as _os
+        import pandas as _pd
+
+        _results_dir = _os.path.join(project_root, 'results')
+        bt_with_returns = None
+        _score_col = '_bt_score'
+
+        # 机会挖掘报表优先使用真实推荐回测记录
+        _rec_csv = _os.path.join(_results_dir, 'backtest', 'recommendations.csv')
+        if _os.path.exists(_rec_csv):
+            _rec_df = _pd.read_csv(_rec_csv)
+            if len(_rec_df) > 0:
+                _rec_df = _rec_df.copy()
+                _rec_df['code'] = _rec_df['code'].apply(_normalize_stock_code)
+                _rec_df['report_date'] = _rec_df['report_date'].astype(str).str[:10]
+                _rec_df['_bt_score'] = _pd.to_numeric(_rec_df.get('score'), errors='coerce')
+                bt_with_returns = _rec_df.copy()
+
+        # recommendations 不足时才回退到历史重建
+        if bt_with_returns is None or len(bt_with_returns) < 10:
+            _rebuilt_csvs = sorted([
+                f for f in _os.listdir(_results_dir)
+                if f.startswith('backtest_rebuilt_') and f.endswith('.csv')
+            ])
+            if _rebuilt_csvs:
+                _csv_path = _os.path.join(_results_dir, _rebuilt_csvs[-1])
+                from scripts.simulate_v5_backtest import apply_v8_scoring
+                _raw_df = _pd.read_csv(_csv_path)
+                _scored_df = apply_v8_scoring(_raw_df)
+                bt_with_returns = _scored_df.copy()
+                bt_with_returns['_bt_score'] = _pd.to_numeric(bt_with_returns.get('v8_score'), errors='coerce')
+
+        if bt_with_returns is None or len(bt_with_returns) < 10:
+            _analysis_csvs = sorted([
+                f for f in _os.listdir(_results_dir)
+                if f.startswith('backtest_analysis_') and f.endswith('.csv')
+            ])
+            if _analysis_csvs:
+                _csv_path = _os.path.join(_results_dir, _analysis_csvs[-1])
+                from scripts.simulate_v5_backtest import load_backtest_data, apply_v8_scoring as _apply_scoring
+                _raw_df = load_backtest_data(_csv_path)
+                _scored_df = _apply_scoring(_raw_df)
+                bt_with_returns = _scored_df.copy()
+                bt_with_returns['_bt_score'] = _pd.to_numeric(bt_with_returns.get('v8_score'), errors='coerce')
+
+        if bt_with_returns is not None and len(bt_with_returns) > 0:
+            bt_with_returns = bt_with_returns.copy()
+            bt_with_returns['code'] = bt_with_returns['code'].apply(_normalize_stock_code)
+            bt_with_returns['report_date'] = bt_with_returns['report_date'].astype(str).str[:10]
+
+        if bt_with_returns is None or len(bt_with_returns) == 0:
+            return None, _score_col, None, None
+
+        cutoff_dt = self._compute_backtest_report_cutoff(current_report_dt, reserve_trade_days=reserve_trade_days)
+        anchor_dt = cutoff_dt or current_report_dt
+        if lookback_days == 30:
+            window_start_dt = self._shift_one_month_back(anchor_dt).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        else:
+            window_start_dt = (anchor_dt - timedelta(days=lookback_days)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        bt_with_returns = bt_with_returns.copy()
+        bt_with_returns['_report_dt'] = _pd.to_datetime(bt_with_returns['report_date'], errors='coerce')
+        bt_with_returns = bt_with_returns[bt_with_returns['_report_dt'].notna()].copy()
+        bt_with_returns = bt_with_returns[bt_with_returns['_report_dt'] >= _pd.Timestamp(window_start_dt.date())].copy()
+        if cutoff_dt is not None:
+            bt_with_returns = bt_with_returns[bt_with_returns['_report_dt'] <= _pd.Timestamp(cutoff_dt.date())].copy()
+        bt_with_returns['report_date'] = bt_with_returns['_report_dt'].dt.strftime('%Y-%m-%d')
+        bt_with_returns = bt_with_returns.drop(columns=['_report_dt'])
+
+        return bt_with_returns, _score_col, cutoff_dt, window_start_dt
 
     def generate_report(self, analysis_results: List[Dict],
                        report_title: str = "投资机会挖掘报告",
@@ -353,6 +824,7 @@ class OpportunityReportGenerator:
             md_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             md_filename = f"opportunity_top10_{md_timestamp}.md"
             md_path = os.path.join(self.output_dir, md_filename)
+            current_report_dt = datetime.strptime(md_timestamp, "%Y%m%d_%H%M%S")
 
             MODEL_DISPLAY_MAP = {
                 'balance_dual_moving': '均衡双均线', 'multi_breakthrough': '多重突破', 'support_resistance': '支撑阻力',
@@ -375,6 +847,12 @@ class OpportunityReportGenerator:
             lines.append('<thead><tr><th>排名</th><th>代码</th><th>股票名称</th><th>综合得分</th><th>详细分析</th></tr></thead>')
             lines.append('<tbody>')
 
+            recent_repeat_map = self._collect_recent_repeat_entries(
+                [stock.get('stock_code') or stock.get('code') for stock in top_20[:20]],
+                current_report_dt=current_report_dt,
+                window_days=None
+            )
+
             for i, stock in enumerate(top_20[:20], 1):
                 code = _normalize_stock_code(stock.get('stock_code') or stock.get('code') or '未知') or '未知'
                 name_txt = _pick_stock_display_name(
@@ -386,7 +864,20 @@ class OpportunityReportGenerator:
 
                 summary_txt = (self._build_full_indicator_summary(stock) or "").replace('<br>', '；')
                 advanced_txt = self._build_advanced_analysis_summary(stock)
-                full_analysis = f"{summary_txt}；【高级】{advanced_txt}" if advanced_txt and advanced_txt != "—" else summary_txt
+                repeat_summary = self._build_recent_repeat_selection_summary(
+                    code,
+                    recent_repeat_map.get(code),
+                    window_days=None
+                )
+
+                analysis_parts = []
+                if repeat_summary:
+                    analysis_parts.append(repeat_summary)
+                if summary_txt:
+                    analysis_parts.append(summary_txt)
+                if advanced_txt and advanced_txt != "—":
+                    analysis_parts.append(f"【高级】{advanced_txt}")
+                full_analysis = "；".join(part for part in analysis_parts if part)
                 
                 lines.append(f'<tr><td style="text-align: center;">{i}</td><td style="text-align: center;">{code}</td><td>{name_txt}</td><td style="text-align: center;">{score:.2f}</td><td>{full_analysis}</td></tr>')
 
@@ -434,50 +925,10 @@ class OpportunityReportGenerator:
 
             # 历史回测统计（使用 v8.0 评分的回测分析数据）
             try:
-                import os as _os
                 import json as _json
                 import pandas as _pd
 
-                _project_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-                _results_dir = _os.path.join(_project_root, 'results')
-
-                # 优先使用 backtest_rebuilt CSV（最新优化数据 + v11评分）
-                bt_with_returns = None
-                _score_col = 'v8_score'
-
-                _rebuilt_csvs = sorted([
-                    f for f in _os.listdir(_results_dir)
-                    if f.startswith('backtest_rebuilt_') and f.endswith('.csv')
-                ])
-                if _rebuilt_csvs:
-                    _csv_path = _os.path.join(_results_dir, _rebuilt_csvs[-1])
-                    from scripts.simulate_v5_backtest import apply_v8_scoring
-                    _raw_df = _pd.read_csv(_csv_path)
-                    _scored_df = apply_v8_scoring(_raw_df)
-                    bt_with_returns = _scored_df.copy()
-
-                # 回退到 backtest_analysis CSV
-                if bt_with_returns is None or len(bt_with_returns) < 10:
-                    _analysis_csvs = sorted([
-                        f for f in _os.listdir(_results_dir)
-                        if f.startswith('backtest_analysis_') and f.endswith('.csv')
-                    ])
-                    if _analysis_csvs:
-                        _csv_path = _os.path.join(_results_dir, _analysis_csvs[-1])
-                        from scripts.simulate_v5_backtest import load_backtest_data, apply_v8_scoring as _apply_scoring
-                        _raw_df = load_backtest_data(_csv_path)
-                        _scored_df = _apply_scoring(_raw_df)
-                        bt_with_returns = _scored_df.copy()
-
-                # 回退到 recommendations.csv（较少数据）
-                if bt_with_returns is None or len(bt_with_returns) < 10:
-                    _bt_csv = _os.path.join(_results_dir, 'backtest', 'recommendations.csv')
-                    if _os.path.exists(_bt_csv):
-                        _rec_df = _pd.read_csv(_bt_csv)
-                        _rec_with_returns = _rec_df[_rec_df['return_5d'].notna()].copy()
-                        if len(_rec_with_returns) >= 10:
-                            bt_with_returns = _rec_with_returns
-                            _score_col = 'score'
+                bt_with_returns, _score_col, _cutoff_dt, _window_start_dt = self._prepare_backtest_history(current_report_dt)
 
                 # 自动补充缺失的收益数据
                 if bt_with_returns is not None and len(bt_with_returns) >= 10:
@@ -485,8 +936,8 @@ class OpportunityReportGenerator:
                     _missing_count = _missing_mask.sum()
                     if _missing_count > 0:
                         try:
-                            _cfg_path = _os.path.join(_project_root, 'config', 'tushare_config.json')
-                            if _os.path.exists(_cfg_path):
+                            _cfg_path = os.path.join(project_root, 'config', 'tushare_config.json')
+                            if os.path.exists(_cfg_path):
                                 with open(_cfg_path, 'r') as _f:
                                     _cfg = _json.load(_f)
                                 _token = _cfg.get('token', '') or _cfg.get('tushare', {}).get('token', '')
@@ -500,7 +951,11 @@ class OpportunityReportGenerator:
                                             _code = str(int(bt_with_returns.at[_idx, 'code'])).zfill(6)
                                             _rd = str(bt_with_returns.at[_idx, 'report_date']).replace('-', '')
                                             _ts_code = f"{_code}.SH" if _code.startswith(('6', '9')) else f"{_code}.SZ"
-                                            _price_df = _pro.daily(ts_code=_ts_code, start_date=_rd, end_date='20260315')
+                                            _price_df = _pro.daily(
+                                                ts_code=_ts_code,
+                                                start_date=_rd,
+                                                end_date=current_report_dt.strftime('%Y%m%d')
+                                            )
                                             if _price_df is not None and len(_price_df) > 0:
                                                 _price_df = _price_df.sort_values('trade_date').reset_index(drop=True)
                                                 _buy_idx = None
@@ -528,16 +983,21 @@ class OpportunityReportGenerator:
                 if bt_with_returns is not None and len(bt_with_returns) >= 10:
                     lines.append("\n> **备注**: 每月第一个交易日将根据前一个月量化选股结果进行AI自我回测及算法优化，如有需求意见也可在留言中反馈，如有AI相关业务落地咨询的可私聊博主。\n")
                     lines.append("\n### 历史回测表现（基于已验证数据）")
+                    if _cutoff_dt is not None:
+                        lines.append(
+                            f"\n**统计窗口**: {_window_start_dt.strftime('%Y-%m-%d')} ~ {_cutoff_dt.strftime('%Y-%m-%d')}"
+                            f"（先预留最近10个交易日，再向前回看1个月）\n"
+                        )
+                    lines.append("\n**样本口径**: 历史每日Top10推荐（不是全量候选池），因此高分样本占比会明显更高。")
                     lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
                     lines.append('<thead><tr><th>评分区间</th><th>数量</th><th>5日均收益</th><th>5日胜率</th><th>10日均收益</th><th>盈亏比</th></tr></thead>')
                     lines.append('<tbody>')
 
                     score_bins = [
-                        (85, 999, 'S级(≥85)', '#e53935'),
-                        (78, 85, 'A级(78-85)', '#ff6f00'),
-                        (70, 78, 'B级(70-78)', '#1565c0'),
-                        (60, 70, 'C+(60-70)', '#757575'),
-                        (0, 60, 'C级(<60)', '#9e9e9e')
+                        (80, 999, '80分以上', '#e53935'),
+                        (70, 80, '70-80分', '#1565c0'),
+                        (60, 70, '60-70分', '#757575'),
+                        (0, 60, '60分以下', '#9e9e9e')
                     ]
 
                     for low, high, label, color in score_bins:
@@ -565,15 +1025,16 @@ class OpportunityReportGenerator:
                             lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
                     lines.append('</tbody></table>')
 
-                    # 关键阈值提示
-                    _above78 = bt_with_returns[bt_with_returns[_score_col] >= 78]
-                    _r5_78 = _above78['return_5d'].dropna()
-                    if len(_r5_78) > 0:
-                        lines.append(f"\n**关键阈值**: 评分≥78共{len(_r5_78)}条 | "
-                                    f"5日胜率: {(_r5_78 > 0).mean()*100:.1f}% | "
-                                    f"5日均收益: {_r5_78.mean():+.2f}%")
+                    # 核心阈值提示（按80分以上统计）
+                    _above80 = bt_with_returns[bt_with_returns[_score_col] >= 80]
+                    _r5_80 = _above80['return_5d'].dropna()
+                    if len(_r5_80) > 0:
+                        lines.append(f"\n**核心统计(评分≥80)**: {len(_above80)}条 | "
+                                    f"已验证{len(_r5_80)}条 | "
+                                    f"5日胜率: {(_r5_80 > 0).mean()*100:.1f}% | "
+                                    f"5日均收益: {_r5_80.mean():+.2f}%")
 
-                    # 整体统计
+                    # 全样本统计
                     total_r5 = bt_with_returns['return_5d'].dropna()
                     _total_rows = len(bt_with_returns)
                     _verified_rows = len(total_r5)
@@ -582,7 +1043,7 @@ class OpportunityReportGenerator:
                     if len(total_r5) > 0:
                         _pending = _total_rows - _verified_rows
                         _pending_str = f"(其中{_pending}条待验证)" if _pending > 0 else ""
-                        lines.append(f"\n**整体**: {_total_rows}条{_pending_str} | "
+                        lines.append(f"\n**全样本**: {_total_rows}条{_pending_str} | "
                                     f"已验证{_verified_rows}条 | "
                                     f"5日均收益: {total_r5.mean():+.2f}% | "
                                     f"5日胜率: {(total_r5 > 0).mean()*100:.1f}% | "
@@ -630,10 +1091,10 @@ class OpportunityReportGenerator:
                             _top = _tier_df.nlargest(min(3, _cnt), _return_col)
                             _parts = []
                             for _, _row in _top.iterrows():
-                                _sname = _pick_stock_display_name(
-                                    _row.get('name'),
-                                    _row.get('stock_name'),
-                                    _row.get('code'),
+                                _sname = self._resolve_stock_display_name_from_reports(
+                                    code=_row.get('code'),
+                                    name=_row.get('name'),
+                                    stock_name=_row.get('stock_name'),
                                     default='未知'
                                 )
                                 _sdate = str(_row.get('report_date', ''))[:10] if _has_date else ''

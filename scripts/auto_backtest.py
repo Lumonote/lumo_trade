@@ -66,6 +66,19 @@ def _normalize_stock_code(code_value) -> str:
     return text.zfill(6)
 
 
+def _to_baostock_code(code: str) -> str:
+    """将 6 位股票代码映射为 baostock 市场代码。"""
+    normalized = _normalize_stock_code(code)
+    if not normalized:
+        return ''
+
+    if normalized.startswith(('5', '6', '9')):
+        return f'sh.{normalized}'
+    if normalized.startswith(('0', '1', '2', '3')):
+        return f'sz.{normalized}'
+    return ''
+
+
 def save_recommendations(passed_stocks: List[Dict], report_date: str = None):
     """
     保存当日推荐股票到回测记录
@@ -185,11 +198,10 @@ def update_returns(days_back: int = 30):
 
             # 使用baostock获取后续价格
             if has_baostock:
-                # 转换代码格式
-                if code.startswith('6'):
-                    bs_code = f'sh.{code}'
-                else:
-                    bs_code = f'sz.{code}'
+                bs_code = _to_baostock_code(code)
+                if not bs_code:
+                    logger.debug(f"跳过baostock暂不支持的代码: {code}")
+                    continue
 
                 start_date = report_dt.strftime('%Y-%m-%d')
                 end_date = (report_dt + timedelta(days=20)).strftime('%Y-%m-%d')
@@ -262,8 +274,12 @@ def generate_backtest_report(days_back: int = None) -> str:
         logger.warning("没有符合条件的回测数据")
         return ""
 
+    score_threshold = 80
+
     # 只分析有收益数据的
     df_with_returns = df[df['return_5d'].notna()].copy()
+    score_series = pd.to_numeric(df_with_returns.get('score'), errors='coerce')
+    df_core = df_with_returns[score_series >= score_threshold].copy()
 
     lines = []
     lines.append(f"# v7.0 自动回测报告")
@@ -272,20 +288,23 @@ def generate_backtest_report(days_back: int = None) -> str:
     lines.append(f"**数据范围**: {df['report_date'].min()} ~ {df['report_date'].max()}")
     lines.append(f"**总推荐数**: {len(df)} 条")
     lines.append(f"**已有收益数据**: {len(df_with_returns)} 条")
+    lines.append(f"**核心统计样本**: {len(df_core)} 条（评分 >= {score_threshold}）")
     lines.append(f"")
 
     if len(df_with_returns) == 0:
         lines.append("暂无收益数据（推荐后需等待交易日获取后续价格）")
+    elif len(df_core) == 0:
+        lines.append(f"暂无评分 >= {score_threshold} 的有效收益样本")
     else:
         # 核心统计
-        lines.append("## 一、核心指标")
+        lines.append(f"## 一、核心指标（仅统计评分 >= {score_threshold}）")
         lines.append("")
         lines.append("| 指标 | 实盘 | v5.5基线 | 差异 |")
         lines.append("|------|------|----------|------|")
 
         for period, label in [('return_1d', '1日'), ('return_3d', '3日'),
                               ('return_5d', '5日'), ('return_10d', '10日')]:
-            valid = df_with_returns[period].dropna()
+            valid = df_core[period].dropna()
             if len(valid) > 0:
                 avg = valid.mean()
                 wr = (valid > 0).mean() * 100
@@ -298,7 +317,7 @@ def generate_backtest_report(days_back: int = None) -> str:
                 lines.append(f"| {label}胜率 | {wr:.1f}% | {baseline_wr:.1f}% | {diff_wr:+.1f}% |")
 
         # 盈亏比
-        valid_5d = df_with_returns['return_5d'].dropna()
+        valid_5d = df_core['return_5d'].dropna()
         if len(valid_5d) > 0:
             wins = valid_5d[valid_5d > 0]
             losses = valid_5d[valid_5d < 0]
@@ -311,7 +330,8 @@ def generate_backtest_report(days_back: int = None) -> str:
 
         # 牛股率
         df_with_returns['is_bull'] = (df_with_returns['return_5d'] > 10) | (df_with_returns['return_10d'].fillna(0) > 15)
-        bull_rate = df_with_returns['is_bull'].mean() * 100
+        df_core['is_bull'] = (df_core['return_5d'] > 10) | (df_core['return_10d'].fillna(0) > 15)
+        bull_rate = df_core['is_bull'].mean() * 100
         lines.append(f"| 牛股率 | {bull_rate:.1f}% | {BASELINE['bull_rate']:.1f}% | {bull_rate - BASELINE['bull_rate']:+.1f}% |")
 
         lines.append("")
@@ -385,17 +405,18 @@ def generate_backtest_report(days_back: int = None) -> str:
                 health_status = "**警告: 平均收益为负**"
 
             lines.append(f"- 健康状态: {health_status}")
+            lines.append(f"- 统计口径: 仅评分 >= {score_threshold} 样本")
             lines.append(f"- 5日胜率: {current_wr:.1f}% (基线{BASELINE['wr_5d']:.1f}%)")
             lines.append(f"- 5日收益: {current_avg:+.2f}% (基线{BASELINE['avg_5d']:+.2f}%)")
 
             # 最近5天趋势
-            recent = df_with_returns.sort_values('report_date').tail(20)
+            recent = df_core.sort_values('report_date').tail(20)
             recent_valid = recent['return_5d'].dropna()
             if len(recent_valid) >= 5:
                 recent_wr = (recent_valid > 0).mean() * 100
                 lines.append(f"- 最近20条胜率: {recent_wr:.1f}%")
         else:
-            lines.append(f"- 数据量不足(仅{len(valid_5d)}条)，暂无法评估")
+            lines.append(f"- 数据量不足(仅{len(valid_5d)}条评分 >= {score_threshold} 样本)，暂无法评估")
 
     # 保存报告
     report_name = f"backtest_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
@@ -407,17 +428,17 @@ def generate_backtest_report(days_back: int = None) -> str:
     logger.info(f"回测报告已生成: {report_path}")
 
     # 输出关键指标到控制台
-    if len(df_with_returns) > 0:
-        valid_5d = df_with_returns['return_5d'].dropna()
+    if len(df_core) > 0:
+        valid_5d = df_core['return_5d'].dropna()
         if len(valid_5d) > 0:
             print(f"\n{'='*50}")
             print(f"  v7.0 自动回测结果")
             print(f"{'='*50}")
             print(f"  推荐总数: {len(df)}")
-            print(f"  有收益数据: {len(valid_5d)}")
+            print(f"  核心统计样本(>=80分): {len(valid_5d)}")
             print(f"  5日平均收益: {valid_5d.mean():+.2f}% (基线: {BASELINE['avg_5d']:+.2f}%)")
             print(f"  5日胜率: {(valid_5d > 0).mean()*100:.1f}% (基线: {BASELINE['wr_5d']:.1f}%)")
-            valid_10d = df_with_returns['return_10d'].dropna()
+            valid_10d = df_core['return_10d'].dropna()
             if len(valid_10d) > 0:
                 print(f"  10日平均收益: {valid_10d.mean():+.2f}% (基线: {BASELINE['avg_10d']:+.2f}%)")
             print(f"{'='*50}")
