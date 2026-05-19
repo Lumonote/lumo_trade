@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-04-19T18:17:05.062879",
+  "generated_at": "2026-05-10T21:58:19.385677",
   "window_days": 120,
-  "sample_count": 312,
+  "sample_count": 342,
   "signals": [
     "score_negative_corr"
   ],
-  "score_corr_5d": -0.017925,
+  "score_corr_5d": -0.005868,
   "rating_thresholds": {
     "S": 85,
     "A+": 82,

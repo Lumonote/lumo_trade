@@ -14,6 +14,10 @@ from typing import List, Dict, Optional
 import json
 import logging
 from urllib.parse import quote
+from scripts.stock_filter_utils import (
+    filter_st_stocks,
+    load_tushare_stock_name_map,
+)
 
 # 添加项目根目录到路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -251,6 +255,7 @@ class OpportunityReportGenerator:
         self._recent_repeat_cache = {}
         self._price_history_cache = {}
         self._historical_stock_name_cache = None
+        self._tushare_name_cache = None  # 6位代码 → 中文名 (lazy)
 
     def _normalize_topic_url(self, raw_url: str, title: str = '') -> str:
         url = (raw_url or '').strip()
@@ -381,6 +386,53 @@ class OpportunityReportGenerator:
         self._historical_stock_name_cache = name_by_code
         return name_by_code
 
+    def _load_tushare_name_map(self) -> Dict[str, str]:
+        """通过 Tushare stock_basic 拉全市场代码→中文名映射，结果缓存到实例。
+        失败时返回 {} 并不再重试。"""
+        if self._tushare_name_cache is not None:
+            return self._tushare_name_cache
+        self._tushare_name_cache = load_tushare_stock_name_map()
+        if self._tushare_name_cache:
+            logger.info(f"✓ Tushare 股票名称映射加载: {len(self._tushare_name_cache)} 只")
+            return self._tushare_name_cache
+
+        self._tushare_name_cache = {}  # 默认空,失败也不重试
+        try:
+            import tushare as _ts
+            _cfg_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                'config', 'tushare_config.json'
+            )
+            with open(_cfg_path) as _f:
+                _cfg = json.load(_f)
+            _token = _cfg.get('tushare', {}).get('token', '') or _cfg.get('token', '')
+            if not _token:
+                return self._tushare_name_cache
+            _ts.set_token(_token)
+            pro = _ts.pro_api()
+            df = pro.stock_basic(exchange='', list_status='L',
+                                 fields='ts_code,symbol,name')
+            if df is None or df.empty:
+                return self._tushare_name_cache
+            mapping = {}
+            for _, row in df.iterrows():
+                code = str(row.get('symbol') or '').strip()
+                nm = str(row.get('name') or '').strip()
+                if code and nm:
+                    mapping[code.zfill(6)] = nm
+            self._tushare_name_cache = mapping
+            logger.info(f"✓ Tushare 股票名称映射加载: {len(mapping)} 只")
+        except Exception as e:
+            logger.debug(f"Tushare 股票名称加载失败: {e}")
+        return self._tushare_name_cache
+
+    def _filter_st_analysis_results(self, analysis_results: List[Dict], context: str) -> List[Dict]:
+        """报表生成前最终过滤 ST/退市股票，防止上游漏网。"""
+        filtered, removed = filter_st_stocks(analysis_results, self._load_tushare_name_map())
+        if removed:
+            logger.info(f"{context}: 过滤ST/退市股票 {len(removed)} 只: {', '.join(removed)}")
+        return filtered
+
     def _resolve_stock_display_name_from_reports(
         self,
         code=None,
@@ -396,9 +448,20 @@ class OpportunityReportGenerator:
         if display_name:
             return display_name
 
+        # 1) 本地历史报告缓存
         cached_name = self._load_stock_name_cache_from_reports().get(normalized_code, '')
         cached_name = self._sanitize_stock_name(cached_name, normalized_code)
-        return _pick_stock_display_name(None, cached_name, normalized_code, default=default)
+        if cached_name:
+            return cached_name
+
+        # 2) Tushare stock_basic 兜底
+        ts_name = self._load_tushare_name_map().get(normalized_code, '')
+        ts_name = self._sanitize_stock_name(ts_name, normalized_code)
+        if ts_name:
+            return ts_name
+
+        # 3) 仍然找不到 → 显示代码
+        return _pick_stock_display_name(None, '', normalized_code, default=default)
 
     def _load_price_history(self, stock_code: str):
         code = _normalize_stock_code(stock_code)
@@ -749,11 +812,208 @@ class OpportunityReportGenerator:
 
         return bt_with_returns, _score_col, cutoff_dt, window_start_dt
 
+    def _build_market_regime_alert(self, regime_info: Optional[Dict],
+                                    s_count: int, a_count: int,
+                                    passed_count: int) -> List[str]:
+        """生成大盘环境提示 + 候选不足时的"放空一天的勇气"提醒。
+
+        触发情况:
+        - 大盘 risk_off (沪深300 5日跌≥3%): 强烈建议观望
+        - S 级 = 0 且 A 级 < 5: 候选质量偏低，建议观望
+        - S 级 + A 级 < 3: 没有像样的标的
+        正常情况下也会显示一行简短的市场状态。
+        """
+        lines = []
+        regime = (regime_info or {}).get('regime', 'unknown')
+        chg5 = (regime_info or {}).get('hs300_chg_5d')
+        chg20 = (regime_info or {}).get('hs300_chg_20d')
+
+        # 严重情况判定
+        is_thin = (s_count == 0 and a_count < 5) or (s_count + a_count < 3)
+        is_bear = regime == 'risk_off'
+
+        if is_bear or is_thin:
+            warn_parts = []
+            if is_bear and chg5 is not None:
+                warn_parts.append(
+                    f"⚠️ <strong>大盘走弱</strong>(沪深300 近5日 {chg5:+.2f}%, 近20日 {chg20:+.2f}%)，整体环境不利"
+                )
+            if is_thin:
+                warn_parts.append(
+                    f"⚠️ <strong>今日候选质量偏低</strong>(S 级 {s_count} 只 / A 级 {a_count} 只 / 通过筛选 {passed_count} 只)"
+                )
+            lines.append("\n## 🛑 风险提示")
+            lines.append('<div style="border: 2px solid #d32f2f; background: #ffebee; padding: 12px; border-radius: 6px; font-size: 14px;">')
+            for p in warn_parts:
+                lines.append(f'<p style="margin: 4px 0;">{p}</p>')
+            lines.append('<p style="margin: 8px 0 0; font-weight: bold; color: #c62828;">📍 建议:今日观望或仅参与 S 级标的，控制总仓位 ≤ 30%</p>')
+            lines.append('</div>')
+            lines.append("")
+        elif regime in ('risk_on', 'neutral') and chg5 is not None:
+            tag = '✅ 风险偏好' if regime == 'risk_on' else '🟡 中性'
+            lines.append(
+                f"\n> **市场环境**: {tag} | 沪深300 近5日 {chg5:+.2f}% / 近20日 {chg20:+.2f}% | 今日 S 级 {s_count} 只, A 级 {a_count} 只\n"
+            )
+        return lines
+
+    def _build_yesterday_recap(self, current_report_dt: datetime) -> List[str]:
+        """读取上一份报告的 Top10，计算其推荐股票"昨日开盘买入"截至现在的实际涨跌。
+
+        返回若干 markdown 行；找不到上一份报告或数据不足时返回 []。
+        """
+        try:
+            import glob as _glob
+            pattern = os.path.join(self.output_dir, 'opportunity_top10_*.md')
+            files = sorted(_glob.glob(pattern))
+            if not files:
+                return []
+            cur_stamp = current_report_dt.strftime('%Y%m%d_%H%M%S')
+            prev_files = [
+                f for f in files
+                if 'wechat' not in os.path.basename(f)
+                and 'alignment' not in os.path.basename(f)
+                and 'xueqiu' not in os.path.basename(f)
+                and re.search(r'_(\d{8}_\d{6})\.md$', os.path.basename(f))
+                and re.search(r'_(\d{8}_\d{6})\.md$', os.path.basename(f)).group(1) < cur_stamp
+            ]
+            if not prev_files:
+                return []
+            prev_path = prev_files[-1]
+            prev_basename = os.path.basename(prev_path)
+            m = re.search(r'_(\d{8})_\d{6}\.md$', prev_basename)
+            if not m:
+                return []
+            prev_date_str = m.group(1)
+            prev_date_iso = f"{prev_date_str[:4]}-{prev_date_str[4:6]}-{prev_date_str[6:8]}"
+
+            stocks = self._extract_ranked_stocks_from_markdown(prev_path, prev_date_iso)
+            if not stocks:
+                return []
+            top10 = stocks[:10]
+
+            # 取 Tushare 日线，取上一报告日"次个交易日"开盘价 → 最新可用收盘价
+            try:
+                import tushare as _ts
+                import json as _json
+                _cfg_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    'config', 'tushare_config.json'
+                )
+                with open(_cfg_path) as _f:
+                    _cfg = _json.load(_f)
+                _token = _cfg.get('tushare', {}).get('token', '') or _cfg.get('token', '')
+                if not _token:
+                    return []
+                _ts.set_token(_token)
+                pro = _ts.pro_api()
+            except Exception:
+                return []
+
+            try:
+                cal = pro.trade_cal(
+                    exchange='SSE',
+                    start_date=prev_date_str,
+                    end_date=current_report_dt.strftime('%Y%m%d'),
+                    is_open='1',
+                )
+                tdays = sorted(cal['cal_date'].tolist())
+            except Exception:
+                return []
+            if len(tdays) < 1:
+                return []
+            future = [t for t in tdays if t > prev_date_str]
+            if not future:
+                return []
+            buy_day = future[0]
+            latest_day = tdays[-1]
+
+            rows_data = []
+            wins = 0
+            losses = 0
+            total_ret = 0.0
+            for s in top10:
+                code = str(s.get('code') or '').zfill(6)
+                if not code or len(code) != 6:
+                    continue
+                ts_code = f"{code}.SH" if code.startswith(('6', '9')) else f"{code}.SZ"
+                try:
+                    df = pro.daily(
+                        ts_code=ts_code,
+                        start_date=buy_day,
+                        end_date=latest_day,
+                    )
+                except Exception:
+                    continue
+                if df is None or len(df) == 0:
+                    continue
+                df = df.sort_values('trade_date').reset_index(drop=True)
+                if df.iloc[0]['trade_date'] != buy_day:
+                    continue
+                buy_open = float(df.iloc[0]['open'])
+                last_close = float(df.iloc[-1]['close'])
+                if buy_open <= 0:
+                    continue
+                ret = (last_close - buy_open) / buy_open * 100
+                total_ret += ret
+                if ret > 0:
+                    wins += 1
+                elif ret < 0:
+                    losses += 1
+                rows_data.append({
+                    'rank': s.get('rank'),
+                    'code': code,
+                    'name': s.get('name') or '',
+                    'score': s.get('score'),
+                    'buy_open': buy_open,
+                    'last_close': last_close,
+                    'ret': ret,
+                    'days': len(df),
+                })
+
+            if not rows_data:
+                return []
+
+            n = len(rows_data)
+            avg_ret = total_ret / n
+            wr = wins / n * 100 if n else 0
+            tag = '✅' if avg_ret > 0 else ('🟡' if avg_ret > -1 else '❌')
+
+            lines = []
+            lines.append("\n## 📅 昨日选股复盘")
+            lines.append(
+                f"\n> **上一份报告**: ({prev_date_iso}) | "
+                f"**买入日**: {buy_day[:4]}-{buy_day[4:6]}-{buy_day[6:8]} 开盘 → "
+                f"**截至**: {latest_day[:4]}-{latest_day[4:6]}-{latest_day[6:8]} 收盘 | "
+                f"{tag} **平均收益 {avg_ret:+.2f}%** | 胜率 {wr:.1f}% ({wins}赚 / {losses}亏 / {n - wins - losses}平)"
+            )
+            lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
+            lines.append('<thead><tr><th>原排名</th><th>代码</th><th>股票</th><th>原评分</th><th>买入价</th><th>最新价</th><th>持有N日</th><th>累计涨跌</th></tr></thead>')
+            lines.append('<tbody>')
+            rows_data.sort(key=lambda x: -x['ret'])
+            for r in rows_data:
+                color = '#2e7d32' if r['ret'] > 0 else ('#c62828' if r['ret'] < 0 else '#666')
+                lines.append(
+                    f'<tr><td style="text-align: center;">#{r["rank"]}</td>'
+                    f'<td style="text-align: center;">{r["code"]}</td>'
+                    f'<td>{r["name"]}</td>'
+                    f'<td style="text-align: center;">{(r["score"] or 0):.2f}</td>'
+                    f'<td style="text-align: center;">{r["buy_open"]:.2f}</td>'
+                    f'<td style="text-align: center;">{r["last_close"]:.2f}</td>'
+                    f'<td style="text-align: center;">{r["days"]}</td>'
+                    f'<td style="text-align: center; font-weight: bold; color: {color};">{r["ret"]:+.2f}%</td></tr>'
+                )
+            lines.append('</tbody></table>\n')
+            return lines
+        except Exception as e:
+            logger.debug(f"昨日复盘段渲染失败: {e}")
+            return []
+
     def generate_report(self, analysis_results: List[Dict],
                        report_title: str = "投资机会挖掘报告",
                        global_hot_news: List[Dict] = None,
                        sector_hot_news: List[Dict] = None,
-                       hot_news_title: str = None) -> str:
+                       hot_news_title: str = None,
+                       market_regime: Optional[Dict] = None) -> str:
         """
         生成投资机会挖掘HTML报表
 
@@ -765,6 +1025,7 @@ class OpportunityReportGenerator:
             生成的HTML文件路径
         """
         logger.info(f"开始生成投资机会挖掘报表...")
+        analysis_results = self._filter_st_analysis_results(analysis_results, "报表生成")
 
         # 统计数据
         total_count = len(analysis_results)
@@ -842,6 +1103,26 @@ class OpportunityReportGenerator:
             }
 
             lines = []
+
+            # === 头部增强: 昨日推荐复盘 + 大盘环境/候选不足提示 ===
+            try:
+                _recap = self._build_yesterday_recap(current_report_dt)
+                if _recap:
+                    lines.extend(_recap)
+                    lines.append("---\n")
+            except Exception as _re:
+                logger.debug(f"昨日复盘失败: {_re}")
+
+            try:
+                _s_count = sum(1 for _s in top_20 if float(_s.get('final_score', 0) or 0) >= 85)
+                _a_count = sum(1 for _s in top_20 if 78 <= float(_s.get('final_score', 0) or 0) < 85)
+                _alert = self._build_market_regime_alert(market_regime, _s_count, _a_count, passed_count)
+                if _alert:
+                    lines.extend(_alert)
+                    lines.append("---\n")
+            except Exception as _ae:
+                logger.debug(f"大盘提示失败: {_ae}")
+
             lines.append("## 🏆 综合排名 TOP20")
             lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
             lines.append('<thead><tr><th>排名</th><th>代码</th><th>股票名称</th><th>综合得分</th><th>详细分析</th></tr></thead>')
@@ -855,10 +1136,11 @@ class OpportunityReportGenerator:
 
             for i, stock in enumerate(top_20[:20], 1):
                 code = _normalize_stock_code(stock.get('stock_code') or stock.get('code') or '未知') or '未知'
-                name_txt = _pick_stock_display_name(
-                    stock.get('name'),
-                    stock.get('stock_name'),
-                    code
+                name_txt = self._resolve_stock_display_name_from_reports(
+                    code=code,
+                    name=stock.get('name'),
+                    stock_name=stock.get('stock_name'),
+                    default=code,
                 )
                 score = float(stock.get('final_score', 0) or 0)
 
@@ -988,17 +1270,20 @@ class OpportunityReportGenerator:
                             f"\n**统计窗口**: {_window_start_dt.strftime('%Y-%m-%d')} ~ {_cutoff_dt.strftime('%Y-%m-%d')}"
                             f"（先预留最近10个交易日，再向前回看1个月）\n"
                         )
-                    lines.append("\n**样本口径**: 历史每日Top10推荐（不是全量候选池），因此高分样本占比会明显更高。")
+                    lines.append("\n**样本口径**: 历史每日Top10推荐（不是全量候选池），因此高分样本占比会明显更高。\n**交易规则**: 报告次日开盘价买入，第5个交易日收盘价卖出（年化按 252/5≈50.4 次复利估算）。")
                     lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
-                    lines.append('<thead><tr><th>评分区间</th><th>数量</th><th>5日均收益</th><th>5日胜率</th><th>10日均收益</th><th>盈亏比</th></tr></thead>')
+                    lines.append('<thead><tr><th>评分区间</th><th>数量</th><th>5日均收益</th><th>5日胜率</th><th>10日均收益</th><th>盈亏比</th><th>年化估算</th></tr></thead>')
                     lines.append('<tbody>')
 
                     score_bins = [
-                        (80, 999, '80分以上', '#e53935'),
+                        (85, 999, 'S 级 (≥85分)', '#d32f2f'),
+                        (80, 85, 'A 级 (80-85分)', '#f57c00'),
                         (70, 80, '70-80分', '#1565c0'),
                         (60, 70, '60-70分', '#757575'),
                         (0, 60, '60分以下', '#9e9e9e')
                     ]
+
+                    _ANN_CYCLES = 252.0 / 5.0  # 5日持仓 → 一年约 50.4 次复利
 
                     for low, high, label, color in score_bins:
                         if high == 999:
@@ -1007,7 +1292,7 @@ class OpportunityReportGenerator:
                             subset = bt_with_returns[(bt_with_returns[_score_col] >= low) & (bt_with_returns[_score_col] < high)]
 
                         if len(subset) == 0:
-                            lines.append(f'<tr><td style="font-weight: bold;">{label}</td><td style="text-align: center;">0</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
+                            lines.append(f'<tr><td style="font-weight: bold;">{label}</td><td style="text-align: center;">0</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
                             continue
 
                         r5 = subset['return_5d'].dropna()
@@ -1020,19 +1305,30 @@ class OpportunityReportGenerator:
                             losses = r5[r5 < 0].sum()
                             pf = abs(wins / losses) if losses != 0 else float('inf')
                             pf_str = f"{pf:.2f}" if pf != float('inf') else "∞"
-                            lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td style="text-align: center;">{avg5:+.2f}%</td><td style="text-align: center;">{wr:.1f}%</td><td style="text-align: center;">{avg10_str}</td><td style="text-align: center;">{pf_str}</td></tr>')
+                            try:
+                                ann = ((1 + avg5 / 100.0) ** _ANN_CYCLES - 1) * 100
+                                ann_str = f"{ann:+.1f}%"
+                            except Exception:
+                                ann_str = "—"
+                            lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td style="text-align: center;">{avg5:+.2f}%</td><td style="text-align: center;">{wr:.1f}%</td><td style="text-align: center;">{avg10_str}</td><td style="text-align: center;">{pf_str}</td><td style="text-align: center; font-weight: bold;">{ann_str}</td></tr>')
                         else:
-                            lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
+                            lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
                     lines.append('</tbody></table>')
 
                     # 核心阈值提示（按80分以上统计）
                     _above80 = bt_with_returns[bt_with_returns[_score_col] >= 80]
                     _r5_80 = _above80['return_5d'].dropna()
                     if len(_r5_80) > 0:
+                        try:
+                            _ann80 = ((1 + _r5_80.mean() / 100.0) ** _ANN_CYCLES - 1) * 100
+                            _ann80_str = f" | 年化估算: {_ann80:+.1f}%"
+                        except Exception:
+                            _ann80_str = ""
                         lines.append(f"\n**核心统计(评分≥80)**: {len(_above80)}条 | "
                                     f"已验证{len(_r5_80)}条 | "
                                     f"5日胜率: {(_r5_80 > 0).mean()*100:.1f}% | "
-                                    f"5日均收益: {_r5_80.mean():+.2f}%")
+                                    f"5日均收益: {_r5_80.mean():+.2f}%"
+                                    f"{_ann80_str}")
 
                     # 全样本统计
                     total_r5 = bt_with_returns['return_5d'].dropna()
@@ -1043,10 +1339,16 @@ class OpportunityReportGenerator:
                     if len(total_r5) > 0:
                         _pending = _total_rows - _verified_rows
                         _pending_str = f"(其中{_pending}条待验证)" if _pending > 0 else ""
+                        try:
+                            _ann_total = ((1 + total_r5.mean() / 100.0) ** _ANN_CYCLES - 1) * 100
+                            _ann_total_str = f" | 年化估算: {_ann_total:+.1f}%"
+                        except Exception:
+                            _ann_total_str = ""
                         lines.append(f"\n**全样本**: {_total_rows}条{_pending_str} | "
                                     f"已验证{_verified_rows}条 | "
                                     f"5日均收益: {total_r5.mean():+.2f}% | "
-                                    f"5日胜率: {(total_r5 > 0).mean()*100:.1f}% | "
+                                    f"5日胜率: {(total_r5 > 0).mean()*100:.1f}%"
+                                    f"{_ann_total_str} | "
                                     f"数据范围: {_date_min} ~ {_date_max}")
 
                     # 分档收益分布
@@ -1475,8 +1777,22 @@ class OpportunityReportGenerator:
                                 model_part = k_str.split('/')[-1].lower()
                             else:
                                 model_part = k_str.lower()
-                            return model_part in ['qwen', 'deepseek', 'minimax', 'kimi', 'glm']
-                        is_multi_model = any('/' in str(k) or contains_model_name(k) for k in llm_result.keys())
+                            return any(
+                                model_part == n or model_part.startswith(n)
+                                for n in ['qwen', 'deepseek', 'minimax', 'kimi', 'glm']
+                            )
+
+                        # 兼容：键名可能是 "DeepSeek-V4" 这类非纯模型名；
+                        # 或键名不含厂商/分隔符，但值仍是标准LLM分析结构。
+                        is_multi_model = (
+                            any('/' in str(k) or contains_model_name(k) for k in llm_result.keys())
+                            or any(
+                                isinstance(v, dict) and any(
+                                    kk in v for kk in ['operation_advice', 'risk_assessment', 'kline_prediction', 'strategy', 'summary']
+                                )
+                                for v in llm_result.values()
+                            )
+                        )
                         if is_multi_model:
                             for model_name, model_result in llm_result.items():
                                 if isinstance(model_result, dict) and 'error' not in model_result:
@@ -1538,6 +1854,13 @@ class OpportunityReportGenerator:
             with open(md_path, 'w', encoding='utf-8') as mf:
                 mf.write('\n'.join(lines))
             logger.info(f"✓ TOP20统计Markdown已生成: {md_path}")
+
+            try:
+                from scripts.generate_xueqiu_article import generate as _gen_xueqiu
+                xueqiu_path = _gen_xueqiu(md_path)
+                logger.info(f"✓ 雪球长文版已生成: {xueqiu_path}")
+            except Exception as _xe:
+                logger.warning(f"生成雪球长文失败: {_xe}")
         except Exception as e:
             logger.warning(f"生成TOP20 Markdown失败: {e}")
         logger.info(f"✓ 报表生成完成: {filepath}")
@@ -1656,8 +1979,17 @@ class OpportunityReportGenerator:
                     'buy_lg_amount': float(row.get('buy_lg_amount', 0)),
                 }
 
-            inflow_list = [row_to_dict(row) for _, row in top_inflow.iterrows()]
-            outflow_list = [row_to_dict(row) for _, row in top_outflow.iterrows()]
+            inflow_list, removed_inflow = filter_st_stocks(
+                [row_to_dict(row) for _, row in top_inflow.iterrows()],
+                self._load_tushare_name_map()
+            )
+            outflow_list, removed_outflow = filter_st_stocks(
+                [row_to_dict(row) for _, row in top_outflow.iterrows()],
+                self._load_tushare_name_map()
+            )
+            removed_count = len(removed_inflow) + len(removed_outflow)
+            if removed_count:
+                logger.info(f"资金流向榜过滤ST/退市股票 {removed_count} 只")
 
             logger.info(f"✓ 获取资金流向数据成功，日期: {trade_date}，流入{len(inflow_list)}只/流出{len(outflow_list)}只")
             return {
@@ -3785,8 +4117,22 @@ class OpportunityReportGenerator:
                     model_part = k_str.split('/')[-1].lower()
                 else:
                     model_part = k_str.lower()
-                return model_part in ['qwen', 'deepseek', 'minimax', 'kimi', 'glm']
-            is_multi_model = any(contains_model_name(k) for k in llm_result.keys()) if isinstance(llm_result, dict) else False
+                return any(
+                    model_part == n or model_part.startswith(n)
+                    for n in ['qwen', 'deepseek', 'minimax', 'kimi', 'glm']
+                )
+            is_multi_model = (
+                isinstance(llm_result, dict)
+                and (
+                    any(contains_model_name(k) for k in llm_result.keys())
+                    or any(
+                        isinstance(v, dict) and any(
+                            kk in v for kk in ['operation_advice', 'risk_assessment', 'kline_prediction', 'strategy', 'summary']
+                        )
+                        for v in llm_result.values()
+                    )
+                )
+            )
 
             if is_multi_model:
                 for model_name, model_result in llm_result.items():
@@ -4006,8 +4352,22 @@ class OpportunityReportGenerator:
                     model_part = k_str.split('/')[-1].lower()
                 else:
                     model_part = k_str.lower()
-                return model_part in ['qwen', 'deepseek', 'minimax', 'kimi', 'glm']
-            is_multi_model = any(contains_model_name(k) for k in llm_result.keys()) if isinstance(llm_result, dict) else False
+                return any(
+                    model_part == n or model_part.startswith(n)
+                    for n in ['qwen', 'deepseek', 'minimax', 'kimi', 'glm']
+                )
+            is_multi_model = (
+                isinstance(llm_result, dict)
+                and (
+                    any(contains_model_name(k) for k in llm_result.keys())
+                    or any(
+                        isinstance(v, dict) and any(
+                            kk in v for kk in ['operation_advice', 'risk_assessment', 'kline_prediction', 'strategy', 'summary']
+                        )
+                        for v in llm_result.values()
+                    )
+                )
+            )
 
             if is_multi_model:
                 # 多模型结果

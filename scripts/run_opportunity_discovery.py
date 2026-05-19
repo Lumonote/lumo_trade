@@ -33,6 +33,7 @@ sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scripts.hot_stocks_fetcher import HotStocksFetcher
+from scripts.stock_filter_utils import filter_st_stocks
 from analysis.opportunity_scorer import OpportunityScorer
 from analysis.opportunity_filter import OpportunityFilter
 from scripts.opportunity_report_generator import OpportunityReportGenerator
@@ -69,7 +70,10 @@ class OpportunityDiscovery:
 
         # 投资机会挖掘流程要求实时数据，禁用热门股票缓存
         self.hot_stocks_fetcher = HotStocksFetcher(disable_cache=True)
+        logger.info("初始化评分器 OpportunityScorer（可能会初始化数据源/爬虫组件）...")
+        t0 = time.time()
         self.scorer = OpportunityScorer()
+        logger.info(f"✓ 评分器初始化完成（耗时 {time.time() - t0:.2f}s）")
         self.filter = OpportunityFilter()
         # 尊重打包环境的结果目录设置
         output_dir = os.environ.get('KRONOS_RESULTS_DIR', 'results')
@@ -247,6 +251,14 @@ class OpportunityDiscovery:
         if dropped > 0:
             logger.info(f"候选清洗：移除热榜深位排名股票 {dropped} 只（阈值 rank<={max_rank}）")
         return trimmed
+
+    def _filter_st_candidates(self, stocks: List[Dict], context: str) -> List[Dict]:
+        """统一过滤 ST/退市候选，避免不同候选来源漏过。"""
+        filtered, removed = filter_st_stocks(stocks)
+        if removed:
+            logger.info(f"{context}: 过滤ST/退市股票 {len(removed)} 只: {', '.join(removed)}")
+            logger.info(f"{context}: 过滤后剩余 {len(filtered)} 只股票")
+        return filtered
 
     def _fetch_oversold_rebound_stocks(self, limit: int = 30) -> List[Dict]:
         """
@@ -517,6 +529,200 @@ class OpportunityDiscovery:
             logger.warning(f"个股资金流向筛选失败: {e}")
             return []
 
+    def _fetch_low_position_breakout_stocks(self, limit: int = 30) -> List[Dict]:
+        """低位放量待突破扫描 — 补充现有源的动量偏置，挖掘"未涨先选"标的。
+
+        筛选条件（基于 5 个时间点的横截面数据，无需逐股拉历史）:
+        - 60 日累计涨跌 > -10%（不在下跌趋势中）
+        - 20 日累计涨幅 ∈ [-8%, 12%]（一个月内没炒过头也没继续下跌）
+        - 5 日累计涨幅 ∈ [-3%, 8%]（短期温和）
+        - 当日 / 近 20 日均量 > 1.3 倍（出现放量）
+        - 当日成交额 > 5000 万（流动性门槛）
+        - 当日涨跌幅 ∈ [-3%, 7%]（避开涨停冲高与暴跌）
+        """
+        try:
+            import tushare as ts
+            import pandas as pd
+        except ImportError:
+            logger.warning("Tushare/Pandas未安装，无法扫描低位放量")
+            return []
+
+        token = self._load_tushare_token()
+        if not token:
+            return []
+
+        try:
+            pro = ts.pro_api(token)
+        except Exception:
+            return []
+
+        trade_date = self._resolve_latest_trade_date(pro, datetime.now())
+
+        try:
+            cal = pro.trade_cal(exchange='SSE', end_date=trade_date, is_open='1', limit=70)
+            trade_days = sorted(cal['cal_date'].tolist())
+            if len(trade_days) < 65:
+                logger.info("交易日不足60日,跳过低位放量扫描")
+                return []
+            d_5 = trade_days[-6]
+            d_10 = trade_days[-11]
+            d_15 = trade_days[-16]
+            d_20 = trade_days[-21]
+            d_60 = trade_days[-61]
+
+            df_today = pro.daily(trade_date=trade_date,
+                                 fields='ts_code,close,open,vol,amount,pct_chg')
+            if df_today is None or df_today.empty:
+                return []
+            df_today = df_today[~df_today['ts_code'].str.contains('BJ')]
+            df_today = df_today[df_today['vol'] > 0]
+            df_today = df_today[df_today['amount'] >= 5000]  # amount 单位千元 → 5000 万门槛
+
+            def _xs(d):
+                df = pro.daily(trade_date=d, fields='ts_code,close,vol')
+                if df is None or df.empty:
+                    return {}, {}
+                return dict(zip(df['ts_code'], df['close'])), dict(zip(df['ts_code'], df['vol']))
+
+            c5, v5 = _xs(d_5)
+            c10, v10 = _xs(d_10)
+            c15, v15 = _xs(d_15)
+            c20, v20 = _xs(d_20)
+            c60, _ = _xs(d_60)
+
+            candidates = []
+            for _, row in df_today.iterrows():
+                ts_code = row['ts_code']
+                close = float(row['close'])
+                vol_today = float(row['vol'])
+                pct = float(row.get('pct_chg', 0) or 0)
+
+                p5 = c5.get(ts_code)
+                p20 = c20.get(ts_code)
+                p60 = c60.get(ts_code)
+                v_5d = v5.get(ts_code, 0)
+                v_10d = v10.get(ts_code, 0)
+                v_15d = v15.get(ts_code, 0)
+                v_20d = v20.get(ts_code, 0)
+
+                if not (p5 and p20 and p60):
+                    continue
+                if min(v_5d, v_10d, v_15d, v_20d) <= 0:
+                    continue
+
+                chg_5d = (close - p5) / p5 * 100
+                chg_20d = (close - p20) / p20 * 100
+                chg_60d = (close - p60) / p60 * 100
+
+                vol_avg_20 = (v_5d + v_10d + v_15d + v_20d) / 4
+                vol_ratio = vol_today / vol_avg_20 if vol_avg_20 > 0 else 1.0
+
+                # 严格门槛
+                if chg_60d < -10:
+                    continue
+                if chg_20d > 12 or chg_20d < -8:
+                    continue
+                if chg_5d > 8 or chg_5d < -3:
+                    continue
+                if vol_ratio < 1.3:
+                    continue
+                if pct > 7 or pct < -3:
+                    continue
+
+                # 评分 (越大越优)
+                score = 0
+                if 1.5 <= vol_ratio <= 3.0:
+                    score += 3
+                elif vol_ratio > 3.0:
+                    score += 1  # 暴量警惕
+                else:
+                    score += 2
+                if 0 <= chg_5d <= 5:
+                    score += 2
+                if -5 <= chg_20d <= 8:
+                    score += 1
+                if 0 <= chg_60d <= 20:
+                    score += 1
+
+                candidates.append({
+                    'ts_code': ts_code,
+                    'close': close,
+                    'pct_chg': pct,
+                    'chg_5d': round(chg_5d, 2),
+                    'chg_20d': round(chg_20d, 2),
+                    'chg_60d': round(chg_60d, 2),
+                    'vol_ratio': round(vol_ratio, 2),
+                    'breakout_score': score,
+                })
+
+            candidates.sort(key=lambda x: -x['breakout_score'])
+
+            results = []
+            for idx, c in enumerate(candidates[:limit], start=1):
+                ts_code = c['ts_code']
+                code = ts_code.split('.')[0]
+                results.append({
+                    'code': code,
+                    'name': '',
+                    'price': c['close'],
+                    'change_pct': c['pct_chg'],
+                    'source': 'low_position_breakout',
+                    'source_detail': (
+                        f"低位放量待突破(5/20/60日 {c['chg_5d']:+.1f}%/"
+                        f"{c['chg_20d']:+.1f}%/{c['chg_60d']:+.1f}%, 量比{c['vol_ratio']:.1f}x)"
+                    ),
+                    'popularity_score': max(0, 100 - idx + 1),
+                })
+
+            logger.info(
+                f"✓ 低位放量扫描完成({trade_date}): {len(results)}只入选, 全市场扫描{len(df_today)}只"
+            )
+            return results
+        except Exception as e:
+            logger.warning(f"低位放量扫描失败: {e}")
+            return []
+
+    def _assess_market_regime(self) -> Dict:
+        """评估大盘环境，用于动态收紧/放松候选阈值。
+
+        返回 {regime: 'risk_on'|'neutral'|'risk_off'|'unknown', hs300_chg_5d, hs300_chg_20d}
+        """
+        try:
+            import tushare as ts
+        except ImportError:
+            return {'regime': 'unknown'}
+
+        token = self._load_tushare_token()
+        if not token:
+            return {'regime': 'unknown'}
+        try:
+            pro = ts.pro_api(token)
+            trade_date = self._resolve_latest_trade_date(pro, datetime.now())
+            df = pro.index_daily(ts_code='000300.SH', end_date=trade_date, limit=25)
+            if df is None or len(df) < 21:
+                return {'regime': 'unknown'}
+            df = df.sort_values('trade_date').reset_index(drop=True)
+            close_today = float(df.iloc[-1]['close'])
+            close_5d = float(df.iloc[-6]['close'])
+            close_20d = float(df.iloc[-21]['close'])
+            chg_5d = (close_today - close_5d) / close_5d * 100
+            chg_20d = (close_today - close_20d) / close_20d * 100
+            if chg_5d <= -3 or (chg_5d <= -1 and chg_20d <= -5):
+                regime = 'risk_off'
+            elif chg_5d >= 3 and chg_20d >= 3:
+                regime = 'risk_on'
+            else:
+                regime = 'neutral'
+            return {
+                'regime': regime,
+                'hs300_chg_5d': round(chg_5d, 2),
+                'hs300_chg_20d': round(chg_20d, 2),
+                'trade_date': trade_date,
+            }
+        except Exception as e:
+            logger.warning(f"大盘环境评估失败: {e}")
+            return {'regime': 'unknown'}
+
     def run(self, limit: int = 100, test_codes: List[str] = None, source: str = 'multi') -> str:
         """
         运行完整的投资机会挖掘流程
@@ -533,6 +739,15 @@ class OpportunityDiscovery:
         logger.info("=" * 60)
 
         start_time = datetime.now()
+
+        # 步骤0: 评估大盘环境(用于报告中提示是否值得入场)
+        self.market_regime = self._assess_market_regime()
+        if self.market_regime.get('regime') != 'unknown':
+            logger.info(
+                f"📈 大盘环境: {self.market_regime['regime']} "
+                f"(沪深300 5日{self.market_regime.get('hs300_chg_5d', 0):+.2f}%, "
+                f"20日{self.market_regime.get('hs300_chg_20d', 0):+.2f}%)"
+            )
 
         # 步骤1: 获取热门股票 TOP 100 与全市场热门新闻TOP10
         if test_codes:
@@ -558,7 +773,7 @@ class OpportunityDiscovery:
                 # 多源融合: 热股100 + 超跌反弹 + 资金流向
                 logger.info(f"\n步骤1: 多源融合选股模式")
 
-                logger.info(f"  [1/3] 获取热门股票 TOP {limit}...")
+                logger.info(f"  [1/4] 获取热门股票 TOP {limit}...")
                 hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
                 if not hot_stocks:
                     hot_stocks = []
@@ -570,7 +785,7 @@ class OpportunityDiscovery:
                 if len(hot_stocks) < limit:
                     deficit = limit - len(hot_stocks)
                     topup_limit = max(deficit * 2, deficit + 30)
-                    logger.info(f"  [1.5/3] 热股不足{limit}只，补充资金流向候选 TOP {topup_limit}...")
+                    logger.info(f"  [1.5/4] 热股不足{limit}只，补充资金流向候选 TOP {topup_limit}...")
                     moneyflow_candidates = self._fetch_moneyflow_dc_stocks(limit=topup_limit)
                     seen_hot_codes = set(str(s.get('code') or '') for s in hot_stocks if s.get('code'))
                     added = 0
@@ -585,17 +800,21 @@ class OpportunityDiscovery:
                             break
                     logger.info(f"  ✓ 资金流向补充新增: {added}只（当前热股候选: {len(hot_stocks)}只）")
 
-                logger.info(f"  [2/3] 筛选超跌反弹候选...")
+                logger.info(f"  [2/4] 筛选超跌反弹候选...")
                 oversold = self._fetch_oversold_rebound_stocks(limit=30)
                 logger.info(f"  ✓ 超跌反弹: {len(oversold)}只")
 
-                logger.info(f"  [3/3] 获取个股资金流向...")
+                logger.info(f"  [3/4] 获取个股资金流向...")
                 dragon = self._fetch_capital_flow_stocks(limit=40)
                 logger.info(f"  ✓ 资金流向: {len(dragon)}只")
 
+                logger.info(f"  [4/4] 扫描低位放量待突破候选...")
+                breakout = self._fetch_low_position_breakout_stocks(limit=30)
+                logger.info(f"  ✓ 低位放量: {len(breakout)}只")
+
                 # 去重合并（以code为准，热股优先保留）
                 seen_codes = set(s['code'] for s in hot_stocks)
-                for s in oversold + dragon:
+                for s in oversold + dragon + breakout:
                     if s['code'] not in seen_codes:
                         hot_stocks.append(s)
                         seen_codes.add(s['code'])
@@ -629,6 +848,7 @@ class OpportunityDiscovery:
             hot_stocks = merged[:limit]
 
         hot_stocks = self._trim_deep_heat_rank_candidates(hot_stocks, limit)
+        hot_stocks = self._filter_st_candidates(hot_stocks, "候选清洗")
 
         if not hot_stocks:
             logger.error("✗ 候选股票获取失败，程序终止")
@@ -741,6 +961,8 @@ class OpportunityDiscovery:
                     )
 
         logger.info(f"✓ 完成 {len(scored_stocks)}/{total_count} 只股票的分析")
+
+        scored_stocks = self._filter_st_candidates(scored_stocks, "评分结果清洗")
 
         # 步骤3: 漏斗筛选
         logger.info(f"\n步骤3: 正在进行漏斗筛选...")
@@ -1101,7 +1323,8 @@ class OpportunityDiscovery:
             report_title="投资机会挖掘报告",
             global_hot_news=self.global_hot_news,
             sector_hot_news=self.sector_hot_news,
-            hot_news_title=hot_news_title
+            hot_news_title=hot_news_title,
+            market_regime=getattr(self, 'market_regime', None),
         )
 
         # 完成

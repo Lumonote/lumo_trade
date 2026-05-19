@@ -1,7 +1,7 @@
 {
   "providers": {
     "魔搭社区": {
-      "enabled": true,
+      "enabled": false,
       "base_url": "https://dashscope.aliyuncs.com/api/v1",
       "api_style": "dashscope",
       "default_timeout": 90,
@@ -53,23 +53,16 @@
       }
     },
     "DeepSeek官方": {
-      "enabled": false,
+      "enabled": true,
       "base_url": "https://api.deepseek.com",
       "api_style": "openai",
       "models": {
-        "DEEPSEEK-V3": {
-          "model_id": "deepseek-v3.2",
-          "endpoint": "/v1/chat/completions",
+        "DeepSeek-V4": {
+          "model_id": "deepseek-v4-pro",
+          "endpoint": "/chat/completions",
           "request_format": "openai",
           "max_tokens": 8192,
-          "description": "DeepSeek V3.2"
-        },
-        "DEEPSEEK-R1": {
-          "model_id": "deepseek-r1",
-          "endpoint": "/v1/chat/completions",
-          "request_format": "openai",
-          "max_tokens": 8192,
-          "description": "DeepSeek R1 推理模型"
+          "description": "DeepSeek V4"
         }
       }
     },

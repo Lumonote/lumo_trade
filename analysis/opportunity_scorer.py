@@ -34,6 +34,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Optional, Tuple, List
 import logging
+import time
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
@@ -191,7 +192,11 @@ class OpportunityScorer:
 
         # 初始化共享的数据获取器（复用连接，避免频繁初始化）
         self._data_fetcher = None
-        self._init_data_fetcher()
+        # 关键：延迟初始化，避免启动阶段卡在Playwright/爬虫组件初始化上。
+        # 这不改变任何业务逻辑，只改变初始化时机：真正需要取历史数据时再初始化。
+        self._lazy_data_fetcher = os.environ.get('KRONOS_LAZY_DATA_FETCHER', '1').strip().lower() in ('1', 'true', 'yes', 'on')
+        if not self._lazy_data_fetcher:
+            self._init_data_fetcher()
 
     def _load_runtime_config(self):
         config_path = os.environ.get(
@@ -242,10 +247,14 @@ class OpportunityScorer:
 
     def _init_data_fetcher(self):
         """初始化共享数据获取器"""
+        if self._data_fetcher is not None:
+            return
         try:
+            t0 = time.time()
+            logger.info("开始初始化共享数据获取器（MultiSourceDataFetcher）...")
             from scripts.fetch_data import MultiSourceDataFetcher
             self._data_fetcher = MultiSourceDataFetcher()
-            logger.info("✓ 共享数据获取器初始化成功")
+            logger.info(f"✓ 共享数据获取器初始化成功（耗时 {time.time() - t0:.2f}s）")
         except Exception as e:
             logger.warning(f"共享数据获取器初始化失败: {e}")
             self._data_fetcher = None
@@ -468,6 +477,10 @@ class OpportunityScorer:
                 liquidity_score * weights_used.get('liquidity', 0.08)
             )
 
+            # v23+ P0-2: 保存基础七维加权分,用于最终单调性硬约束
+            # 防止"基础分弱但靠单点爆点冲到 82+"的票污染 A 级
+            base_seven_dim_score = total_score
+
             # [已放开] 超大市值惩罚机制 - 用户要求放开大市值限制，不再扣分
 
             # [新增] 卖出信号一票否决/降权机制
@@ -535,6 +548,17 @@ class OpportunityScorer:
             if quant_cap_limit is not None:
                 total_score = min(total_score, quant_cap_limit)
 
+            # v23+ P0-1: 量化分极端共识反指标硬约束
+            # 实测 qs >= 95 胜率 42.86%(低于基线),回测打分加 -18,生产侧此前没有处理
+            # 此处保守处理: -10 + 强制不进入 S 级(≤ 84)
+            if quant_score >= 95:
+                penalty = 10
+                total_score -= penalty
+                # 强制压在 A 级以下,防止"30 个模型一致看好"的过度共识冲到 S 级
+                total_score = min(total_score, 84.0)
+                logger.info(f"{stock_code} 量化分极端共识({quant_score:.0f}>=95) 反指标处理: -{penalty} 分 + 限 ≤ 84")
+                score_adjustments.append(f"量化分极端({quant_score:.0f}): -{penalty} + 限 A 级以下(过度共识反指标)")
+
             total_score = self._clamp_score(total_score)
 
             # 一票否决：风险标记，降低评分（v8.0: 不淘汰，仅扣分，含上限保护）
@@ -589,6 +613,13 @@ class OpportunityScorer:
                     rsi_strong_bonus = 3  # v22提高: 2→3
                     v54_total_bonus += rsi_strong_bonus
                     logger.info(f"{stock_code} RSI强势区奖励: RSI={current_rsi:.1f}在60-80, 加{rsi_strong_bonus}分")
+                elif 50 < current_rsi < 60:
+                    # v23新增: RSI 50-60 涨停后回落区惩罚 (实测 36.7%wr/-1.37%)
+                    # 该区间多为涨停次日位置, 大概率回落, 之前未扣分等于鼓励
+                    rsi_pullback_pen = 4
+                    v54_total_penalty += rsi_pullback_pen
+                    logger.info(f"{stock_code} RSI回落区惩罚: RSI={current_rsi:.1f}在50-60, 扣{rsi_pullback_pen}分")
+                    score_adjustments.append(f"RSI回落区: RSI={current_rsi:.1f}在50-60, 扣{rsi_pullback_pen}分")
                 elif 40 <= current_rsi < 50:
                     # v22新增: RSI黄金区奖励（真回测52.5%wr/+2.79%）
                     rsi_golden_bonus = 4
@@ -809,12 +840,16 @@ class OpportunityScorer:
                 total_score -= sector_hot_penalty
                 logger.info(f"{stock_code} 板块过热惩罚: sector_score={sector_score:.0f}>=95, 扣{sector_hot_penalty}分")
 
-            # v10优化: 板块死区惩罚（大幅降低）
-            if 60 <= sector_score < 75:
-                sector_dead_penalty = 10  # v19验证: sd=10比sd=5的B+质量更高(57.1%>56.1%)
-                total_score -= sector_dead_penalty
-                logger.info(f"{stock_code} 板块死区惩罚: sector_score={sector_score:.0f}在60-75区间, 扣{sector_dead_penalty}分")
-                score_adjustments.append(f"板块死区惩罚: sector_score={sector_score:.0f}在60-75区间, 扣{sector_dead_penalty}分")
+            # v10优化 + v23: 板块死区 U 型连续函数 (消除 60/75 边界跳变)
+            # peak penalty 在死区中心 67.5(原 flat -10), 边界 60/75 处自然为 0
+            # 之前 sector=59 不扣分而 sector=60 突然扣 10 分,违反单调性
+            if 60 <= sector_score <= 75:
+                distance = abs(sector_score - 67.5) / 7.5
+                sector_dead_penalty = round(10 * (1 - distance))
+                if sector_dead_penalty > 0:
+                    total_score -= sector_dead_penalty
+                    logger.info(f"{stock_code} 板块死区惩罚(U型): sector_score={sector_score:.0f}, 扣{sector_dead_penalty}分")
+                    score_adjustments.append(f"板块死区惩罚: sector_score={sector_score:.0f}, 扣{sector_dead_penalty}分")
 
             # v21移除: 技术面虚高惩罚 (真回测tech>=80: 41.2%wr, 不算差)
             tech_score = result.get('dimension_scores', {}).get('technical', 50)
@@ -832,6 +867,20 @@ class OpportunityScorer:
 
             # v21: 总分clamp到0-100
             total_score = max(0, min(100, total_score))
+
+            # v23+ P0-2: [82, 85) 单调性硬约束
+            # 实测此区间胜率 51.5%,反低于 [80, 82) 的 58.6%。根因:基础分弱但靠单点
+            # 爆点(如涨停 +10 + 趋势确认 +12)冲入 82+。此规则强制要求多维共振才能进入
+            # 修复后预期 [82, 85) 段质量回升,A 级整体可信度恢复单调
+            try:
+                _base_seven = float(base_seven_dim_score)
+            except Exception:
+                _base_seven = total_score
+            if _base_seven < 70.0 and 82.0 <= total_score < 85.0:
+                _capped = 81.5
+                logger.info(f"{stock_code} 单调性硬约束: 基础七维分{_base_seven:.1f}<70 但加分后冲到{total_score:.1f}, 压回{_capped} (防止单点爆冲 A 级)")
+                score_adjustments.append(f"单调性约束: 基础分{_base_seven:.1f}<70, 总分压回{_capped} (避免单点爆冲)")
+                total_score = _capped
 
             result['total_score'] = round(total_score, 2)
             result['rating'] = self._get_rating(total_score)
@@ -910,6 +959,9 @@ class OpportunityScorer:
                 pass  # 缓存模块不可用, 降级到原始方式
 
             # 2. 降级: 使用MultiSourceDataFetcher
+            if not self._data_fetcher:
+                # 惰性初始化：避免程序启动阶段卡住；只有确实需要降级取数时才初始化
+                self._init_data_fetcher()
             if not self._data_fetcher:
                 logger.warning(f"{stock_code}: 数据获取器未初始化，无法获取历史数据")
                 return None
@@ -1103,6 +1155,11 @@ class OpportunityScorer:
 
     @staticmethod
     def _apply_headroom_bonus(base_score: float, bonus_points: float) -> float:
+        """v21: 分段线性 — 90 以下加分完全保留, 90 以上做缓收敛防止冲过100。
+
+        旧公式 base + bonus*(100-base)/100 在 base=70 时仅保留 30% 加分,
+        导致中段优质股永远突破不了 90 分。新公式让中段票分数能正确反映质量。
+        """
         base = OpportunityScorer._clamp_score(base_score)
         try:
             bonus = float(bonus_points)
@@ -1110,7 +1167,11 @@ class OpportunityScorer:
             bonus = 0.0
         if bonus <= 0:
             return base
-        return base + bonus * (100.0 - base) / 100.0
+        candidate = base + bonus
+        if candidate <= 90.0:
+            return candidate  # 完全线性: bonus 100% 落地
+        # 超过 90 后, 用 0.6 系数缓收敛, 避免冲到 100
+        return min(100.0, 90.0 + (candidate - 90.0) * 0.6)
 
     def _score_quantitative_models(self, stock_code: str,
                                    historical_data: Optional[pd.DataFrame]) -> Tuple[float, Dict]:

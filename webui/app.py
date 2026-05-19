@@ -4,7 +4,11 @@ import numpy as np
 import json
 import plotly.graph_objects as go
 import plotly.utils
-from flask import Flask, render_template, request, jsonify
+import re
+import uuid
+from html import unescape
+from pathlib import Path
+from flask import Flask, render_template, request, jsonify, send_from_directory, abort
 from flask_cors import CORS
 import sys
 import warnings
@@ -14,6 +18,7 @@ import time
 import random
 import math
 import urllib.request
+import urllib.parse
 
 warnings.filterwarnings('ignore')
 
@@ -30,6 +35,43 @@ except ImportError:
 
 app = Flask(__name__)
 CORS(app)
+
+# === Pattern Search ===
+from analysis.pattern_matcher import (
+    TARGET_LENGTH as PATTERN_TARGET_LENGTH,
+    comparison_window as pattern_comparison_window,
+    search_similar as pattern_search_similar,
+)
+from analysis.pattern_store import PatternStore
+
+PATTERN_DB_PATH = Path(__file__).resolve().parent.parent / 'data' / 'pattern_fingerprints.db'
+_pattern_store_instance = None
+
+
+def _get_pattern_store():
+    global _pattern_store_instance
+    if _pattern_store_instance is None:
+        _pattern_store_instance = PatternStore(PATTERN_DB_PATH)
+        _pattern_store_instance.init_schema()
+    return _pattern_store_instance
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RESULTS_DIR = PROJECT_ROOT / 'results'
+REPORT_DIRS = {
+    'results': RESULTS_DIR,
+    'reports': PROJECT_ROOT / 'reports',
+    'integrated_results': PROJECT_ROOT / 'integrated_results',
+}
+PRIMARY_OPPORTUNITY_REPORT_RE = re.compile(r'^opportunity_top10_\d{8}_\d{6}\.md$')
+
+analysis_jobs = {}
+analysis_jobs_lock = threading.Lock()
+market_intelligence_cache = {
+    'ts': 0,
+    'payload': None,
+}
+MARKET_INTELLIGENCE_TTL = 180
 
 # Global variables to store models
 tokenizer = None
@@ -89,15 +131,22 @@ ALL_REAL_CODES = []
 for k, v in REAL_CODES_MAP.items():
     ALL_REAL_CODES.extend(v)
 
+REAL_INDEX_CODES = {
+    "sh000001": "上证指数",
+    "sz399001": "深证成指",
+    "sh000300": "沪深300",
+    "sz399006": "创业板指",
+}
+
 # Market Global State
 market_state = {
     "stocks": [],
-    "index": 3824.56,
-    "index_change": 2.15,
+    "indices": {},
     "trades": [],
     "news": [],
     "sectors": SECTORS,
     "last_update": time.time(),
+    "index_last_update": None,
     "real_data_cache": {} # code -> {price, change, name}
 }
 
@@ -153,6 +202,8 @@ def init_market():
     market_state["stocks"] = []
     market_state["news"] = list(INITIAL_NEWS)
     market_state["sectors"] = SECTORS
+    market_state["indices"] = {}
+    market_state["index_last_update"] = None
     
     for sector in SECTORS:
         real_codes = REAL_CODES_MAP.get(sector["key"], [])
@@ -201,17 +252,71 @@ def init_market():
             
     print(f"Market initialized with {len(market_state['stocks'])} stocks.")
 
+
+def _parse_tencent_quote_line(line):
+    if '="' not in line:
+        return None, None
+    parts = line.split('="', 1)
+    api_code = parts[0].strip().replace('v_', '')
+    fields = parts[1].strip().strip('"').split('~')
+    if len(fields) <= 4:
+        return api_code, None
+
+    name = fields[1] or api_code
+    price = _safe_float(fields[3], None)
+    prev_close = _safe_float(fields[4], None)
+    change = _safe_float(fields[31], None) if len(fields) > 31 else None
+    change_pct = _safe_float(fields[32], None) if len(fields) > 32 else None
+
+    if change_pct is None and price is not None and prev_close:
+        change_pct = (price - prev_close) / prev_close * 100
+    if change is None and price is not None and prev_close is not None:
+        change = price - prev_close
+
+    return api_code, {
+        "code": api_code,
+        "name": name,
+        "price": price,
+        "change": change,
+        "change_pct": change_pct,
+        "available": price is not None,
+        "source": "tencent",
+        "updated_at": _format_datetime(),
+    }
+
+
+def fetch_real_index_data():
+    """Fetch real index quotes. Never derive index values from monitored stocks."""
+    try:
+        url = f"http://qt.gtimg.cn/q={','.join(REAL_INDEX_CODES.keys())}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as f:
+            content = f.read().decode('gbk', errors='ignore')
+
+        indices = {}
+        for line in content.strip().split(';'):
+            api_code, quote = _parse_tencent_quote_line(line)
+            if api_code and quote and quote.get("available"):
+                quote["display_name"] = REAL_INDEX_CODES.get(api_code, quote["name"])
+                indices[api_code] = quote
+
+        if indices:
+            market_state["indices"] = indices
+            market_state["index_last_update"] = time.time()
+            return True
+    except Exception as e:
+        print(f"Error fetching real index data: {e}")
+    return False
+
+
 def fetch_real_market_data():
     try:
         url = f"http://qt.gtimg.cn/q={','.join(ALL_REAL_CODES)}"
-        req = urllib.request.Request(url)
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=5) as f:
             content = f.read().decode('gbk')
         
         lines = content.strip().split(';')
-        total_change = 0
-        count = 0
-        
         for line in lines:
             if '="' in line:
                 parts = line.split('="')
@@ -238,14 +343,7 @@ def fetch_real_market_data():
                         "change": change_pct,
                         "volume": volume
                     }
-                    
-                    total_change += change_pct
-                    count += 1
-        
-        if count > 0:
-            avg_change = total_change / count
-            market_state["index_change"] = avg_change
-            market_state["index"] = 3800 * (1 + avg_change / 100)
+                    market_state["last_update"] = time.time()
             
     except Exception as e:
         print(f"Error fetching real data: {e}")
@@ -255,6 +353,7 @@ def monitor_loop():
     while True:
         try:
             # 1. Fetch Real Data
+            fetch_real_index_data()
             fetch_real_market_data()
             
             # 2. Update Stocks
@@ -600,9 +699,1108 @@ def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, his
     return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
 
+def _safe_int(value, default, minimum=None, maximum=None):
+    """Parse an integer with optional bounds."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _safe_float(value, default=0.0):
+    try:
+        if value in (None, '', '—', 'N/A'):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_datetime(ts=None):
+    if ts is None:
+        dt = datetime.datetime.now()
+    elif isinstance(ts, (int, float)):
+        dt = datetime.datetime.fromtimestamp(ts)
+    elif isinstance(ts, datetime.datetime):
+        dt = ts
+    else:
+        return str(ts)
+    return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _strip_markup(value):
+    text = unescape(str(value or ''))
+    text = re.sub(r'<[^>]+>', '', text)
+    text = text.replace('**', '').replace('&nbsp;', ' ')
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+def _truncate_text(value, limit=180):
+    text = _strip_markup(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1].rstrip() + '…'
+
+
+def _request_json(url, headers=None, timeout=5):
+    last_exc = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers=headers or {
+                    'User-Agent': 'Mozilla/5.0',
+                    'Accept': 'application/json,text/plain,*/*',
+                },
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return json.loads(response.read().decode('utf-8'))
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(0.2 * (attempt + 1))
+    raise last_exc
+
+
+def _fetch_jinshi_flash(limit=12):
+    """Fetch Jinshi flash headlines for homepage macro tape."""
+    url = 'https://flash-api.jin10.com/get_flash_list?channel=-8200&vip=1'
+    payload = _request_json(
+        url,
+        headers={
+            'User-Agent': (
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+            ),
+            'Accept': 'application/json,text/plain,*/*',
+            'Referer': 'https://www.jin10.com/',
+            'x-app-id': 'SO1EJGmNgCtmpcPF',
+            'x-version': '1.0.0',
+        },
+        timeout=4,
+    )
+    rows = payload.get('data') if isinstance(payload, dict) else []
+    items = []
+    for row in rows or []:
+        data = row.get('data') or {}
+        title = data.get('title') or data.get('vip_title') or ''
+        content = data.get('content') or ''
+        text = _strip_markup(title or content)
+        if not text:
+            continue
+        source = _strip_markup(data.get('source') or '')
+        link = data.get('source_link') or data.get('link') or ''
+        items.append({
+            'id': row.get('id'),
+            'time': row.get('time'),
+            'title': _truncate_text(text, 150),
+            'source': source or '金十数据',
+            'important': bool(row.get('important')),
+            'url': link,
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _eastmoney_money_text(value):
+    number = _safe_float(value, 0.0)
+    if abs(number) >= 100000000:
+        return f"{number / 100000000:.2f}亿"
+    if abs(number) >= 10000:
+        return f"{number / 10000:.1f}万"
+    return f"{number:.0f}"
+
+
+def _fetch_eastmoney_clist(fs, fid='f3', limit=10):
+    """Fetch Eastmoney board/stock ranking rows for display only, not K-line/OHLC sourcing."""
+    params = {
+        'pn': '1',
+        'pz': str(limit),
+        'po': '1',
+        'np': '1',
+        'fltt': '2',
+        'invt': '2',
+        'fid': fid,
+        'fs': fs,
+        'fields': 'f12,f14,f2,f3,f62',
+    }
+    url = 'https://push2.eastmoney.com/api/qt/clist/get?' + urllib.parse.urlencode(params)
+    payload = _request_json(
+        url,
+        headers={
+            'User-Agent': (
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+            ),
+            'Accept': 'application/json,text/plain,*/*',
+            'Referer': 'https://quote.eastmoney.com/',
+        },
+        timeout=4,
+    )
+    rows = ((payload or {}).get('data') or {}).get('diff') or []
+    items = []
+    for row in rows:
+        code = str(row.get('f12') or '').strip()
+        name = str(row.get('f14') or '').strip()
+        if not code or not name:
+            continue
+        money_flow = _safe_float(row.get('f62'), 0.0)
+        items.append({
+            'code': code,
+            'name': name,
+            'price': _safe_float(row.get('f2'), None),
+            'change_pct': round(_safe_float(row.get('f3'), 0.0), 2),
+            'main_net_inflow': money_flow,
+            'main_net_inflow_text': _eastmoney_money_text(money_flow),
+            'source': 'eastmoney',
+        })
+    return items
+
+
+def _load_market_intelligence():
+    now = time.time()
+    cached = market_intelligence_cache.get('payload')
+    if cached and now - market_intelligence_cache.get('ts', 0) < MARKET_INTELLIGENCE_TTL:
+        return cached
+
+    payload = {
+        'updated_at': _format_datetime(now),
+        'jinshi': [],
+        'eastmoney': {
+            'industry_boards': [],
+            'concept_boards': [],
+            'money_boards': [],
+            'hot_stocks': [],
+            'updated_at': _format_datetime(now),
+        },
+        'errors': {},
+    }
+
+    try:
+        payload['jinshi'] = _fetch_jinshi_flash(limit=12)
+    except Exception as exc:
+        payload['errors']['jinshi'] = str(exc)
+
+    try:
+        payload['eastmoney']['industry_boards'] = _fetch_eastmoney_clist(
+            'm:90+t:2', fid='f3', limit=8
+        )
+    except Exception as exc:
+        payload['errors']['eastmoney_industry'] = str(exc)
+
+    try:
+        payload['eastmoney']['concept_boards'] = _fetch_eastmoney_clist(
+            'm:90+t:3', fid='f3', limit=8
+        )
+    except Exception as exc:
+        payload['errors']['eastmoney_concept'] = str(exc)
+
+    try:
+        payload['eastmoney']['money_boards'] = _fetch_eastmoney_clist(
+            'm:90+t:2', fid='f62', limit=8
+        )
+    except Exception as exc:
+        payload['errors']['eastmoney_money_boards'] = str(exc)
+
+    try:
+        payload['eastmoney']['hot_stocks'] = _fetch_eastmoney_clist(
+            'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23', fid='f62', limit=12
+        )
+    except Exception as exc:
+        payload['errors']['eastmoney_hot_stocks'] = str(exc)
+
+    market_intelligence_cache['payload'] = payload
+    market_intelligence_cache['ts'] = now
+    return payload
+
+
+def _normalize_stock_codes(raw_codes):
+    if raw_codes is None:
+        return []
+    if isinstance(raw_codes, list):
+        candidates = raw_codes
+    else:
+        candidates = re.split(r'[\s,，;；|/]+', str(raw_codes))
+
+    normalized = []
+    seen = set()
+    for item in candidates:
+        token = str(item or '').strip().upper()
+        if not token:
+            continue
+        if token.startswith(('SH', 'SZ', 'BJ')) and len(token) >= 8:
+            token = token[2:]
+        if token.endswith(('.SH', '.SZ', '.BJ')):
+            token = token.split('.')[0]
+        match = re.search(r'\d{6}', token)
+        if not match:
+            continue
+        code = match.group(0)
+        if code not in seen:
+            normalized.append(code)
+            seen.add(code)
+    return normalized
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if pd.isna(value) if not isinstance(value, (dict, list, tuple, set, str, bytes)) else False:
+        return None
+    return value
+
+
+def _latest_files(directory, pattern, limit=10):
+    if not directory.exists():
+        return []
+    files = [path for path in directory.glob(pattern) if path.is_file()]
+    return sorted(files, key=lambda item: item.stat().st_mtime, reverse=True)[:limit]
+
+
+def _latest_primary_opportunity_reports(limit=1):
+    """Return dashboard-ready Top榜 reports, excluding source-specific long-form files."""
+    candidates = _latest_files(RESULTS_DIR, 'opportunity_top10_*.md', limit=80)
+    reports = [
+        path for path in candidates
+        if PRIMARY_OPPORTUNITY_REPORT_RE.match(path.name)
+    ]
+    return reports[:limit]
+
+
+def _report_url(path):
+    if not path:
+        return None
+    report_path = Path(path)
+    if not report_path.is_absolute():
+        report_path = PROJECT_ROOT / report_path
+    try:
+        resolved = report_path.resolve()
+    except OSError:
+        return None
+
+    for key, directory in REPORT_DIRS.items():
+        try:
+            relative = resolved.relative_to(directory.resolve())
+            return f"/analysis-reports/{key}/{relative.as_posix()}"
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_section(detail, label, limit=180):
+    match = re.search(rf'【{re.escape(label)}】([^【]+)', detail)
+    if not match:
+        return ''
+    return _truncate_text(match.group(1), limit)
+
+
+QUANT_MODEL_LIBRARY = {
+    '均衡双均线': {
+        'category': '趋势',
+        'focus': '中短均线共振',
+        'description': '用快慢均线判断趋势方向，适合过滤刚形成多头排列的标的。',
+    },
+    '多重突破': {
+        'category': '突破',
+        'focus': '价格突破确认',
+        'description': '同时观察关键高点、平台压力和短周期区间突破，强调确认度。',
+    },
+    '量能突破': {
+        'category': '量价',
+        'focus': '放量有效性',
+        'description': '关注成交量相对近期均量的放大，判断突破是否有资金承接。',
+    },
+    '海龟交易': {
+        'category': '趋势',
+        'focus': '通道突破',
+        'description': '以通道高低点识别趋势启动，偏向捕捉强势延续行情。',
+    },
+    '机器学习RF': {
+        'category': '机器学习',
+        'focus': '多因子非线性',
+        'description': '随机森林模型融合技术、量价、位置等特征，输出概率型信号。',
+    },
+    '趋势回踩': {
+        'category': '低吸',
+        'focus': '强趋势回落',
+        'description': '寻找上升趋势中的缩量回踩和重新转强位置。',
+    },
+    '资金趋势': {
+        'category': '资金',
+        'focus': '资金连续性',
+        'description': '跟踪主力资金净流入和连续性，识别资金推动型机会。',
+    },
+    '均线共振': {
+        'category': '趋势',
+        'focus': '均线簇排列',
+        'description': '多周期均线方向一致时提高趋势得分。',
+    },
+    '统计量化': {
+        'category': '统计',
+        'focus': '历史分布偏离',
+        'description': '基于收益、波动和位置分布判断当前价格状态。',
+    },
+}
+
+
+def _extract_quant_models(quant_text):
+    models = []
+    text = _strip_markup(quant_text)
+    match = re.search(r'模型\[(.*?)\]', text)
+    if match:
+        models = [item.strip() for item in re.split(r'[,，、/]+', match.group(1)) if item.strip()]
+    return models
+
+
+def _build_quant_model_summary(items):
+    model_counts = {}
+    model_examples = {}
+    for item in items:
+        for model_name in item.get('quant_models', []):
+            model_counts[model_name] = model_counts.get(model_name, 0) + 1
+            model_examples.setdefault(model_name, []).append({
+                'code': item.get('code'),
+                'name': item.get('name'),
+                'score': item.get('score'),
+            })
+
+    summary = []
+    for model_name, count in sorted(model_counts.items(), key=lambda pair: pair[1], reverse=True):
+        meta = QUANT_MODEL_LIBRARY.get(model_name, {})
+        summary.append({
+            'name': model_name,
+            'count': count,
+            'category': meta.get('category', '量化'),
+            'focus': meta.get('focus', '信号确认'),
+            'description': meta.get('description', '来自当前机会挖掘报告的触发模型。'),
+            'examples': model_examples.get(model_name, [])[:4],
+        })
+    return summary
+
+
+def _parse_opportunity_report(path):
+    try:
+        content = path.read_text(encoding='utf-8', errors='ignore')
+    except OSError:
+        return {
+            'file': path.name,
+            'path': str(path),
+            'url': _report_url(path),
+            'updated_at': _format_datetime(path.stat().st_mtime),
+            'market_env': '',
+            'items': [],
+        }
+
+    market_env = ''
+    env_match = re.search(r'>\s*\*\*市场环境\*\*:\s*(.+)', content)
+    if env_match:
+        market_env = _strip_markup(env_match.group(1))
+
+    row_pattern = re.compile(
+        r'<tr>\s*'
+        r'<td[^>]*>\s*(\d+)\s*</td>\s*'
+        r'<td[^>]*>\s*([0-9]{6})\s*</td>\s*'
+        r'<td[^>]*>\s*(.*?)\s*</td>\s*'
+        r'<td[^>]*>\s*([0-9.]+)\s*</td>\s*'
+        r'<td[^>]*>\s*(.*?)\s*</td>\s*'
+        r'</tr>',
+        re.S,
+    )
+
+    items = []
+    for row in row_pattern.finditer(content):
+        detail = _strip_markup(row.group(5))
+        overview = _extract_section(detail, '概览', 120)
+        rating_match = re.search(r'评级\s*([A-Z+]+)', overview)
+        recommendation_match = re.search(r'建议[:：]\s*([^；]+)', overview)
+        risk_match = re.search(r'追高风险:\s*([^ ]+\s*[^ ]*\([^)]+\))', detail)
+        score = _safe_float(row.group(4), 0.0)
+        quant = _extract_section(detail, '量化', 160)
+        quant_models = _extract_quant_models(quant)
+        stock_code = row.group(2)
+        item = {
+            'rank': int(row.group(1)),
+            'code': stock_code,
+            'name': _strip_markup(row.group(3)),
+            'score': round(score, 2),
+            'rating': rating_match.group(1) if rating_match else '',
+            'recommendation': _truncate_text(recommendation_match.group(1), 32) if recommendation_match else '',
+            'change': _extract_section(detail, '涨幅', 110),
+            'sector': _extract_section(detail, '板块', 100),
+            'quant': quant,
+            'quant_models': quant_models,
+            'technical': _extract_section(detail, '技术', 100),
+            'fundamental': _extract_section(detail, '基本面', 100),
+            'sentiment': _extract_section(detail, '情绪资金', 120),
+            'news': _extract_section(detail, '消息', 110),
+            'reason': _extract_section(detail, '入选原因', 180),
+            'latest_news': _extract_section(detail, '最新动态', 180),
+            'risk': _truncate_text(risk_match.group(1), 60) if risk_match else _extract_section(detail, '高级', 100),
+            'has_local_kline': bool(_local_kline_candidates(stock_code, 'daily')),
+        }
+        items.append(item)
+
+    return {
+        'file': path.name,
+        'path': str(path),
+        'url': _report_url(path),
+        'updated_at': _format_datetime(path.stat().st_mtime),
+        'market_env': market_env,
+        'items': items,
+    }
+
+
+def _load_latest_opportunities():
+    reports = _latest_primary_opportunity_reports(limit=1)
+    if not reports:
+        return {
+            'latest_report': None,
+            'market_env': '暂无机会挖掘报告',
+            'items': [],
+            'quant_models': [],
+            'stats': {
+                'total': 0,
+                'strong_count': 0,
+                'average_score': 0,
+                'top_score': 0,
+            },
+        }
+
+    parsed = _parse_opportunity_report(reports[0])
+    items = parsed['items']
+    scores = [item['score'] for item in items]
+    strong_count = len([item for item in items if item['score'] >= 80])
+    return {
+        'latest_report': {
+            'file': parsed['file'],
+            'url': parsed['url'],
+            'updated_at': parsed['updated_at'],
+        },
+        'market_env': parsed['market_env'],
+        'items': items,
+        'quant_models': _build_quant_model_summary(items),
+        'stats': {
+            'total': len(items),
+            'strong_count': strong_count,
+            'average_score': round(sum(scores) / len(scores), 2) if scores else 0,
+            'top_score': round(max(scores), 2) if scores else 0,
+        },
+    }
+
+
+def _build_market_dashboard():
+    stocks = market_state.get('stocks', [])
+    real_stocks = [stock for stock in stocks if stock.get('real_api_code')]
+    top_movers = sorted(
+        real_stocks,
+        key=lambda stock: _safe_float(stock.get('change'), 0.0),
+        reverse=True,
+    )[:8]
+
+    sector_rows = []
+    for sector in market_state.get('sectors', []):
+        sector_stocks = [
+            stock for stock in stocks
+            if stock.get('sectorId') == sector.get('id') and stock.get('real_api_code')
+        ]
+        changes = [_safe_float(stock.get('change'), 0.0) for stock in sector_stocks]
+        avg_change = round(sum(changes) / len(changes), 2) if changes else 0.0
+        leader = max(sector_stocks, key=lambda stock: _safe_float(stock.get('change'), 0.0), default=None)
+        sector_rows.append({
+            'name': sector.get('name'),
+            'key': sector.get('key'),
+            'color': sector.get('color'),
+            'avg_change': avg_change,
+            'monitored_count': len(sector_stocks),
+            'is_hot': bool(sector.get('hot')),
+            'leader': {
+                'code': leader.get('code'),
+                'name': leader.get('name'),
+                'change': round(_safe_float(leader.get('change'), 0.0), 2),
+            } if leader else None,
+        })
+
+    index_last_update = market_state.get("index_last_update")
+    index_is_fresh = bool(index_last_update and (time.time() - index_last_update <= 600))
+    raw_indices = market_state.get("indices", {}) if index_is_fresh else {}
+    indices = []
+    for code, fallback_name in REAL_INDEX_CODES.items():
+        quote = raw_indices.get(code)
+        if quote:
+            indices.append({
+                "code": code,
+                "name": quote.get("display_name") or fallback_name,
+                "price": round(_safe_float(quote.get("price"), 0.0), 2),
+                "change": round(_safe_float(quote.get("change"), 0.0), 2),
+                "change_pct": round(_safe_float(quote.get("change_pct"), 0.0), 2),
+                "available": True,
+                "source": quote.get("source", "tencent"),
+                "updated_at": quote.get("updated_at"),
+            })
+        else:
+            indices.append({
+                "code": code,
+                "name": fallback_name,
+                "price": None,
+                "change": None,
+                "change_pct": None,
+                "available": False,
+                "source": "tencent",
+                "updated_at": None,
+            })
+
+    primary_index = next((item for item in indices if item["code"] == "sh000001"), indices[0] if indices else None)
+
+    return {
+        'index': primary_index.get("price") if primary_index else None,
+        'index_change': primary_index.get("change_pct") if primary_index else None,
+        'primary_index': primary_index,
+        'indices': indices,
+        'index_available': bool(primary_index and primary_index.get("available")),
+        'index_last_update': _format_datetime(index_last_update) if index_last_update else None,
+        'total_particles': len(stocks),
+        'monitored_count': len(real_stocks),
+        'limit_up_count': len([stock for stock in real_stocks if stock.get('isLimitUp')]),
+        'last_update': _format_datetime(market_state.get('last_update', time.time())),
+        'top_movers': [
+            {
+                'code': stock.get('code'),
+                'name': stock.get('name'),
+                'price': round(_safe_float(stock.get('price'), 0.0), 2),
+                'change': round(_safe_float(stock.get('change'), 0.0), 2),
+                'sector': SECTORS[stock.get('sectorId', 0)]['name'] if stock.get('sectorId') is not None else '',
+            }
+            for stock in top_movers
+        ],
+        'sectors': sorted(sector_rows, key=lambda row: row['avg_change'], reverse=True),
+        'news': market_state.get('news', [])[:8],
+        'intelligence': _load_market_intelligence(),
+    }
+
+
+def _sina_symbol_for_code(stock_code):
+    code = str(stock_code or '').strip().zfill(6)
+    if code.startswith(('43', '83', '87', '92')):
+        return f'bj{code}'
+    if code.startswith(('6', '9')):
+        return f'sh{code}'
+    return f'sz{code}'
+
+
+def _period_to_sina_scale(period):
+    period_map = {
+        '1m': '1',
+        '5m': '5',
+        '5': '5',
+        '15m': '15',
+        '30m': '30',
+        '60m': '60',
+        '1h': '60',
+        'daily': '240',
+        '1d': '240',
+        'day': '240',
+    }
+    return period_map.get(str(period or 'daily'), '240')
+
+
+def _local_kline_candidates(stock_code, period):
+    data_dir = PROJECT_ROOT / 'data'
+    if not data_dir.exists():
+        return []
+    prefixes = []
+    if str(period) in ('5m', '5'):
+        prefixes.extend(['5m', '5min'])
+    prefixes.extend(['1d', 'daily', 'day'])
+    patterns = [f'{prefix}_{stock_code}.*' for prefix in prefixes]
+    candidates = []
+    for pattern in patterns:
+        candidates.extend(data_dir.glob(pattern))
+    return [path for path in candidates if path.suffix.lower() in ('.csv', '.feather')]
+
+
+def _frame_to_kline_records(df, limit):
+    if df is None or df.empty:
+        return []
+
+    work = df.copy()
+    timestamp_col = next(
+        (col for col in ['timestamps', 'timestamp', 'date', 'datetime', 'time'] if col in work.columns),
+        None,
+    )
+    if timestamp_col:
+        work[timestamp_col] = pd.to_datetime(work[timestamp_col], errors='coerce')
+        work = work.dropna(subset=[timestamp_col])
+        work = work.sort_values(timestamp_col)
+    else:
+        work['_timestamp'] = pd.RangeIndex(start=1, stop=len(work) + 1)
+        timestamp_col = '_timestamp'
+
+    for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors='coerce')
+    work = work.dropna(subset=[col for col in ['open', 'high', 'low', 'close'] if col in work.columns])
+
+    records = []
+    for _, row in work.tail(limit).iterrows():
+        timestamp = row[timestamp_col]
+        if isinstance(timestamp, pd.Timestamp):
+            date_text = timestamp.strftime('%Y-%m-%d')
+        else:
+            date_text = str(timestamp)
+        open_price = float(row['open'])
+        close_price = float(row['close'])
+        pct_chg = ((close_price - open_price) / open_price * 100) if open_price else 0.0
+        records.append({
+            'date': date_text,
+            'open': open_price,
+            'close': close_price,
+            'high': float(row['high']),
+            'low': float(row['low']),
+            'volume': float(row['volume']) if 'volume' in row and pd.notna(row.get('volume')) else 0.0,
+            'amount': float(row['amount']) if 'amount' in row and pd.notna(row.get('amount')) else 0.0,
+            'pct_chg': round(pct_chg, 2),
+        })
+    return records
+
+
+def _load_local_kline(stock_code, period, limit):
+    for path in _local_kline_candidates(stock_code, period):
+        try:
+            if path.suffix.lower() == '.csv':
+                df = pd.read_csv(path)
+            else:
+                df = pd.read_feather(path)
+            records = _frame_to_kline_records(df, limit)
+            if records:
+                return records, path.name
+        except Exception as exc:
+            print(f"Failed to load local kline {path}: {exc}")
+    return [], None
+
+
+def _parse_sina_klines(klines):
+    records = []
+    prev_close = None
+    for item in klines or []:
+        if not isinstance(item, dict):
+            continue
+        open_price = _safe_float(item.get('open'))
+        close_price = _safe_float(item.get('close'))
+        if open_price <= 0 or close_price <= 0:
+            continue
+        high_price = _safe_float(item.get('high'), max(open_price, close_price))
+        low_price = _safe_float(item.get('low'), min(open_price, close_price))
+        pct_chg = 0.0
+        if prev_close and prev_close > 0:
+            pct_chg = (close_price / prev_close - 1) * 100
+        records.append({
+            'date': str(item.get('day') or item.get('date') or ''),
+            'open': open_price,
+            'close': close_price,
+            'high': high_price,
+            'low': low_price,
+            'volume': _safe_float(item.get('volume')),
+            'amount': _safe_float(item.get('amount')),
+            'pct_chg': round(pct_chg, 2),
+        })
+        prev_close = close_price
+    return records
+
+
+def _fetch_sina_kline(stock_code, period, limit):
+    params = {
+        'symbol': _sina_symbol_for_code(stock_code),
+        'scale': _period_to_sina_scale(period),
+        'ma': 'no',
+        'datalen': str(limit),
+    }
+    url = (
+        'http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+        'CN_MarketData.getKLineData?' + urllib.parse.urlencode(params)
+    )
+    req = urllib.request.Request(
+        url,
+        headers={
+            'User-Agent': (
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+            ),
+            'Accept': 'application/json,text/plain,*/*',
+            'Referer': 'https://finance.sina.com.cn/',
+        },
+    )
+    with urllib.request.urlopen(req, timeout=8) as response:
+        payload = json.loads(response.read().decode('utf-8'))
+    records = _parse_sina_klines(payload if isinstance(payload, list) else [])
+    return records, ''
+
+
+def _get_stock_kline_payload(stock_code, period='daily', limit=120):
+    codes = _normalize_stock_codes([stock_code])
+    if not codes:
+        return None, 'Invalid stock code'
+    code = codes[0]
+    normalized_limit = _safe_int(limit, 120, minimum=30, maximum=500)
+    normalized_period = str(period or 'daily')
+
+    local_records, local_source = _load_local_kline(code, normalized_period, normalized_limit)
+    if local_records:
+        return {
+            'code': code,
+            'name': '',
+            'period': normalized_period,
+            'source': f'local:{local_source}',
+            'available': True,
+            'records': local_records,
+        }, None
+
+    try:
+        records, stock_name = _fetch_sina_kline(code, normalized_period, normalized_limit)
+        if records:
+            return {
+                'code': code,
+                'name': stock_name,
+                'period': normalized_period,
+                'source': 'sina',
+                'available': True,
+                'records': records,
+            }, None
+        return {
+            'code': code,
+            'name': '',
+            'period': normalized_period,
+            'source': 'sina',
+            'available': False,
+            'records': [],
+            'message': '暂无K线数据：本地没有该股票数据，Sina 行情接口未返回记录。',
+        }, None
+    except Exception as exc:
+        return {
+            'code': code,
+            'name': '',
+            'period': normalized_period,
+            'source': 'sina',
+            'available': False,
+            'records': [],
+            'message': '暂无K线数据：本地没有该股票数据，Sina 行情接口暂不可用。',
+            'detail': str(exc),
+        }, None
+
+
+def _load_batch_summary():
+    batch_results = _latest_files(RESULTS_DIR, 'batch_results_*.csv', limit=5)
+    batch_details = _latest_files(RESULTS_DIR, 'batch_details_*.json', limit=5)
+    batch_predictions = _latest_files(RESULTS_DIR, 'batch_prediction_*.csv', limit=8)
+
+    analysis_runs = []
+    for csv_path in batch_results:
+        rows = 0
+        top_score = 0
+        try:
+            df = pd.read_csv(csv_path)
+            rows = int(len(df))
+            if not df.empty:
+                score_col = next((col for col in ['综合评分', 'score', 'total_score'] if col in df.columns), None)
+                if score_col:
+                    top_score = round(float(pd.to_numeric(df[score_col], errors='coerce').max()), 2)
+        except Exception:
+            pass
+        analysis_runs.append({
+            'file': csv_path.name,
+            'updated_at': _format_datetime(csv_path.stat().st_mtime),
+            'rows': rows,
+            'top_score': top_score,
+            'url': _report_url(csv_path),
+        })
+
+    detail_runs = []
+    for json_path in batch_details:
+        summary = {}
+        try:
+            summary = json.loads(json_path.read_text(encoding='utf-8'))
+        except Exception:
+            summary = {}
+        detail_runs.append({
+            'file': json_path.name,
+            'updated_at': _format_datetime(json_path.stat().st_mtime),
+            'summary': summary,
+            'url': _report_url(json_path),
+        })
+
+    prediction_runs = []
+    for csv_path in batch_predictions:
+        rows = 0
+        try:
+            rows = int(len(pd.read_csv(csv_path)))
+        except Exception:
+            rows = 0
+        prediction_runs.append({
+            'file': csv_path.name,
+            'updated_at': _format_datetime(csv_path.stat().st_mtime),
+            'rows': rows,
+            'url': _report_url(csv_path),
+        })
+
+    return {
+        'analysis_runs': analysis_runs,
+        'detail_runs': detail_runs,
+        'prediction_runs': prediction_runs,
+        'analysis_count': len(batch_results),
+        'prediction_count': len(batch_predictions),
+    }
+
+
+def _load_report_history(limit=12):
+    patterns = [
+        ('机会挖掘HTML', RESULTS_DIR, 'opportunity_discovery_*.html'),
+        ('机会Top榜', RESULTS_DIR, 'opportunity_top10_*.md'),
+        ('个股分析报告', RESULTS_DIR, 'kronos_analysis_*.html'),
+        ('重大利好挖掘', PROJECT_ROOT / 'integrated_results', 'major_positive_news_*.html'),
+    ]
+    reports = []
+    for label, directory, pattern in patterns:
+        for path in _latest_files(directory, pattern, limit=limit):
+            reports.append({
+                'type': label,
+                'file': path.name,
+                'updated_at': _format_datetime(path.stat().st_mtime),
+                'url': _report_url(path),
+                'size_kb': round(path.stat().st_size / 1024, 1),
+            })
+
+    reports.sort(key=lambda item: item['updated_at'], reverse=True)
+    return reports[:limit]
+
+
+def _module_health():
+    modules = [
+        ('投资机会挖掘', 'scripts.run_opportunity_discovery', '热门股、多源候选、漏斗过滤、报告生成'),
+        ('异步批量分析', 'analysis.batch_processor', '批量采集、并发评分、结果汇总'),
+        ('机会评分器', 'analysis.opportunity_scorer', '量化、技术、情绪、板块、事件综合打分'),
+        ('专业个股分析', 'analysis.professional_stock_analyzer', '基本面、行业对比、风险过滤'),
+        ('资金情绪分析', 'analysis.investor_sentiment', '主力资金、龙虎榜、市场情绪、股吧情绪'),
+        ('Kronos预测模型', 'model', 'K线预测与多模型推理'),
+    ]
+    health = []
+    for name, module_name, scope in modules:
+        try:
+            __import__(module_name)
+            status = 'ready'
+        except Exception:
+            status = 'degraded'
+        health.append({
+            'name': name,
+            'module': module_name,
+            'scope': scope,
+            'status': status,
+        })
+    return health
+
+
+def _create_job(job_type, params):
+    job_id = uuid.uuid4().hex[:12]
+    job = {
+        'id': job_id,
+        'type': job_type,
+        'status': 'queued',
+        'created_at': datetime.datetime.now().isoformat(),
+        'started_at': None,
+        'finished_at': None,
+        'params': params,
+        'logs': ['任务已进入队列'],
+        'result': None,
+        'error': None,
+    }
+    with analysis_jobs_lock:
+        analysis_jobs[job_id] = job
+    return job
+
+
+def _update_job(job_id, **updates):
+    with analysis_jobs_lock:
+        job = analysis_jobs.get(job_id)
+        if not job:
+            return
+        job.update(_json_safe(updates))
+
+
+def _append_job_log(job_id, message):
+    with analysis_jobs_lock:
+        job = analysis_jobs.get(job_id)
+        if not job:
+            return
+        logs = job.setdefault('logs', [])
+        logs.append(f"{_format_datetime()} {str(message).strip()}")
+        if len(logs) > 120:
+            del logs[:-120]
+
+
+def _get_job_snapshot(job_id=None):
+    with analysis_jobs_lock:
+        if job_id:
+            job = analysis_jobs.get(job_id)
+            return _json_safe(job.copy()) if job else None
+        jobs = sorted(
+            [job.copy() for job in analysis_jobs.values()],
+            key=lambda item: item.get('created_at', ''),
+            reverse=True,
+        )
+        return _json_safe(jobs[:20])
+
+
+def _run_opportunity_job(job_id, params):
+    _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
+    _append_job_log(job_id, '开始执行投资机会挖掘')
+    try:
+        from scripts.run_opportunity_discovery import OpportunityDiscovery
+
+        discovery = OpportunityDiscovery(max_workers=params['workers'])
+        report_path = discovery.run(
+            limit=params['limit'],
+            test_codes=params.get('stock_codes') or None,
+            source=params['source'],
+        )
+        result = {
+            'report_path': str(report_path) if report_path else '',
+            'report_url': _report_url(report_path) if report_path else None,
+        }
+        _append_job_log(job_id, f"机会挖掘完成: {result['report_path'] or '未生成报告'}")
+        _update_job(
+            job_id,
+            status='finished',
+            finished_at=datetime.datetime.now().isoformat(),
+            result=result,
+        )
+    except Exception as exc:
+        _append_job_log(job_id, f'机会挖掘失败: {exc}')
+        _update_job(
+            job_id,
+            status='failed',
+            finished_at=datetime.datetime.now().isoformat(),
+            error=str(exc),
+        )
+
+
+def _run_batch_analysis_job(job_id, params):
+    _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
+    _append_job_log(job_id, '开始执行批量分析')
+    try:
+        import asyncio
+        from analysis.batch_processor import BatchProcessor
+
+        processor = BatchProcessor(
+            max_concurrent=params['max_concurrent'],
+            collection_timeout=params['collection_timeout'],
+            scoring_timeout=params['scoring_timeout'],
+            enable_progress_bar=False,
+        )
+        processor.set_progress_callback(lambda message: _append_job_log(job_id, message))
+
+        result_df, details, stats = asyncio.run(processor.process_batch(
+            params['stock_codes'],
+            data_types=params['data_types'],
+            filter_strategy=params['filter_strategy'],
+            skip_scoring=params['skip_scoring'],
+        ))
+
+        csv_path = None
+        json_path = None
+        if result_df is not None:
+            csv_path, json_path = processor.save_results(
+                result_df,
+                details,
+                output_dir=str(RESULTS_DIR),
+            )
+
+        result = {
+            'rows': int(len(result_df)) if result_df is not None else 0,
+            'statistics': stats.to_dict() if stats else {},
+            'csv_path': str(csv_path) if csv_path else '',
+            'json_path': str(json_path) if json_path else '',
+            'csv_url': _report_url(csv_path) if csv_path else None,
+            'json_url': _report_url(json_path) if json_path else None,
+        }
+        _append_job_log(job_id, f"批量分析完成，通过股票 {result['rows']} 只")
+        _update_job(
+            job_id,
+            status='finished',
+            finished_at=datetime.datetime.now().isoformat(),
+            result=_json_safe(result),
+        )
+    except Exception as exc:
+        _append_job_log(job_id, f'批量分析失败: {exc}')
+        _update_job(
+            job_id,
+            status='failed',
+            finished_at=datetime.datetime.now().isoformat(),
+            error=str(exc),
+        )
+
+
+def _run_pattern_refresh_job(job_id, params):
+    _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
+    _append_job_log(job_id, '开始刷新形态指纹库')
+    try:
+        from scripts.build_pattern_fingerprints import build_all
+
+        store = _get_pattern_store()
+
+        def log_cb(message):
+            _append_job_log(job_id, message)
+
+        result = build_all(
+            store,
+            limit=params.get('limit'),
+            max_workers=params.get('workers', 16),
+            progress_callback=log_cb,
+        )
+        _append_job_log(
+            job_id,
+            f"刷新完成: 总数 {result['total']} 成功 {result['succeeded']} 失败 {result['failed']}"
+        )
+        _update_job(
+            job_id,
+            status='finished',
+            finished_at=datetime.datetime.now().isoformat(),
+            result=result,
+        )
+    except Exception as exc:
+        _append_job_log(job_id, f'指纹刷新失败: {exc}')
+        _update_job(
+            job_id,
+            status='failed',
+            finished_at=datetime.datetime.now().isoformat(),
+            error=str(exc),
+        )
+
+
 @app.route('/')
 def index():
-    """Home page"""
+    """Stock analysis home page"""
+    return render_template('stock_analysis_home.html')
+
+
+@app.route('/prediction')
+def prediction_console():
+    """Kronos prediction console"""
     return render_template('index.html')
 
 
@@ -1028,10 +2226,298 @@ def get_model_status():
         })
 
 
+@app.route('/api/stock-dashboard')
+def get_stock_dashboard():
+    """Aggregate data for the stock analysis home page."""
+    opportunity = _load_latest_opportunities()
+    batch = _load_batch_summary()
+    dashboard = {
+        'generated_at': datetime.datetime.now().isoformat(),
+        'market': _build_market_dashboard(),
+        'opportunity': opportunity,
+        'batch': batch,
+        'reports': _load_report_history(),
+        'modules': _module_health(),
+        'model': {
+            'library_available': MODEL_AVAILABLE,
+            'loaded': predictor is not None,
+            'available_models': AVAILABLE_MODELS,
+        },
+        'jobs': _get_job_snapshot(),
+    }
+    return jsonify(_json_safe(dashboard))
+
+
+@app.route('/api/stock-kline/<stock_code>')
+def get_stock_kline(stock_code):
+    """Get K-line data for a stock from local data first, then Sina Finance."""
+    period = request.args.get('period', 'daily')
+    limit = request.args.get('limit', 120)
+    payload, error = _get_stock_kline_payload(stock_code, period=period, limit=limit)
+    if error:
+        return jsonify({'error': error}), 400
+    return jsonify({'success': True, 'data': _json_safe(payload)})
+
+
+@app.route('/api/opportunity-discovery/start', methods=['POST'])
+def start_opportunity_discovery():
+    """Start the existing investment opportunity discovery flow in the background."""
+    data = request.get_json(silent=True) or {}
+    source = str(data.get('source', 'multi')).strip()
+    if source not in ('multi', 'heat', 'moneyflow_dc'):
+        return jsonify({'error': 'Unsupported source, use multi / heat / moneyflow_dc'}), 400
+
+    stock_codes = _normalize_stock_codes(data.get('stock_codes'))
+    params = {
+        'limit': _safe_int(data.get('limit'), 80, minimum=5, maximum=500),
+        'workers': _safe_int(data.get('workers'), 8, minimum=1, maximum=32),
+        'source': source,
+        'stock_codes': stock_codes,
+    }
+    job = _create_job('opportunity_discovery', params)
+    thread = threading.Thread(
+        target=_run_opportunity_job,
+        args=(job['id'], params),
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({'success': True, 'job': _get_job_snapshot(job['id'])})
+
+
+@app.route('/api/batch-analysis/start', methods=['POST'])
+def start_batch_analysis():
+    """Start the existing batch analysis flow in the background."""
+    data = request.get_json(silent=True) or {}
+    stock_codes = _normalize_stock_codes(data.get('stock_codes'))
+    if not stock_codes:
+        return jsonify({'error': 'Please provide at least one 6-digit stock code'}), 400
+
+    requested_types = data.get('data_types') or ['comprehensive']
+    if isinstance(requested_types, str):
+        requested_types = re.split(r'[\s,，;；]+', requested_types)
+    allowed_types = {'comprehensive', 'fundamental', 'sentiment'}
+    data_types = [item for item in requested_types if item in allowed_types]
+    if not data_types:
+        data_types = ['comprehensive']
+
+    filter_strategy = str(data.get('filter_strategy', 'balanced')).strip() or 'balanced'
+    params = {
+        'stock_codes': stock_codes[:100],
+        'data_types': data_types,
+        'filter_strategy': filter_strategy,
+        'max_concurrent': _safe_int(data.get('max_concurrent'), 5, minimum=1, maximum=20),
+        'collection_timeout': _safe_int(data.get('collection_timeout'), 30, minimum=5, maximum=180),
+        'scoring_timeout': _safe_int(data.get('scoring_timeout'), 15, minimum=5, maximum=120),
+        'skip_scoring': bool(data.get('skip_scoring', False)),
+    }
+    job = _create_job('batch_analysis', params)
+    thread = threading.Thread(
+        target=_run_batch_analysis_job,
+        args=(job['id'], params),
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({'success': True, 'job': _get_job_snapshot(job['id'])})
+
+
+@app.route('/api/jobs')
+def list_jobs():
+    """List recent analysis jobs."""
+    return jsonify({'jobs': _get_job_snapshot()})
+
+
+@app.route('/api/pattern-search/status')
+def pattern_search_status():
+    store = _get_pattern_store()
+    status = store.current_status()
+
+    staleness_days = None
+    warning = None
+    if status.get('last_snapshot_date'):
+        try:
+            d = datetime.date.fromisoformat(status['last_snapshot_date'])
+            staleness_days = (datetime.date.today() - d).days
+            if staleness_days >= 3:
+                warning = f"指纹数据已陈旧 {staleness_days} 天，建议刷新"
+        except ValueError:
+            staleness_days = None
+    if not status.get('available'):
+        warning = warning or "指纹库尚未生成，请先点击刷新"
+
+    return jsonify({
+        'available': status.get('available', False),
+        'snapshot_date': status.get('last_snapshot_date'),
+        'total_stocks': status.get('total_stocks', 0),
+        'updated_at': status.get('last_finished_at'),
+        'last_status': status.get('last_status'),
+        'staleness_days': staleness_days,
+        'warning': warning,
+    })
+
+
+@app.route('/api/pattern-search/match', methods=['POST'])
+def pattern_search_match():
+    payload = request.get_json(silent=True) or {}
+    curve = payload.get('curve')
+    if not isinstance(curve, list) or not (5 <= len(curve) <= PATTERN_TARGET_LENGTH):
+        return jsonify({
+            'error': f'curve 必须为长度 5-{PATTERN_TARGET_LENGTH} 的数组'
+        }), 400
+    try:
+        curve = [float(x) for x in curve]
+    except (TypeError, ValueError):
+        return jsonify({'error': 'curve 元素必须为数字'}), 400
+
+    top_n = _safe_int(payload.get('top_n'), default=30, minimum=1, maximum=200)
+    window_days = _safe_int(
+        payload.get('window_days'),
+        default=PATTERN_TARGET_LENGTH,
+        minimum=5,
+        maximum=PATTERN_TARGET_LENGTH,
+    )
+    query_offset_days = _safe_int(
+        payload.get('query_offset_days'),
+        default=0,
+        minimum=0,
+        maximum=5,
+    )
+    query_curve = pattern_comparison_window(
+        curve,
+        max_days=window_days,
+        offset_days=query_offset_days,
+    )
+    if not query_curve:
+        return jsonify({'error': '当前相似天数/回推设置下曲线数据不足'}), 400
+
+    filters = payload.get('filters') or {}
+    markets = filters.get('market') or None
+    if markets and not isinstance(markets, list):
+        markets = [markets]
+    industry = filters.get('industry') or None
+    exclude_st = bool(filters.get('exclude_st', True))
+
+    store = _get_pattern_store()
+    started = time.time()
+    results = pattern_search_similar(
+        store, curve, top_n=top_n,
+        markets=markets, industry=industry, exclude_st=exclude_st,
+        window_days=window_days, query_offset_days=query_offset_days,
+    )
+    elapsed_ms = int((time.time() - started) * 1000)
+
+    status = store.current_status()
+    return jsonify({
+        'matches': results,
+        'query_curve': query_curve,
+        'window_days': len(query_curve),
+        'requested_window_days': window_days,
+        'query_offset_days': query_offset_days,
+        'snapshot_date': status.get('last_snapshot_date'),
+        'compute_ms': elapsed_ms,
+        'count': len(results),
+    })
+
+
+@app.route('/api/pattern-search/stocks')
+def pattern_search_stocks():
+    query = str(request.args.get('q') or '').strip()
+    limit = _safe_int(request.args.get('limit'), default=10, minimum=1, maximum=30)
+    if not query:
+        return jsonify({'stocks': [], 'count': 0})
+
+    store = _get_pattern_store()
+    stocks = store.search_stocks(query, limit=limit)
+    return jsonify({
+        'stocks': stocks,
+        'count': len(stocks),
+        'query': query,
+    })
+
+
+@app.route('/api/pattern-search/stock-curve/<stock_code>')
+def pattern_search_stock_curve(stock_code):
+    code = (stock_code or '').strip()
+    if not code:
+        return jsonify({'error': '股票代码不能为空'}), 400
+    store = _get_pattern_store()
+    fp = store.load_fingerprint(code)
+    if fp is None:
+        return jsonify({
+            'available': False,
+            'message': '该股不在指纹库中（可能停牌、未上市或库尚未刷新）',
+        }), 404
+    return jsonify({
+        'available': True,
+        'stock_code': fp.stock_code,
+        'stock_name': fp.stock_name,
+        'market': fp.market,
+        'industry': fp.industry,
+        'normalized_curve': fp.normalized_curve,
+        'mean_slope': fp.mean_slope,
+        'latest_close': fp.latest_close,
+        'latest_change_pct': fp.latest_change_pct,
+        'snapshot_date': fp.snapshot_date.isoformat(),
+    })
+
+
+@app.route('/api/pattern-search/refresh', methods=['POST'])
+def pattern_search_refresh():
+    payload = request.get_json(silent=True) or {}
+    limit_raw = payload.get('limit')
+    params = {
+        'limit': _safe_int(limit_raw, default=None, minimum=1, maximum=10000) if limit_raw else None,
+        'workers': _safe_int(payload.get('workers'), default=16, minimum=1, maximum=64),
+    }
+    job = _create_job('pattern_refresh', params)
+    thread = threading.Thread(
+        target=_run_pattern_refresh_job, args=(job['id'], params), daemon=True
+    )
+    thread.start()
+    return jsonify({'job_id': job['id'], 'status': 'queued'})
+
+
+@app.route('/api/jobs/<job_id>')
+def get_job(job_id):
+    """Get a single analysis job."""
+    job = _get_job_snapshot(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    return jsonify({'job': job})
+
+
+@app.route('/analysis-reports/<path:subpath>')
+def analysis_report(subpath):
+    """Serve generated local reports from approved report directories."""
+    safe_path = str(subpath).replace('\\', '/')
+    root_key, _, filename = safe_path.partition('/')
+    directory = REPORT_DIRS.get(root_key)
+    if not directory or not filename:
+        abort(404)
+    return send_from_directory(str(directory), filename)
+
+
+@app.route('/figures/<path:filename>')
+def figures(filename):
+    """Serve project figures used by the web UI."""
+    return send_from_directory(str(PROJECT_ROOT / 'figures'), filename)
+
+
+@app.route('/assets/<path:filename>')
+def assets(filename):
+    """Serve project assets used by the web UI."""
+    return send_from_directory(str(PROJECT_ROOT / 'assets'), filename)
+
+
+@app.route('/favicon.ico')
+def favicon():
+    """Serve application favicon."""
+    return send_from_directory(str(PROJECT_ROOT / 'assets'), 'kronos_ai_stock.ico')
+
+
 @app.route('/particles')
 def particles():
     """Render market particles visualization"""
-    return render_template('market_particles.html')
+    return send_from_directory(str(Path(__file__).resolve().parent / 'templates'), 'market_particles.html')
 
 
 @app.route('/api/snapshot')

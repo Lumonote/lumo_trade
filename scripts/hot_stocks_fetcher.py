@@ -14,6 +14,7 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 import logging
+from scripts.stock_filter_utils import filter_st_stocks, is_st_stock
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -125,6 +126,11 @@ class HotStocksFetcher:
         self._ensure_stock_name_cache()
         return HotStocksFetcher._stock_name_cache.get(c, c)
 
+    @staticmethod
+    def _is_st_stock(stock: Dict) -> bool:
+        """判断是否为ST股票（包含ST、*ST、＊ST、SST等，支持半角/全角星号）"""
+        return is_st_stock(stock)
+
     def get_hot_stocks(self, limit: int = 100, force_refresh: bool = False, heat_only: bool = False) -> List[Dict]:
         """
         获取热门股票TOP100
@@ -162,6 +168,10 @@ class HotStocksFetcher:
             all_sources = {str(s.get('source') or '').lower() for s in stocks_from_cache}
             if all_sources and all_sources.issubset(valid_sources) and 'fallback' not in all_sources:
                 logger.info(f"使用缓存数据（缓存时间: {cached_data['timestamp']}）")
+                # 过滤ST股票（缓存数据也需过滤）
+                stocks_from_cache, st_removed = filter_st_stocks(stocks_from_cache)
+                if st_removed:
+                    logger.info(f"过滤ST股票 {len(st_removed)} 只: {', '.join(st_removed)}")
                 return stocks_from_cache[:limit]
             else:
                 logger.info("检测到缓存来源非直接采集（可能为fallback/未知），忽略缓存，改为直接采集")
@@ -329,6 +339,11 @@ class HotStocksFetcher:
         stocks.sort(key=lambda x: (-_safe_popularity(x), _safe_rank(x)))
         for idx, stock in enumerate(stocks, start=1):
             stock['rank'] = idx
+
+        # 过滤ST股票
+        stocks, st_removed = filter_st_stocks(stocks)
+        if st_removed:
+            logger.info(f"过滤ST股票 {len(st_removed)} 只: {', '.join(st_removed)}")
 
         logger.info(f"✓ 热门股票获取完成: {len(stocks)} 只股票")
         return stocks[:limit]

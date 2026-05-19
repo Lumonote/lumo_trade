@@ -13,6 +13,7 @@
 import os
 import re
 import sys
+import argparse
 import glob
 import json
 import pandas as pd
@@ -649,12 +650,117 @@ def objective(result, min_n=5):
     return base_obj + b_bonus
 
 
+# ========== Walk-Forward CV + 多目标(P2) ==========
+
+def evaluate_walkforward(df, params, n_folds=5, threshold=78, top_n=10):
+    """时间序列 walk-forward CV: 按 report_date 切分,前 n-1 折训练,最后 1 折 holdout。
+
+    返回包含训练/holdout/一致性/样本外鲁棒性/A>B单调性的综合 dict,
+    向下兼容 objective() 所需的 wr/avg/n 等字段(取训练集值)。
+    """
+    if 'report_date' not in df.columns:
+        return evaluate(df, params, threshold=threshold, top_n=top_n)
+    dates = sorted(df['report_date'].dropna().unique())
+    if len(dates) < n_folds * 2:
+        return evaluate(df, params, threshold=threshold, top_n=top_n)
+
+    fold_size = max(1, len(dates) // n_folds)
+    train_dates = dates[: (n_folds - 1) * fold_size]
+    holdout_dates = dates[(n_folds - 1) * fold_size:]
+    train_df = df[df['report_date'].isin(train_dates)]
+    holdout_df = df[df['report_date'].isin(holdout_dates)]
+
+    train_res = evaluate(train_df, params, threshold=threshold, top_n=top_n)
+    holdout_res = evaluate(holdout_df, params, threshold=threshold, top_n=top_n)
+
+    # A vs B 单调性 (在训练集上,样本足够多)
+    df_t = train_df.copy()
+    df_t['adj_score'] = df_t.apply(lambda r: score_row(r, params), axis=1)
+    a_r5 = df_t[(df_t['adj_score'] >= 78) & (df_t['adj_score'] < 85)]['return_5d'].dropna()
+    b_r5 = df_t[(df_t['adj_score'] >= 70) & (df_t['adj_score'] < 78)]['return_5d'].dropna()
+    a_wr = (a_r5 > 0).mean() * 100 if len(a_r5) >= 5 else 0
+    b_wr = (b_r5 > 0).mean() * 100 if len(b_r5) >= 5 else 0
+    a_b_gap = a_wr - b_wr  # 正值 = A 比 B 强(单调性)
+
+    # 一致性: 训练 vs holdout 胜率差异 (越接近越好,过拟合时差异大)
+    train_wr = train_res.get('wr', 0)
+    holdout_wr = holdout_res.get('wr', 0)
+    if train_wr > 0:
+        consistency = max(0.0, 1.0 - abs(train_wr - holdout_wr) / max(1.0, train_wr))
+    else:
+        consistency = 0.0
+
+    # 鲁棒性: holdout 样本量是否足够 (n>=30 算可信)
+    holdout_n = holdout_res.get('n', 0)
+    robustness = min(1.0, holdout_n / 30.0)
+
+    out = dict(train_res)  # 兼容 objective() 现有字段
+    out.update({
+        'wf_train_wr': train_wr,
+        'wf_train_avg': train_res.get('avg', 0),
+        'wf_train_n': train_res.get('n', 0),
+        'wf_holdout_wr': holdout_wr,
+        'wf_holdout_avg': holdout_res.get('avg', 0),
+        'wf_holdout_n': holdout_n,
+        'wf_consistency': consistency,
+        'wf_robustness': robustness,
+        'wf_a_b_gap': a_b_gap,
+        'wf_train_dates': len(train_dates),
+        'wf_holdout_dates': len(holdout_dates),
+    })
+    return out
+
+
+def objective_multi(result, min_holdout_n=15):
+    """多目标: 优先样本外胜率 + 收益 + A>B 单调性 + 训练/holdout 一致性 + 样本鲁棒性。
+
+    与单目标 objective() 的核心区别:
+    - 主指标用 holdout(样本外)而非训练集 → 直接惩罚过拟合
+    - consistency 项明确惩罚 train vs holdout 差异过大
+    - a_b_gap 强制保证 A 级好于 B 级(单调性)
+    """
+    holdout_n = result.get('wf_holdout_n', result.get('n', 0))
+    if holdout_n < min_holdout_n:
+        return -999
+    holdout_wr = result.get('wf_holdout_wr', result.get('wr', 0))
+    holdout_avg = result.get('wf_holdout_avg', result.get('avg', 0))
+    a_b_gap = result.get('wf_a_b_gap', 0)
+    consistency = result.get('wf_consistency', 0.5)
+    robustness = result.get('wf_robustness', 0.5)
+
+    # 加权:
+    # 30% 样本外胜率 (绝对量级 0-100)
+    # 15% 样本外均收益 (放大 5 倍接近胜率量级)
+    # 20% A>B 单调性 (max(0, gap), 0-30 范围)
+    # 25% 一致性 (训练 holdout 接近度, 0-1 乘 25)
+    # 10% 鲁棒性 (holdout 样本量, 0-1 乘 10)
+    return (
+        0.30 * holdout_wr
+        + 0.15 * holdout_avg * 5.0
+        + 0.20 * max(0.0, a_b_gap)
+        + 25.0 * consistency
+        + 10.0 * robustness
+    )
+
+
+def evaluate_and_score(df, params, use_walkforward=False, threshold=78, top_n=10):
+    """评估 + 评分一体化, 根据 use_walkforward 切换 CV 方式。"""
+    if use_walkforward:
+        result = evaluate_walkforward(df, params, threshold=threshold, top_n=top_n)
+        return result, objective_multi(result)
+    result = evaluate(df, params, threshold=threshold, top_n=top_n)
+    return result, objective(result)
+
+
 # ========== 第四部分: 多轮优化 ==========
 
-def round1_single_scan(df, base_params):
-    """第1轮: 单参数扫描"""
+def round1_single_scan(df, base_params, use_walkforward=False):
+    """第1轮: 单参数扫描. use_walkforward=True 则用时间序列 CV 评分(防过拟合)。"""
     print("\n" + "=" * 60)
-    print("  第1轮: 单参数敏感度扫描")
+    if use_walkforward:
+        print("  第1轮: 单参数敏感度扫描 [walk-forward CV 模式]")
+    else:
+        print("  第1轮: 单参数敏感度扫描")
     print("=" * 60)
 
     # 每个参数的搜索范围
@@ -699,10 +805,17 @@ def round1_single_scan(df, base_params):
         'adj_high_pen': [5, 8, 10, 15],
     }
 
-    base_result = evaluate(df, base_params)
-    base_obj = objective(base_result)
-    print(f"  基线: wr={base_result['wr']:.1f}%, avg={base_result['avg']:+.2f}%, n={base_result['n']}, "
-          f"top_wr={base_result['top_wr']:.1f}%, obj={base_obj:.2f}")
+    base_result, base_obj = evaluate_and_score(df, base_params, use_walkforward=use_walkforward)
+    if use_walkforward:
+        print(f"  基线[walk-forward]: 训练wr={base_result.get('wf_train_wr', 0):.1f}%, "
+              f"holdout wr={base_result.get('wf_holdout_wr', 0):.1f}%, "
+              f"holdout n={base_result.get('wf_holdout_n', 0)}, "
+              f"A>B gap={base_result.get('wf_a_b_gap', 0):+.1f}pp, "
+              f"一致性={base_result.get('wf_consistency', 0):.2f}, "
+              f"obj={base_obj:.2f}")
+    else:
+        print(f"  基线: wr={base_result['wr']:.1f}%, avg={base_result['avg']:+.2f}%, n={base_result['n']}, "
+              f"top_wr={base_result['top_wr']:.1f}%, obj={base_obj:.2f}")
 
     improvements = {}
     best_params = dict(base_params)
@@ -716,8 +829,7 @@ def round1_single_scan(df, base_params):
                 continue
             test_params = dict(base_params)
             test_params[param_name] = val
-            result = evaluate(df, test_params)
-            obj = objective(result)
+            _, obj = evaluate_and_score(df, test_params, use_walkforward=use_walkforward)
             if obj > best_obj:
                 best_obj = obj
                 best_val = val
@@ -964,8 +1076,19 @@ def print_final_results(df, params, threshold):
 
 
 def main():
+    parser = argparse.ArgumentParser(description='参数优化器 (支持 walk-forward CV 防过拟合)')
+    parser.add_argument('--walk-forward', action='store_true',
+                        help='启用时间序列 walk-forward CV + 多目标 (强烈推荐, 防过拟合)')
+    parser.add_argument('--n-folds', type=int, default=5,
+                        help='walk-forward 折数 (默认 5)')
+    args = parser.parse_args()
+    use_wf = args.walk_forward
+
     print("=" * 70)
-    print("  全量历史回测重建 + 多轮参数优化")
+    if use_wf:
+        print(f"  全量历史回测重建 + 多轮参数优化 [walk-forward CV, n_folds={args.n_folds}]")
+    else:
+        print("  全量历史回测重建 + 多轮参数优化")
     print("=" * 70)
 
     # 第1步: 解析所有报告
@@ -1015,14 +1138,28 @@ def main():
     params = dict(DEFAULT_PARAMS)
 
     # 基线评估
-    base_result = evaluate(df_valid, params)
-    print(f"\n  当前算法基线: wr={base_result['wr']:.1f}%, avg={base_result['avg']:+.2f}%, "
-          f"n={base_result['n']}, top_wr={base_result['top_wr']:.1f}%")
+    if use_wf:
+        base_result = evaluate_walkforward(df_valid, params)
+        print(f"\n  当前算法基线[walk-forward]: 训练wr={base_result.get('wf_train_wr', 0):.1f}%, "
+              f"holdout wr={base_result.get('wf_holdout_wr', 0):.1f}%, "
+              f"holdout n={base_result.get('wf_holdout_n', 0)}, "
+              f"A>B gap={base_result.get('wf_a_b_gap', 0):+.1f}pp, "
+              f"一致性={base_result.get('wf_consistency', 0):.2f}")
+    else:
+        base_result = evaluate(df_valid, params)
+        print(f"\n  当前算法基线: wr={base_result['wr']:.1f}%, avg={base_result['avg']:+.2f}%, "
+              f"n={base_result['n']}, top_wr={base_result['top_wr']:.1f}%")
 
     # Round 1: 单参数扫描
-    params, improvements = round1_single_scan(df_valid, params)
-    r1_result = evaluate(df_valid, params)
-    print(f"\n  第1轮后: wr={r1_result['wr']:.1f}%, avg={r1_result['avg']:+.2f}%, n={r1_result['n']}")
+    params, improvements = round1_single_scan(df_valid, params, use_walkforward=use_wf)
+    if use_wf:
+        r1_result = evaluate_walkforward(df_valid, params)
+        print(f"\n  第1轮后[walk-forward]: 训练wr={r1_result.get('wf_train_wr', 0):.1f}%, "
+              f"holdout wr={r1_result.get('wf_holdout_wr', 0):.1f}%, "
+              f"一致性={r1_result.get('wf_consistency', 0):.2f}")
+    else:
+        r1_result = evaluate(df_valid, params)
+        print(f"\n  第1轮后: wr={r1_result['wr']:.1f}%, avg={r1_result['avg']:+.2f}%, n={r1_result['n']}")
 
     # Round 2: 精细化
     params = round2_refinement(df_valid, params)

@@ -149,9 +149,14 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
             if sector >= 95:
                 penalty += 12  # v12优化: 10→12
                 details.append(f'板块过热{sector:.0f}:-12')
-            elif 60 <= sector < 75:
-                penalty += 10  # v20验证: 分段惩罚破坏A>B排序, 保持flat10
-                details.append(f'板块死区{sector:.0f}:-10')
+            elif 60 <= sector <= 75:
+                # v21: U 型连续函数代替 flat -10, 消除 60/75 边界跳变
+                # peak 在 67.5(死区中心), 边界 60/75 处自然为 0
+                distance = abs(sector - 67.5) / 7.5
+                sector_pen = round(10 * (1 - distance))
+                if sector_pen > 0:
+                    penalty += sector_pen
+                    details.append(f'板块死区{sector:.0f}:-{sector_pen}')
 
         # 原始评分过高（v18: 渐进惩罚，高分扣更多）
         # 回测: score>=90仅25%wr，越高越差，渐进惩罚防止高分股污染A级
@@ -183,10 +188,14 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
             penalty += 5
             details.append(f'卖出信号多{sell_sig:.0f}:-5')
 
-        # v18新增: 量化分极高惩罚 (qs>=90: 33.0%wr/-3.53%, 强反指标)
-        if pd.notna(qs) and qs >= 90:
-            penalty += 5
-            details.append(f'量化分极高{qs:.0f}:-5')
+        # v18新增 + v21加重: 量化分极高惩罚 (qs>=90: 33%wr/-3.53%, qs>=95 更糟)
+        # 30个量化模型一致看好 = 过度共识 = 反指标, v18 仅扣 5 分力度不够
+        if pd.notna(qs) and qs >= 95:
+            penalty += 18  # v21新增: 极端共识重扣
+            details.append(f'量化分极端{qs:.0f}:-18')
+        elif pd.notna(qs) and qs >= 90:
+            penalty += 12  # v21: 5→12 (反指标力度匹配实际负收益)
+            details.append(f'量化分极高{qs:.0f}:-12')
 
         # 卖出占优 — v9优化: 移除（回测验证无效）
         # if pd.notna(sell_sig) and pd.notna(buy_sig) and sell_sig > buy_sig:
@@ -219,6 +228,12 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
         if pd.notna(rsi) and 40 <= rsi <= 50:
             bonus += 4   # v15优化: 3→4, 区间42-53→40-50
             details.append(f'RSI黄金区{rsi:.0f}:+4')
+
+        # v21新增: RSI 50-60 涨停后回落区惩罚 (实测 36.7%wr/-1.37%, 严重反常)
+        # 该区间通常是涨停次日位置, 大概率回落, 之前未扣分等于鼓励
+        if pd.notna(rsi) and 50 < rsi < 60:
+            penalty += 4
+            details.append(f'RSI回落区{rsi:.0f}:-4')
 
         # 买入信号占优 — v10优化: 移除（全量回测验证无效，buy_signals与收益负相关）
         # if pd.notna(buy_sig) and pd.notna(sell_sig) and buy_sig >= 5 and sell_sig > 0 and buy_sig >= sell_sig * 2:
@@ -270,6 +285,11 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
 
         # ========== 计算最终评分 ==========
         adj = max(0, score - penalty + bonus)
+
+        # v21新增: ≥95 上限保护 (实测 ≥95 胜率 42.86%, 比 ≥85 的 61.76% 反而差 19pp)
+        # 任何评分超过 95 都强制压回 95, 避免极端共识冲顶
+        if adj > 95:
+            adj = 95
 
         # 评分甜蜜区奖励 — v10优化: 移除（回测验证无正向效果）
         # if 63 <= adj <= 69:

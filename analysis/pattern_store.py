@@ -1,0 +1,270 @@
+"""SQLite repository for pattern fingerprints."""
+
+from __future__ import annotations
+
+import datetime
+import json
+import sqlite3
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterable, List, Optional
+
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS pattern_fingerprints (
+    stock_code        TEXT PRIMARY KEY,
+    stock_name        TEXT,
+    market            TEXT,
+    industry          TEXT,
+    normalized_curve  TEXT NOT NULL,
+    mean_slope        REAL NOT NULL,
+    latest_close      REAL,
+    latest_change_pct REAL,
+    snapshot_date     DATE NOT NULL,
+    updated_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_fp_market   ON pattern_fingerprints(market);
+CREATE INDEX IF NOT EXISTS idx_fp_industry ON pattern_fingerprints(industry);
+CREATE INDEX IF NOT EXISTS idx_fp_date     ON pattern_fingerprints(snapshot_date);
+
+CREATE TABLE IF NOT EXISTS pattern_snapshot_meta (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_date   DATE NOT NULL,
+    status          TEXT NOT NULL,
+    total_stocks    INTEGER,
+    succeeded       INTEGER,
+    failed          INTEGER,
+    started_at      TIMESTAMP NOT NULL,
+    finished_at     TIMESTAMP,
+    error_log       TEXT
+);
+"""
+
+
+@dataclass
+class Fingerprint:
+    stock_code: str
+    stock_name: str
+    market: str
+    industry: str
+    normalized_curve: List[float]
+    mean_slope: float
+    latest_close: float
+    latest_change_pct: float
+    snapshot_date: datetime.date
+
+
+class PatternStore:
+    def __init__(self, db_path: Path):
+        self.db_path = Path(db_path)
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
+    def init_schema(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.executescript(SCHEMA_SQL)
+
+    def upsert_fingerprints(self, fingerprints: Iterable[Fingerprint]) -> int:
+        """批量写入指纹，按主键 stock_code 替换。返回写入条数。"""
+        records = list(fingerprints)
+        if not records:
+            return 0
+        rows = [
+            (
+                fp.stock_code,
+                fp.stock_name,
+                fp.market,
+                fp.industry,
+                json.dumps(fp.normalized_curve, separators=(",", ":")),
+                float(fp.mean_slope),
+                float(fp.latest_close),
+                float(fp.latest_change_pct),
+                fp.snapshot_date.isoformat(),
+                datetime.datetime.now().isoformat(timespec="seconds"),
+            )
+            for fp in records
+        ]
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO pattern_fingerprints (
+                    stock_code, stock_name, market, industry,
+                    normalized_curve, mean_slope,
+                    latest_close, latest_change_pct,
+                    snapshot_date, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def _row_to_fp(self, row: sqlite3.Row) -> Fingerprint:
+        return Fingerprint(
+            stock_code=row["stock_code"],
+            stock_name=row["stock_name"] or "",
+            market=row["market"] or "",
+            industry=row["industry"] or "",
+            normalized_curve=json.loads(row["normalized_curve"]),
+            mean_slope=float(row["mean_slope"]),
+            latest_close=float(row["latest_close"] or 0.0),
+            latest_change_pct=float(row["latest_change_pct"] or 0.0),
+            snapshot_date=datetime.date.fromisoformat(row["snapshot_date"]),
+        )
+
+    def load_all_fingerprints(self) -> List[Fingerprint]:
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT * FROM pattern_fingerprints")
+            return [self._row_to_fp(row) for row in cursor]
+
+    def load_fingerprint(self, stock_code: str) -> Optional[Fingerprint]:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM pattern_fingerprints WHERE stock_code = ?",
+                (stock_code,),
+            )
+            row = cursor.fetchone()
+            return self._row_to_fp(row) if row else None
+
+    def search_stocks(self, query: str, limit: int = 10) -> List[dict]:
+        """按股票代码、名称、市场或行业搜索指纹库中的股票。"""
+        keyword = str(query or "").strip()
+        if not keyword:
+            return []
+
+        normalized = keyword.upper()
+        if normalized.startswith(("SH", "SZ", "BJ")) and len(normalized) >= 8:
+            normalized = normalized[2:]
+        if normalized.endswith((".SH", ".SZ", ".BJ")):
+            normalized = normalized.split(".")[0]
+
+        like_any = f"%{keyword}%"
+        code_like_any = f"%{normalized}%"
+        code_prefix = f"{normalized}%"
+        name_prefix = f"{keyword}%"
+        capped_limit = max(1, min(int(limit or 10), 30))
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT
+                    stock_code, stock_name, market, industry,
+                    mean_slope, latest_close, latest_change_pct, snapshot_date
+                FROM pattern_fingerprints
+                WHERE stock_code LIKE ?
+                   OR stock_name LIKE ?
+                   OR market LIKE ?
+                   OR industry LIKE ?
+                ORDER BY
+                    CASE
+                        WHEN stock_code = ? THEN 0
+                        WHEN stock_code LIKE ? THEN 1
+                        WHEN stock_name = ? THEN 2
+                        WHEN stock_name LIKE ? THEN 3
+                        WHEN industry LIKE ? THEN 4
+                        ELSE 5
+                    END,
+                    snapshot_date DESC,
+                    latest_change_pct DESC
+                LIMIT ?
+                """,
+                (
+                    code_like_any,
+                    like_any,
+                    like_any,
+                    like_any,
+                    normalized,
+                    code_prefix,
+                    keyword,
+                    name_prefix,
+                    like_any,
+                    capped_limit,
+                ),
+            )
+            rows = cursor.fetchall()
+
+        return [
+            {
+                "stock_code": row["stock_code"],
+                "stock_name": row["stock_name"] or "",
+                "market": row["market"] or "",
+                "industry": row["industry"] or "",
+                "mean_slope": float(row["mean_slope"] or 0.0),
+                "latest_close": float(row["latest_close"] or 0.0),
+                "latest_change_pct": float(row["latest_change_pct"] or 0.0),
+                "snapshot_date": row["snapshot_date"],
+            }
+            for row in rows
+        ]
+
+    def start_snapshot(self, snapshot_date: datetime.date) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO pattern_snapshot_meta (
+                    snapshot_date, status, started_at
+                ) VALUES (?, 'running', ?)
+                """,
+                (snapshot_date.isoformat(), datetime.datetime.now().isoformat()),
+            )
+            return int(cursor.lastrowid)
+
+    def finish_snapshot(
+        self,
+        snapshot_id: int,
+        status: str,
+        total: int,
+        succeeded: int,
+        failed: int,
+        error_log: Optional[str] = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE pattern_snapshot_meta SET
+                    status = ?, total_stocks = ?, succeeded = ?,
+                    failed = ?, finished_at = ?, error_log = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    total,
+                    succeeded,
+                    failed,
+                    datetime.datetime.now().isoformat(),
+                    error_log,
+                    snapshot_id,
+                ),
+            )
+
+    def current_status(self) -> dict:
+        with self._connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM pattern_fingerprints"
+            ).fetchone()[0]
+            last_snap = conn.execute(
+                """
+                SELECT snapshot_date, status, finished_at
+                FROM pattern_snapshot_meta
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+        if last_snap and last_snap["status"] == "success":
+            return {
+                "available": True,
+                "total_stocks": int(total),
+                "last_snapshot_date": last_snap["snapshot_date"],
+                "last_status": last_snap["status"],
+                "last_finished_at": last_snap["finished_at"],
+            }
+        return {
+            "available": False,
+            "total_stocks": int(total),
+            "last_snapshot_date": last_snap["snapshot_date"] if last_snap else None,
+            "last_status": last_snap["status"] if last_snap else None,
+            "last_finished_at": last_snap["finished_at"] if last_snap else None,
+        }

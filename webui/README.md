@@ -4,6 +4,14 @@ Web user interface for Kronos financial prediction model, providing intuitive gr
 
 ## ✨ Features
 
+- **Stock analysis home page**: Unified dashboard for opportunity discovery, batch analysis, module health and reports
+- **Pattern search canvas (形态搜股)**: Top-bar button opens a full-screen modal — draw any close-price shape or pick a stock code to find the top-30 A-share stocks whose 30-day normalized close curves match best. Backed by a SQLite fingerprint cache (`data/pattern_fingerprints.db`).
+- **Investment opportunity discovery**: Launches the existing multi-source opportunity mining flow from the browser
+- **Batch stock analysis**: Runs the existing batch collector/scorer against a custom stock pool
+- **Clickable stock K-line view**: Click any opportunity stock to load its K-line chart from local data or Eastmoney
+- **Quant model panel**: Shows current opportunity-discovery model triggers and model heat distribution
+- **Report center**: Opens generated opportunity, batch, single-stock and major-positive-news reports
+- **Real market overview**: Displays provider-backed index quotes when available; unavailable quotes are shown explicitly
 - **Multi-format data support**: Supports CSV, Feather and other financial data formats
 - **Smart time window**: Fixed 400+120 data point time window slider selection
 - **Real model prediction**: Integrated real Kronos model, supports multiple model sizes
@@ -38,7 +46,24 @@ python app.py
 
 After successful startup, visit http://localhost:7070
 
+## 📍 Web Routes
+
+- `http://localhost:7070/`: comprehensive stock analysis home page
+- `http://localhost:7070/prediction`: original Kronos K-line prediction console
+- `http://localhost:7070/particles`: real-time market particle visualization
+
 ## 📋 Usage Steps
+
+### Stock Analysis Home
+
+1. Open `/` to review the latest opportunity report, market snapshot, module health and generated artifacts.
+2. Click a stock in **投资机会** to switch the K-line chart and per-stock quant model panel.
+3. Use **机会挖掘** to start the existing `scripts/run_opportunity_discovery.py` flow in a background job.
+4. Use **批量分析** to start the existing `analysis.batch_processor` flow for a custom stock pool.
+5. Track background progress in **任务队列** and open output files from **报告库** or **批量结果**.
+6. 使用顶部 **形态搜股** 按钮打开 Modal，「手绘形态」画一条曲线或「选股票形态」输入代码 → 点击检索 → 右侧列出近 30 日形态最相似的 Top-30 股票；点击列表项可在下方查看曲线对比图。首次使用需点击 Modal 顶部「刷新指纹库」（约 10-15 分钟），之后每日 16:30 后台自动刷新。
+
+### K-line Prediction Console
 
 1. **Load data**: Select financial data file from data directory
 2. **Load model**: Select Kronos model and computing device
