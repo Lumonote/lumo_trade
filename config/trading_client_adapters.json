@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "discovery": {
+    "macos_app_categories": ["public.app-category.finance"],
+    "include_all_macos_finance_apps": false,
+    "name_keywords": [
+      "股票",
+      "证券",
+      "交易",
+      "行情",
+      "财富",
+      "金融",
+      "同花顺",
+      "东方财富",
+      "通达信",
+      "大智慧",
+      "指南针",
+      "雪球",
+      "富途",
+      "老虎",
+      "futu",
+      "niuniu",
+      "tiger",
+      "tradingview"
+    ]
+  },
+  "jump": {
+    "default_mode": "keyboard",
+    "keyboard_delay_ms": 700
+  },
+  "adapters": [
+    {
+      "id": "tonghuashun",
+      "display_name": "同花顺",
+      "match": {
+        "bundle_ids": ["cn.com.10jqka.macstockPro"],
+        "url_schemes": ["hexinstockpro"],
+        "name_keywords": ["同花顺", "10jqka", "hexin"],
+        "executable_names": ["同花顺.exe", "hexin.exe"]
+      },
+      "keyboard_targets": ["stock", "board", "search"]
+    },
+    {
+      "id": "eastmoney",
+      "display_name": "东方财富",
+      "match": {
+        "bundle_ids": ["com.emmac.mac"],
+        "name_keywords": ["东方财富", "eastmoney"],
+        "executable_names": ["东方财富.exe", "eastmoney.exe", "emoney.exe"]
+      },
+      "keyboard_targets": ["stock", "board", "search"]
+    },
+    {
+      "id": "tongdaxin",
+      "display_name": "通达信",
+      "match": {
+        "name_keywords": ["通达信", "tdx"],
+        "executable_names": ["tdxw.exe", "通达信.exe"]
+      },
+      "keyboard_targets": ["stock", "board", "search"]
+    },
+    {
+      "id": "generic-finance-client",
+      "display_name": "",
+      "match": {
+        "name_keywords": ["股票", "证券", "交易", "行情", "财富", "金融"]
+      },
+      "keyboard_targets": ["stock", "board", "search"]
+    }
+  ]
+}

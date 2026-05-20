@@ -1,0 +1,13 @@
+{
+  "name": "kronos-ultra-desktop",
+  "version": "1.1.6",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

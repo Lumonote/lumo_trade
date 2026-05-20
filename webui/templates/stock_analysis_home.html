@@ -1806,7 +1806,7 @@
                 return;
             }
             $('#opportunityHero').innerHTML = `
-                <div class="hero-top">
+                <div class="hero-top" data-stock-code="${escapeHtml(item.code)}" data-stock-name="${escapeHtml(item.name)}" data-sector="${escapeHtml(item.sector || '')}">
                     <div>
                         <h2 class="hero-name">${escapeHtml(item.name)}</h2>
                         <p class="hero-code">${escapeHtml(item.code)} · 排名 ${item.rank}</p>
@@ -1821,7 +1821,7 @@
                         <p class="fact-label">建议</p>
                         <p class="fact-value">${escapeHtml(item.recommendation || '-')}</p>
                     </div>
-                    <div class="fact">
+                    <div class="fact" data-sector="${escapeHtml(item.sector || '')}">
                         <p class="fact-label">板块</p>
                         <p class="fact-value">${escapeHtml(item.sector || '-')}</p>
                     </div>
@@ -1840,7 +1840,7 @@
         function renderOpportunities(items = []) {
             const rows = items.map((item) => {
                 const tags = (item.quant_models || []).slice(0, 4).map((name) => `<span class="model-tag">${escapeHtml(name)}</span>`).join('');
-                return `<article class="stock-row" data-code="${escapeHtml(item.code)}">
+                return `<article class="stock-row" data-code="${escapeHtml(item.code)}" data-stock-code="${escapeHtml(item.code)}" data-stock-name="${escapeHtml(item.name)}" data-sector="${escapeHtml(item.sector || '')}">
                     <div class="stock-row-main">
                         <span class="rank">${item.rank}</span>
                         <div>
@@ -2198,7 +2198,7 @@
 
         function renderTopMovers(items = []) {
             const rows = items.map((stock) => `
-                <div class="list-item">
+                <div class="list-item" data-stock-code="${escapeHtml(stock.code)}" data-stock-name="${escapeHtml(stock.name)}" data-sector="${escapeHtml(stock.sector || '')}">
                     <div>
                         <p class="list-title">${escapeHtml(stock.name)} <span class="hero-code">${escapeHtml(stock.code)}</span></p>
                         <p class="list-meta">${escapeHtml(stock.sector || '')} · 最新价 ${Number(stock.price || 0).toFixed(2)}</p>
@@ -2212,7 +2212,7 @@
         function renderSectors(sectors = []) {
             const rows = sectors.map((sector) => {
                 const leader = sector.leader ? `${sector.leader.name} ${formatChange(sector.leader.change)}` : '暂无领涨样本';
-                return `<div class="list-item">
+                return `<div class="list-item" data-sector="${escapeHtml(sector.name || '')}">
                     <div>
                         <p class="list-title">${escapeHtml(sector.name)}</p>
                         <p class="list-meta">${escapeHtml(leader)} · 监控 ${sector.monitored_count} 只</p>
@@ -2254,7 +2254,7 @@
         function renderHotColumn(title, items = [], mode = 'change') {
             const rows = items.slice(0, 8).map((item, index) => {
                 const flowClass = Number(item.main_net_inflow || 0) >= 0 ? 'change-up' : 'change-down';
-                return `<div class="hot-card">
+                return `<div class="hot-card" data-board-code="${escapeHtml(item.code || '')}" data-board-name="${escapeHtml(item.name || '')}" data-sector="${escapeHtml(item.name || '')}">
                     <div class="hot-card-top">
                         <div>
                             <p class="hot-name">${index + 1}. ${escapeHtml(item.name || '')}</p>
@@ -2284,7 +2284,7 @@
         function renderEastmoneyHotStocks(items = []) {
             const rows = items.slice(0, 12).map((stock) => {
                 const flowClass = Number(stock.main_net_inflow || 0) >= 0 ? 'change-up' : 'change-down';
-                return `<div class="list-item">
+                return `<div class="list-item" data-stock-code="${escapeHtml(stock.code)}" data-stock-name="${escapeHtml(stock.name)}">
                     <div>
                         <p class="list-title">${escapeHtml(stock.name)} <span class="hero-code">${escapeHtml(stock.code)}</span></p>
                         <p class="list-meta">最新价 ${formatPrice(stock.price)} · 主力净流入 <span class="${flowClass}">${escapeHtml(stock.main_net_inflow_text || '--')}</span></p>
@@ -2987,7 +2987,7 @@
                 }
                 patternModal.setResultState('results');
                 patternModal.resultsEl.innerHTML = matches.map((m, idx) => `
-                    <div class="pattern-result-item" data-idx="${idx}" data-code="${m.stock_code}">
+                    <div class="pattern-result-item" data-idx="${idx}" data-code="${m.stock_code}" data-stock-code="${m.stock_code}" data-stock-name="${escapeHtml(m.stock_name || '')}" data-sector="${escapeHtml(m.industry || '')}">
                         <div class="pattern-result-row1">
                             <div>
                                 <div>${m.stock_code} ${escapeHtml(m.stock_name || '')}</div>
@@ -3651,7 +3651,7 @@
                 }
                 this.suggestionsEl.hidden = false;
                 this.suggestionsEl.innerHTML = stocks.map((stock) => `
-                    <button class="pattern-stock-suggestion" type="button" data-code="${stock.stock_code}">
+                    <button class="pattern-stock-suggestion" type="button" data-code="${stock.stock_code}" data-stock-code="${stock.stock_code}" data-stock-name="${escapeHtml(stock.stock_name || '')}" data-sector="${escapeHtml(stock.industry || '')}">
                         <div>
                             <strong>${stock.stock_code} ${escapeHtml(stock.stock_name || '')}</strong>
                             <span>${escapeHtml(stock.market || '--')} · ${escapeHtml(stock.industry || '--')} · ${escapeHtml(stock.snapshot_date || '')}</span>
@@ -3693,7 +3693,7 @@
                 const modeText = patternModeText(getPatternSearchSettings(), displayCurve.length);
                 this.previewEl.className = 'pattern-stock-preview';
                 this.previewEl.innerHTML = `
-                    <div class="pattern-stock-head">
+                    <div class="pattern-stock-head" data-stock-code="${data.stock_code}" data-stock-name="${escapeHtml(data.stock_name || '')}" data-sector="${escapeHtml(data.industry || '')}">
                         <div>
                             <p class="pattern-stock-name">${escapeHtml(data.stock_name || '')}</p>
                             <p class="pattern-stock-code">${data.stock_code} · ${escapeHtml(data.market || '--')} · ${escapeHtml(data.industry || '--')}</p>
@@ -3906,6 +3906,7 @@
             </div>
         </div>
     </div>
+    <script src="/static/provider_context_menu.js"></script>
 </body>
 
 </html>

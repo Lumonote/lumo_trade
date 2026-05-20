@@ -81,6 +81,11 @@ ENV/
 env.bak/
 venv.bak/
 
+# Node / Tauri
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+
 # Temporary files
 *.tmp
 *.temp

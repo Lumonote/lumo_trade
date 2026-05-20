@@ -28,11 +28,11 @@ show_help() {
     echo "使用方法: $0 [平台] [选项]"
     echo ""
     echo "支持的平台:"
-    echo "  macos          - 构建macOS版本 (本地构建)"
-    echo "  windows        - 构建Windows版本 (需要Windows环境)"
-    echo "  windows-docker - 使用Docker构建Windows版本"
-    echo "  windows-wine   - 使用Wine构建Windows版本"
-    echo "  linux          - 构建Linux版本"
+    echo "  macos          - 使用Tauri构建macOS版本 (本地构建)"
+    echo "  windows        - 使用Tauri构建Windows版本 (需要Windows环境)"
+    echo "  windows-docker - 旧PyInstaller Docker构建Windows版本"
+    echo "  windows-wine   - 旧PyInstaller Wine构建Windows版本"
+    echo "  linux          - 使用Tauri构建Linux版本 (本地构建)"
     echo "  all            - 构建所有平台版本"
     echo ""
     echo "选项:"
@@ -188,7 +188,7 @@ prepare_resources() {
     
     case $version in
         "modern")
-            echo -e "${PURPLE}🎨 使用现代化GUI版本${NC}"
+            echo -e "${PURPLE}🎨 使用 Tauri + Flask Web UI 桌面版本${NC}"
             ;;
         "console")
             echo -e "${PURPLE}⌨️  使用控制台版本${NC}"
@@ -198,141 +198,76 @@ prepare_resources() {
     echo -e "${GREEN}✅ 资源文件准备完成${NC}"
 }
 
-# macOS构建
-build_macos() {
-    if [ "$CURRENT_OS" != "macos" ] && [ "$USE_DOCKER" = false ]; then
-        echo -e "${RED}❌ macOS构建需要在macOS系统上运行${NC}"
-        echo -e "${YELLOW}💡 或者使用 --docker 选项进行交叉编译${NC}"
+check_tauri_environment() {
+    echo -e "${BLUE}📋 检查Tauri环境...${NC}"
+
+    if ! command -v cargo &> /dev/null; then
+        echo -e "${RED}❌ 未找到Rust/Cargo${NC}"
+        echo -e "${YELLOW}💡 请先安装Rust工具链: https://www.rust-lang.org/tools/install${NC}"
         return 1
     fi
 
-    echo -e "${PURPLE}🎨🍎 开始打包现代化GUI macOS 版本 (Kronos_Ultra)...${NC}"
-    echo "=========================================="
+    if ! command -v npm &> /dev/null; then
+        echo -e "${RED}❌ 未找到npm${NC}"
+        echo -e "${YELLOW}💡 请先安装Node.js/npm${NC}"
+        return 1
+    fi
 
     cd "$PROJECT_ROOT"
-
-    # 验证价格断层修复代码存在
-    echo -e "${BLUE}🔍 验证价格断层修复代码...${NC}"
-    if grep -q "关键：修正后必须重新创建pred_overlap和pred_future" examples/prediction_batch_example.py; then
-        echo -e "${GREEN}✅ 价格断层修复代码已包含${NC}"
-    else
-        echo -e "${RED}❌ 警告：未找到价格断层修复代码${NC}"
-        echo -e "${YELLOW}   请确认 examples/prediction_batch_example.py 包含修复代码${NC}"
-        read -p "是否继续打包？(y/n): " CONTINUE
-        if [ "$CONTINUE" != "y" ]; then
-            return 1
-        fi
+    if [ ! -d "node_modules/@tauri-apps/cli" ]; then
+        echo -e "${YELLOW}📦 未检测到Tauri CLI依赖，执行 npm install...${NC}"
+        npm install
     fi
 
-    # 检查并导入Python检测器
-    echo -e "${BLUE}🔍 检查Python环境...${NC}"
-    $PYTHON_CMD -c "import sys; sys.path.append('tools'); from python_detector import get_python_detector, verify_python_environment; detector = get_python_detector(); print(f'检测到Python命令: {detector.get_command()}'); verify_python_environment()"
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Python环境检查失败${NC}"
-        return 1
+    echo -e "${GREEN}✅ Tauri环境检查完成${NC}"
+}
+
+copy_tauri_artifacts() {
+    local bundle_dir="$PROJECT_ROOT/src-tauri/target/release/bundle"
+    local output_dir="$PROJECT_ROOT/packaging/builds"
+
+    if [ ! -d "$bundle_dir" ]; then
+        echo -e "${YELLOW}⚠️  未找到Tauri bundle目录: $bundle_dir${NC}"
+        return 0
     fi
 
-    # 运行PyInstaller
-    echo -e "${BLUE}🔧 执行PyInstaller构建...${NC}"
-    $PYTHON_CMD -m PyInstaller \
-        --clean \
-        --noconfirm \
-        packaging/scripts/kronos_macos.spec
+    mkdir -p "$output_dir"
+    find "$bundle_dir" -maxdepth 3 \( -name "*.dmg" -o -name "*.app" -o -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \) -print | while read -r artifact; do
+        cp -R "$artifact" "$output_dir/" 2>/dev/null || true
+        echo -e "${PURPLE}📦 Tauri产物: $artifact${NC}"
+    done
+    echo -e "${CYAN}📁 统一产物目录: $output_dir${NC}"
+}
+
+build_tauri_desktop() {
+    local platform_name="$1"
+
+    echo -e "${PURPLE}🖥️  开始Tauri桌面构建 ($platform_name)...${NC}"
+    echo "=========================================="
+
+    check_tauri_environment || return 1
+    cd "$PROJECT_ROOT"
+
+    KRONOS_PROJECT_ROOT="$PROJECT_ROOT" npm run desktop:build
 
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ 现代化GUI macOS版本创建成功！${NC}"
-
-        # 验证打包结果
-        echo -e "${BLUE}🔍 验证打包结果...${NC}"
-
-        # 检查examples目录是否被打包
-        if [ -d "dist/Kronos_Ultra/examples" ]; then
-            echo -e "${GREEN}✅ examples/ 目录已打包到 dist/Kronos_Ultra/examples/${NC}"
-
-            if [ -f "dist/Kronos_Ultra/examples/prediction_batch_example.py" ]; then
-                echo -e "${GREEN}✅ prediction_batch_example.py 已包含${NC}"
-
-                # 验证修复代码
-                if grep -q "关键：修正后必须重新创建pred_overlap和pred_future" dist/Kronos_Ultra/examples/prediction_batch_example.py; then
-                    echo -e "${GREEN}✅ 修复代码已正确包含到打包文件中${NC}"
-                else
-                    echo -e "${YELLOW}⚠️  警告：打包的文件中不包含修复代码${NC}"
-                fi
-            else
-                echo -e "${YELLOW}⚠️  警告：prediction_batch_example.py 未找到${NC}"
-            fi
-        elif [ -d "dist/Kronos_Ultra.app/Contents/Resources/examples" ]; then
-            echo -e "${GREEN}✅ examples/ 目录在 Kronos_Ultra.app/Contents/Resources/ 中${NC}"
-
-            if [ -f "dist/Kronos_Ultra.app/Contents/Resources/examples/prediction_batch_example.py" ]; then
-                echo -e "${GREEN}✅ prediction_batch_example.py 已包含到.app包${NC}"
-
-                # 验证修复代码
-                if grep -q "关键：修正后必须重新创建pred_overlap和pred_future" "dist/Kronos_Ultra.app/Contents/Resources/examples/prediction_batch_example.py"; then
-                    echo -e "${GREEN}✅ 修复代码已正确包含到.app包中${NC}"
-                else
-                    echo -e "${YELLOW}⚠️  警告：.app包中的文件不包含修复代码${NC}"
-                fi
-            else
-                echo -e "${YELLOW}⚠️  警告：.app包中未找到 prediction_batch_example.py${NC}"
-            fi
-        else
-            echo -e "${YELLOW}⚠️  警告：examples/ 目录未被打包${NC}"
-        fi
-
-        # 测试应用启动
-        echo -e "${BLUE}🧪 测试应用启动...${NC}"
-        if timeout 10s open dist/Kronos_Ultra.app --args --test 2>/dev/null; then
-            echo "  (应用可以启动)"
-        else
-            echo "  (启动测试超时，但构建成功)"
-        fi
-        
-        # 创建应用包
-        if [ -d "dist/Kronos_Ultra.app" ]; then
-            echo -e "${GREEN}✅ 现代化GUI macOS应用包创建成功！${NC}"
-            
-            # 创建DMG文件（统一版本命名）
-            BUILD_DIR="$PROJECT_ROOT/packaging/builds"
-            mkdir -p "$BUILD_DIR"
-
-            # 读取版本配置并生成文件名
-            load_version_config
-            TIMESTAMP=$(date "+%Y%m%d_%H%M%S")
-            PLATFORM_NAME="macOS"
-            ARTIFACT_NAME="$ARTIFACT_TEMPLATE"
-            ARTIFACT_NAME="${ARTIFACT_NAME/\{version\}/$VERSION}"
-            ARTIFACT_NAME="${ARTIFACT_NAME/\{platform\}/$PLATFORM_NAME}"
-            ARTIFACT_NAME="${ARTIFACT_NAME/\{timestamp\}/$TIMESTAMP}"
-            DMG_FILE="$BUILD_DIR/${ARTIFACT_NAME}.dmg"
-            if command -v hdiutil &> /dev/null; then
-            hdiutil create -srcfolder "dist/Kronos_Ultra.app" -volname "Kronos_Ultra" "$DMG_FILE" 2>/dev/null || {
-                    echo -e "${YELLOW}⚠️  DMG创建失败，但应用包构建成功${NC}"
-                }
-                if [ -f "$DMG_FILE" ]; then
-                    echo "created: $DMG_FILE"
-                    echo -e "${PURPLE}💿 创建了DMG安装包: $DMG_FILE${NC}"
-                fi
-            fi
-            
-            # 显示应用包大小
-            APP_SIZE=$(du -sh "dist/Kronos_Ultra.app" | cut -f1)
-            echo -e "${CYAN}📏 应用包大小: $APP_SIZE${NC}"
-        fi
-        
-        echo ""
-        echo -e "${GREEN}🎯 使用说明:${NC}"
-        echo "1. 双击 Kronos_Ultra.app 启动应用"
-        echo "2. 或者从命令行: open dist/Kronos_Ultra.app"
-        if [ -f "$DMG_FILE" ]; then
-            echo "3. 分发给用户: $DMG_FILE"
-        fi
-        
+        copy_tauri_artifacts
+        echo -e "${GREEN}✅ Tauri桌面构建成功！${NC}"
         return 0
     else
-        echo -e "${RED}❌ macOS构建失败${NC}"
+        echo -e "${RED}❌ Tauri桌面构建失败${NC}"
         return 1
     fi
+}
+
+# macOS构建
+build_macos() {
+    if [ "$CURRENT_OS" != "macos" ]; then
+        echo -e "${RED}❌ Tauri macOS构建需要在macOS系统上运行${NC}"
+        return 1
+    fi
+
+    build_tauri_desktop "macOS"
 }
 
 # Windows Docker构建
@@ -446,27 +381,11 @@ build_windows_wine() {
 build_windows_local() {
     if [ "$CURRENT_OS" != "windows" ]; then
         echo -e "${RED}❌ Windows本地构建需要在Windows系统上运行${NC}"
-        echo -e "${YELLOW}💡 请使用 windows-docker 或 windows-wine 选项${NC}"
+        echo -e "${YELLOW}💡 Tauri官方推荐在目标系统本地构建对应桌面包${NC}"
         return 1
     fi
-    
-    echo -e "${PURPLE}🪟 开始Windows本地构建...${NC}"
-    echo "=========================================="
-    
-    cd "$PROJECT_ROOT"
-    
-    $PYTHON_CMD -m PyInstaller \
-        --clean \
-        --noconfirm \
-        packaging/scripts/kronos_windows.spec
-    
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ Windows本地构建成功！${NC}"
-        return 0
-    else
-        echo -e "${RED}❌ Windows本地构建失败${NC}"
-        return 1
-    fi
+
+    build_tauri_desktop "Windows"
 }
 
 # Linux构建
@@ -480,9 +399,7 @@ build_linux() {
     echo -e "${PURPLE}🐧 开始Linux构建...${NC}"
     echo "=========================================="
     
-    # TODO: 实现Linux构建逻辑
-    echo -e "${YELLOW}⚠️  Linux构建功能正在开发中${NC}"
-    return 1
+    build_tauri_desktop "Linux"
 }
 
 # 构建所有平台

@@ -1,0 +1,13 @@
+[package]
+name = "kronos-ultra"
+version = "1.1.6"
+description = "Kronos Ultra desktop shell"
+authors = ["Kronos"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+

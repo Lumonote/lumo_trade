@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }} - Kronos Ultra</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
+    <link rel="stylesheet" href="/static/kronos_desktop.css" />
+  </head>
+	  <body data-page="{{ active_page }}">
+	    <div class="app-shell" id="appShell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1 class="brand-title">Kronos Ultra</h1>
+          <p class="brand-note">智能投研控制台</p>
+        </div>
+        <nav class="nav" aria-label="桌面导航">
+          {% for key, meta in pages.items() %}
+	          <a class="{% if key == active_page %}active{% endif %}" href="/desktop/{{ key }}" data-short="{{ meta.title[:1] }}" title="{{ meta.title }}">
+	            <span>{{ meta.title }}</span>
+	          </a>
+	          {% endfor %}
+	          <a class="external" href="/prediction" data-short="预" title="预测控制台">预测控制台</a>
+	          <a class="external" href="/" data-short="功" title="功能总览">功能总览</a>
+        </nav>
+        <div class="sidebar-foot">市场分析 · 预测 · 报告</div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div>
+            <h1>{{ page_title }}</h1>
+            <p>{{ page_subtitle }}</p>
+          </div>
+	          <div class="toolbar">
+	            <button id="sidebarToggleBtn" class="button secondary shell-button" type="button" title="收起/展开菜单">菜单</button>
+	            <button id="workspaceFullscreenBtn" class="button secondary shell-button" type="button" title="全屏显示右侧功能">全屏</button>
+	            <span id="refreshMeta" class="panel-meta">--</span>
+	            <button id="refreshBtn" class="button secondary" type="button">刷新</button>
+	          </div>
+        </header>
+
+        {% if active_page == 'overview' %}
+        <section class="grid three">
+          <div class="panel">
+            <div class="panel-body metric">
+              <span>上证指数</span>
+              <strong id="marketIndex">--</strong>
+              <small id="marketIndexMeta" class="muted">--</small>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-body metric">
+              <span>监控股票</span>
+              <strong id="monitoredCount">--</strong>
+              <small id="particleCount" class="muted">--</small>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-body metric">
+              <span>最新机会</span>
+              <strong id="opportunityCount">--</strong>
+              <small id="opportunityStats" class="muted">--</small>
+            </div>
+          </div>
+        </section>
+
+        <section class="grid two" style="margin-top: 14px;">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">指数与板块</h2>
+              <span class="panel-meta">市场概览</span>
+            </div>
+            <div id="indexList" class="panel-body list"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">实时异动</h2>
+              <span class="panel-meta">Top movers</span>
+            </div>
+            <div id="topMovers" class="panel-body list"></div>
+          </div>
+        </section>
+
+        <section class="grid two" style="margin-top: 14px;">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">市场快讯</h2>
+              <span class="panel-meta">本地缓存</span>
+            </div>
+            <div id="marketNews" class="panel-body list"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">板块动量</h2>
+              <span class="panel-meta">监控均值</span>
+            </div>
+            <div id="sectorList" class="panel-body list"></div>
+          </div>
+        </section>
+        {% endif %}
+
+        {% if active_page == 'opportunities' %}
+        <section class="grid two">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">投资机会</h2>
+              <span id="opportunityMeta" class="panel-meta">--</span>
+            </div>
+            <div id="opportunityList" class="panel-body list"></div>
+          </div>
+          <div class="grid">
+            <div class="panel">
+              <div class="panel-header">
+                <h2 id="klineTitle" class="panel-title">K线</h2>
+                <span id="klineMeta" class="panel-meta">选择股票查看</span>
+              </div>
+              <div id="klineChart" class="panel-body chart"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">量化模型</h2>
+                <span class="panel-meta">机会挖掘摘要</span>
+              </div>
+              <div id="quantModels" class="panel-body list"></div>
+            </div>
+          </div>
+        </section>
+        {% endif %}
+
+        {% if active_page == 'workbench' %}
+        <section class="grid two">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">机会挖掘</h2>
+              <span class="panel-meta">后台任务</span>
+            </div>
+            <form id="opportunityForm" class="panel-body">
+              <div class="form-grid">
+                <label>候选数量
+                  <input name="limit" type="number" value="80" min="5" max="500" />
+                </label>
+                <label>并发数
+                  <input name="workers" type="number" value="8" min="1" max="32" />
+                </label>
+                <label>来源
+                  <select name="source">
+                    <option value="multi">多源候选</option>
+                    <option value="heat">热度候选</option>
+                    <option value="moneyflow_dc">东方财富资金</option>
+                  </select>
+                </label>
+                <label>指定股票池
+                  <input name="stock_codes" placeholder="可选，如 600519,300750" />
+                </label>
+              </div>
+              <div class="actions">
+                <button class="button" type="submit">启动机会挖掘</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">批量分析</h2>
+              <span class="panel-meta">股票池评分</span>
+            </div>
+            <form id="batchForm" class="panel-body">
+              <label>股票代码
+                <textarea name="stock_codes">600519, 300750, 000001, 002230, 601138</textarea>
+              </label>
+              <div class="form-grid" style="margin-top: 12px;">
+                <label>策略
+                  <select name="filter_strategy">
+                    <option value="balanced">balanced</option>
+                    <option value="strict">strict</option>
+                    <option value="loose">loose</option>
+                  </select>
+                </label>
+                <label>并发数
+                  <input name="max_concurrent" type="number" value="5" min="1" max="20" />
+                </label>
+              </div>
+              <div class="actions">
+                <button class="button" type="submit">启动批量分析</button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-header">
+            <h2 class="panel-title">任务队列</h2>
+            <span class="panel-meta">最近20条</span>
+          </div>
+          <div id="jobList" class="panel-body list"></div>
+        </section>
+        {% endif %}
+
+        {% if active_page == 'patterns' %}
+        <section class="pattern-layout">
+          <div class="grid">
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">查询形态</h2>
+                <div class="tabs">
+                  <button class="tab active" data-pattern-tab="draw" type="button">手绘</button>
+                  <button class="tab" data-pattern-tab="stock" type="button">个股</button>
+                </div>
+              </div>
+              <div class="panel-body">
+                <div id="patternStatus" class="notice">正在读取指纹库状态...</div>
+                <div style="height: 12px;"></div>
+                <div id="drawPane">
+                  <div class="canvas-wrap">
+                    <canvas id="patternCanvas" width="900" height="300"></canvas>
+                  </div>
+                  <div class="actions">
+                    <button id="clearPatternBtn" class="button secondary" type="button">清空</button>
+                    <button id="matchDrawBtn" class="button" type="button" disabled>检索相似股票</button>
+                  </div>
+                </div>
+                <div id="stockPane" class="hidden">
+                  <div class="form-grid">
+                    <label>股票代码/名称/行业
+                      <input id="patternStockInput" placeholder="如 600519 或 证券" />
+                    </label>
+                    <label>结果数量
+                      <input id="patternTopN" type="number" value="30" min="1" max="200" />
+                    </label>
+                  </div>
+                  <div class="actions">
+                    <button id="stockSearchBtn" class="button secondary" type="button">搜索股票</button>
+                    <button id="matchStockBtn" class="button" type="button" disabled>用该形态检索</button>
+                  </div>
+                  <div id="stockSuggestions" class="list" style="margin-top: 12px;"></div>
+                </div>
+                <div class="actions">
+                  <label style="min-width: 150px;">窗口天数
+                    <select id="patternWindowDays">
+                      <option value="30">30日</option>
+                      <option value="20">20日</option>
+                      <option value="10">10日</option>
+                    </select>
+                  </label>
+                  <label style="min-width: 150px;">回推天数
+                    <select id="patternOffsetDays">
+                      <option value="0">同日</option>
+                      <option value="1">回推1日</option>
+                      <option value="2">回推2日</option>
+                      <option value="3">回推3日</option>
+                      <option value="5">回推5日</option>
+                    </select>
+                  </label>
+                  <button id="refreshPatternDbBtn" class="button secondary" type="button">刷新指纹库</button>
+                </div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <h2 id="patternCompareTitle" class="panel-title">形态对比</h2>
+                <span id="patternCompareMeta" class="panel-meta">--</span>
+              </div>
+              <div id="patternCompareChart" class="panel-body chart"></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">匹配结果</h2>
+              <span id="patternResultMeta" class="panel-meta">--</span>
+            </div>
+            <div id="patternResults" class="panel-body list"></div>
+          </div>
+        </section>
+        {% endif %}
+
+        {% if active_page == 'reports' %}
+        <section class="grid two">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">报告库</h2>
+              <span class="panel-meta">本地生成</span>
+            </div>
+            <div id="reportList" class="panel-body list"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">模块健康</h2>
+              <span class="panel-meta">导入检查</span>
+            </div>
+            <div id="moduleList" class="panel-body list"></div>
+          </div>
+        </section>
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-header">
+            <h2 class="panel-title">批量结果</h2>
+            <span id="batchMeta" class="panel-meta">--</span>
+          </div>
+          <div id="batchRuns" class="panel-body list"></div>
+        </section>
+        {% endif %}
+      </main>
+    </div>
+
+    <script src="/static/kronos_desktop_shell.js"></script>
+    <script src="/static/provider_context_menu.js"></script>
+    <script>
+      const page = document.body.dataset.page;
+      const $ = (selector) => document.querySelector(selector);
+      const state = {
+        dashboard: null,
+        selectedCurve: null,
+        selectedStock: null,
+        drawPoints: [],
+      };
+
+      function html(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[char]);
+      }
+
+      function num(value, digits = 2) {
+        const n = Number(value);
+        return Number.isFinite(n) ? n.toFixed(digits) : "--";
+      }
+
+      function changeClass(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n === 0) return "";
+        return n >= 0 ? "change-up" : "change-down";
+      }
+
+      async function fetchJson(url, options) {
+        const response = await fetch(url, options);
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || data.message || `HTTP ${response.status}`);
+        }
+        return data;
+      }
+
+      async function loadDashboard() {
+        const data = await fetchJson("/api/stock-dashboard");
+        state.dashboard = data;
+        $("#refreshMeta").textContent = `更新 ${new Date().toLocaleTimeString()}`;
+        return data;
+      }
+
+      function empty(target, text = "暂无数据") {
+        if (target) target.innerHTML = `<div class="item"><p class="item-meta">${html(text)}</p></div>`;
+      }
+
+      function renderOverview(data) {
+        const market = data.market || {};
+        const opportunity = data.opportunity || {};
+        const primary = market.primary_index || {};
+        $("#marketIndex").textContent = primary.available ? num(primary.price) : "--";
+        $("#marketIndexMeta").innerHTML = primary.available
+          ? `<span class="${changeClass(primary.change_pct)}">${num(primary.change_pct)}%</span> · ${html(primary.name)}`
+          : "指数接口暂不可用";
+        $("#monitoredCount").textContent = market.monitored_count ?? "--";
+        $("#particleCount").textContent = `市场粒子 ${market.total_particles ?? "--"}`;
+        $("#opportunityCount").textContent = opportunity.stats?.total ?? 0;
+        $("#opportunityStats").textContent = `强机会 ${opportunity.stats?.strong_count ?? 0} · 最高 ${num(opportunity.stats?.top_score)}`;
+
+        const indexList = $("#indexList");
+        indexList.innerHTML = (market.indices || []).map((item) => `
+          <div class="item">
+            <div class="item-top">
+              <p class="item-title">${html(item.name)}</p>
+              <span class="pill ${item.available ? "ok" : "warn"}">${item.available ? "在线" : "不可用"}</span>
+            </div>
+            <p class="item-meta">${html(item.code)} · ${item.available ? num(item.price) : "--"} · <span class="${changeClass(item.change_pct)}">${item.available ? num(item.change_pct) + "%" : "--"}</span></p>
+          </div>
+        `).join("");
+        if (!market.indices?.length) empty(indexList);
+
+        const topMovers = $("#topMovers");
+        topMovers.innerHTML = (market.top_movers || []).map((item) => `
+          <a class="item" href="/desktop/opportunities?stock=${html(item.code || "")}" data-stock-code="${html(item.code || "")}" data-stock-name="${html(item.name || "")}" data-sector="${html(item.sector || "")}">
+            <div class="item-top">
+              <p class="item-title">${html(item.name || item.code)}</p>
+              <strong class="${changeClass(item.change)}">${num(item.change)}%</strong>
+            </div>
+            <p class="item-meta">${html(item.code)} · ${html(item.sector)} · ${num(item.price)}</p>
+          </a>
+        `).join("");
+        if (!market.top_movers?.length) empty(topMovers);
+
+        const news = $("#marketNews");
+        const newsItems = market.intelligence?.jinshi || market.news || [];
+        news.innerHTML = newsItems.slice(0, 8).map((item) => `
+          <div class="item">
+            <div class="item-top">
+              <p class="item-title">${html(item.title || item.tag || "市场信息")}</p>
+              <span class="pill">${html(item.time || item.tag || "news")}</span>
+            </div>
+            ${item.url ? `<a class="item-meta" href="${html(item.url)}" target="_blank" rel="noreferrer">查看来源</a>` : ""}
+          </div>
+        `).join("");
+        if (!newsItems.length) empty(news);
+
+        const sectors = $("#sectorList");
+        sectors.innerHTML = (market.sectors || []).map((item) => `
+          <div class="item" data-sector="${html(item.name || "")}">
+            <div class="item-top">
+              <p class="item-title">${html(item.name)}</p>
+              <strong class="${changeClass(item.avg_change)}">${num(item.avg_change)}%</strong>
+            </div>
+            <p class="item-meta">监控 ${item.monitored_count || 0} · 龙头 ${html(item.leader?.name || "--")} ${item.leader ? num(item.leader.change) + "%" : ""}</p>
+          </div>
+        `).join("");
+        if (!market.sectors?.length) empty(sectors);
+      }
+
+      function stockCodeFromItem(item) {
+        return item.stock_code || item.code || item.symbol || "";
+      }
+
+      function renderOpportunities(data) {
+        const opportunity = data.opportunity || {};
+        $("#opportunityMeta").textContent = opportunity.latest_report?.updated_at || "--";
+        const items = opportunity.items || [];
+        const list = $("#opportunityList");
+        list.innerHTML = items.map((item, index) => {
+          const code = stockCodeFromItem(item);
+          return `<button class="item" type="button" data-stock="${html(code)}" data-stock-code="${html(code)}" data-stock-name="${html(item.stock_name || item.name || "")}" data-sector="${html(item.sector || item.industry || "")}">
+            <div class="item-top">
+              <p class="item-title">${index + 1}. ${html(item.stock_name || item.name || code)}</p>
+              <strong>${num(item.score)}</strong>
+            </div>
+            <p class="item-meta">${html(code)} · ${html(item.reason || item.summary || item.industry || "点击查看K线")}</p>
+          </button>`;
+        }).join("");
+        if (!items.length) empty(list, "还没有机会报告，请先在工作台启动机会挖掘。");
+        list.querySelectorAll("[data-stock]").forEach((el) => {
+          el.addEventListener("click", () => loadKline(el.dataset.stock));
+        });
+
+        const quant = $("#quantModels");
+        const models = opportunity.quant_models || {};
+        const entries = Object.entries(models);
+        quant.innerHTML = entries.map(([name, value]) => `
+          <div class="item">
+            <div class="item-top">
+              <p class="item-title">${html(name)}</p>
+              <span class="pill">${typeof value === "object" ? html(value.count ?? value.total ?? "--") : html(value)}</span>
+            </div>
+            <p class="item-meta">${typeof value === "object" ? html(value.description || value.summary || JSON.stringify(value)) : "模型触发摘要"}</p>
+          </div>
+        `).join("");
+        if (!entries.length) empty(quant, "暂无量化模型摘要。");
+
+        const requested = new URLSearchParams(location.search).get("stock");
+        const firstCode = requested || stockCodeFromItem(items[0] || {});
+        if (firstCode) loadKline(firstCode);
+      }
+
+      async function loadKline(code) {
+        if (!code) return;
+        $("#klineTitle").textContent = `${code} K线`;
+        $("#klineMeta").textContent = "读取中...";
+        try {
+          const payload = await fetchJson(`/api/stock-kline/${encodeURIComponent(code)}?limit=120`);
+          const data = payload.data || {};
+          const records = data.records || [];
+          $("#klineMeta").textContent = `${data.source || "--"} · ${records.length} 条`;
+          if (!records.length || !window.Plotly) {
+            $("#klineChart").innerHTML = `<p class="muted">${html(data.message || "暂无K线数据")}</p>`;
+            return;
+          }
+          Plotly.newPlot("klineChart", [{
+            x: records.map((r) => r.date),
+            open: records.map((r) => r.open),
+            high: records.map((r) => r.high),
+            low: records.map((r) => r.low),
+            close: records.map((r) => r.close),
+            type: "candlestick",
+            increasing: { line: { color: "#d92d20" } },
+            decreasing: { line: { color: "#178c4d" } },
+          }], {
+            margin: { l: 42, r: 16, t: 10, b: 28 },
+            xaxis: { rangeslider: { visible: false } },
+            paper_bgcolor: "transparent",
+            plot_bgcolor: "transparent",
+          }, { displayModeBar: false, responsive: true });
+        } catch (error) {
+          $("#klineMeta").textContent = "读取失败";
+          $("#klineChart").innerHTML = `<p class="muted">${html(error.message)}</p>`;
+        }
+      }
+
+      function renderJobs(jobs) {
+        const target = $("#jobList");
+        if (!target) return;
+        target.innerHTML = (jobs || []).map((job) => `
+          <div class="item">
+            <div class="item-top">
+              <p class="item-title">${html(job.type)} · ${html(job.id)}</p>
+              <span class="pill ${job.status === "finished" ? "ok" : job.status === "failed" ? "bad" : "warn"}">${html(job.status)}</span>
+            </div>
+            <p class="item-meta">${html((job.logs || []).slice(-2).join(" / ") || "暂无日志")}</p>
+          </div>
+        `).join("");
+        if (!jobs?.length) empty(target, "暂无任务。");
+      }
+
+      async function loadJobs() {
+        const data = await fetchJson("/api/jobs");
+        renderJobs(data.jobs || []);
+      }
+
+      function setupWorkbench(data) {
+        renderJobs(data.jobs || []);
+        $("#opportunityForm").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          const payload = Object.fromEntries(form.entries());
+          payload.limit = Number(payload.limit);
+          payload.workers = Number(payload.workers);
+          try {
+            await fetchJson("/api/opportunity-discovery/start", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            await loadJobs();
+          } catch (error) {
+            alert(error.message);
+          }
+        });
+        $("#batchForm").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          const payload = Object.fromEntries(form.entries());
+          payload.max_concurrent = Number(payload.max_concurrent);
+          payload.data_types = ["comprehensive"];
+          try {
+            await fetchJson("/api/batch-analysis/start", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            await loadJobs();
+          } catch (error) {
+            alert(error.message);
+          }
+        });
+      }
+
+      function renderReports(data) {
+        const reports = $("#reportList");
+        reports.innerHTML = (data.reports || []).map((item) => `
+          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+            <div class="item-top">
+              <p class="item-title">${html(item.file)}</p>
+              <span class="pill">${html(item.type)}</span>
+            </div>
+            <p class="item-meta">${html(item.updated_at)} · ${item.size_kb} KB</p>
+          </a>
+        `).join("");
+        if (!data.reports?.length) empty(reports, "暂无报告。");
+
+        const modules = $("#moduleList");
+        modules.innerHTML = (data.modules || []).map((item) => `
+          <div class="item">
+            <div class="item-top">
+              <p class="item-title">${html(item.name)}</p>
+              <span class="pill ${item.status === "ready" ? "ok" : "warn"}">${html(item.status)}</span>
+            </div>
+            <p class="item-meta">${html(item.scope)} · ${html(item.module)}</p>
+          </div>
+        `).join("");
+
+        const batch = data.batch || {};
+        $("#batchMeta").textContent = `分析 ${batch.analysis_count || 0} · 预测 ${batch.prediction_count || 0}`;
+        const runs = [...(batch.analysis_runs || []), ...(batch.prediction_runs || [])];
+        const batchRuns = $("#batchRuns");
+        batchRuns.innerHTML = runs.map((item) => `
+          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+            <div class="item-top">
+              <p class="item-title">${html(item.file)}</p>
+              <span class="pill">${item.rows || 0} 行</span>
+            </div>
+            <p class="item-meta">${html(item.updated_at)} · 最高评分 ${num(item.top_score)}</p>
+          </a>
+        `).join("");
+        if (!runs.length) empty(batchRuns, "暂无批量结果。");
+      }
+
+      function normalizeCurve(values) {
+        if (!values.length) return [];
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        if (max === min) return values.map(() => 0.5);
+        return values.map((value) => (value - min) / (max - min));
+      }
+
+      function resample(points, length = 30) {
+        if (points.length < 2) return [];
+        const sorted = [...points].sort((a, b) => a.x - b.x);
+        const minX = sorted[0].x;
+        const maxX = sorted[sorted.length - 1].x;
+        const values = [];
+        for (let i = 0; i < length; i += 1) {
+          const x = minX + ((maxX - minX) * i) / (length - 1);
+          let right = sorted.findIndex((point) => point.x >= x);
+          if (right <= 0) {
+            values.push(1 - sorted[0].y);
+            continue;
+          }
+          const left = sorted[right - 1];
+          const next = sorted[right];
+          const ratio = (x - left.x) / Math.max(next.x - left.x, 1);
+          values.push(1 - (left.y + (next.y - left.y) * ratio));
+        }
+        return normalizeCurve(values);
+      }
+
+      function setupPatternCanvas() {
+        const canvas = $("#patternCanvas");
+        const ctx = canvas.getContext("2d");
+        let drawing = false;
+
+        function draw() {
+          const width = canvas.width;
+          const height = canvas.height;
+          ctx.clearRect(0, 0, width, height);
+          ctx.strokeStyle = "#d9e1ec";
+          ctx.lineWidth = 1;
+          for (let i = 1; i < 5; i += 1) {
+            ctx.beginPath();
+            ctx.moveTo((width * i) / 5, 0);
+            ctx.lineTo((width * i) / 5, height);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(0, (height * i) / 5);
+            ctx.lineTo(width, (height * i) / 5);
+            ctx.stroke();
+          }
+          if (state.drawPoints.length > 1) {
+            ctx.strokeStyle = "#0a84ff";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            state.drawPoints.forEach((point, index) => {
+              const x = point.x * width;
+              const y = point.y * height;
+              if (index === 0) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+          }
+          $("#matchDrawBtn").disabled = state.drawPoints.length < 5;
+        }
+
+        function point(event) {
+          const rect = canvas.getBoundingClientRect();
+          return {
+            x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+            y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+          };
+        }
+
+        canvas.addEventListener("pointerdown", (event) => {
+          drawing = true;
+          state.drawPoints = [point(event)];
+          draw();
+        });
+        canvas.addEventListener("pointermove", (event) => {
+          if (!drawing) return;
+          state.drawPoints.push(point(event));
+          draw();
+        });
+        window.addEventListener("pointerup", () => {
+          if (!drawing) return;
+          drawing = false;
+          state.selectedCurve = resample(state.drawPoints);
+          draw();
+        });
+        $("#clearPatternBtn").addEventListener("click", () => {
+          state.drawPoints = [];
+          state.selectedCurve = null;
+          draw();
+        });
+        draw();
+      }
+
+      async function loadPatternStatus() {
+        const status = await fetchJson("/api/pattern-search/status");
+        $("#patternStatus").textContent = status.available
+          ? `指纹库 ${status.total_stocks} 只股票 · 快照 ${status.snapshot_date || "--"}`
+          : status.warning || "指纹库尚未生成";
+      }
+
+      async function runPatternMatch(curve) {
+        if (!curve?.length) return;
+        $("#patternResults").innerHTML = `<div class="item"><p class="item-meta">正在检索...</p></div>`;
+        const payload = {
+          curve,
+          top_n: Number($("#patternTopN")?.value || 30),
+          window_days: Number($("#patternWindowDays").value),
+          query_offset_days: Number($("#patternOffsetDays").value),
+        };
+        const data = await fetchJson("/api/pattern-search/match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        $("#patternResultMeta").textContent = `${data.count || 0} 条 · ${data.compute_ms || 0} ms`;
+        renderPatternResults(data.matches || [], data.query_curve || curve);
+      }
+
+      function renderPatternResults(matches, queryCurve) {
+        const target = $("#patternResults");
+        target.innerHTML = matches.map((item, index) => `
+          <button class="item" type="button" data-pattern-index="${index}" data-stock-code="${html(item.stock_code || "")}" data-stock-name="${html(item.stock_name || "")}" data-sector="${html(item.industry || "")}">
+            <div class="item-top">
+              <p class="item-title">${index + 1}. ${html(item.stock_name || item.stock_code)}</p>
+              <strong>${num(Number(item.score || 0) * 100, 1)}%</strong>
+            </div>
+            <p class="item-meta">${html(item.stock_code)} · ${html(item.market || "--")} · ${html(item.industry || "--")} · ${html(item.snapshot_date || "")}</p>
+          </button>
+        `).join("");
+        if (!matches.length) empty(target, "暂无匹配结果。");
+        target.querySelectorAll("[data-pattern-index]").forEach((el) => {
+          el.addEventListener("click", () => {
+            const item = matches[Number(el.dataset.patternIndex)];
+            plotPatternCompare(queryCurve, item);
+          });
+        });
+        if (matches[0]) plotPatternCompare(queryCurve, matches[0]);
+      }
+
+      function plotPatternCompare(queryCurve, item) {
+        $("#patternCompareTitle").textContent = `${item.stock_name || item.stock_code} 形态对比`;
+        $("#patternCompareMeta").textContent = `${num(Number(item.score || 0) * 100, 1)}%`;
+        const stockCurve = item.matched_curve || item.normalized_curve || item.curve || item.close_curve || [];
+        if (!window.Plotly || !stockCurve.length) {
+          $("#patternCompareChart").innerHTML = `<p class="muted">暂无可绘制曲线。</p>`;
+          return;
+        }
+        Plotly.newPlot("patternCompareChart", [
+          { y: queryCurve, type: "scatter", mode: "lines", name: "查询形态", line: { color: "#0a84ff", width: 3 } },
+          { y: stockCurve, type: "scatter", mode: "lines", name: item.stock_name || item.stock_code, line: { color: "#d92d20", width: 3 } },
+        ], {
+          margin: { l: 36, r: 12, t: 10, b: 28 },
+          yaxis: { range: [-0.05, 1.05] },
+          paper_bgcolor: "transparent",
+          plot_bgcolor: "transparent",
+        }, { displayModeBar: false, responsive: true });
+      }
+
+      function setupPatterns() {
+        setupPatternCanvas();
+        loadPatternStatus().catch((error) => {
+          $("#patternStatus").textContent = error.message;
+        });
+        document.querySelectorAll("[data-pattern-tab]").forEach((button) => {
+          button.addEventListener("click", () => {
+            document.querySelectorAll("[data-pattern-tab]").forEach((el) => el.classList.remove("active"));
+            button.classList.add("active");
+            const mode = button.dataset.patternTab;
+            $("#drawPane").classList.toggle("hidden", mode !== "draw");
+            $("#stockPane").classList.toggle("hidden", mode !== "stock");
+          });
+        });
+        $("#matchDrawBtn").addEventListener("click", () => runPatternMatch(state.selectedCurve).catch((error) => alert(error.message)));
+        $("#stockSearchBtn").addEventListener("click", async () => {
+          const q = $("#patternStockInput").value.trim();
+          if (!q) return;
+          const data = await fetchJson(`/api/pattern-search/stocks?q=${encodeURIComponent(q)}&limit=8`);
+          const target = $("#stockSuggestions");
+          target.innerHTML = (data.stocks || []).map((item) => `
+            <button class="item" type="button" data-stock-code="${html(item.stock_code)}" data-stock-name="${html(item.stock_name || "")}" data-sector="${html(item.industry || "")}">
+              <div class="item-top">
+                <p class="item-title">${html(item.stock_name || item.stock_code)}</p>
+                <span class="pill">${html(item.stock_code)}</span>
+              </div>
+              <p class="item-meta">${html(item.market || "--")} · ${html(item.industry || "--")}</p>
+            </button>
+          `).join("");
+          if (!data.stocks?.length) empty(target, "没有匹配股票。");
+          target.querySelectorAll("[data-stock-code]").forEach((el) => {
+            el.addEventListener("click", async () => {
+              const payload = await fetchJson(`/api/pattern-search/stock-curve/${encodeURIComponent(el.dataset.stockCode)}`);
+              state.selectedStock = payload;
+              state.selectedCurve = payload.normalized_curve;
+              $("#matchStockBtn").disabled = false;
+              $("#patternCompareTitle").textContent = `${payload.stock_name} 形态预览`;
+              $("#patternCompareMeta").textContent = payload.snapshot_date || "--";
+              plotPatternCompare(payload.normalized_curve, {
+                stock_code: payload.stock_code,
+                stock_name: payload.stock_name,
+                normalized_curve: payload.normalized_curve,
+                score: 1,
+              });
+            });
+          });
+        });
+        $("#matchStockBtn").addEventListener("click", () => runPatternMatch(state.selectedCurve).catch((error) => alert(error.message)));
+        $("#refreshPatternDbBtn").addEventListener("click", async () => {
+          const data = await fetchJson("/api/pattern-search/refresh", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workers: 16 }),
+          });
+          alert(`刷新任务已创建: ${data.job_id}`);
+        });
+      }
+
+      async function boot() {
+        $("#refreshBtn").addEventListener("click", () => location.reload());
+        const dashboardPages = ["overview", "opportunities", "workbench", "reports"];
+        if (dashboardPages.includes(page)) {
+          const data = await loadDashboard();
+          if (page === "overview") renderOverview(data);
+          if (page === "opportunities") renderOpportunities(data);
+          if (page === "workbench") setupWorkbench(data);
+          if (page === "reports") renderReports(data);
+        }
+        if (page === "patterns") {
+          $("#refreshMeta").textContent = "形态检索";
+          setupPatterns();
+        }
+      }
+
+      boot().catch((error) => {
+        $("#refreshMeta").textContent = "加载失败";
+        console.error(error);
+        alert(error.message);
+      });
+    </script>
+  </body>
+</html>

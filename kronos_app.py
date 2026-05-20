@@ -13,7 +13,6 @@ import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
-import webbrowser
 
 # 导入Python命令检测器
 sys.path.append(str(Path(__file__).parent / "tools"))
@@ -570,15 +569,11 @@ class KronosApp:
 
         if choice == "🚀 启动Web界面":
             self.dialog.show_info("🌐 启动中",
-                                  "Web界面正在启动...\\n\\n🌐 访问地址: http://localhost:7070\\n🚀 启动完成后浏览器将自动打开")
+                                  "Web界面正在启动...\\n\\n请在桌面窗口中继续使用。")
 
             # 启动web界面
             def start_web():
                 self.run_command_async("Web界面", get_python_command_list("webui/app.py"))
-                # 延迟打开浏览器
-                import time
-                time.sleep(3)
-                webbrowser.open("http://localhost:7070")
 
             threading.Thread(target=start_web, daemon=True).start()
 
@@ -683,7 +678,6 @@ class KronosApp:
 
 🌐 Web界面：
 提供可视化的操作界面和图表分析
-访问地址: http://localhost:7070
 
 📞 技术支持：
 如遇问题请查看README.md或联系技术支持"""

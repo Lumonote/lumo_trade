@@ -49,8 +49,22 @@ After successful startup, visit http://localhost:7070
 ## 📍 Web Routes
 
 - `http://localhost:7070/`: comprehensive stock analysis home page
+- `http://localhost:7070/desktop/overview`: Tauri desktop multi-page shell
 - `http://localhost:7070/prediction`: original Kronos K-line prediction console
 - `http://localhost:7070/particles`: real-time market particle visualization
+
+## 🖥️ Desktop Shell
+
+The desktop package now uses Tauri as the native shell and reuses the Flask Web UI as a local backend.
+
+```bash
+npm install
+npm run desktop:dev
+npm run desktop:build
+```
+
+The Tauri entry opens `/desktop/overview`, where the original stock-analysis home page is split into dedicated pages:
+overview, opportunities, workbench, pattern search, and reports/health.
 
 ## 📋 Usage Steps
 
