@@ -1,120 +1,29 @@
-import os
-import pandas as pd
-import numpy as np
-import json
-import plotly.graph_objects as go
-import plotly.utils
-import re
-import uuid
-from html import unescape
-from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory, abort
 from flask_cors import CORS
-import sys
-import warnings
-import datetime
-import threading
-import time
-import random
-import math
-import plistlib
-import platform
-import shutil
-import subprocess
-import urllib.request
-import urllib.parse
 
-warnings.filterwarnings('ignore')
-
-# Add project root directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-try:
-    from model import Kronos, KronosTokenizer, KronosPredictor
-
-    MODEL_AVAILABLE = True
-except ImportError:
-    MODEL_AVAILABLE = False
-    print("Warning: Kronos model cannot be imported, will use simulated data for demonstration")
+from webui.core import *  # noqa: F401,F403  - re-export helpers/singletons
+from webui.core import (
+    PROJECT_ROOT,
+    USER_ROOT,
+    RESULTS_DIR,
+    REPORT_DIRS,
+    AVAILABLE_MODELS,
+    MODEL_AVAILABLE,
+    CONFIGURATION_SERVICE,
+    JOB_STORE,
+    ANALYSIS_JOB_PARSER,
+    STOCK_KLINE_SERVICE,
+    MARKET_INTELLIGENCE_SERVICE,
+    PATTERN_SEARCH_SERVICE,
+    TRADING_CLIENT_SERVICE,
+    _set_loaded_model,
+    _model_runtime_context,
+)
 
 app = Flask(__name__)
 CORS(app)
 
-# === Pattern Search ===
-from analysis.pattern_matcher import (
-    TARGET_LENGTH as PATTERN_TARGET_LENGTH,
-    comparison_window as pattern_comparison_window,
-    search_similar as pattern_search_similar,
-)
-from analysis.pattern_store import PatternStore
-
-PATTERN_DB_PATH = Path(__file__).resolve().parent.parent / 'data' / 'pattern_fingerprints.db'
-_pattern_store_instance = None
-
-
-def _get_pattern_store():
-    global _pattern_store_instance
-    if _pattern_store_instance is None:
-        _pattern_store_instance = PatternStore(PATTERN_DB_PATH)
-        _pattern_store_instance.init_schema()
-    return _pattern_store_instance
-
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RESULTS_DIR = PROJECT_ROOT / 'results'
-REPORT_DIRS = {
-    'results': RESULTS_DIR,
-    'reports': PROJECT_ROOT / 'reports',
-    'integrated_results': PROJECT_ROOT / 'integrated_results',
-}
-PRIMARY_OPPORTUNITY_REPORT_RE = re.compile(r'^opportunity_top10_\d{8}_\d{6}\.md$')
-
-analysis_jobs = {}
-analysis_jobs_lock = threading.Lock()
-market_intelligence_cache = {
-    'ts': 0,
-    'payload': None,
-}
-MARKET_INTELLIGENCE_TTL = 180
-TRADING_CLIENT_CONFIG_PATH = PROJECT_ROOT / 'config' / 'trading_client_adapters.json'
-TRADING_CLIENT_DISCOVERY_TTL = 30
-trading_client_cache = {
-    'ts': 0,
-    'payload': None,
-}
-
-# Global variables to store models
-tokenizer = None
-model = None
-predictor = None
-
-# Available model configurations
-AVAILABLE_MODELS = {
-    'kronos-mini': {
-        'name': 'Kronos-mini',
-        'model_id': 'northwind9898/Kronos-mini',
-        'tokenizer_id': 'northwind9898/Kronos-Tokenizer-2k',
-        'context_length': 2048,
-        'params': '4.1M',
-        'description': 'Lightweight model, suitable for fast prediction'
-    },
-    'kronos-small': {
-        'name': 'Kronos-small',
-        'model_id': 'northwind9898/Kronos-small',
-        'tokenizer_id': 'northwind9898/Kronos-Tokenizer-base',
-        'context_length': 512,
-        'params': '24.7M',
-        'description': 'Small model, balanced performance and speed'
-    },
-    'kronos-base': {
-        'name': 'Kronos-base',
-        'model_id': 'northwind9898/Kronos-base',
-        'tokenizer_id': 'northwind9898/Kronos-Tokenizer-base',
-        'context_length': 512,
-        'params': '102.3M',
-        'description': 'Base model, provides better prediction quality'
-    }
-}
+JOB_SERVICE = BackgroundJobService(JOB_STORE, sanitizer=lambda value: _json_safe(value))
 
 
 # --- Market Data Configuration & Logic ---
@@ -159,6 +68,8 @@ market_state = {
     "index_last_update": None,
     "real_data_cache": {} # code -> {price, change, name}
 }
+market_monitor_thread = None
+market_monitor_lock = threading.Lock()
 
 # Initial News Data
 INITIAL_NEWS = [
@@ -299,9 +210,13 @@ def fetch_real_index_data():
     """Fetch real index quotes. Never derive index values from monitored stocks."""
     try:
         url = f"http://qt.gtimg.cn/q={','.join(REAL_INDEX_CODES.keys())}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as f:
-            content = f.read().decode('gbk', errors='ignore')
+        content = request_text(
+            url,
+            headers={'User-Agent': 'Mozilla/5.0'},
+            timeout=5,
+            encoding='gbk',
+            errors='ignore',
+        )
 
         indices = {}
         for line in content.strip().split(';'):
@@ -322,10 +237,13 @@ def fetch_real_index_data():
 def fetch_real_market_data():
     try:
         url = f"http://qt.gtimg.cn/q={','.join(ALL_REAL_CODES)}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as f:
-            content = f.read().decode('gbk')
-        
+        content = request_text(
+            url,
+            headers={'User-Agent': 'Mozilla/5.0'},
+            timeout=5,
+            encoding='gbk',
+        )
+
         lines = content.strip().split(';')
         for line in lines:
             if '="' in line:
@@ -433,19 +351,32 @@ def monitor_loop():
         time.sleep(2.0)
 
 
+def start_market_monitor():
+    """Initialize market state and start the monitor thread once."""
+    global market_monitor_thread
+    with market_monitor_lock:
+        if market_monitor_thread and market_monitor_thread.is_alive():
+            return market_monitor_thread
+
+        print("Initializing market data...")
+        init_market()
+        market_monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
+        market_monitor_thread.start()
+        return market_monitor_thread
+
+
 def load_data_files():
     """Scan data directory and return available data files"""
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
+    data_dir = USER_ROOT / 'data'
     data_files = []
 
-    if os.path.exists(data_dir):
-        for file in os.listdir(data_dir):
-            if file.endswith(('.csv', '.feather')):
-                file_path = os.path.join(data_dir, file)
-                file_size = os.path.getsize(file_path)
+    if data_dir.exists():
+        for path in data_dir.iterdir():
+            if path.suffix.lower() in ('.csv', '.feather'):
+                file_size = path.stat().st_size
                 data_files.append({
-                    'name': file,
-                    'path': file_path,
+                    'name': path.name,
+                    'path': str(path),
                     'size': f"{file_size / 1024:.1f} KB" if file_size < 1024 * 1024 else f"{file_size / (1024 * 1024):.1f} MB"
                 })
 
@@ -503,14 +434,14 @@ def load_data_file(file_path):
 def save_prediction_results(file_path, prediction_type, prediction_results, actual_data, input_data, prediction_params):
     """Save prediction results to file"""
     try:
-        # Create prediction results directory
-        results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prediction_results')
-        os.makedirs(results_dir, exist_ok=True)
+        # Runtime prediction output must stay outside packaged read-only resources.
+        results_dir = USER_ROOT / 'prediction_results'
+        results_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate filename
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f'prediction_{timestamp}.json'
-        filepath = os.path.join(results_dir, filename)
+        filepath = results_dir / filename
 
         # Prepare data for saving
         save_data = {
@@ -578,7 +509,7 @@ def save_prediction_results(file_path, prediction_type, prediction_results, actu
             json.dump(save_data, f, indent=2, ensure_ascii=False)
 
         print(f"Prediction results saved to: {filepath}")
-        return filepath
+        return str(filepath)
 
     except Exception as e:
         print(f"Failed to save prediction results: {e}")
@@ -711,16 +642,7 @@ def create_prediction_chart(df, pred_df, lookback, pred_len, actual_df=None, his
 
 def _safe_int(value, default, minimum=None, maximum=None):
     """Parse an integer with optional bounds."""
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = default
-
-    if minimum is not None:
-        parsed = max(minimum, parsed)
-    if maximum is not None:
-        parsed = min(maximum, parsed)
-    return parsed
+    return safe_int(value, default, minimum=minimum, maximum=maximum)
 
 
 def _safe_float(value, default=0.0):
@@ -744,220 +666,12 @@ def _format_datetime(ts=None):
     return dt.strftime('%Y-%m-%d %H:%M:%S')
 
 
-def _strip_markup(value):
-    text = unescape(str(value or ''))
-    text = re.sub(r'<[^>]+>', '', text)
-    text = text.replace('**', '').replace('&nbsp;', ' ')
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-
-def _truncate_text(value, limit=180):
-    text = _strip_markup(value)
-    if len(text) <= limit:
-        return text
-    return text[:limit - 1].rstrip() + '…'
-
-
-def _request_json(url, headers=None, timeout=5):
-    last_exc = None
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(
-                url,
-                headers=headers or {
-                    'User-Agent': 'Mozilla/5.0',
-                    'Accept': 'application/json,text/plain,*/*',
-                },
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                return json.loads(response.read().decode('utf-8'))
-        except Exception as exc:
-            last_exc = exc
-            if attempt < 2:
-                time.sleep(0.2 * (attempt + 1))
-    raise last_exc
-
-
-def _fetch_jinshi_flash(limit=12):
-    """Fetch Jinshi flash headlines for homepage macro tape."""
-    url = 'https://flash-api.jin10.com/get_flash_list?channel=-8200&vip=1'
-    payload = _request_json(
-        url,
-        headers={
-            'User-Agent': (
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
-            ),
-            'Accept': 'application/json,text/plain,*/*',
-            'Referer': 'https://www.jin10.com/',
-            'x-app-id': 'SO1EJGmNgCtmpcPF',
-            'x-version': '1.0.0',
-        },
-        timeout=4,
-    )
-    rows = payload.get('data') if isinstance(payload, dict) else []
-    items = []
-    for row in rows or []:
-        data = row.get('data') or {}
-        title = data.get('title') or data.get('vip_title') or ''
-        content = data.get('content') or ''
-        text = _strip_markup(title or content)
-        if not text:
-            continue
-        source = _strip_markup(data.get('source') or '')
-        link = data.get('source_link') or data.get('link') or ''
-        items.append({
-            'id': row.get('id'),
-            'time': row.get('time'),
-            'title': _truncate_text(text, 150),
-            'source': source or '金十数据',
-            'important': bool(row.get('important')),
-            'url': link,
-        })
-        if len(items) >= limit:
-            break
-    return items
-
-
-def _eastmoney_money_text(value):
-    number = _safe_float(value, 0.0)
-    if abs(number) >= 100000000:
-        return f"{number / 100000000:.2f}亿"
-    if abs(number) >= 10000:
-        return f"{number / 10000:.1f}万"
-    return f"{number:.0f}"
-
-
-def _fetch_eastmoney_clist(fs, fid='f3', limit=10):
-    """Fetch Eastmoney board/stock ranking rows for display only, not K-line/OHLC sourcing."""
-    params = {
-        'pn': '1',
-        'pz': str(limit),
-        'po': '1',
-        'np': '1',
-        'fltt': '2',
-        'invt': '2',
-        'fid': fid,
-        'fs': fs,
-        'fields': 'f12,f14,f2,f3,f62',
-    }
-    url = 'https://push2.eastmoney.com/api/qt/clist/get?' + urllib.parse.urlencode(params)
-    payload = _request_json(
-        url,
-        headers={
-            'User-Agent': (
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
-            ),
-            'Accept': 'application/json,text/plain,*/*',
-            'Referer': 'https://quote.eastmoney.com/',
-        },
-        timeout=4,
-    )
-    rows = ((payload or {}).get('data') or {}).get('diff') or []
-    items = []
-    for row in rows:
-        code = str(row.get('f12') or '').strip()
-        name = str(row.get('f14') or '').strip()
-        if not code or not name:
-            continue
-        money_flow = _safe_float(row.get('f62'), 0.0)
-        items.append({
-            'code': code,
-            'name': name,
-            'price': _safe_float(row.get('f2'), None),
-            'change_pct': round(_safe_float(row.get('f3'), 0.0), 2),
-            'main_net_inflow': money_flow,
-            'main_net_inflow_text': _eastmoney_money_text(money_flow),
-            'source': 'eastmoney',
-        })
-    return items
-
-
 def _load_market_intelligence():
-    now = time.time()
-    cached = market_intelligence_cache.get('payload')
-    if cached and now - market_intelligence_cache.get('ts', 0) < MARKET_INTELLIGENCE_TTL:
-        return cached
-
-    payload = {
-        'updated_at': _format_datetime(now),
-        'jinshi': [],
-        'eastmoney': {
-            'industry_boards': [],
-            'concept_boards': [],
-            'money_boards': [],
-            'hot_stocks': [],
-            'updated_at': _format_datetime(now),
-        },
-        'errors': {},
-    }
-
-    try:
-        payload['jinshi'] = _fetch_jinshi_flash(limit=12)
-    except Exception as exc:
-        payload['errors']['jinshi'] = str(exc)
-
-    try:
-        payload['eastmoney']['industry_boards'] = _fetch_eastmoney_clist(
-            'm:90+t:2', fid='f3', limit=8
-        )
-    except Exception as exc:
-        payload['errors']['eastmoney_industry'] = str(exc)
-
-    try:
-        payload['eastmoney']['concept_boards'] = _fetch_eastmoney_clist(
-            'm:90+t:3', fid='f3', limit=8
-        )
-    except Exception as exc:
-        payload['errors']['eastmoney_concept'] = str(exc)
-
-    try:
-        payload['eastmoney']['money_boards'] = _fetch_eastmoney_clist(
-            'm:90+t:2', fid='f62', limit=8
-        )
-    except Exception as exc:
-        payload['errors']['eastmoney_money_boards'] = str(exc)
-
-    try:
-        payload['eastmoney']['hot_stocks'] = _fetch_eastmoney_clist(
-            'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23', fid='f62', limit=12
-        )
-    except Exception as exc:
-        payload['errors']['eastmoney_hot_stocks'] = str(exc)
-
-    market_intelligence_cache['payload'] = payload
-    market_intelligence_cache['ts'] = now
-    return payload
+    return MARKET_INTELLIGENCE_SERVICE.load()
 
 
 def _normalize_stock_codes(raw_codes):
-    if raw_codes is None:
-        return []
-    if isinstance(raw_codes, list):
-        candidates = raw_codes
-    else:
-        candidates = re.split(r'[\s,，;；|/]+', str(raw_codes))
-
-    normalized = []
-    seen = set()
-    for item in candidates:
-        token = str(item or '').strip().upper()
-        if not token:
-            continue
-        if token.startswith(('SH', 'SZ', 'BJ')) and len(token) >= 8:
-            token = token[2:]
-        if token.endswith(('.SH', '.SZ', '.BJ')):
-            token = token.split('.')[0]
-        match = re.search(r'\d{6}', token)
-        if not match:
-            continue
-        code = match.group(0)
-        if code not in seen:
-            normalized.append(code)
-            seen.add(code)
-    return normalized
+    return normalize_stock_codes(raw_codes)
 
 
 def _json_safe(value):
@@ -978,522 +692,7 @@ def _json_safe(value):
     return value
 
 
-def _load_trading_client_config():
-    default_config = {
-        'discovery': {
-            'macos_app_categories': ['public.app-category.finance'],
-            'include_all_macos_finance_apps': False,
-            'name_keywords': [
-                '股票', '证券', '交易', '行情', '财富', '金融', '同花顺',
-                '通达信', '大智慧', '指南针', '雪球', '富途', '老虎',
-                'futu', 'niuniu', 'tiger', 'tradingview',
-            ],
-        },
-        'jump': {
-            'default_mode': 'keyboard',
-            'keyboard_delay_ms': 700,
-        },
-        'adapters': [],
-    }
-    if not TRADING_CLIENT_CONFIG_PATH.exists():
-        return default_config
-    try:
-        with TRADING_CLIENT_CONFIG_PATH.open('r', encoding='utf-8') as fh:
-            loaded = json.load(fh)
-    except Exception:
-        return default_config
-
-    config = default_config.copy()
-    config['discovery'] = {**default_config['discovery'], **loaded.get('discovery', {})}
-    config['jump'] = {**default_config['jump'], **loaded.get('jump', {})}
-    config['adapters'] = loaded.get('adapters', [])
-    return config
-
-
-def _slugify_client_id(value):
-    slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', str(value or '').strip()).strip('-').lower()
-    return slug[:80] or 'client'
-
-
-def _unique_client_id(base, used_ids):
-    client_id = _slugify_client_id(base)
-    original = client_id
-    idx = 2
-    while client_id in used_ids:
-        client_id = f'{original}-{idx}'
-        idx += 1
-    used_ids.add(client_id)
-    return client_id
-
-
-def _client_match_score(client, adapter):
-    match = adapter.get('match') or {}
-    score = 0
-    bundle_id = str(client.get('bundle_id') or '').lower()
-    name = str(client.get('name') or '').lower()
-    path = str(client.get('path') or '').lower()
-    executable = str(client.get('executable') or '').lower()
-    schemes = {str(item).lower() for item in client.get('url_schemes') or []}
-
-    if bundle_id and bundle_id in {str(item).lower() for item in match.get('bundle_ids', [])}:
-        score += 100
-    if schemes.intersection({str(item).lower() for item in match.get('url_schemes', [])}):
-        score += 80
-    for keyword in match.get('name_keywords', []):
-        kw = str(keyword).lower()
-        if kw and (kw in name or kw in path or kw in executable):
-            score += 25
-    for executable_name in match.get('executable_names', []):
-        if str(executable_name).lower() in executable:
-            score += 35
-    return score
-
-
-def _match_trading_adapter(client, adapters):
-    scored = [
-        (_client_match_score(client, adapter), adapter)
-        for adapter in adapters
-    ]
-    scored = [item for item in scored if item[0] > 0]
-    if not scored:
-        return None
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return scored[0][1]
-
-
-def _looks_like_trading_client(client, config):
-    category = str(client.get('category') or '')
-    discovery = config.get('discovery', {})
-    category_match = category in set(discovery.get('macos_app_categories', []))
-    haystack = ' '.join([
-        str(client.get('name') or ''),
-        str(client.get('path') or ''),
-        str(client.get('executable') or ''),
-    ]).lower()
-    for keyword in discovery.get('name_keywords', []):
-        if str(keyword).lower() in haystack:
-            return True
-    return bool(category_match and discovery.get('include_all_macos_finance_apps'))
-
-
-def _macos_read_app_bundle(app_path):
-    info_path = app_path / 'Contents' / 'Info.plist'
-    if not info_path.exists():
-        return None
-    try:
-        with info_path.open('rb') as fh:
-            info = plistlib.load(fh)
-    except Exception:
-        return None
-
-    schemes = []
-    for item in info.get('CFBundleURLTypes') or []:
-        schemes.extend(item.get('CFBundleURLSchemes') or [])
-    executable = info.get('CFBundleExecutable') or app_path.stem
-    return {
-        'platform': 'macos',
-        'name': (
-            info.get('CFBundleDisplayName') or
-            info.get('CFBundleName') or
-            app_path.stem
-        ),
-        'path': str(app_path),
-        'bundle_id': info.get('CFBundleIdentifier') or '',
-        'executable': executable,
-        'category': info.get('LSApplicationCategoryType') or '',
-        'url_schemes': sorted(set(str(item) for item in schemes if item)),
-    }
-
-
-def _discover_macos_trading_clients(config):
-    roots = [
-        Path('/Applications'),
-        Path.home() / 'Applications',
-        Path('/System/Applications'),
-    ]
-    clients = []
-    seen_paths = set()
-    for root in roots:
-        if not root.exists():
-            continue
-        for app_path in root.glob('*.app'):
-            resolved = str(app_path.resolve())
-            if resolved in seen_paths:
-                continue
-            seen_paths.add(resolved)
-            client = _macos_read_app_bundle(app_path)
-            if client and _looks_like_trading_client(client, config):
-                clients.append(client)
-    return clients
-
-
-def _discover_windows_trading_clients(config):
-    clients = []
-    adapters = config.get('adapters', [])
-    roots = [
-        os.environ.get('ProgramFiles'),
-        os.environ.get('ProgramFiles(x86)'),
-        os.environ.get('LOCALAPPDATA'),
-        os.environ.get('APPDATA'),
-    ]
-    executable_names = set()
-    for adapter in adapters:
-        executable_names.update(adapter.get('match', {}).get('executable_names', []))
-        executable_names.update(adapter.get('windows', {}).get('executable_names', []))
-    for name in executable_names:
-        path = shutil.which(name)
-        if path:
-            clients.append({
-                'platform': 'windows',
-                'name': Path(path).stem,
-                'path': path,
-                'bundle_id': '',
-                'executable': Path(path).name,
-                'category': '',
-                'url_schemes': [],
-            })
-
-    shortcut_roots = [
-        Path(os.environ.get('PROGRAMDATA', '')) / 'Microsoft' / 'Windows' / 'Start Menu' / 'Programs',
-        Path(os.environ.get('APPDATA', '')) / 'Microsoft' / 'Windows' / 'Start Menu' / 'Programs',
-    ]
-    for root in shortcut_roots:
-        if not root.exists():
-            continue
-        for path in root.glob('**/*.lnk'):
-            client = {
-                'platform': 'windows',
-                'name': path.stem,
-                'path': str(path),
-                'bundle_id': '',
-                'executable': path.name,
-                'category': '',
-                'url_schemes': [],
-            }
-            if _looks_like_trading_client(client, config):
-                clients.append(client)
-
-    for root_raw in roots:
-        if not root_raw:
-            continue
-        root = Path(root_raw)
-        if not root.exists():
-            continue
-        for exe_name in executable_names:
-            for path in root.glob(f'**/{exe_name}'):
-                if path.is_file():
-                    clients.append({
-                        'platform': 'windows',
-                        'name': path.stem,
-                        'path': str(path),
-                        'bundle_id': '',
-                        'executable': path.name,
-                        'category': '',
-                        'url_schemes': [],
-                    })
-    return clients
-
-
-def _parse_desktop_entry(path):
-    data = {}
-    try:
-        for line in path.read_text(encoding='utf-8', errors='ignore').splitlines():
-            if '=' in line and not line.startswith('#'):
-                key, value = line.split('=', 1)
-                data[key.strip()] = value.strip()
-    except Exception:
-        return None
-    exec_cmd = data.get('Exec', '').split()
-    return {
-        'platform': 'linux',
-        'name': data.get('Name') or path.stem,
-        'path': str(path),
-        'bundle_id': '',
-        'executable': exec_cmd[0] if exec_cmd else '',
-        'category': data.get('Categories', ''),
-        'url_schemes': [
-            item.rsplit('/', 1)[-1]
-            for item in data.get('MimeType', '').split(';')
-            if item.startswith('x-scheme-handler/')
-        ],
-    }
-
-
-def _discover_linux_trading_clients(config):
-    roots = [
-        Path('/usr/share/applications'),
-        Path('/usr/local/share/applications'),
-        Path.home() / '.local/share/applications',
-    ]
-    clients = []
-    for root in roots:
-        if not root.exists():
-            continue
-        for path in root.glob('*.desktop'):
-            client = _parse_desktop_entry(path)
-            if client and _looks_like_trading_client(client, config):
-                clients.append(client)
-    return clients
-
-
-def _platform_key():
-    system = platform.system().lower()
-    if system == 'darwin':
-        return 'macos'
-    if system == 'windows':
-        return 'windows'
-    if system == 'linux':
-        return 'linux'
-    return system
-
-
-def _platform_trading_clients(config):
-    system = _platform_key()
-    if system == 'macos':
-        return _discover_macos_trading_clients(config)
-    if system == 'windows':
-        return _discover_windows_trading_clients(config)
-    if system == 'linux':
-        return _discover_linux_trading_clients(config)
-    return []
-
-
-def _adapter_templates(adapter, platform_key):
-    templates = []
-    templates.extend(adapter.get('url_templates') or [])
-    platform_config = adapter.get(platform_key) or {}
-    templates.extend(platform_config.get('url_templates') or [])
-    return templates
-
-
-def _client_capabilities(client, adapter, config):
-    platform_key = client.get('platform') or _platform_key()
-    direct_targets = {
-        item.get('target')
-        for item in _adapter_templates(adapter or {}, platform_key)
-        if item.get('target')
-    }
-    keyboard_targets = set((adapter or {}).get('keyboard_targets') or [])
-    if not keyboard_targets and config.get('jump', {}).get('default_mode') == 'keyboard':
-        keyboard_targets = {'stock', 'board', 'search'}
-    return {
-        'stock': 'stock' in direct_targets or 'stock' in keyboard_targets,
-        'board': 'board' in direct_targets or 'board' in keyboard_targets or 'search' in keyboard_targets,
-        'direct_targets': sorted(direct_targets),
-        'keyboard_targets': sorted(keyboard_targets),
-    }
-
-
-def _discover_trading_clients(refresh=False):
-    now = time.time()
-    if (
-        not refresh and
-        trading_client_cache.get('payload') and
-        now - trading_client_cache.get('ts', 0) < TRADING_CLIENT_DISCOVERY_TTL
-    ):
-        return trading_client_cache['payload']
-
-    config = _load_trading_client_config()
-    adapters = config.get('adapters', [])
-    used_ids = set()
-    clients = []
-    seen = set()
-    for client in _platform_trading_clients(config):
-        key = (client.get('platform'), client.get('bundle_id'), client.get('path'))
-        if key in seen:
-            continue
-        seen.add(key)
-        adapter = _match_trading_adapter(client, adapters) or {}
-        adapter_id = adapter.get('id') or client.get('bundle_id') or client.get('name')
-        client_id = _unique_client_id(adapter_id, used_ids)
-        capabilities = _client_capabilities(client, adapter, config)
-        client.update({
-            'id': client_id,
-            'display_name': adapter.get('display_name') or client.get('name'),
-            'adapter_id': adapter.get('id') or '',
-            'capabilities': capabilities,
-            'jump_mode': (adapter.get('jump') or {}).get('mode') or config.get('jump', {}).get('default_mode', 'keyboard'),
-        })
-        if capabilities.get('stock') or capabilities.get('board'):
-            clients.append(client)
-
-    payload = {
-        'platform': _platform_key(),
-        'clients': sorted(clients, key=lambda item: item.get('display_name') or item.get('name') or ''),
-        'config_path': str(TRADING_CLIENT_CONFIG_PATH),
-        'generated_at': _format_datetime(now),
-    }
-    trading_client_cache['payload'] = payload
-    trading_client_cache['ts'] = now
-    return payload
-
-
-def _market_prefix_for_code(stock_code):
-    code = str(stock_code or '').strip()
-    if code.startswith(('43', '83', '87', '92')):
-        return {'lower': 'bj', 'upper': 'BJ', 'ths_market': '48'}
-    if code.startswith(('6', '9')):
-        return {'lower': 'sh', 'upper': 'SH', 'ths_market': '17'}
-    return {'lower': 'sz', 'upper': 'SZ', 'ths_market': '33'}
-
-
-def _template_context(target):
-    stock_code = _normalize_stock_codes(target.get('stock_code') or target.get('code'))
-    code = stock_code[0] if stock_code else ''
-    board_code = str(target.get('board_code') or '').strip().upper()
-    board_name = str(target.get('board_name') or target.get('sector') or target.get('name') or '').strip()
-    stock_name = str(target.get('stock_name') or target.get('name') or '').strip()
-    query = code or board_code or board_name or stock_name
-    market = _market_prefix_for_code(code)
-    return {
-        'code': code,
-        'stock_code': code,
-        'stock_name': stock_name,
-        'board_code': board_code,
-        'board_name': board_name,
-        'query': query,
-        'market': market['lower'],
-        'market_upper': market['upper'],
-        'ths_market': market['ths_market'],
-    }
-
-
-def _render_jump_template(template, context):
-    try:
-        return str(template).format(**{
-            key: urllib.parse.quote(str(value), safe='')
-            for key, value in context.items()
-        })
-    except KeyError:
-        return ''
-
-
-def _run_detached(args):
-    subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return True
-
-
-def _launch_client_app(client):
-    system = client.get('platform') or _platform_key()
-    path = client.get('path') or ''
-    if system == 'macos':
-        if path.endswith('.app'):
-            return _run_detached(['open', path])
-        return _run_detached(['open', '-a', client.get('display_name') or client.get('name') or path])
-    if system == 'windows':
-        if path and hasattr(os, 'startfile'):
-            os.startfile(path)
-            return True
-        return _run_detached([path]) if path else False
-    if system == 'linux':
-        executable = client.get('executable') or path
-        return _run_detached([executable]) if executable else False
-    return False
-
-
-def _applescript_string(value):
-    return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"') + '"'
-
-
-def _send_keyboard_jump(client, query, delay_ms):
-    if not query:
-        return False, '缺少可跳转的代码或名称'
-    system = client.get('platform') or _platform_key()
-    _launch_client_app(client)
-    delay_seconds = max(float(delay_ms or 700) / 1000, 0.1)
-
-    if system == 'macos':
-        app_name = client.get('name') or client.get('display_name')
-        script = [
-            f'tell application {_applescript_string(app_name)} to activate',
-            f'delay {delay_seconds:.2f}',
-            'tell application "System Events"',
-            f'keystroke {_applescript_string(query)}',
-            'key code 36',
-            'end tell',
-        ]
-        args = ['osascript']
-        for line in script:
-            args.extend(['-e', line])
-        completed = subprocess.run(args, capture_output=True, text=True, timeout=5)
-        if completed.returncode == 0:
-            return True, '已通过客户端快捷输入跳转'
-        message = (completed.stderr or completed.stdout or '').strip()
-        return False, message or '系统未允许键盘自动化'
-
-    if system == 'windows':
-        ps_query = str(query).replace("'", "''")
-        command = (
-            f"Start-Sleep -Milliseconds {int(delay_seconds * 1000)}; "
-            "Add-Type -AssemblyName System.Windows.Forms; "
-            f"[System.Windows.Forms.SendKeys]::SendWait('{ps_query}{{ENTER}}')"
-        )
-        completed = subprocess.run(
-            ['powershell', '-NoProfile', '-Command', command],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if completed.returncode == 0:
-            return True, '已通过客户端快捷输入跳转'
-        return False, (completed.stderr or completed.stdout or '').strip() or '键盘自动化失败'
-
-    if system == 'linux':
-        xdotool = shutil.which('xdotool')
-        if not xdotool:
-            return False, '未安装 xdotool，已尝试启动客户端'
-        completed = subprocess.run(
-            [xdotool, 'type', '--delay', '20', str(query)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if completed.returncode == 0:
-            subprocess.run([xdotool, 'key', 'Return'], capture_output=True, timeout=2)
-            return True, '已通过客户端快捷输入跳转'
-        return False, (completed.stderr or completed.stdout or '').strip() or '键盘自动化失败'
-
-    return False, '当前系统暂不支持键盘跳转'
-
-
-def _open_trading_client_target(client_id, target):
-    discovered = _discover_trading_clients(refresh=True)
-    config = _load_trading_client_config()
-    client = next((item for item in discovered['clients'] if item['id'] == client_id), None)
-    if not client:
-        return {'success': False, 'error': '未发现该交易客户端'}
-
-    adapters = config.get('adapters', [])
-    adapter = _match_trading_adapter(client, adapters) or {}
-    target_type = str(target.get('type') or '').strip() or ('stock' if target.get('stock_code') else 'board')
-    context = _template_context(target)
-
-    for item in _adapter_templates(adapter, client.get('platform') or _platform_key()):
-        if item.get('target') != target_type:
-            continue
-        url = _render_jump_template(item.get('url') or '', context)
-        if not url:
-            continue
-        if client.get('platform') == 'macos' and client.get('bundle_id'):
-            _run_detached(['open', '-b', client['bundle_id'], url])
-        elif client.get('platform') == 'windows' and hasattr(os, 'startfile'):
-            os.startfile(url)
-        else:
-            _run_detached(['open', url] if client.get('platform') == 'macos' else ['xdg-open', url])
-        return {
-            'success': True,
-            'mode': 'scheme',
-            'client': client.get('display_name'),
-        }
-
-    delay_ms = config.get('jump', {}).get('keyboard_delay_ms', 700)
-    success, message = _send_keyboard_jump(client, context['query'], delay_ms)
-    return {
-        'success': success,
-        'mode': 'keyboard',
-        'client': client.get('display_name'),
-        'message': message,
-    }
+JOB_SERVICE.mark_interrupted_jobs()
 
 
 def _latest_files(directory, pattern, limit=10):
@@ -1533,167 +732,534 @@ def _report_url(path):
     return None
 
 
-def _extract_section(detail, label, limit=180):
-    match = re.search(rf'【{re.escape(label)}】([^【]+)', detail)
+def _strip_markup(value):
+    text = unescape(str(value or ''))
+    text = re.sub(r'<[^>]+>', '', text)
+    text = text.replace('**', '').replace('&nbsp;', ' ')
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+def _truncate_text(value, limit=180):
+    text = _strip_markup(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1].rstrip() + '…'
+
+
+def _extract_detail_section(detail, title):
+    pattern = rf'【{re.escape(title)}】([^【]+)'
+    match = re.search(pattern, detail or '')
+    return _strip_markup(match.group(1)).strip('；; ') if match else ''
+
+
+def _parse_rating(detail):
+    overview = _extract_detail_section(detail, '概览')
+    match = re.search(r'评级\s*([A-Z]\+?|S|C)', overview)
+    return match.group(1) if match else ''
+
+
+def _parse_recommendation(detail):
+    overview = _extract_detail_section(detail, '概览')
+    match = re.search(r'建议[:：]\s*([^；;，,]+)', overview)
+    return _strip_markup(match.group(1)) if match else ''
+
+
+def _parse_sector(detail):
+    sector = _extract_detail_section(detail, '板块')
+    return re.split(r'[（(]', sector, maxsplit=1)[0].strip() if sector else ''
+
+
+def _parse_quant_models(detail):
+    quant = _extract_detail_section(detail, '量化')
+    match = re.search(r'模型\[([^\]]+)\]', quant)
     if not match:
-        return ''
-    return _truncate_text(match.group(1), limit)
+        return []
+    models = [
+        _strip_markup(item)
+        for item in re.split(r'[,，/、\s]+', match.group(1))
+        if _strip_markup(item) and _strip_markup(item) not in {'无', '-', '—'}
+    ]
+    return models[:8]
 
 
-QUANT_MODEL_LIBRARY = {
-    '均衡双均线': {
-        'category': '趋势',
-        'focus': '中短均线共振',
-        'description': '用快慢均线判断趋势方向，适合过滤刚形成多头排列的标的。',
-    },
-    '多重突破': {
-        'category': '突破',
-        'focus': '价格突破确认',
-        'description': '同时观察关键高点、平台压力和短周期区间突破，强调确认度。',
-    },
-    '量能突破': {
-        'category': '量价',
-        'focus': '放量有效性',
-        'description': '关注成交量相对近期均量的放大，判断突破是否有资金承接。',
-    },
-    '海龟交易': {
-        'category': '趋势',
-        'focus': '通道突破',
-        'description': '以通道高低点识别趋势启动，偏向捕捉强势延续行情。',
-    },
-    '机器学习RF': {
-        'category': '机器学习',
-        'focus': '多因子非线性',
-        'description': '随机森林模型融合技术、量价、位置等特征，输出概率型信号。',
-    },
-    '趋势回踩': {
-        'category': '低吸',
-        'focus': '强趋势回落',
-        'description': '寻找上升趋势中的缩量回踩和重新转强位置。',
-    },
-    '资金趋势': {
-        'category': '资金',
-        'focus': '资金连续性',
-        'description': '跟踪主力资金净流入和连续性，识别资金推动型机会。',
-    },
-    '均线共振': {
-        'category': '趋势',
-        'focus': '均线簇排列',
-        'description': '多周期均线方向一致时提高趋势得分。',
-    },
-    '统计量化': {
-        'category': '统计',
-        'focus': '历史分布偏离',
-        'description': '基于收益、波动和位置分布判断当前价格状态。',
-    },
-}
+def _html_table_rows(markdown):
+    rows = []
+    for row_html in re.findall(r'<tr[^>]*>(.*?)</tr>', markdown or '', flags=re.I | re.S):
+        cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row_html, flags=re.I | re.S)
+        if len(cells) < 5:
+            continue
+        cleaned = [_strip_markup(cell) for cell in cells[:5]]
+        if cleaned[0] in {'排名', '#'} or cleaned[1] in {'代码', '股票代码'}:
+            continue
+        rows.append(cleaned)
+    return rows
 
 
-def _extract_quant_models(quant_text):
-    models = []
-    text = _strip_markup(quant_text)
-    match = re.search(r'模型\[(.*?)\]', text)
-    if match:
-        models = [item.strip() for item in re.split(r'[,，、/]+', match.group(1)) if item.strip()]
-    return models
-
-
-def _build_quant_model_summary(items):
-    model_counts = {}
-    model_examples = {}
-    for item in items:
-        for model_name in item.get('quant_models', []):
-            model_counts[model_name] = model_counts.get(model_name, 0) + 1
-            model_examples.setdefault(model_name, []).append({
-                'code': item.get('code'),
-                'name': item.get('name'),
-                'score': item.get('score'),
-            })
-
-    summary = []
-    for model_name, count in sorted(model_counts.items(), key=lambda pair: pair[1], reverse=True):
-        meta = QUANT_MODEL_LIBRARY.get(model_name, {})
-        summary.append({
-            'name': model_name,
-            'count': count,
-            'category': meta.get('category', '量化'),
-            'focus': meta.get('focus', '信号确认'),
-            'description': meta.get('description', '来自当前机会挖掘报告的触发模型。'),
-            'examples': model_examples.get(model_name, [])[:4],
-        })
-    return summary
+def _markdown_table_rows(markdown):
+    rows = []
+    for raw_line in str(markdown or '').splitlines():
+        line = raw_line.strip()
+        if not line.startswith('|') or '---' in line:
+            continue
+        cells = [_strip_markup(cell) for cell in line.strip('|').split('|')]
+        if len(cells) < 5 or cells[0] in {'排名', '#'} or cells[1] in {'代码', '股票代码'}:
+            continue
+        rows.append(cells[:5])
+    return rows
 
 
 def _parse_opportunity_report(path):
+    report_path = Path(path)
     try:
-        content = path.read_text(encoding='utf-8', errors='ignore')
+        content = report_path.read_text(encoding='utf-8', errors='replace')
     except OSError:
-        return {
-            'file': path.name,
-            'path': str(path),
-            'url': _report_url(path),
-            'updated_at': _format_datetime(path.stat().st_mtime),
-            'market_env': '',
-            'items': [],
-        }
+        content = ''
 
-    market_env = ''
-    env_match = re.search(r'>\s*\*\*市场环境\*\*:\s*(.+)', content)
-    if env_match:
-        market_env = _strip_markup(env_match.group(1))
-
-    row_pattern = re.compile(
-        r'<tr>\s*'
-        r'<td[^>]*>\s*(\d+)\s*</td>\s*'
-        r'<td[^>]*>\s*([0-9]{6})\s*</td>\s*'
-        r'<td[^>]*>\s*(.*?)\s*</td>\s*'
-        r'<td[^>]*>\s*([0-9.]+)\s*</td>\s*'
-        r'<td[^>]*>\s*(.*?)\s*</td>\s*'
-        r'</tr>',
-        re.S,
-    )
-
+    rows = _html_table_rows(content) or _markdown_table_rows(content)
     items = []
-    for row in row_pattern.finditer(content):
-        detail = _strip_markup(row.group(5))
-        overview = _extract_section(detail, '概览', 120)
-        rating_match = re.search(r'评级\s*([A-Z+]+)', overview)
-        recommendation_match = re.search(r'建议[:：]\s*([^；]+)', overview)
-        risk_match = re.search(r'追高风险:\s*([^ ]+\s*[^ ]*\([^)]+\))', detail)
-        score = _safe_float(row.group(4), 0.0)
-        quant = _extract_section(detail, '量化', 160)
-        quant_models = _extract_quant_models(quant)
-        stock_code = row.group(2)
+    for cells in rows:
+        rank_raw, code, name, score_raw, detail = cells
+        code_match = re.search(r'\d{6}', code)
+        if not code_match:
+            continue
+        score_match = re.search(r'-?\d+(?:\.\d+)?', score_raw)
+        score = float(score_match.group(0)) if score_match else 0.0
+        reason = _extract_detail_section(detail, '入选原因') or _truncate_text(detail, 180)
+        quant = _extract_detail_section(detail, '量化')
         item = {
-            'rank': int(row.group(1)),
-            'code': stock_code,
-            'name': _strip_markup(row.group(3)),
-            'score': round(score, 2),
-            'rating': rating_match.group(1) if rating_match else '',
-            'recommendation': _truncate_text(recommendation_match.group(1), 32) if recommendation_match else '',
-            'change': _extract_section(detail, '涨幅', 110),
-            'sector': _extract_section(detail, '板块', 100),
+            'rank': _safe_int(rank_raw, len(items) + 1, minimum=1),
+            'code': code_match.group(0),
+            'stock_code': code_match.group(0),
+            'name': _strip_markup(name),
+            'stock_name': _strip_markup(name),
+            'score': score,
+            'rating': _parse_rating(detail),
+            'recommendation': _parse_recommendation(detail),
+            'sector': _parse_sector(detail),
+            'industry': _parse_sector(detail),
+            'technical': _extract_detail_section(detail, '技术'),
             'quant': quant,
-            'quant_models': quant_models,
-            'technical': _extract_section(detail, '技术', 100),
-            'fundamental': _extract_section(detail, '基本面', 100),
-            'sentiment': _extract_section(detail, '情绪资金', 120),
-            'news': _extract_section(detail, '消息', 110),
-            'reason': _extract_section(detail, '入选原因', 180),
-            'latest_news': _extract_section(detail, '最新动态', 180),
-            'risk': _truncate_text(risk_match.group(1), 60) if risk_match else _extract_section(detail, '高级', 100),
-            'has_local_kline': bool(_local_kline_candidates(stock_code, 'daily')),
+            'sentiment': _extract_detail_section(detail, '情绪资金'),
+            'risk': _extract_detail_section(detail, '关键加减分'),
+            'reason': reason,
+            'summary': reason,
+            'quant_models': _parse_quant_models(detail),
+            'has_local_kline': False,
         }
         items.append(item)
 
+    market_env = ''
+    risk_match = re.search(r'<p[^>]*>\s*⚠️\s*<strong>(.*?)</strong>', content, flags=re.S)
+    if risk_match:
+        market_env = _strip_markup(risk_match.group(1))
+    if not market_env:
+        heading_match = re.search(r'##\s*([^\n]+)', content)
+        market_env = _strip_markup(heading_match.group(1)) if heading_match else '已解析最新机会挖掘报告'
+
     return {
-        'file': path.name,
-        'path': str(path),
-        'url': _report_url(path),
-        'updated_at': _format_datetime(path.stat().st_mtime),
+        'file': report_path.name,
+        'url': _report_url(report_path),
+        'updated_at': _format_datetime(report_path.stat().st_mtime) if report_path.exists() else '--',
         'market_env': market_env,
         'items': items,
     }
+
+
+def _build_quant_model_summary(items):
+    model_meta = {
+        'RSI': ('量化', '超买超卖', '相对强弱指标触发的拐点或风险信号'),
+        'MACD': ('量化', '趋势动能', 'MACD 金叉、背离或趋势确认信号'),
+        'KDJ': ('量化', '短线拐点', 'KDJ 低位/高位拐点和短线动能信号'),
+        '布林': ('量化', '波动突破', '布林带突破、收敛或回归信号'),
+        '均线': ('技术', '趋势结构', '多周期均线趋势与支撑压力结构'),
+    }
+    summary = {}
+    for item in items or []:
+        for name in item.get('quant_models') or []:
+            entry = summary.setdefault(name, {
+                'name': name,
+                'count': 0,
+                'category': model_meta.get(name, ('量化', '信号确认', '来自机会挖掘报告的量化模型触发'))[0],
+                'focus': model_meta.get(name, ('量化', '信号确认', '来自机会挖掘报告的量化模型触发'))[1],
+                'description': model_meta.get(name, ('量化', '信号确认', '来自机会挖掘报告的量化模型触发'))[2],
+                'examples': [],
+            })
+            entry['count'] += 1
+            if len(entry['examples']) < 4:
+                entry['examples'].append({
+                    'code': item.get('code') or item.get('stock_code') or '',
+                    'name': item.get('name') or item.get('stock_name') or '',
+                })
+    return sorted(summary.values(), key=lambda item: item['count'], reverse=True)
+
+
+def _market_symbol_for_code(stock_code):
+    code = str(stock_code or '').strip().zfill(6)
+    if code.startswith(('43', '83', '87', '92')):
+        return {'lower': 'bj', 'upper': 'BJ', 'code': code}
+    if code.startswith(('6', '9')):
+        return {'lower': 'sh', 'upper': 'SH', 'code': code}
+    return {'lower': 'sz', 'upper': 'SZ', 'code': code}
+
+
+def _xueqiu_symbol(stock_code):
+    market = _market_symbol_for_code(stock_code)
+    return f"{market['upper']}{market['code']}"
+
+
+def _stock_external_links(stock_code, stock_name=''):
+    market = _market_symbol_for_code(stock_code)
+    code = market['code']
+    symbol = _xueqiu_symbol(code)
+    keyword = (stock_name or code).strip() or code
+    encoded_keyword = urllib.parse.quote(keyword)
+    encoded_code = urllib.parse.quote(code)
+    return {
+        'xueqiu_stock': f'https://xueqiu.com/S/{symbol}',
+        'xueqiu_search': f'https://xueqiu.com/k?q={encoded_keyword}',
+        'jiuyangongshe_home': 'https://www.jiuyangongshe.com/',
+        'jiuyangongshe_search': f'https://www.jiuyangongshe.com/search?keyword={encoded_keyword}',
+        'eastmoney_quote': f'https://quote.eastmoney.com/{market["lower"]}{code}.html',
+        'eastmoney_guba': f'https://guba.eastmoney.com/list,{encoded_code}.html',
+        'eastmoney_news_search': f'https://so.eastmoney.com/news/s?keyword={encoded_keyword}',
+        'eastmoney_report_search': f'https://so.eastmoney.com/report/s?keyword={encoded_keyword}',
+        'ths_news_search': f'https://news.10jqka.com.cn/tapp/search/index/?keyword={encoded_keyword}',
+        'sina_quote': f'https://finance.sina.com.cn/realstock/company/{market["lower"]}{code}/nc.shtml',
+    }
+
+
+def _latest_stock_quote(stock_code):
+    code = str(stock_code or '').strip().zfill(6)
+    api_code = f'{_market_symbol_for_code(code)["lower"]}{code}'
+    quote = market_state.get('real_data_cache', {}).get(api_code) or {}
+    if not quote:
+        stock = next(
+            (
+                item for item in market_state.get('stocks', [])
+                if str(item.get('code') or '').zfill(6) == code
+            ),
+            None,
+        )
+        if stock:
+            quote = {
+                'name': stock.get('name'),
+                'price': stock.get('price'),
+                'change': stock.get('change'),
+                'volume': stock.get('volume'),
+                'source': 'market_monitor',
+            }
+    if not quote:
+        return None
+    return {
+        'code': code,
+        'name': quote.get('name') or '',
+        'price': round(_safe_float(quote.get('price'), 0.0), 2),
+        'change_pct': round(_safe_float(quote.get('change'), 0.0), 2),
+        'volume': _safe_float(quote.get('volume'), 0.0),
+        'source': quote.get('source') or 'tencent',
+        'updated_at': quote.get('updated_at') or _format_datetime(market_state.get('last_update')),
+    }
+
+
+def _stock_kline_summary(kline_payload):
+    records = (kline_payload or {}).get('records') or []
+    if not records:
+        return {
+            'available': False,
+            'message': (kline_payload or {}).get('message') or '暂无K线数据',
+        }
+    first = records[0]
+    last = records[-1]
+    highs = [_safe_float(row.get('high'), None) for row in records]
+    lows = [_safe_float(row.get('low'), None) for row in records]
+    volumes = [_safe_float(row.get('volume'), 0.0) or 0.0 for row in records]
+    highs = [value for value in highs if value is not None]
+    lows = [value for value in lows if value is not None]
+    first_close = _safe_float(first.get('close'), None)
+    last_close = _safe_float(last.get('close'), None)
+    change_pct = None
+    if first_close and last_close is not None:
+        change_pct = round((last_close / first_close - 1) * 100, 2)
+    return {
+        'available': True,
+        'records': len(records),
+        'source': (kline_payload or {}).get('source') or '--',
+        'latest_date': last.get('date'),
+        'latest_close': last_close,
+        'latest_change_pct': _safe_float(last.get('pct_chg'), 0.0),
+        'range_change_pct': change_pct,
+        'range_high': max(highs) if highs else None,
+        'range_low': min(lows) if lows else None,
+        'avg_volume': round(sum(volumes) / len(volumes), 2) if volumes else None,
+    }
+
+
+def _report_matches_stock(report, stock_code, stock_name=''):
+    code = str(stock_code or '').strip().zfill(6)
+    name = _strip_markup(stock_name or '')
+    text = ' '.join([
+        str(report.get('file') or ''),
+        str(report.get('type') or ''),
+        str(report.get('url') or ''),
+    ])
+    if code in text or (name and name in text):
+        return True
+    path = report.get('_path')
+    if not path:
+        return False
+    try:
+        report_path = Path(path)
+        if not report_path.is_file() or report_path.stat().st_size > 3 * 1024 * 1024:
+            return False
+        content = report_path.read_text(encoding='utf-8', errors='ignore')
+    except OSError:
+        return False
+    return code in content or (name and name in content)
+
+
+def _load_stock_report_history(stock_code, stock_name='', limit=8):
+    reports = []
+    for report in _report_history_candidates(limit=40):
+        if _report_matches_stock(report, stock_code, stock_name):
+            reports.append({key: value for key, value in report.items() if key != '_path'})
+        if len(reports) >= limit:
+            break
+    return reports
+
+
+def _stock_row_code(row):
+    for column in ['股票代码', 'stock_code', 'code', '代码', 'symbol', 'ts_code']:
+        if column in row and row[column] not in (None, ''):
+            codes = normalize_stock_codes([row[column]])
+            if codes:
+                return codes[0]
+    for value in row.values():
+        codes = normalize_stock_codes([value])
+        if codes:
+            return codes[0]
+    return ''
+
+
+def _stock_batch_fields(row):
+    preferred = [
+        '综合评分', '评级', '建议', '量化', '技术', '位置',
+        '量价', '情绪', '板块', 'total_score', 'rating',
+        'recommendation', 'score',
+    ]
+    fields = []
+    seen = set()
+    for column in preferred + list(row.keys()):
+        if column in seen or column not in row:
+            continue
+        seen.add(column)
+        value = row.get(column)
+        if value is None or value == '':
+            continue
+        if isinstance(value, float) and math.isnan(value):
+            continue
+        fields.append({'label': str(column), 'value': str(value)})
+        if len(fields) >= 12:
+            break
+    return fields
+
+
+def _load_stock_batch_results(stock_code, limit=5):
+    code = str(stock_code or '').strip().zfill(6)
+    results = []
+    for csv_path in _latest_files(RESULTS_DIR, 'batch_results_*.csv', limit=20):
+        try:
+            df = pd.read_csv(csv_path, dtype=str).fillna('')
+        except Exception:
+            continue
+        for _, series in df.iterrows():
+            row = series.to_dict()
+            if _stock_row_code(row) != code:
+                continue
+            results.append({
+                'file': csv_path.name,
+                'updated_at': _format_datetime(csv_path.stat().st_mtime),
+                'url': _report_url(csv_path),
+                'fields': _stock_batch_fields(row),
+            })
+            break
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _stock_social_sources(stock_code, stock_name=''):
+    code = str(stock_code or '').strip().zfill(6)
+    name = _strip_markup(stock_name or '')
+    links = _stock_external_links(code, name)
+    return [
+        {
+            'platform': '雪球',
+            'title': f'{name or code} 雪球个股页',
+            'summary': '社区讨论、组合关注、公告和行情聚合入口',
+            'url': links['xueqiu_stock'],
+            'status': 'external_link',
+        },
+        {
+            'platform': '雪球',
+            'title': f'{name or code} 雪球搜索',
+            'summary': '按名称检索近期讨论和长文',
+            'url': links['xueqiu_search'],
+            'status': 'external_link',
+        },
+        {
+            'platform': '韭研公社',
+            'title': f'{name or code} 韭研公社检索',
+            'summary': '主题投研、事件线索和热帖入口',
+            'url': links['jiuyangongshe_search'],
+            'status': 'external_link',
+        },
+        {
+            'platform': '东方财富股吧',
+            'title': f'{name or code} 股吧讨论',
+            'summary': '散户讨论、异动解读和消息反馈',
+            'url': links['eastmoney_guba'],
+            'status': 'external_link',
+        },
+    ]
+
+
+def _stock_news_sources(stock_code, stock_name='', limit=8):
+    code = str(stock_code or '').strip().zfill(6)
+    name = _strip_markup(stock_name or '')
+    keywords = {code}
+    if name:
+        keywords.add(name)
+    items = []
+
+    def add_item(platform, title, summary='', url='', status='cached'):
+        clean_title = _truncate_text(title, 120)
+        if not clean_title:
+            return
+        key = (platform, clean_title, url)
+        if any((row['platform'], row['title'], row.get('url', '')) == key for row in items):
+            return
+        items.append({
+            'platform': platform,
+            'title': clean_title,
+            'summary': _truncate_text(summary, 160),
+            'url': url,
+            'status': status,
+        })
+
+    intelligence = _load_market_intelligence()
+    for item in intelligence.get('jinshi') or []:
+        text = ' '.join([str(item.get('title') or ''), str(item.get('source') or '')])
+        if any(keyword and keyword in text for keyword in keywords):
+            add_item(
+                item.get('source') or '金十数据',
+                item.get('title') or '',
+                item.get('time') or '',
+                item.get('url') or '',
+            )
+
+    for item in (intelligence.get('eastmoney') or {}).get('hot_stocks') or []:
+        row_code = str(item.get('code') or '').zfill(6)
+        if row_code == code or (name and name == str(item.get('name') or '')):
+            add_item(
+                '东方财富',
+                f"{item.get('name') or code} 资金热度",
+                f"涨跌幅 {item.get('change_pct', '--')}% · 主力净流入 {item.get('main_net_inflow_text', '--')}",
+                _stock_external_links(code, name)['eastmoney_quote'],
+            )
+
+    opportunity = _load_latest_opportunities()
+    match = next(
+        (
+            item for item in opportunity.get('items', [])
+            if str(item.get('stock_code') or item.get('code') or '').zfill(6) == code
+        ),
+        None,
+    )
+    if match:
+        add_item(
+            '本地机会报告',
+            match.get('reason') or match.get('summary') or f'{name or code} 入选机会榜',
+            f"{match.get('rating') or '--'} · 评分 {match.get('score', '--')} · {match.get('recommendation') or ''}",
+            (opportunity.get('latest_report') or {}).get('url') or '',
+        )
+
+    links = _stock_external_links(code, name)
+    fallback_links = [
+        ('东方财富新闻', f'{name or code} 新闻搜索', '个股新闻、公告和异动解读检索入口', links['eastmoney_news_search']),
+        ('东方财富研报', f'{name or code} 研报搜索', '券商研报、评级变化和深度研究检索入口', links['eastmoney_report_search']),
+        ('同花顺资讯', f'{name or code} 同花顺资讯', '同花顺新闻、公告和互动信息检索入口', links['ths_news_search']),
+    ]
+    for platform, title, summary, url in fallback_links:
+        if len(items) >= limit:
+            break
+        add_item(platform, title, summary, url, status='external_link')
+
+    return items[:limit]
+
+
+def _stock_context_payload(stock_code, stock_name=''):
+    codes = normalize_stock_codes([stock_code])
+    if not codes:
+        return None, 'Invalid stock code'
+    code = codes[0]
+    opportunity = _load_latest_opportunities()
+    opportunity_match = next(
+        (
+            item for item in opportunity.get('items', [])
+            if str(item.get('stock_code') or item.get('code') or '').zfill(6) == code
+        ),
+        None,
+    )
+    resolved_name = (
+        stock_name
+        or (opportunity_match or {}).get('stock_name')
+        or (opportunity_match or {}).get('name')
+        or (_latest_stock_quote(code) or {}).get('name')
+        or ''
+    )
+    sector = (
+        (opportunity_match or {}).get('sector')
+        or (opportunity_match or {}).get('industry')
+        or ''
+    )
+    kline_payload, kline_error = _get_stock_kline_payload(code, limit=240)
+    if kline_error:
+        kline_payload = {
+            'code': code,
+            'available': False,
+            'records': [],
+            'message': kline_error,
+        }
+    trading_clients = TRADING_CLIENT_SERVICE.discover_clients(refresh=False)
+    clients = [
+        client for client in trading_clients.get('clients', [])
+        if (client.get('capabilities') or {}).get('stock')
+    ]
+    return {
+        'success': True,
+        'stock': {
+            'code': code,
+            'name': resolved_name,
+            'sector': sector,
+            'symbol': _xueqiu_symbol(code),
+            'market': _market_symbol_for_code(code),
+        },
+        'quote': _latest_stock_quote(code),
+        'opportunity': opportunity_match,
+        'opportunity_report': opportunity.get('latest_report'),
+        'analysis_results': _load_stock_batch_results(code),
+        'kline_summary': _stock_kline_summary(kline_payload),
+        'reports': _load_stock_report_history(code, resolved_name),
+        'news': _stock_news_sources(code, resolved_name),
+        'social': _stock_social_sources(code, resolved_name),
+        'external_links': _stock_external_links(code, resolved_name),
+        'trading_clients': {
+            'platform': trading_clients.get('platform'),
+            'generated_at': trading_clients.get('generated_at'),
+            'clients': clients,
+        },
+    }, None
 
 
 def _load_latest_opportunities():
@@ -1712,7 +1278,26 @@ def _load_latest_opportunities():
             },
         }
 
-    parsed = _parse_opportunity_report(reports[0])
+    try:
+        parsed = _parse_opportunity_report(reports[0])
+    except Exception as exc:
+        logger.warning(f"解析机会报告失败: {exc}")
+        return {
+            'latest_report': {
+                'file': reports[0].name,
+                'url': _report_url(reports[0]),
+                'updated_at': _format_datetime(reports[0].stat().st_mtime),
+            },
+            'market_env': '机会报告解析失败，已降级为空视图',
+            'items': [],
+            'quant_models': [],
+            'stats': {
+                'total': 0,
+                'strong_count': 0,
+                'average_score': 0,
+                'top_score': 0,
+            },
+        }
     items = parsed['items']
     scores = [item['score'] for item in items]
     strong_count = len([item for item in items if item['score'] >= 80])
@@ -1824,213 +1409,8 @@ def _build_market_dashboard():
     }
 
 
-def _sina_symbol_for_code(stock_code):
-    code = str(stock_code or '').strip().zfill(6)
-    if code.startswith(('43', '83', '87', '92')):
-        return f'bj{code}'
-    if code.startswith(('6', '9')):
-        return f'sh{code}'
-    return f'sz{code}'
-
-
-def _period_to_sina_scale(period):
-    period_map = {
-        '1m': '1',
-        '5m': '5',
-        '5': '5',
-        '15m': '15',
-        '30m': '30',
-        '60m': '60',
-        '1h': '60',
-        'daily': '240',
-        '1d': '240',
-        'day': '240',
-    }
-    return period_map.get(str(period or 'daily'), '240')
-
-
-def _local_kline_candidates(stock_code, period):
-    data_dir = PROJECT_ROOT / 'data'
-    if not data_dir.exists():
-        return []
-    prefixes = []
-    if str(period) in ('5m', '5'):
-        prefixes.extend(['5m', '5min'])
-    prefixes.extend(['1d', 'daily', 'day'])
-    patterns = [f'{prefix}_{stock_code}.*' for prefix in prefixes]
-    candidates = []
-    for pattern in patterns:
-        candidates.extend(data_dir.glob(pattern))
-    return [path for path in candidates if path.suffix.lower() in ('.csv', '.feather')]
-
-
-def _frame_to_kline_records(df, limit):
-    if df is None or df.empty:
-        return []
-
-    work = df.copy()
-    timestamp_col = next(
-        (col for col in ['timestamps', 'timestamp', 'date', 'datetime', 'time'] if col in work.columns),
-        None,
-    )
-    if timestamp_col:
-        work[timestamp_col] = pd.to_datetime(work[timestamp_col], errors='coerce')
-        work = work.dropna(subset=[timestamp_col])
-        work = work.sort_values(timestamp_col)
-    else:
-        work['_timestamp'] = pd.RangeIndex(start=1, stop=len(work) + 1)
-        timestamp_col = '_timestamp'
-
-    for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
-        if col in work.columns:
-            work[col] = pd.to_numeric(work[col], errors='coerce')
-    work = work.dropna(subset=[col for col in ['open', 'high', 'low', 'close'] if col in work.columns])
-
-    records = []
-    for _, row in work.tail(limit).iterrows():
-        timestamp = row[timestamp_col]
-        if isinstance(timestamp, pd.Timestamp):
-            date_text = timestamp.strftime('%Y-%m-%d')
-        else:
-            date_text = str(timestamp)
-        open_price = float(row['open'])
-        close_price = float(row['close'])
-        pct_chg = ((close_price - open_price) / open_price * 100) if open_price else 0.0
-        records.append({
-            'date': date_text,
-            'open': open_price,
-            'close': close_price,
-            'high': float(row['high']),
-            'low': float(row['low']),
-            'volume': float(row['volume']) if 'volume' in row and pd.notna(row.get('volume')) else 0.0,
-            'amount': float(row['amount']) if 'amount' in row and pd.notna(row.get('amount')) else 0.0,
-            'pct_chg': round(pct_chg, 2),
-        })
-    return records
-
-
-def _load_local_kline(stock_code, period, limit):
-    for path in _local_kline_candidates(stock_code, period):
-        try:
-            if path.suffix.lower() == '.csv':
-                df = pd.read_csv(path)
-            else:
-                df = pd.read_feather(path)
-            records = _frame_to_kline_records(df, limit)
-            if records:
-                return records, path.name
-        except Exception as exc:
-            print(f"Failed to load local kline {path}: {exc}")
-    return [], None
-
-
-def _parse_sina_klines(klines):
-    records = []
-    prev_close = None
-    for item in klines or []:
-        if not isinstance(item, dict):
-            continue
-        open_price = _safe_float(item.get('open'))
-        close_price = _safe_float(item.get('close'))
-        if open_price <= 0 or close_price <= 0:
-            continue
-        high_price = _safe_float(item.get('high'), max(open_price, close_price))
-        low_price = _safe_float(item.get('low'), min(open_price, close_price))
-        pct_chg = 0.0
-        if prev_close and prev_close > 0:
-            pct_chg = (close_price / prev_close - 1) * 100
-        records.append({
-            'date': str(item.get('day') or item.get('date') or ''),
-            'open': open_price,
-            'close': close_price,
-            'high': high_price,
-            'low': low_price,
-            'volume': _safe_float(item.get('volume')),
-            'amount': _safe_float(item.get('amount')),
-            'pct_chg': round(pct_chg, 2),
-        })
-        prev_close = close_price
-    return records
-
-
-def _fetch_sina_kline(stock_code, period, limit):
-    params = {
-        'symbol': _sina_symbol_for_code(stock_code),
-        'scale': _period_to_sina_scale(period),
-        'ma': 'no',
-        'datalen': str(limit),
-    }
-    url = (
-        'http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
-        'CN_MarketData.getKLineData?' + urllib.parse.urlencode(params)
-    )
-    req = urllib.request.Request(
-        url,
-        headers={
-            'User-Agent': (
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
-            ),
-            'Accept': 'application/json,text/plain,*/*',
-            'Referer': 'https://finance.sina.com.cn/',
-        },
-    )
-    with urllib.request.urlopen(req, timeout=8) as response:
-        payload = json.loads(response.read().decode('utf-8'))
-    records = _parse_sina_klines(payload if isinstance(payload, list) else [])
-    return records, ''
-
-
 def _get_stock_kline_payload(stock_code, period='daily', limit=120):
-    codes = _normalize_stock_codes([stock_code])
-    if not codes:
-        return None, 'Invalid stock code'
-    code = codes[0]
-    normalized_limit = _safe_int(limit, 120, minimum=30, maximum=500)
-    normalized_period = str(period or 'daily')
-
-    local_records, local_source = _load_local_kline(code, normalized_period, normalized_limit)
-    if local_records:
-        return {
-            'code': code,
-            'name': '',
-            'period': normalized_period,
-            'source': f'local:{local_source}',
-            'available': True,
-            'records': local_records,
-        }, None
-
-    try:
-        records, stock_name = _fetch_sina_kline(code, normalized_period, normalized_limit)
-        if records:
-            return {
-                'code': code,
-                'name': stock_name,
-                'period': normalized_period,
-                'source': 'sina',
-                'available': True,
-                'records': records,
-            }, None
-        return {
-            'code': code,
-            'name': '',
-            'period': normalized_period,
-            'source': 'sina',
-            'available': False,
-            'records': [],
-            'message': '暂无K线数据：本地没有该股票数据，Sina 行情接口未返回记录。',
-        }, None
-    except Exception as exc:
-        return {
-            'code': code,
-            'name': '',
-            'period': normalized_period,
-            'source': 'sina',
-            'available': False,
-            'records': [],
-            'message': '暂无K线数据：本地没有该股票数据，Sina 行情接口暂不可用。',
-            'detail': str(exc),
-        }, None
+    return STOCK_KLINE_SERVICE.get_payload(stock_code, period=period, limit=limit)
 
 
 def _load_batch_summary():
@@ -2096,7 +1476,7 @@ def _load_batch_summary():
     }
 
 
-def _load_report_history(limit=12):
+def _report_history_candidates(limit=12):
     patterns = [
         ('机会挖掘HTML', RESULTS_DIR, 'opportunity_discovery_*.html'),
         ('机会Top榜', RESULTS_DIR, 'opportunity_top10_*.md'),
@@ -2112,10 +1492,18 @@ def _load_report_history(limit=12):
                 'updated_at': _format_datetime(path.stat().st_mtime),
                 'url': _report_url(path),
                 'size_kb': round(path.stat().st_size / 1024, 1),
+                '_path': str(path),
             })
 
     reports.sort(key=lambda item: item['updated_at'], reverse=True)
     return reports[:limit]
+
+
+def _load_report_history(limit=12):
+    return [
+        {key: value for key, value in item.items() if key != '_path'}
+        for item in _report_history_candidates(limit=limit)
+    ]
 
 
 def _module_health():
@@ -2143,55 +1531,58 @@ def _module_health():
     return health
 
 
-def _create_job(job_type, params):
-    job_id = uuid.uuid4().hex[:12]
-    job = {
-        'id': job_id,
-        'type': job_type,
-        'status': 'queued',
-        'created_at': datetime.datetime.now().isoformat(),
-        'started_at': None,
-        'finished_at': None,
-        'params': params,
-        'logs': ['任务已进入队列'],
-        'result': None,
-        'error': None,
-    }
-    with analysis_jobs_lock:
-        analysis_jobs[job_id] = job
-    return job
-
-
 def _update_job(job_id, **updates):
-    with analysis_jobs_lock:
-        job = analysis_jobs.get(job_id)
-        if not job:
-            return
-        job.update(_json_safe(updates))
+    JOB_SERVICE.update(job_id, **updates)
 
 
 def _append_job_log(job_id, message):
-    with analysis_jobs_lock:
-        job = analysis_jobs.get(job_id)
-        if not job:
-            return
-        logs = job.setdefault('logs', [])
-        logs.append(f"{_format_datetime()} {str(message).strip()}")
-        if len(logs) > 120:
-            del logs[:-120]
+    JOB_SERVICE.append_log(job_id, message)
+
+
+class _JobLogHandler(logging.Handler):
+    """Forward selected Python logger messages into the WebUI job log."""
+
+    def __init__(self, job_id):
+        super().__init__(level=logging.INFO)
+        self.job_id = job_id
+        self._last_message = None
+
+    def emit(self, record):
+        try:
+            message = record.getMessage()
+            message = " / ".join(line.strip() for line in str(message).splitlines() if line.strip())
+            if not message or message == self._last_message:
+                return
+            self._last_message = message
+            if len(message) > 700:
+                message = f"{message[:697]}..."
+            _append_job_log(self.job_id, message)
+        except Exception:
+            pass
+
+
+class _JobLogCapture:
+    def __init__(self, job_id, logger_names):
+        self.handler = _JobLogHandler(job_id)
+        self.logger_names = logger_names
+        self.loggers = []
+
+    def __enter__(self):
+        self.handler.setFormatter(logging.Formatter('%(message)s'))
+        for name in self.logger_names:
+            logger = logging.getLogger(name)
+            logger.addHandler(self.handler)
+            self.loggers.append(logger)
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        for logger in self.loggers:
+            logger.removeHandler(self.handler)
+        self.loggers.clear()
 
 
 def _get_job_snapshot(job_id=None):
-    with analysis_jobs_lock:
-        if job_id:
-            job = analysis_jobs.get(job_id)
-            return _json_safe(job.copy()) if job else None
-        jobs = sorted(
-            [job.copy() for job in analysis_jobs.values()],
-            key=lambda item: item.get('created_at', ''),
-            reverse=True,
-        )
-        return _json_safe(jobs[:20])
+    return JOB_SERVICE.snapshot(job_id, limit=20)
 
 
 def _run_opportunity_job(job_id, params):
@@ -2200,12 +1591,13 @@ def _run_opportunity_job(job_id, params):
     try:
         from scripts.run_opportunity_discovery import OpportunityDiscovery
 
-        discovery = OpportunityDiscovery(max_workers=params['workers'])
-        report_path = discovery.run(
-            limit=params['limit'],
-            test_codes=params.get('stock_codes') or None,
-            source=params['source'],
-        )
+        with _JobLogCapture(job_id, ['scripts.run_opportunity_discovery']):
+            discovery = OpportunityDiscovery(max_workers=params['workers'])
+            report_path = discovery.run(
+                limit=params['limit'],
+                test_codes=params.get('stock_codes') or None,
+                source=params['source'],
+            )
         result = {
             'report_path': str(report_path) if report_path else '',
             'report_url': _report_url(report_path) if report_path else None,
@@ -2287,19 +1679,10 @@ def _run_pattern_refresh_job(job_id, params):
     _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
     _append_job_log(job_id, '开始刷新形态指纹库')
     try:
-        from scripts.build_pattern_fingerprints import build_all
-
-        store = _get_pattern_store()
-
         def log_cb(message):
             _append_job_log(job_id, message)
 
-        result = build_all(
-            store,
-            limit=params.get('limit'),
-            max_workers=params.get('workers', 16),
-            progress_callback=log_cb,
-        )
+        result = PATTERN_SEARCH_SERVICE.refresh_fingerprints(params, progress_callback=log_cb)
         _append_job_log(
             job_id,
             f"刷新完成: 总数 {result['total']} 成功 {result['succeeded']} 失败 {result['failed']}"
@@ -2333,17 +1716,17 @@ def prediction_console():
 
 
 DESKTOP_PAGES = {
+    'features': {
+        'title': '功能总览',
+        'subtitle': '桌面端所有功能入口与当前可用状态',
+    },
     'overview': {
         'title': '总览',
         'subtitle': '市场状态、核心指标与实时信息',
     },
-    'opportunities': {
-        'title': '投资机会',
-        'subtitle': 'Top 机会、K线与单股量化视图',
-    },
     'workbench': {
         'title': '分析工作台',
-        'subtitle': '机会挖掘、批量分析与任务队列',
+        'subtitle': '机会挖掘、批量分析、任务日志与结果复盘',
     },
     'patterns': {
         'title': '形态搜股',
@@ -2351,15 +1734,29 @@ DESKTOP_PAGES = {
     },
     'reports': {
         'title': '报告与健康',
-        'subtitle': '本地报告、批量结果与模块状态',
+        'subtitle': '本地报告与模块运行状态',
+    },
+    'settings': {
+        'title': '后台配置',
+        'subtitle': '配置 AI 分析模型、TuShare 数据源和模型运行状态',
     },
 }
+
+DESKTOP_PAGE_ALIASES = {
+    'opportunities': 'workbench',
+}
+
+
+def resolve_desktop_page(page):
+    """Resolve legacy desktop URLs to the visible desktop information architecture."""
+    return DESKTOP_PAGE_ALIASES.get(page, page)
 
 
 @app.route('/desktop')
 @app.route('/desktop/<page>')
-def desktop_page(page='overview'):
+def desktop_page(page='features'):
     """Tauri desktop multi-page shell."""
+    page = resolve_desktop_page(page)
     if page not in DESKTOP_PAGES:
         abort(404)
     return render_template(
@@ -2445,315 +1842,15 @@ def load_data():
 @app.route('/api/predict', methods=['POST'])
 def predict():
     """Perform prediction"""
-    try:
-        data = request.get_json()
-        file_path = data.get('file_path')
-        lookback = int(data.get('lookback', 400))
-        pred_len = int(data.get('pred_len', 120))
-
-        # Get prediction quality parameters
-        temperature = float(data.get('temperature', 0.6))
-        top_p = float(data.get('top_p', 0.9))
-        sample_count = int(data.get('sample_count', 10))
-
-        if not file_path:
-            return jsonify({'error': 'File path cannot be empty'}), 400
-
-        # Load data
-        df, error = load_data_file(file_path)
-        if error:
-            return jsonify({'error': error}), 400
-
-        if len(df) < lookback:
-            return jsonify({'error': f'Insufficient data length, need at least {lookback} rows'}), 400
-
-        # Perform prediction
-        if MODEL_AVAILABLE and predictor is not None:
-            try:
-                # Use real Kronos model
-                # Only use necessary columns: OHLCV, excluding amount
-                required_cols = ['open', 'high', 'low', 'close']
-                if 'volume' in df.columns:
-                    required_cols.append('volume')
-
-                # Process time period selection
-                start_date = data.get('start_date')
-
-                if start_date:
-                    # Custom time period - fix logic: use data within selected window
-                    start_dt = pd.to_datetime(start_date)
-
-                    # Find data after start time
-                    mask = df['timestamps'] >= start_dt
-                    time_range_df = df[mask]
-
-                    # Ensure sufficient data: lookback + pred_len
-                    if len(time_range_df) < lookback + pred_len:
-                        return jsonify({
-                                           'error': f'Insufficient data from start time {start_dt.strftime("%Y-%m-%d %H:%M")}, need at least {lookback + pred_len} data points, currently only {len(time_range_df)} available'}), 400
-
-                    # Use first lookback data points within selected window for prediction
-                    x_df = time_range_df.iloc[:lookback][required_cols]
-                    x_timestamp = time_range_df.iloc[:lookback]['timestamps']
-
-                    # Use last pred_len data points within selected window as actual values
-                    y_timestamp = time_range_df.iloc[lookback:lookback + pred_len]['timestamps']
-
-                    # Calculate actual time period length
-                    start_timestamp = time_range_df['timestamps'].iloc[0]
-                    end_timestamp = time_range_df['timestamps'].iloc[lookback + pred_len - 1]
-                    time_span = end_timestamp - start_timestamp
-
-                    prediction_type = f"Kronos model prediction (within selected window: first {lookback} data points for prediction, last {pred_len} data points for comparison, time span: {time_span})"
-                else:
-                    # Use latest data
-                    x_df = df.iloc[:lookback][required_cols]
-                    x_timestamp = df.iloc[:lookback]['timestamps']
-                    y_timestamp = df.iloc[lookback:lookback + pred_len]['timestamps']
-                    prediction_type = "Kronos model prediction (latest data)"
-
-                # Ensure timestamps are Series format, not DatetimeIndex, to avoid .dt attribute error in Kronos model
-                if isinstance(x_timestamp, pd.DatetimeIndex):
-                    x_timestamp = pd.Series(x_timestamp, name='timestamps')
-                if isinstance(y_timestamp, pd.DatetimeIndex):
-                    y_timestamp = pd.Series(y_timestamp, name='timestamps')
-
-                pred_df = predictor.predict(
-                    df=x_df,
-                    x_timestamp=x_timestamp,
-                    y_timestamp=y_timestamp,
-                    pred_len=pred_len,
-                    T=temperature,
-                    top_p=top_p,
-                    sample_count=sample_count
-                )
-
-            except Exception as e:
-                return jsonify({'error': f'Kronos model prediction failed: {str(e)}'}), 500
-        else:
-            return jsonify({'error': 'Kronos model not loaded, please load model first'}), 400
-
-        # Prepare actual data for comparison (if exists)
-        actual_data = []
-        actual_df = None
-
-        if start_date:  # Custom time period
-            # Fix logic: use data within selected window
-            # Prediction uses first 400 data points within selected window
-            # Actual data should be last 120 data points within selected window
-            start_dt = pd.to_datetime(start_date)
-
-            # Find data starting from start_date
-            mask = df['timestamps'] >= start_dt
-            time_range_df = df[mask]
-
-            if len(time_range_df) >= lookback + pred_len:
-                # Get last 120 data points within selected window as actual values
-                actual_df = time_range_df.iloc[lookback:lookback + pred_len]
-
-                for i, (_, row) in enumerate(actual_df.iterrows()):
-                    actual_data.append({
-                        'timestamp': row['timestamps'].isoformat(),
-                        'open': float(row['open']),
-                        'high': float(row['high']),
-                        'low': float(row['low']),
-                        'close': float(row['close']),
-                        'volume': float(row['volume']) if 'volume' in row else 0,
-                        'amount': float(row['amount']) if 'amount' in row else 0
-                    })
-        else:  # Latest data
-            # Prediction uses first 400 data points
-            # Actual data should be 120 data points after first 400 data points
-            if len(df) >= lookback + pred_len:
-                actual_df = df.iloc[lookback:lookback + pred_len]
-                for i, (_, row) in enumerate(actual_df.iterrows()):
-                    actual_data.append({
-                        'timestamp': row['timestamps'].isoformat(),
-                        'open': float(row['open']),
-                        'high': float(row['high']),
-                        'low': float(row['low']),
-                        'close': float(row['close']),
-                        'volume': float(row['volume']) if 'volume' in row else 0,
-                        'amount': float(row['amount']) if 'amount' in row else 0
-                    })
-
-        # Create chart - pass historical data start position
-        if start_date:
-            # Custom time period: find starting position of historical data in original df
-            start_dt = pd.to_datetime(start_date)
-            mask = df['timestamps'] >= start_dt
-            historical_start_idx = df[mask].index[0] if len(df[mask]) > 0 else 0
-        else:
-            # Latest data: start from beginning
-            historical_start_idx = 0
-
-        chart_json = create_prediction_chart(df, pred_df, lookback, pred_len, actual_df, historical_start_idx)
-
-        # Prepare prediction result data - fix timestamp calculation logic
-        if 'timestamps' in df.columns:
-            if start_date:
-                # Custom time period: use selected window data to calculate timestamps
-                start_dt = pd.to_datetime(start_date)
-                mask = df['timestamps'] >= start_dt
-                time_range_df = df[mask]
-
-                if len(time_range_df) >= lookback:
-                    # Calculate prediction timestamps starting from last time point of selected window
-                    last_timestamp = time_range_df['timestamps'].iloc[lookback - 1]
-                    time_diff = df['timestamps'].iloc[1] - df['timestamps'].iloc[0]
-                    future_timestamps = pd.date_range(
-                        start=last_timestamp + time_diff,
-                        periods=pred_len,
-                        freq=time_diff
-                    )
-                else:
-                    future_timestamps = []
-            else:
-                # Latest data: calculate from last time point of entire data file
-                last_timestamp = df['timestamps'].iloc[-1]
-                time_diff = df['timestamps'].iloc[1] - df['timestamps'].iloc[0]
-                future_timestamps = pd.date_range(
-                    start=last_timestamp + time_diff,
-                    periods=pred_len,
-                    freq=time_diff
-                )
-        else:
-            future_timestamps = range(len(df), len(df) + pred_len)
-
-        prediction_results = []
-        for i, (_, row) in enumerate(pred_df.iterrows()):
-            prediction_results.append({
-                'timestamp': future_timestamps[i].isoformat() if i < len(future_timestamps) else f"T{i}",
-                'open': float(row['open']),
-                'high': float(row['high']),
-                'low': float(row['low']),
-                'close': float(row['close']),
-                'volume': float(row['volume']) if 'volume' in row else 0,
-                'amount': float(row['amount']) if 'amount' in row else 0
-            })
-
-        # Save prediction results to file
-        try:
-            save_prediction_results(
-                file_path=file_path,
-                prediction_type=prediction_type,
-                prediction_results=prediction_results,
-                actual_data=actual_data,
-                input_data=x_df,
-                prediction_params={
-                    'lookback': lookback,
-                    'pred_len': pred_len,
-                    'temperature': temperature,
-                    'top_p': top_p,
-                    'sample_count': sample_count,
-                    'start_date': start_date if start_date else 'latest'
-                }
-            )
-        except Exception as e:
-            print(f"Failed to save prediction results: {e}")
-
-        return jsonify({
-            'success': True,
-            'prediction_type': prediction_type,
-            'chart': chart_json,
-            'prediction_results': prediction_results,
-            'actual_data': actual_data,
-            'has_comparison': len(actual_data) > 0,
-            'message': f'Prediction completed, generated {pred_len} prediction points' + (
-                f', including {len(actual_data)} actual data points for comparison' if len(actual_data) > 0 else '')
-        })
-
-    except Exception as e:
-        return jsonify({'error': f'Prediction failed: {str(e)}'}), 500
+    payload, status_code = run_prediction_payload(request.get_json(silent=True) or {}, _model_runtime_context())
+    return jsonify(_json_safe(payload)), status_code
 
 
 @app.route('/api/load-model', methods=['POST'])
 def load_model():
     """Load Kronos model"""
-    global tokenizer, model, predictor
-
-    try:
-        if not MODEL_AVAILABLE:
-            return jsonify({'error': 'Kronos model library not available'}), 400
-
-        data = request.get_json()
-        model_key = data.get('model_key', 'kronos-small')
-        device = data.get('device', 'cpu')
-
-        if model_key not in AVAILABLE_MODELS:
-            return jsonify({'error': f'Unsupported model: {model_key}'}), 400
-
-        model_config = AVAILABLE_MODELS[model_key]
-
-        # 使用统一的模型加载方式
-        from modelscope import snapshot_download
-        from pathlib import Path
-        import shutil
-
-        # 设置模型目录
-        model_dir = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / 'models'
-        model_dir.mkdir(exist_ok=True)
-
-        # 一级目录结构，直接在models下
-        tokenizer_dir = model_dir / "Kronos-Tokenizer-base"  # 统一使用base tokenizer
-        if model_key == 'kronos-mini':
-            model_dir_path = model_dir / "Kronos-mini"
-            model_model_id = 'northwind9898/Kronos-mini'
-        elif model_key == 'kronos-small':
-            model_dir_path = model_dir / "Kronos-small"
-            model_model_id = 'northwind9898/Kronos-small'
-        elif model_key == 'kronos-base':
-            model_dir_path = model_dir / "Kronos-base"
-            model_model_id = 'northwind9898/Kronos-base'
-        else:
-            return jsonify({'error': f'Unsupported model: {model_key}'}), 400
-
-        # Load tokenizer
-        if tokenizer_dir.exists() and (tokenizer_dir / "config.json").exists():
-            print("Found local tokenizer, loading...")
-            tokenizer = KronosTokenizer.from_pretrained(str(tokenizer_dir))
-        else:
-            # 下载并保存到一级目录
-            print("Downloading tokenizer...")
-            downloaded_path = snapshot_download('northwind9898/Kronos-Tokenizer-base', cache_dir=str(model_dir))
-            if "northwind9898" in downloaded_path:
-                if not tokenizer_dir.exists():
-                    shutil.move(downloaded_path, str(tokenizer_dir))
-                tokenizer = KronosTokenizer.from_pretrained(str(tokenizer_dir))
-            else:
-                tokenizer = KronosTokenizer.from_pretrained(downloaded_path)
-
-        # Load model
-        if model_dir_path.exists() and (model_dir_path / "config.json").exists():
-            print("Found local model, loading...")
-            model = Kronos.from_pretrained(str(model_dir_path))
-        else:
-            # 下载并保存到一级目录
-            print("Downloading model...")
-            downloaded_path = snapshot_download(model_model_id, cache_dir=str(model_dir))
-            if "northwind9898" in downloaded_path:
-                if not model_dir_path.exists():
-                    shutil.move(downloaded_path, str(model_dir_path))
-                model = Kronos.from_pretrained(str(model_dir_path))
-            else:
-                model = Kronos.from_pretrained(downloaded_path)
-
-        # Create predictor
-        predictor = KronosPredictor(model, tokenizer, device=device, max_context=model_config['context_length'])
-
-        return jsonify({
-            'success': True,
-            'message': f'Model loaded successfully: {model_config["name"]} ({model_config["params"]}) on {device}',
-            'model_info': {
-                'name': model_config['name'],
-                'params': model_config['params'],
-                'context_length': model_config['context_length'],
-                'description': model_config['description']
-            }
-        })
-
-    except Exception as e:
-        return jsonify({'error': f'Model loading failed: {str(e)}'}), 500
+    payload, status_code = load_model_payload(request.get_json(silent=True) or {}, _model_runtime_context())
+    return jsonify(_json_safe(payload)), status_code
 
 
 @app.route('/api/available-models')
@@ -2768,29 +1865,57 @@ def get_available_models():
 @app.route('/api/model-status')
 def get_model_status():
     """Get model status"""
+    disabled = os.environ.get("KRONOS_DISABLE_TORCH", "0").lower() in {"1", "true", "yes"}
+    bundle_mode = os.environ.get("KRONOS_BACKEND_BUNDLE_MODE", "source")
     if MODEL_AVAILABLE:
         if predictor is not None:
             return jsonify({
                 'available': True,
                 'loaded': True,
                 'message': 'Kronos model loaded and available',
-                'current_model': {
-                    'name': predictor.model.__class__.__name__,
-                    'device': str(next(predictor.model.parameters()).device)
-                }
+                'bundle_mode': bundle_mode,
+                'torch_disabled': disabled,
+                'current_model': loaded_model_info(predictor)
             })
         else:
             return jsonify({
                 'available': True,
                 'loaded': False,
-                'message': 'Kronos model available but not loaded'
+                'message': 'Kronos model available but not loaded',
+                'bundle_mode': bundle_mode,
+                'torch_disabled': disabled,
             })
     else:
+        message = 'Kronos model library not available, please install related dependencies'
+        if disabled:
+            message = '当前桌面 lite 包未内置 Kronos/PyTorch 推理依赖，请使用 full backend 构建或源码环境载入模型'
         return jsonify({
             'available': False,
             'loaded': False,
-            'message': 'Kronos model library not available, please install related dependencies'
+            'message': message,
+            'bundle_mode': bundle_mode,
+            'torch_disabled': disabled,
         })
+
+
+@app.route('/api/settings')
+def get_settings():
+    """Return user-editable runtime settings for the desktop configuration page."""
+    return jsonify(_json_safe(CONFIGURATION_SERVICE.settings_payload()))
+
+
+@app.route('/api/settings/llm', methods=['POST'])
+def save_llm_settings():
+    payload = request.get_json(silent=True) or {}
+    result = CONFIGURATION_SERVICE.save_llm_settings(payload)
+    return jsonify(_json_safe(result))
+
+
+@app.route('/api/settings/tushare', methods=['POST'])
+def save_tushare_settings():
+    payload = request.get_json(silent=True) or {}
+    result = CONFIGURATION_SERVICE.save_tushare_settings(payload)
+    return jsonify(_json_safe(result))
 
 
 @app.route('/api/stock-dashboard')
@@ -2810,6 +1935,7 @@ def get_stock_dashboard():
             'loaded': predictor is not None,
             'available_models': AVAILABLE_MODELS,
         },
+        'settings': CONFIGURATION_SERVICE.settings_payload(),
         'jobs': _get_job_snapshot(),
     }
     return jsonify(_json_safe(dashboard))
@@ -2826,28 +1952,26 @@ def get_stock_kline(stock_code):
     return jsonify({'success': True, 'data': _json_safe(payload)})
 
 
+@app.route('/api/stock-context/<stock_code>')
+def get_stock_context(stock_code):
+    """Return the unified stock context used by the desktop stock workbench."""
+    payload, error = _stock_context_payload(
+        stock_code,
+        stock_name=request.args.get('name', ''),
+    )
+    if error:
+        return jsonify({'error': error}), 400
+    return jsonify(_json_safe(payload))
+
+
 @app.route('/api/opportunity-discovery/start', methods=['POST'])
 def start_opportunity_discovery():
     """Start the existing investment opportunity discovery flow in the background."""
     data = request.get_json(silent=True) or {}
-    source = str(data.get('source', 'multi')).strip()
-    if source not in ('multi', 'heat', 'moneyflow_dc'):
-        return jsonify({'error': 'Unsupported source, use multi / heat / moneyflow_dc'}), 400
-
-    stock_codes = _normalize_stock_codes(data.get('stock_codes'))
-    params = {
-        'limit': _safe_int(data.get('limit'), 80, minimum=5, maximum=500),
-        'workers': _safe_int(data.get('workers'), 8, minimum=1, maximum=32),
-        'source': source,
-        'stock_codes': stock_codes,
-    }
-    job = _create_job('opportunity_discovery', params)
-    thread = threading.Thread(
-        target=_run_opportunity_job,
-        args=(job['id'], params),
-        daemon=True,
-    )
-    thread.start()
+    params, error = ANALYSIS_JOB_PARSER.opportunity_params(data)
+    if error:
+        return jsonify({'error': error}), 400
+    job = JOB_SERVICE.start('opportunity_discovery', params, _run_opportunity_job)
     return jsonify({'success': True, 'job': _get_job_snapshot(job['id'])})
 
 
@@ -2855,35 +1979,10 @@ def start_opportunity_discovery():
 def start_batch_analysis():
     """Start the existing batch analysis flow in the background."""
     data = request.get_json(silent=True) or {}
-    stock_codes = _normalize_stock_codes(data.get('stock_codes'))
-    if not stock_codes:
-        return jsonify({'error': 'Please provide at least one 6-digit stock code'}), 400
-
-    requested_types = data.get('data_types') or ['comprehensive']
-    if isinstance(requested_types, str):
-        requested_types = re.split(r'[\s,，;；]+', requested_types)
-    allowed_types = {'comprehensive', 'fundamental', 'sentiment'}
-    data_types = [item for item in requested_types if item in allowed_types]
-    if not data_types:
-        data_types = ['comprehensive']
-
-    filter_strategy = str(data.get('filter_strategy', 'balanced')).strip() or 'balanced'
-    params = {
-        'stock_codes': stock_codes[:100],
-        'data_types': data_types,
-        'filter_strategy': filter_strategy,
-        'max_concurrent': _safe_int(data.get('max_concurrent'), 5, minimum=1, maximum=20),
-        'collection_timeout': _safe_int(data.get('collection_timeout'), 30, minimum=5, maximum=180),
-        'scoring_timeout': _safe_int(data.get('scoring_timeout'), 15, minimum=5, maximum=120),
-        'skip_scoring': bool(data.get('skip_scoring', False)),
-    }
-    job = _create_job('batch_analysis', params)
-    thread = threading.Thread(
-        target=_run_batch_analysis_job,
-        args=(job['id'], params),
-        daemon=True,
-    )
-    thread.start()
+    params, error = ANALYSIS_JOB_PARSER.batch_params(data)
+    if error:
+        return jsonify({'error': error}), 400
+    job = JOB_SERVICE.start('batch_analysis', params, _run_batch_analysis_job)
     return jsonify({'success': True, 'job': _get_job_snapshot(job['id'])})
 
 
@@ -2897,7 +1996,7 @@ def list_jobs():
 def list_trading_clients():
     """Discover installed desktop trading clients for context-menu jumps."""
     refresh = str(request.args.get('refresh') or '').lower() in {'1', 'true', 'yes'}
-    return jsonify(_json_safe(_discover_trading_clients(refresh=refresh)))
+    return jsonify(_json_safe(TRADING_CLIENT_SERVICE.discover_clients(refresh=refresh)))
 
 
 @app.route('/api/trading-clients/open', methods=['POST'])
@@ -2908,159 +2007,44 @@ def open_trading_client():
     target = payload.get('target') or {}
     if not client_id or not isinstance(target, dict):
         return jsonify({'success': False, 'error': '参数不完整'}), 400
-    result = _open_trading_client_target(client_id, target)
+    result = TRADING_CLIENT_SERVICE.open_target(client_id, target)
     status = 200 if result.get('success') else 400
     return jsonify(_json_safe(result)), status
 
 
 @app.route('/api/pattern-search/status')
 def pattern_search_status():
-    store = _get_pattern_store()
-    status = store.current_status()
-
-    staleness_days = None
-    warning = None
-    if status.get('last_snapshot_date'):
-        try:
-            d = datetime.date.fromisoformat(status['last_snapshot_date'])
-            staleness_days = (datetime.date.today() - d).days
-            if staleness_days >= 3:
-                warning = f"指纹数据已陈旧 {staleness_days} 天，建议刷新"
-        except ValueError:
-            staleness_days = None
-    if not status.get('available'):
-        warning = warning or "指纹库尚未生成，请先点击刷新"
-
-    return jsonify({
-        'available': status.get('available', False),
-        'snapshot_date': status.get('last_snapshot_date'),
-        'total_stocks': status.get('total_stocks', 0),
-        'updated_at': status.get('last_finished_at'),
-        'last_status': status.get('last_status'),
-        'staleness_days': staleness_days,
-        'warning': warning,
-    })
+    return jsonify(_json_safe(PATTERN_SEARCH_SERVICE.status()))
 
 
 @app.route('/api/pattern-search/match', methods=['POST'])
 def pattern_search_match():
     payload = request.get_json(silent=True) or {}
-    curve = payload.get('curve')
-    if not isinstance(curve, list) or not (5 <= len(curve) <= PATTERN_TARGET_LENGTH):
-        return jsonify({
-            'error': f'curve 必须为长度 5-{PATTERN_TARGET_LENGTH} 的数组'
-        }), 400
-    try:
-        curve = [float(x) for x in curve]
-    except (TypeError, ValueError):
-        return jsonify({'error': 'curve 元素必须为数字'}), 400
-
-    top_n = _safe_int(payload.get('top_n'), default=30, minimum=1, maximum=200)
-    window_days = _safe_int(
-        payload.get('window_days'),
-        default=PATTERN_TARGET_LENGTH,
-        minimum=5,
-        maximum=PATTERN_TARGET_LENGTH,
-    )
-    query_offset_days = _safe_int(
-        payload.get('query_offset_days'),
-        default=0,
-        minimum=0,
-        maximum=5,
-    )
-    query_curve = pattern_comparison_window(
-        curve,
-        max_days=window_days,
-        offset_days=query_offset_days,
-    )
-    if not query_curve:
-        return jsonify({'error': '当前相似天数/回推设置下曲线数据不足'}), 400
-
-    filters = payload.get('filters') or {}
-    markets = filters.get('market') or None
-    if markets and not isinstance(markets, list):
-        markets = [markets]
-    industry = filters.get('industry') or None
-    exclude_st = bool(filters.get('exclude_st', True))
-
-    store = _get_pattern_store()
-    started = time.time()
-    results = pattern_search_similar(
-        store, curve, top_n=top_n,
-        markets=markets, industry=industry, exclude_st=exclude_st,
-        window_days=window_days, query_offset_days=query_offset_days,
-    )
-    elapsed_ms = int((time.time() - started) * 1000)
-
-    status = store.current_status()
-    return jsonify({
-        'matches': results,
-        'query_curve': query_curve,
-        'window_days': len(query_curve),
-        'requested_window_days': window_days,
-        'query_offset_days': query_offset_days,
-        'snapshot_date': status.get('last_snapshot_date'),
-        'compute_ms': elapsed_ms,
-        'count': len(results),
-    })
+    result, status_code = PATTERN_SEARCH_SERVICE.match(payload)
+    return jsonify(_json_safe(result)), status_code
 
 
 @app.route('/api/pattern-search/stocks')
 def pattern_search_stocks():
-    query = str(request.args.get('q') or '').strip()
-    limit = _safe_int(request.args.get('limit'), default=10, minimum=1, maximum=30)
-    if not query:
-        return jsonify({'stocks': [], 'count': 0})
-
-    store = _get_pattern_store()
-    stocks = store.search_stocks(query, limit=limit)
-    return jsonify({
-        'stocks': stocks,
-        'count': len(stocks),
-        'query': query,
-    })
+    payload = PATTERN_SEARCH_SERVICE.search_stocks(
+        request.args.get('q'),
+        limit=request.args.get('limit'),
+    )
+    return jsonify(_json_safe(payload))
 
 
 @app.route('/api/pattern-search/stock-curve/<stock_code>')
 def pattern_search_stock_curve(stock_code):
-    code = (stock_code or '').strip()
-    if not code:
-        return jsonify({'error': '股票代码不能为空'}), 400
-    store = _get_pattern_store()
-    fp = store.load_fingerprint(code)
-    if fp is None:
-        return jsonify({
-            'available': False,
-            'message': '该股不在指纹库中（可能停牌、未上市或库尚未刷新）',
-        }), 404
-    return jsonify({
-        'available': True,
-        'stock_code': fp.stock_code,
-        'stock_name': fp.stock_name,
-        'market': fp.market,
-        'industry': fp.industry,
-        'normalized_curve': fp.normalized_curve,
-        'mean_slope': fp.mean_slope,
-        'latest_close': fp.latest_close,
-        'latest_change_pct': fp.latest_change_pct,
-        'snapshot_date': fp.snapshot_date.isoformat(),
-    })
+    result, status_code = PATTERN_SEARCH_SERVICE.stock_curve(stock_code)
+    return jsonify(_json_safe(result)), status_code
 
 
 @app.route('/api/pattern-search/refresh', methods=['POST'])
 def pattern_search_refresh():
     payload = request.get_json(silent=True) or {}
-    limit_raw = payload.get('limit')
-    params = {
-        'limit': _safe_int(limit_raw, default=None, minimum=1, maximum=10000) if limit_raw else None,
-        'workers': _safe_int(payload.get('workers'), default=16, minimum=1, maximum=64),
-    }
-    job = _create_job('pattern_refresh', params)
-    thread = threading.Thread(
-        target=_run_pattern_refresh_job, args=(job['id'], params), daemon=True
-    )
-    thread.start()
-    return jsonify({'job_id': job['id'], 'status': 'queued'})
+    params = PATTERN_SEARCH_SERVICE.refresh_params(payload)
+    job = JOB_SERVICE.start('pattern_refresh', params, _run_pattern_refresh_job)
+    return jsonify({'job_id': job['id'], 'status': 'queued', 'job': _get_job_snapshot(job['id'])})
 
 
 @app.route('/api/jobs/<job_id>')
@@ -3104,7 +2088,7 @@ def favicon():
 @app.route('/particles')
 def particles():
     """Render market particles visualization"""
-    return send_from_directory(str(Path(__file__).resolve().parent / 'templates'), 'market_particles.html')
+    return send_from_directory(str(PROJECT_ROOT / 'webui' / 'templates'), 'market_particles.html')
 
 
 @app.route('/api/snapshot')
@@ -3113,13 +2097,21 @@ def get_snapshot():
     return jsonify(market_state)
 
 
-# Initialize Market Data on startup
-print("Initializing market data...")
-init_market()
+def get_server_config():
+    """Return WebUI host, port, and debug mode from environment."""
+    host = os.environ.get('KRONOS_HOST', '0.0.0.0')
+    port = int(os.environ.get('KRONOS_PORT', '7070'))
+    desktop_mode = os.environ.get('KRONOS_DESKTOP') == 'tauri'
+    debug_env = os.environ.get('FLASK_DEBUG')
+    debug = (debug_env not in ('0', 'false', 'False')) if debug_env is not None else not desktop_mode
+    return host, port, debug
 
-# Start Monitor Thread
-monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
-monitor_thread.start()
+
+def run_server():
+    """Run the Flask development server using shared WebUI config."""
+    host, port, debug = get_server_config()
+    start_market_monitor()
+    app.run(debug=debug, host=host, port=port, use_reloader=debug)
 
 
 if __name__ == '__main__':
@@ -3131,10 +2123,4 @@ if __name__ == '__main__':
     else:
         print("Tip: Will use simulated data for demonstration")
 
-    host = os.environ.get('KRONOS_HOST', '0.0.0.0')
-    port = int(os.environ.get('KRONOS_PORT', '7070'))
-    desktop_mode = os.environ.get('KRONOS_DESKTOP') == 'tauri'
-    debug_env = os.environ.get('FLASK_DEBUG')
-    debug = (debug_env not in ('0', 'false', 'False')) if debug_env is not None else not desktop_mode
-
-    app.run(debug=debug, host=host, port=port, use_reloader=debug)
+    run_server()
