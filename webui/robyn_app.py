@@ -454,6 +454,40 @@ def get_stock_context(request: Request, stock_code=None) -> Response:
     return _json_response(payload)
 
 
+@_native_get("/api/stock-analysis-suite/:stock_code")
+def get_stock_analysis_suite(request: Request, stock_code=None) -> Response:
+    code = _path_param(request, "stock_code", stock_code)
+    name = _query_value(request, "name", "")
+    try:
+        payload = webui_core.STOCK_SUITE_SERVICE.get_suite(code, name=name)
+    except ValueError as exc:
+        return _json_response({"success": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"success": False, "error": str(exc)}, status_code=500)
+    return _json_response(payload)
+
+
+@_native_post("/api/stock-analysis-suite/:stock_code/ai")
+def post_stock_analysis_suite_ai(request: Request, stock_code=None) -> Response:
+    code = _path_param(request, "stock_code", stock_code)
+    body = _request_json(request) or {}
+    name = str(body.get("name") or "")
+    force_refresh = bool(body.get("force_refresh", False))
+    model_full_key = body.get("model_full_key")
+    try:
+        payload = webui_core.STOCK_SUITE_SERVICE.trigger_ai_interpretation(
+            code,
+            name=name,
+            model_full_key=model_full_key,
+            force_refresh=force_refresh,
+        )
+    except ValueError as exc:
+        return _json_response({"success": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"success": False, "error": str(exc)}, status_code=500)
+    return _json_response(payload)
+
+
 @_native_post("/api/opportunity-discovery/start")
 def start_opportunity_discovery(request: Request) -> Response:
     params, error = webui_core.ANALYSIS_JOB_PARSER.opportunity_params(_request_json(request))
