@@ -56,14 +56,16 @@ EXPECTED_FUNCTIONS = {
 
 
 @pytest.fixture()
-def webui_module(tmp_path, monkeypatch):
+def clean_webui_env(tmp_path, monkeypatch):
     monkeypatch.setenv("KRONOS_USER_DIR", str(tmp_path))
     sys.modules.pop("webui.app", None)
     sys.modules.pop("webui.core", None)
     yield
+    sys.modules.pop("webui.app", None)
+    sys.modules.pop("webui.core", None)
 
 
-def test_webui_app_exposes_required_surface(webui_module):
+def test_webui_app_exposes_required_surface(clean_webui_env):
     module = importlib.import_module("webui.app")
-    for name in EXPECTED_CONSTANTS | EXPECTED_SINGLETONS | EXPECTED_FUNCTIONS:
+    for name in sorted(EXPECTED_CONSTANTS | EXPECTED_SINGLETONS | EXPECTED_FUNCTIONS):
         assert hasattr(module, name), f"webui.app missing attribute: {name}"
