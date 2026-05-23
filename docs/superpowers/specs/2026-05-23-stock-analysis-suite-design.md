@@ -41,7 +41,7 @@ analysis/stock_analysis_suite.py        # 编排器，单一入口
    ├─ collect_cached_reports(code)      # 读 reports/ 下既有产物
    └─ build_llm_payload(code)           # 给 AI 解读拼 prompt 上下文
 
-webui/services/stock_suite_service.py   # Flask service 层
+webui/services/stock_suite_service.py   # Robyn service 层
    ├─ get_suite(code, name)             # 调编排器，返回结构化 JSON
    └─ trigger_ai_interpretation(code)   # 异步包 LLMAnalyzer
 
@@ -53,14 +53,9 @@ tests/test_stock_analysis_suite.py      # 单元/集成测试
 
 ### 2.3 最小侵入式改动的现有文件
 
-> **Web 框架现状**：项目正在执行 Flask → Robyn 迁移。30 条 HTTP 路由已全部注册成原生 Robyn handler（`webui/robyn_app.py`），Flask 路由（`webui/app.py`）作为兼容兜底保留。新路由必须**在两侧同时注册**，与现有 `stock-context` 等路由保持一致：
-> - Flask 端：`@app.route('/api/stock-analysis-suite/<stock_code>')`
-> - Robyn 端：`@_native_get("/api/stock-analysis-suite/:stock_code")`
->
-> 业务逻辑放在 `webui/services/stock_suite_service.py`，被两侧 handler 共享调用（与 `model_runtime` 现有模式一致），避免双框架逻辑分叉。
+> **Web 框架现状**：Flask 已于 2026-05-23 完整移除，Robyn 是唯一 HTTP runtime。新路由仅在 `webui/robyn_app.py` 注册，业务逻辑放在 `webui/services/stock_suite_service.py`，由 Robyn handler 调用。
 
-- `webui/app.py`：新增 2 个 Flask 路由 `/api/stock-analysis-suite/<code>` (GET) 和 `/api/stock-analysis-suite/<code>/ai` (POST)，不改已有路由
-- `webui/robyn_app.py`：新增对应 2 个原生 Robyn handler（`@_native_get` / `@_native_post`），逻辑全部委托给 `stock_suite_service`
+- `webui/robyn_app.py`：新增 2 个原生 Robyn handler（`@_native_get` / `@_native_post`），逻辑全部委托给 `stock_suite_service`
 - `webui/templates/desktop.html`：在 `#stockContextModal` → `#stockContextBody` 上方插一段 Tab 栏；现有 6 个面板原封不动塞进「快速信息」Tab
 - `webui/static/kronos_desktop.css`：追加 Tab 样式，不改已有规则
 - `webui/services/__init__.py`：如不存在则创建（仅一行空 import）
