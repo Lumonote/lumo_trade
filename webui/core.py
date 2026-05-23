@@ -64,6 +64,7 @@ from webui.services.model_runtime import (
 )
 from webui.services.paths import ensure_user_subdirs, project_root, user_root
 from webui.services.pattern_search_service import PatternSearchService
+from webui.services.stock_suite_service import STOCK_SUITE_SERVICE
 from webui.services.trading_client_service import TradingClientService
 
 logger = logging.getLogger(__name__)
