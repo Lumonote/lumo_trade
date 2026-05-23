@@ -1,9 +1,8 @@
-"""Surface-level regression tests for the helpers/singletons that move
-from webui.app to webui.core during the Flask removal migration.
+"""Surface-level regression tests for the helpers/singletons exposed by
+webui.core after the Flask removal migration.
 
-These tests should pass with the original webui.app, then continue passing
-after the helpers move to webui.core, and finally pass when both
-webui.app and webui.core re-export them.
+These tests guard the public surface (constants, singletons, helper
+functions) that Robyn routes import from webui.core.
 """
 
 import importlib
@@ -58,14 +57,12 @@ EXPECTED_FUNCTIONS = {
 @pytest.fixture()
 def clean_webui_env(tmp_path, monkeypatch):
     monkeypatch.setenv("KRONOS_USER_DIR", str(tmp_path))
-    sys.modules.pop("webui.app", None)
     sys.modules.pop("webui.core", None)
     yield
-    sys.modules.pop("webui.app", None)
     sys.modules.pop("webui.core", None)
 
 
-def test_webui_app_exposes_required_surface(clean_webui_env):
-    module = importlib.import_module("webui.app")
+def test_webui_core_exposes_required_surface(clean_webui_env):
+    module = importlib.import_module("webui.core")
     for name in sorted(EXPECTED_CONSTANTS | EXPECTED_SINGLETONS | EXPECTED_FUNCTIONS):
-        assert hasattr(module, name), f"webui.app missing attribute: {name}"
+        assert hasattr(module, name), f"webui.core missing attribute: {name}"
