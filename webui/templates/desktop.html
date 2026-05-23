@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ page_title }} - Kronos Ultra</title>
-    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
+    <script async src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
     <link rel="stylesheet" href="/static/kronos_desktop.css" />
   </head>
 	  <body data-page="{{ active_page }}">
@@ -20,21 +20,23 @@
 	            <span>{{ meta.title }}</span>
 	          </a>
 	          {% endfor %}
-	          <a class="external" href="/prediction" data-short="预" title="预测控制台">预测控制台</a>
-	          <a class="external" href="/" data-short="功" title="功能总览">功能总览</a>
         </nav>
-        <div class="sidebar-foot">市场分析 · 预测 · 报告</div>
+        <div class="sidebar-foot">市场分析 · 报告 · 配置</div>
       </aside>
 
       <main class="content">
         <header class="topbar">
           <div>
             <h1>{{ page_title }}</h1>
-            <p>{{ page_subtitle }}</p>
+            <p>{{ '本地报告与模块运行状态' if active_page == 'reports' else page_subtitle }}</p>
           </div>
 	          <div class="toolbar">
 	            <button id="sidebarToggleBtn" class="button secondary shell-button" type="button" title="收起/展开菜单">菜单</button>
 	            <button id="workspaceFullscreenBtn" class="button secondary shell-button" type="button" title="全屏显示右侧功能">全屏</button>
+	            {% if active_page != 'features' %}
+	            <a class="button secondary" href="/desktop/features">返回菜单页</a>
+	            {% endif %}
+	            <span id="activeTaskMeta" class="task-meta">任务读取中</span>
 	            <span id="refreshMeta" class="panel-meta">--</span>
 	            <button id="refreshBtn" class="button secondary" type="button">刷新</button>
 	          </div>
@@ -100,100 +102,136 @@
         </section>
         {% endif %}
 
-        {% if active_page == 'opportunities' %}
-        <section class="grid two">
-          <div class="panel">
-            <div class="panel-header">
-              <h2 class="panel-title">投资机会</h2>
-              <span id="opportunityMeta" class="panel-meta">--</span>
-            </div>
-            <div id="opportunityList" class="panel-body list"></div>
-          </div>
-          <div class="grid">
-            <div class="panel">
-              <div class="panel-header">
-                <h2 id="klineTitle" class="panel-title">K线</h2>
-                <span id="klineMeta" class="panel-meta">选择股票查看</span>
-              </div>
-              <div id="klineChart" class="panel-body chart"></div>
-            </div>
-            <div class="panel">
-              <div class="panel-header">
-                <h2 class="panel-title">量化模型</h2>
-                <span class="panel-meta">机会挖掘摘要</span>
-              </div>
-              <div id="quantModels" class="panel-body list"></div>
-            </div>
-          </div>
-        </section>
-        {% endif %}
-
         {% if active_page == 'workbench' %}
-        <section class="grid two">
-          <div class="panel">
-            <div class="panel-header">
-              <h2 class="panel-title">机会挖掘</h2>
-              <span class="panel-meta">后台任务</span>
-            </div>
-            <form id="opportunityForm" class="panel-body">
-              <div class="form-grid">
-                <label>候选数量
-                  <input name="limit" type="number" value="80" min="5" max="500" />
-                </label>
-                <label>并发数
-                  <input name="workers" type="number" value="8" min="1" max="32" />
-                </label>
-                <label>来源
-                  <select name="source">
-                    <option value="multi">多源候选</option>
-                    <option value="heat">热度候选</option>
-                    <option value="moneyflow_dc">东方财富资金</option>
-                  </select>
-                </label>
-                <label>指定股票池
-                  <input name="stock_codes" placeholder="可选，如 600519,300750" />
-                </label>
+        <section class="workbench-layout">
+          <div class="workbench-main">
+            <section class="grid two">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">机会挖掘</h2>
+                  <span class="panel-meta">后台任务</span>
+                </div>
+                <form id="opportunityForm" class="panel-body">
+                  <div class="form-grid">
+                    <label>候选数量
+                      <input name="limit" type="number" value="80" min="5" max="500" />
+                    </label>
+                    <label>并发数
+                      <input name="workers" type="number" value="8" min="1" max="32" />
+                    </label>
+                    <label>来源
+                      <select name="source">
+                        <option value="multi">多源候选</option>
+                        <option value="heat">热度候选</option>
+                        <option value="moneyflow_dc">东方财富资金</option>
+                      </select>
+                    </label>
+                    <label>指定股票池
+                      <input name="stock_codes" placeholder="可选，如 600519,300750" />
+                    </label>
+                  </div>
+                  <div class="actions">
+                    <button class="button" type="submit">启动机会挖掘</button>
+                  </div>
+                </form>
               </div>
-              <div class="actions">
-                <button class="button" type="submit">启动机会挖掘</button>
+
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">批量分析</h2>
+                  <span class="panel-meta">股票池评分</span>
+                </div>
+                <form id="batchForm" class="panel-body">
+                  <label>股票代码
+                    <textarea name="stock_codes">600519, 300750, 000001, 002230, 601138</textarea>
+                  </label>
+                  <div class="form-grid" style="margin-top: 12px;">
+                    <label>策略
+                      <select name="filter_strategy">
+                        <option value="balanced">balanced</option>
+                        <option value="strict">strict</option>
+                        <option value="loose">loose</option>
+                      </select>
+                    </label>
+                    <label>并发数
+                      <input name="max_concurrent" type="number" value="5" min="1" max="20" />
+                    </label>
+                  </div>
+                  <div class="actions">
+                    <button class="button" type="submit">启动批量分析</button>
+                  </div>
+                </form>
               </div>
-            </form>
+            </section>
+
+            <section class="grid two">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">投资机会</h2>
+                  <span id="opportunityMeta" class="panel-meta">--</span>
+                </div>
+                <div id="opportunityList" class="panel-body list"></div>
+              </div>
+              <div class="grid">
+                <div class="panel">
+                  <div class="panel-header">
+                    <h2 id="klineTitle" class="panel-title">K线</h2>
+                    <div class="panel-header-actions">
+                      <span id="klineMeta" class="panel-meta">选择股票查看</span>
+                      <button id="openKlineModalBtn" class="button secondary compact" type="button" disabled>大图</button>
+                    </div>
+                  </div>
+                  <div id="klineChart" class="panel-body chart trading-kline-preview" role="button" tabindex="0" title="大图K线"></div>
+                </div>
+                <div class="panel">
+                  <div class="panel-header">
+                    <h2 class="panel-title">量化模型</h2>
+                    <span class="panel-meta">机会挖掘摘要</span>
+                  </div>
+                  <div id="quantModels" class="panel-body list"></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="grid two">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">批量结果</h2>
+                  <span id="batchMeta" class="panel-meta">--</span>
+                </div>
+                <div id="batchRuns" class="panel-body list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">报告库</h2>
+                  <span class="panel-meta">本地生成</span>
+                </div>
+                <div id="reportList" class="panel-body list"></div>
+              </div>
+            </section>
           </div>
 
-          <div class="panel">
-            <div class="panel-header">
-              <h2 class="panel-title">批量分析</h2>
-              <span class="panel-meta">股票池评分</span>
-            </div>
-            <form id="batchForm" class="panel-body">
-              <label>股票代码
-                <textarea name="stock_codes">600519, 300750, 000001, 002230, 601138</textarea>
-              </label>
-              <div class="form-grid" style="margin-top: 12px;">
-                <label>策略
-                  <select name="filter_strategy">
-                    <option value="balanced">balanced</option>
-                    <option value="strict">strict</option>
-                    <option value="loose">loose</option>
-                  </select>
-                </label>
-                <label>并发数
-                  <input name="max_concurrent" type="number" value="5" min="1" max="20" />
-                </label>
+          <aside class="workbench-side">
+            <section class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">任务队列</h2>
+                <span class="panel-meta">最近20条</span>
               </div>
-              <div class="actions">
-                <button class="button" type="submit">启动批量分析</button>
-              </div>
-            </form>
-          </div>
-        </section>
+              <div id="jobList" class="panel-body list"></div>
+            </section>
 
-        <section class="panel" style="margin-top: 14px;">
-          <div class="panel-header">
-            <h2 class="panel-title">任务队列</h2>
-            <span class="panel-meta">最近20条</span>
-          </div>
-          <div id="jobList" class="panel-body list"></div>
+            <section class="panel">
+              <div class="panel-header">
+                <h2 id="jobDetailTitle" class="panel-title">任务日志</h2>
+                <span id="jobDetailMeta" class="panel-meta">选择或启动任务</span>
+              </div>
+              <div class="panel-body">
+                <div id="jobDetailSummary" class="notice">启动任务后这里会实时展示进度、日志和结果。</div>
+                <div id="jobDetailActions" class="actions"></div>
+                <div id="jobLogStream" class="job-log-stream" style="margin-top: 12px;"></div>
+              </div>
+            </section>
+          </aside>
         </section>
         {% endif %}
 
@@ -217,6 +255,7 @@
                   </div>
                   <div class="actions">
                     <button id="clearPatternBtn" class="button secondary" type="button">清空</button>
+                    <button id="savePatternBtn" class="button secondary" type="button" disabled>保存图形</button>
                     <button id="matchDrawBtn" class="button" type="button" disabled>检索相似股票</button>
                   </div>
                 </div>
@@ -291,15 +330,427 @@
             <div id="moduleList" class="panel-body list"></div>
           </div>
         </section>
-        <section class="panel" style="margin-top: 14px;">
-          <div class="panel-header">
-            <h2 class="panel-title">批量结果</h2>
-            <span id="batchMeta" class="panel-meta">--</span>
+        {% endif %}
+
+        {% if active_page == 'features' %}
+        <section class="feature-hero">
+          <div>
+            <h2>功能总览</h2>
+            <div class="feature-status-strip">
+              <span id="featureOverviewStatus" class="pill">市场读取中</span>
+              <span id="featureJobStatus" class="pill">任务读取中</span>
+              <span id="featureConfigPill" class="pill">配置读取中</span>
+            </div>
           </div>
-          <div id="batchRuns" class="panel-body list"></div>
+          <div class="actions">
+            <a class="button secondary" href="/">系统首页</a>
+            <a class="button secondary" href="/desktop/settings">后台配置</a>
+          </div>
+        </section>
+
+        <section class="grid three">
+          <div class="panel">
+            <div class="panel-body metric">
+              <span>上证指数</span>
+              <strong id="marketIndex">--</strong>
+              <small id="marketIndexMeta" class="muted">--</small>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-body metric">
+              <span>监控股票</span>
+              <strong id="monitoredCount">--</strong>
+              <small id="particleCount" class="muted">--</small>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-body metric">
+              <span>最新机会</span>
+              <strong id="opportunityCount">--</strong>
+              <small id="opportunityStats" class="muted">--</small>
+            </div>
+          </div>
+        </section>
+
+        <section class="feature-main-grid">
+          <div class="feature-main-stack">
+            <section class="grid two">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">指数与板块</h2>
+                  <span class="panel-meta">市场概览</span>
+                </div>
+                <div id="indexList" class="panel-body list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">实时异动</h2>
+                  <span class="panel-meta">Top movers</span>
+                </div>
+                <div id="topMovers" class="panel-body list"></div>
+              </div>
+            </section>
+
+            <section class="grid two">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">市场快讯</h2>
+                  <span class="panel-meta">本地缓存</span>
+                </div>
+                <div id="marketNews" class="panel-body list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">板块动量</h2>
+                  <span class="panel-meta">监控均值</span>
+                </div>
+                <div id="sectorList" class="panel-body list"></div>
+              </div>
+            </section>
+
+            <section class="grid two">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">投资机会</h2>
+                  <span id="opportunityMeta" class="panel-meta">--</span>
+                </div>
+                <div id="opportunityList" class="panel-body list"></div>
+              </div>
+              <div class="grid">
+                <div class="panel">
+                  <div class="panel-header">
+                    <h2 id="klineTitle" class="panel-title">K线</h2>
+                    <div class="panel-header-actions">
+                      <span id="klineMeta" class="panel-meta">选择股票查看</span>
+                      <button id="openKlineModalBtn" class="button secondary compact" type="button" disabled>大图</button>
+                    </div>
+                  </div>
+                  <div id="klineChart" class="panel-body chart trading-kline-preview" role="button" tabindex="0" title="大图K线"></div>
+                </div>
+                <div class="panel">
+                  <div class="panel-header">
+                    <h2 class="panel-title">量化模型</h2>
+                    <span class="panel-meta">机会挖掘摘要</span>
+                  </div>
+                  <div id="quantModels" class="panel-body list"></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="grid two">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">任务队列</h2>
+                  <span class="panel-meta">最近20条</span>
+                </div>
+                <div id="jobList" class="panel-body list"></div>
+              </div>
+              <div class="panel" id="jobDetailPanel">
+                <div class="panel-header">
+                  <h2 id="jobDetailTitle" class="panel-title">任务日志</h2>
+                  <span id="jobDetailMeta" class="panel-meta">选择或启动任务</span>
+                </div>
+                <div class="panel-body">
+                  <div id="jobDetailSummary" class="notice">启动任务后这里会实时展示进度、日志和结果。</div>
+                  <div id="jobDetailActions" class="actions"></div>
+                  <div id="jobLogStream" class="job-log-stream" style="margin-top: 12px;"></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="grid two">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">报告库</h2>
+                  <span class="panel-meta">本地生成</span>
+                </div>
+                <div id="reportList" class="panel-body list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">模块健康</h2>
+                  <span class="panel-meta">导入检查</span>
+                </div>
+                <div id="moduleList" class="panel-body list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">批量结果</h2>
+                  <span id="batchMeta" class="panel-meta">--</span>
+                </div>
+                <div id="batchRuns" class="panel-body list"></div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="feature-side-stack">
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">机会挖掘</h2>
+                <span class="panel-meta">后台任务</span>
+              </div>
+              <form id="opportunityForm" class="panel-body">
+                <div class="form-grid">
+                  <label>候选数量
+                    <input name="limit" type="number" value="80" min="5" max="500" />
+                  </label>
+                  <label>并发数
+                    <input name="workers" type="number" value="8" min="1" max="32" />
+                  </label>
+                  <label>来源
+                    <select name="source">
+                      <option value="multi">多源候选</option>
+                      <option value="heat">热度候选</option>
+                      <option value="moneyflow_dc">东方财富资金</option>
+                    </select>
+                  </label>
+                  <label>指定股票池
+                    <input name="stock_codes" placeholder="可选，如 600519,300750" />
+                  </label>
+                </div>
+                <div class="actions">
+                  <button class="button" type="submit">启动机会挖掘</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">批量分析</h2>
+                <span class="panel-meta">股票池评分</span>
+              </div>
+              <form id="batchForm" class="panel-body">
+                <label>股票代码
+                  <textarea name="stock_codes">600519, 300750, 000001, 002230, 601138</textarea>
+                </label>
+                <div class="form-grid" style="margin-top: 12px;">
+                  <label>策略
+                    <select name="filter_strategy">
+                      <option value="balanced">balanced</option>
+                      <option value="strict">strict</option>
+                      <option value="loose">loose</option>
+                    </select>
+                  </label>
+                  <label>并发数
+                    <input name="max_concurrent" type="number" value="5" min="1" max="20" />
+                  </label>
+                </div>
+                <div class="actions">
+                  <button class="button" type="submit">启动批量分析</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">图形选股</h2>
+                <span id="featurePatternMeta" class="panel-meta">读取中</span>
+              </div>
+              <div class="panel-body">
+                <div id="featurePatternStatus" class="notice">正在读取指纹库状态...</div>
+                <div class="actions">
+                  <button id="featureRefreshPatternDbBtn" class="button secondary" type="button">刷新指纹库</button>
+                  <a class="button secondary" href="/desktop/patterns">打开图形选股</a>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">后台配置</h2>
+                <span id="featureConfigStatus" class="panel-meta">读取中</span>
+              </div>
+              <div class="panel-body">
+                <div id="featureSettingsSummary" class="notice">正在读取配置状态...</div>
+                <div class="actions">
+                  <a class="button secondary" href="/desktop/settings">配置 AI / TuShare</a>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Kronos 模型状态</h2>
+                <span id="kronosModelMeta" class="panel-meta">读取中</span>
+              </div>
+              <div class="panel-body">
+                <div id="kronosModelStatus" class="notice">正在读取模型状态...</div>
+                <div class="form-grid" style="margin-top: 12px;">
+                  <label>模型
+                    <select id="kronosModelSelect"></select>
+                  </label>
+                  <label>设备
+                    <select id="kronosDeviceSelect">
+                      <option value="auto">auto</option>
+                      <option value="cpu">cpu</option>
+                      <option value="mps">mps</option>
+                      <option value="cuda">cuda</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="actions">
+                  <button id="loadKronosModelBtn" class="button" type="button">载入 Kronos 模型</button>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </section>
+        {% endif %}
+
+        {% if active_page == 'settings' %}
+        <section class="grid two">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">AI 分析模型</h2>
+              <span id="llmConfigMeta" class="panel-meta">读取中</span>
+            </div>
+            <form id="llmSettingsForm" class="panel-body">
+              <div id="llmProviderList" class="list"></div>
+              <div class="actions">
+                <button class="button" type="submit">保存 AI 配置</button>
+              </div>
+              <p id="llmConfigPath" class="item-meta" style="margin-top: 10px;"></p>
+            </form>
+          </div>
+
+          <div class="grid">
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">TuShare 数据源</h2>
+                <span id="tushareConfigMeta" class="panel-meta">读取中</span>
+              </div>
+              <form id="tushareSettingsForm" class="panel-body">
+                <div class="form-grid">
+                  <label>Token
+                    <input name="token" type="password" placeholder="留空表示不覆盖现有 Token" autocomplete="off" />
+                  </label>
+                  <label>请求超时（秒）
+                    <input name="timeout" type="number" min="1" max="300" value="30" />
+                  </label>
+                  <label>重试次数
+                    <input name="retry_count" type="number" min="1" max="10" value="3" />
+                  </label>
+                  <label>清空 Token
+                    <select name="clear_token">
+                      <option value="0">否</option>
+                      <option value="1">是</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="actions">
+                  <button class="button" type="submit">保存 TuShare 配置</button>
+                </div>
+                <p id="tushareConfigPath" class="item-meta" style="margin-top: 10px;"></p>
+              </form>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">Kronos 模型状态</h2>
+                <span id="kronosModelMeta" class="panel-meta">读取中</span>
+              </div>
+              <div class="panel-body">
+                <div id="kronosModelStatus" class="notice">正在读取模型状态...</div>
+                <div class="form-grid" style="margin-top: 12px;">
+                  <label>模型
+                    <select id="kronosModelSelect"></select>
+                  </label>
+                  <label>设备
+                    <select id="kronosDeviceSelect">
+                      <option value="auto">auto</option>
+                      <option value="cpu">cpu</option>
+                      <option value="mps">mps</option>
+                      <option value="cuda">cuda</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="actions">
+                  <button id="loadKronosModelBtn" class="button" type="button">载入 Kronos 模型</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </section>
         {% endif %}
       </main>
+    </div>
+
+    <div id="klineModal" class="modal-backdrop" aria-hidden="true" hidden>
+      <div class="modal-shell modal-large" role="dialog" aria-modal="true" aria-labelledby="klineModalTitle">
+        <div class="modal-header">
+          <div>
+            <h2 id="klineModalTitle">大图K线</h2>
+            <p id="klineModalMeta">--</p>
+          </div>
+          <div class="modal-header-actions">
+            <button id="klineOpportunityBtn" class="button compact" type="button">机会挖掘</button>
+            <button id="klineAnalysisBtn" class="button secondary compact" type="button">个股分析</button>
+            <button id="klineTradingBtn" class="button secondary compact" type="button">打开交易软件</button>
+            <button id="closeKlineModalBtn" class="button secondary compact" type="button">关闭</button>
+          </div>
+        </div>
+        <div class="modal-body modal-kline-body">
+          <div class="modal-kline-toolbar">
+            <div class="modal-kline-stats">
+              <span id="klineModalSource" class="pill">--</span>
+              <span id="klineModalRange" class="pill">--</span>
+              <span id="klineModalVolume" class="pill">--</span>
+              <span id="klineInsightStatus" class="pill warn">股票分析读取中</span>
+            </div>
+            <div class="modal-kline-actions">
+              <button class="button secondary compact" type="button" data-kline-range="60">60日</button>
+              <button class="button secondary compact" type="button" data-kline-range="120">120日</button>
+              <button class="button secondary compact" type="button" data-kline-range="240">240日</button>
+              <button class="button secondary compact" type="button" data-kline-range="500">全部</button>
+            </div>
+          </div>
+          <div class="modal-kline-workbench">
+            <div id="klineModalChart" class="modal-kline-chart"></div>
+            <aside id="klineStockInsight" class="modal-kline-insight">
+              <div class="kline-insight-title">
+                <h3>股票分析工作台</h3>
+                <span>机会 · 分析 · 资讯</span>
+              </div>
+              <div class="stock-context-loading">正在读取股票分析...</div>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="stockContextModal" class="modal-backdrop" aria-hidden="true" hidden>
+      <div class="modal-shell stock-context-shell" role="dialog" aria-modal="true" aria-labelledby="stockContextTitle">
+        <div class="modal-header">
+          <div>
+            <h2 id="stockContextTitle">股票工作台</h2>
+            <p id="stockContextMeta">--</p>
+          </div>
+          <button id="closeStockContextBtn" class="button secondary compact" type="button">关闭</button>
+        </div>
+        <div class="modal-body stock-context-body">
+          <nav class="stock-suite-tabs" role="tablist" id="stockSuiteTabs">
+            <button data-suite-tab="quick"               class="suite-tab active" type="button">快速信息</button>
+            <button data-suite-tab="overview"            class="suite-tab" type="button">综合总览</button>
+            <button data-suite-tab="market_cycle"        class="suite-tab" type="button" disabled title="即将上线 · 与市场环境模块联调中">市场周期</button>
+            <button data-suite-tab="main_force_phase"    class="suite-tab" type="button" disabled title="即将上线 · 与主力博弈模块联调中">主力阶段</button>
+            <button data-suite-tab="volume_price_game"   class="suite-tab" type="button" disabled title="即将上线 · 与量价模型联调中">量价博弈</button>
+            <button data-suite-tab="chip_structure"      class="suite-tab" type="button" disabled title="即将上线 · 与筹码模块联调中">筹码结构</button>
+            <button data-suite-tab="performance"         class="suite-tab" type="button" disabled title="即将上线 · 与基本面模块联调中">业绩预期</button>
+            <button data-suite-tab="probability"         class="suite-tab" type="button" disabled title="即将上线 · 与概率推演模块联调中">概率推演</button>
+            <button data-suite-tab="risk_control"        class="suite-tab" type="button">操盘风控</button>
+            <button data-suite-tab="limit_up_screening"  class="suite-tab" type="button" disabled title="即将上线 · 与涨停模块联调中">涨停筛选</button>
+            <button data-suite-tab="ai_interpretation"   class="suite-tab" type="button">AI 解读</button>
+          </nav>
+          <div class="stock-suite-panels" id="stockSuitePanels">
+            <div class="suite-pane" data-suite-pane="quick">
+              <div id="stockContextBody" class="stock-context-loading">正在读取股票上下文...</div>
+            </div>
+            <div class="suite-pane hidden" data-suite-pane="overview" id="suitePaneOverview"></div>
+            <div class="suite-pane hidden" data-suite-pane="risk_control" id="suitePaneRiskControl"></div>
+            <div class="suite-pane hidden" data-suite-pane="ai_interpretation" id="suitePaneAi"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script src="/static/kronos_desktop_shell.js"></script>
@@ -312,6 +763,14 @@
         selectedCurve: null,
         selectedStock: null,
         drawPoints: [],
+        jobs: [],
+        activeJobId: null,
+        jobPollTimer: null,
+        currentKline: null,
+        currentStockContext: null,
+        currentSuitePayload: null,
+        klineModalContext: null,
+        patternClickTimer: null,
       };
 
       function html(value) {
@@ -335,6 +794,73 @@
         return n >= 0 ? "change-up" : "change-down";
       }
 
+      function klineChangeClass(openPrice, closePrice) {
+        const open = Number(openPrice);
+        const close = Number(closePrice);
+        if (!Number.isFinite(open) || !Number.isFinite(close) || open === 0) return "";
+        return close >= open ? "kline-up" : "kline-down";
+      }
+
+      function movingAverage(values, windowSize) {
+        const numbers = values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+        return numbers.map((value, index) => {
+          if (index + 1 < windowSize) return null;
+          const slice = numbers.slice(index + 1 - windowSize, index + 1);
+          const avg = slice.reduce((sum, current) => sum + current, 0) / slice.length;
+          return Number(avg.toFixed(2));
+        });
+      }
+
+      function volumeLabel(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return "--";
+        if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
+        if (n >= 1e4) return `${(n / 1e4).toFixed(2)}万`;
+        return n.toFixed(0);
+      }
+
+      function normalizeStockCode(value) {
+        const match = String(value || "").toUpperCase().replace(/^(SH|SZ|BJ)/, "").replace(/\.(SH|SZ|BJ)$/, "").match(/\d{6}/);
+        return match ? match[0] : "";
+      }
+
+      function stockDisplayName(stock = {}) {
+        const name = stock.name || stock.stock_name || stock.stockName || "";
+        const code = stock.code || stock.stock_code || stock.stockCode || "";
+        return `${name || "股票"} ${code || ""}`.trim();
+      }
+
+      function stockTargetFromDataset(dataset = {}) {
+        const code = normalizeStockCode(dataset.stockCode || dataset.stock || dataset.code);
+        return {
+          type: "stock",
+          stock_code: code,
+          stock_name: dataset.stockName || dataset.name || "",
+          board_name: dataset.sector || dataset.industry || dataset.boardName || "",
+        };
+      }
+
+      function klineStats(records) {
+        if (!records.length) return { high: "--", low: "--", volume: "--", delta: "--" };
+        const first = records[0];
+        const last = records[records.length - 1];
+        const highs = records.map((r) => Number(r.high)).filter((v) => Number.isFinite(v));
+        const lows = records.map((r) => Number(r.low)).filter((v) => Number.isFinite(v));
+        const volumes = records.map((r) => Number(r.volume)).filter((v) => Number.isFinite(v));
+        const delta = first.open ? (((last.close - first.open) / first.open) * 100).toFixed(2) : "--";
+        return {
+          high: highs.length ? Math.max(...highs).toFixed(2) : "--",
+          low: lows.length ? Math.min(...lows).toFixed(2) : "--",
+          volume: volumes.length ? volumeLabel(volumes.reduce((sum, value) => sum + value, 0) / volumes.length) : "--",
+          delta,
+        };
+      }
+
+      function klineAxisTitle(limit) {
+        if (limit >= 500) return "全部数据";
+        return `最近 ${limit} 条`;
+      }
+
       async function fetchJson(url, options) {
         const response = await fetch(url, options);
         const data = await response.json();
@@ -347,12 +873,116 @@
       async function loadDashboard() {
         const data = await fetchJson("/api/stock-dashboard");
         state.dashboard = data;
+        state.jobs = data.jobs || [];
+        updateTaskHeader(state.jobs);
+        updateFeatureJobPill(state.jobs);
+        scheduleJobPolling(state.jobs);
         $("#refreshMeta").textContent = `更新 ${new Date().toLocaleTimeString()}`;
         return data;
       }
 
-      function empty(target, text = "暂无数据") {
-        if (target) target.innerHTML = `<div class="item"><p class="item-meta">${html(text)}</p></div>`;
+      function renderDashboardPage(data) {
+        if (page === "overview") {
+          renderOverview(data);
+          return;
+        }
+        if (page === "workbench") {
+          setupWorkbench(data);
+          renderOpportunities(data);
+          renderReports(data);
+          bindKlineInteractions();
+          return;
+        }
+        if (page === "reports") {
+          renderReports(data);
+          return;
+        }
+        if (page === "features") {
+          renderFeatureOverview(data);
+          bindKlineInteractions();
+        }
+      }
+
+      async function refreshCurrentView() {
+        const button = $("#refreshBtn");
+        if (button) button.disabled = true;
+        try {
+          if (["overview", "workbench", "reports", "features"].includes(page)) {
+            const data = await loadDashboard();
+            renderDashboardPage(data);
+            return;
+          }
+          if (page === "patterns") {
+            await loadPatternStatus();
+            $("#refreshMeta").textContent = `更新 ${new Date().toLocaleTimeString()}`;
+            return;
+          }
+          if (page === "settings") {
+            await Promise.all([loadSettings(), loadKronosStatus()]);
+            $("#refreshMeta").textContent = `更新 ${new Date().toLocaleTimeString()}`;
+            return;
+          }
+          await loadJobs();
+        } finally {
+          if (button) button.disabled = false;
+        }
+      }
+
+      function empty(target, text = "暂无数据", actionsHtml = "") {
+        if (!target) return;
+        target.innerHTML = `
+          <div class="item empty-state">
+            <p class="item-meta">${html(text)}</p>
+            ${actionsHtml ? `<div class="actions empty-actions">${actionsHtml}</div>` : ""}
+          </div>
+        `;
+      }
+
+      function emptyAction(action, label, extraAttrs = "") {
+        return `<button class="button secondary" type="button" data-action="${html(action)}" ${extraAttrs}>${html(label)}</button>`;
+      }
+
+      document.addEventListener("click", (event) => {
+        const actionEl = event.target.closest("[data-action]");
+        if (!actionEl) return;
+        const action = actionEl.dataset.action;
+        if (action === "start-opportunity") {
+          startOpportunityFromContext(actionEl).catch((error) => alert(error.message));
+        }
+        if (action === "start-batch") {
+          startBatchFromContext(actionEl).catch((error) => alert(error.message));
+        }
+      });
+
+      document.addEventListener("click", (event) => {
+        const target = event.target.closest("[data-kline-target]");
+        if (!target) return;
+        if (event.target.closest("a, button, input, textarea, select, [data-stock-action], [data-action]")) {
+          return;
+        }
+        const code = normalizeStockCode(target.dataset.klineTarget);
+        if (!code) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openStockKlineModal(code).catch((error) => alert(error.message));
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        const target = event.target.closest?.("[data-kline-target]");
+        if (!target) return;
+        if (event.target.closest("a, button, input, textarea, select")) return;
+        const code = normalizeStockCode(target.dataset.klineTarget);
+        if (!code) return;
+        event.preventDefault();
+        openStockKlineModal(code).catch((error) => alert(error.message));
+      });
+
+      function klineTargetAttr(code, name = "") {
+        const normalized = normalizeStockCode(code);
+        if (!normalized) return "";
+        const tip = name ? `${name} ${normalized} 点击查看K线大图` : `${normalized} 点击查看K线大图`;
+        return `data-kline-target="${html(normalized)}" role="button" tabindex="0" title="${html(tip)}"`;
       }
 
       function renderOverview(data) {
@@ -382,15 +1012,22 @@
 
         const topMovers = $("#topMovers");
         topMovers.innerHTML = (market.top_movers || []).map((item) => `
-          <a class="item" href="/desktop/opportunities?stock=${html(item.code || "")}" data-stock-code="${html(item.code || "")}" data-stock-name="${html(item.name || "")}" data-sector="${html(item.sector || "")}">
+          <button class="item" type="button" data-stock-code="${html(item.code || "")}" data-stock-name="${html(item.name || "")}" data-sector="${html(item.sector || "")}">
             <div class="item-top">
               <p class="item-title">${html(item.name || item.code)}</p>
               <strong class="${changeClass(item.change)}">${num(item.change)}%</strong>
             </div>
             <p class="item-meta">${html(item.code)} · ${html(item.sector)} · ${num(item.price)}</p>
-          </a>
+          </button>
         `).join("");
         if (!market.top_movers?.length) empty(topMovers);
+        topMovers.querySelectorAll("[data-stock-code]").forEach((el) => {
+          el.addEventListener("click", () => openStockContext(stockTargetFromDataset(el.dataset)));
+          el.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            openStockKlineModal(el.dataset.stockCode).catch((error) => alert(error.message));
+          });
+        });
 
         const news = $("#marketNews");
         const newsItems = market.intelligence?.jinshi || market.news || [];
@@ -406,15 +1043,21 @@
         if (!newsItems.length) empty(news);
 
         const sectors = $("#sectorList");
-        sectors.innerHTML = (market.sectors || []).map((item) => `
+        sectors.innerHTML = (market.sectors || []).map((item) => {
+          const leader = item.leader || null;
+          const leaderHtml = leader
+            ? `<span class="sector-leader" ${klineTargetAttr(leader.code, leader.name)}>${html(leader.name || leader.code || "--")}</span> ${num(leader.change)}%`
+            : "--";
+          return `
           <div class="item" data-sector="${html(item.name || "")}">
             <div class="item-top">
               <p class="item-title">${html(item.name)}</p>
               <strong class="${changeClass(item.avg_change)}">${num(item.avg_change)}%</strong>
             </div>
-            <p class="item-meta">监控 ${item.monitored_count || 0} · 龙头 ${html(item.leader?.name || "--")} ${item.leader ? num(item.leader.change) + "%" : ""}</p>
+            <p class="item-meta">监控 ${item.monitored_count || 0} · 龙头 ${leaderHtml}</p>
           </div>
-        `).join("");
+        `;
+        }).join("");
         if (!market.sectors?.length) empty(sectors);
       }
 
@@ -437,14 +1080,25 @@
             <p class="item-meta">${html(code)} · ${html(item.reason || item.summary || item.industry || "点击查看K线")}</p>
           </button>`;
         }).join("");
-        if (!items.length) empty(list, "还没有机会报告，请先在工作台启动机会挖掘。");
+        if (!items.length) {
+          empty(list, "还没有机会报告。", emptyAction("start-opportunity", "启动机会挖掘"));
+        }
         list.querySelectorAll("[data-stock]").forEach((el) => {
-          el.addEventListener("click", () => loadKline(el.dataset.stock));
+          el.addEventListener("click", async () => {
+            loadKline(el.dataset.stock);
+            await openStockContext(stockTargetFromDataset(el.dataset));
+          });
+          el.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            openStockKlineModal(el.dataset.stock).catch((error) => alert(error.message));
+          });
         });
 
         const quant = $("#quantModels");
         const models = opportunity.quant_models || {};
-        const entries = Object.entries(models);
+        const entries = Array.isArray(models)
+          ? models.map((value) => [value.name || value.model || "量化模型", value])
+          : Object.entries(models);
         quant.innerHTML = entries.map(([name, value]) => `
           <div class="item">
             <div class="item-top">
@@ -454,143 +1108,1626 @@
             <p class="item-meta">${typeof value === "object" ? html(value.description || value.summary || JSON.stringify(value)) : "模型触发摘要"}</p>
           </div>
         `).join("");
-        if (!entries.length) empty(quant, "暂无量化模型摘要。");
+        if (!entries.length) {
+          empty(quant, "暂无量化模型摘要。", emptyAction("start-opportunity", "生成摘要"));
+        }
 
         const requested = new URLSearchParams(location.search).get("stock");
         const firstCode = requested || stockCodeFromItem(items[0] || {});
-        if (firstCode) loadKline(firstCode);
+        if (firstCode) {
+          loadKline(firstCode);
+          if (requested) {
+            openStockContext({
+              type: "stock",
+              stock_code: firstCode,
+              stock_name: "",
+              board_name: "",
+            }).catch((error) => console.warn("打开股票工作台失败", error));
+          }
+        }
+      }
+
+      async function fetchKlineData(code, limit = 500) {
+        const payload = await fetchJson(`/api/stock-kline/${encodeURIComponent(code)}?limit=${limit}`);
+        return payload.data || {};
       }
 
       async function loadKline(code) {
         if (!code) return;
-        $("#klineTitle").textContent = `${code} K线`;
-        $("#klineMeta").textContent = "读取中...";
+        const chart = $("#klineChart");
+        const title = $("#klineTitle");
+        const meta = $("#klineMeta");
+        if (title) title.textContent = `${code} K线`;
+        if (meta) meta.textContent = "读取中...";
+        const openButton = $("#openKlineModalBtn");
+        if (openButton) openButton.disabled = true;
         try {
-          const payload = await fetchJson(`/api/stock-kline/${encodeURIComponent(code)}?limit=120`);
-          const data = payload.data || {};
+          const data = await fetchKlineData(code, 500);
           const records = data.records || [];
-          $("#klineMeta").textContent = `${data.source || "--"} · ${records.length} 条`;
-          if (!records.length || !window.Plotly) {
-            $("#klineChart").innerHTML = `<p class="muted">${html(data.message || "暂无K线数据")}</p>`;
+          if (meta) meta.textContent = `${data.source || "--"} · ${records.length} 条 · MA/成交量`;
+          state.currentKline = data;
+          if (!records.length || !window.Plotly || !chart) {
+            if (chart) {
+              chart.innerHTML = `<p class="muted">${html(data.message || "暂无K线数据")}</p>`;
+            }
+            if (openButton) openButton.disabled = true;
             return;
           }
-          Plotly.newPlot("klineChart", [{
-            x: records.map((r) => r.date),
-            open: records.map((r) => r.open),
-            high: records.map((r) => r.high),
-            low: records.map((r) => r.low),
-            close: records.map((r) => r.close),
-            type: "candlestick",
-            increasing: { line: { color: "#d92d20" } },
-            decreasing: { line: { color: "#178c4d" } },
-          }], {
-            margin: { l: 42, r: 16, t: 10, b: 28 },
-            xaxis: { rangeslider: { visible: false } },
-            paper_bgcolor: "transparent",
-            plot_bgcolor: "transparent",
-          }, { displayModeBar: false, responsive: true });
+          renderKlineChart("klineChart", data, { mode: "preview", limit: 160 });
+          if (openButton) openButton.disabled = false;
         } catch (error) {
-          $("#klineMeta").textContent = "读取失败";
-          $("#klineChart").innerHTML = `<p class="muted">${html(error.message)}</p>`;
+          if (meta) meta.textContent = "读取失败";
+          if (chart) chart.innerHTML = `<p class="muted">${html(error.message)}</p>`;
         }
+      }
+
+      async function openStockKlineModal(code, limit = 240) {
+        if (!code) return;
+        const normalizedCode = String(code || "").trim().padStart(6, "0");
+        const data = await fetchKlineData(normalizedCode, 500);
+        if (!data.records?.length) {
+          alert(data.message || "暂无K线数据");
+          return;
+        }
+        state.currentKline = data;
+        openKlineModal(limit);
+      }
+
+      function klineStockNameFromContext(context) {
+        return context?.stock?.name || state.currentKline?.name || "";
+      }
+
+      function klineStockTarget() {
+        const code = normalizeStockCode(
+          state.currentKline?.code ||
+          state.klineModalContext?.stock?.code ||
+          state.currentStockContext?.stock?.code,
+        );
+        return {
+          type: "stock",
+          stock_code: code,
+          stock_name: klineStockNameFromContext(state.klineModalContext),
+          board_name: state.klineModalContext?.stock?.sector || "",
+        };
+      }
+
+      function buildKlineTraces(records, mode) {
+        const dates = records.map((r) => r.date);
+        const closes = records.map((r) => Number(r.close));
+        const volumes = records.map((r) => Number(r.volume || 0));
+        const volumeColors = records.map((r) => Number(r.close) >= Number(r.open) ? "rgba(196, 61, 54, 0.42)" : "rgba(25, 135, 84, 0.42)");
+        const hoverText = records.map((r) => {
+          const cls = klineChangeClass(r.open, r.close);
+          const direction = cls === "kline-up" ? "上涨" : cls === "kline-down" ? "下跌" : "平盘";
+          return [
+            `${r.date}`,
+            `开 ${num(r.open)} 高 ${num(r.high)}`,
+            `低 ${num(r.low)} 收 ${num(r.close)}`,
+            `成交量 ${volumeLabel(r.volume)}`,
+            `涨跌 ${num(r.pct_chg)}% · ${direction}`,
+          ].join("<br>");
+        });
+        const traces = [{
+          x: dates,
+          open: records.map((r) => r.open),
+          high: records.map((r) => r.high),
+          low: records.map((r) => r.low),
+          close: records.map((r) => r.close),
+          text: hoverText,
+          hoverinfo: "text",
+          type: "candlestick",
+          name: "K线",
+          xaxis: "x",
+          yaxis: "y",
+          increasing: {
+            line: { color: "#c43d36", width: mode === "modal" ? 1.35 : 1.1 },
+            fillcolor: "rgba(196, 61, 54, 0.84)",
+          },
+          decreasing: {
+            line: { color: "#198754", width: mode === "modal" ? 1.35 : 1.1 },
+            fillcolor: "rgba(25, 135, 84, 0.84)",
+          },
+        }];
+        [
+          [5, "#d98c21"],
+          [10, "#2f6fdd"],
+          [20, "#6f55d8"],
+          [60, "#11756f"],
+        ].forEach(([windowSize, color]) => {
+          if (records.length >= windowSize) {
+            traces.push({
+              x: dates,
+              y: movingAverage(closes, windowSize),
+              type: "scatter",
+              mode: "lines",
+              name: `MA${windowSize}`,
+              line: { color, width: mode === "modal" ? 1.8 : 1.25 },
+              hoverinfo: "skip",
+              xaxis: "x",
+              yaxis: "y",
+            });
+          }
+        });
+        traces.push({
+          x: dates,
+          y: volumes,
+          type: "bar",
+          name: "成交量",
+          marker: { color: volumeColors },
+          hovertemplate: "%{x}<br>成交量 %{y:,.0f}<extra></extra>",
+          xaxis: "x",
+          yaxis: "y2",
+        });
+        return traces;
+      }
+
+      function buildKlineLayout(data, records, options = {}) {
+        const mode = options.mode || "preview";
+        const stats = klineStats(records);
+        const firstDate = records[0]?.date || "--";
+        const lastDate = records[records.length - 1]?.date || "--";
+        return {
+          margin: mode === "modal" ? { l: 62, r: 26, t: 36, b: 42 } : { l: 44, r: 12, t: 24, b: 28 },
+          paper_bgcolor: "transparent",
+          plot_bgcolor: "#ffffff",
+          showlegend: true,
+          legend: {
+            orientation: "h",
+            x: 0,
+            y: mode === "modal" ? 1.08 : 1.12,
+            font: { size: 11, color: "#344256" },
+          },
+          hovermode: "x unified",
+          dragmode: "pan",
+          barmode: "overlay",
+          xaxis: {
+            rangeslider: { visible: mode === "modal", thickness: 0.08 },
+            showspikes: true,
+            spikemode: "across",
+            spikesnap: "cursor",
+            spikecolor: "#96a3b4",
+            spikethickness: 1,
+            showgrid: true,
+            gridcolor: "#eef2f6",
+            linecolor: "#c6d0dd",
+            tickfont: { size: 11, color: "#6b778a" },
+            rangebreaks: [{ bounds: ["sat", "mon"] }],
+            rangeselector: mode === "modal" ? {
+              x: 0,
+              y: 1.16,
+              buttons: [
+                { count: 1, label: "1月", step: "month", stepmode: "backward" },
+                { count: 3, label: "3月", step: "month", stepmode: "backward" },
+                { count: 6, label: "6月", step: "month", stepmode: "backward" },
+                { step: "all", label: "全部" },
+              ],
+              bgcolor: "#ffffff",
+              activecolor: "#dbeafe",
+              bordercolor: "#dbe3ee",
+              borderwidth: 1,
+              font: { size: 11, color: "#344256" },
+            } : undefined,
+          },
+          yaxis: {
+            domain: mode === "modal" ? [0.28, 1] : [0.31, 1],
+            side: "right",
+            fixedrange: false,
+            showgrid: true,
+            gridcolor: "#eef2f6",
+            zeroline: false,
+            linecolor: "#c6d0dd",
+            tickfont: { size: 11, color: "#6b778a" },
+          },
+          yaxis2: {
+            domain: [0, mode === "modal" ? 0.2 : 0.22],
+            side: "right",
+            fixedrange: false,
+            showgrid: true,
+            gridcolor: "#f5f7fa",
+            zeroline: false,
+            tickfont: { size: 10, color: "#96a3b4" },
+          },
+          annotations: [{
+            xref: "paper",
+            yref: "paper",
+            x: 0,
+            y: mode === "modal" ? 1.05 : 1.08,
+            showarrow: false,
+            align: "left",
+            text: `${html(data.code || "")} · ${firstDate} - ${lastDate} · 高 ${stats.high} 低 ${stats.low} · 区间 ${stats.delta}%`,
+            font: { size: 11, color: "#6b778a" },
+          }],
+        };
+      }
+
+      function renderKlineChart(targetId, data, options = {}) {
+        const target = document.getElementById(targetId);
+        if (!target || !window.Plotly) return;
+        const limit = Number(options.limit || 160);
+        const mode = options.mode || "preview";
+        const sourceRecords = data.records || [];
+        const records = limit >= 500 ? sourceRecords : sourceRecords.slice(-limit);
+        if (!records.length) {
+          target.innerHTML = `<p class="muted">${html(data.message || "暂无K线数据")}</p>`;
+          return;
+        }
+        Plotly.react(
+          target,
+          buildKlineTraces(records, mode),
+          buildKlineLayout(data, records, { mode }),
+          {
+            displayModeBar: mode === "modal",
+            displaylogo: false,
+            responsive: true,
+            scrollZoom: true,
+            modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d"],
+          },
+        );
+      }
+
+      function bindKlineInteractions() {
+        const chart = $("#klineChart");
+        const openButton = $("#openKlineModalBtn");
+        const modal = $("#klineModal");
+        const closeButton = $("#closeKlineModalBtn");
+
+        const open = () => {
+          if (!state.currentKline) return;
+          openKlineModal(240);
+        };
+
+        if (chart && !chart.dataset.bound) {
+          chart.dataset.bound = "1";
+          chart.addEventListener("click", open);
+          chart.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              open();
+            }
+          });
+        }
+
+        if (openButton && !openButton.dataset.bound) {
+          openButton.dataset.bound = "1";
+          openButton.addEventListener("click", open);
+        }
+
+        if (closeButton && !closeButton.dataset.bound) {
+          closeButton.dataset.bound = "1";
+          closeButton.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            closeKlineModal();
+          });
+        }
+
+        if (modal && !modal.dataset.bound) {
+          modal.dataset.bound = "1";
+          modal.addEventListener("click", (event) => {
+            if (event.target === modal) closeKlineModal();
+          });
+        }
+
+        document.querySelectorAll("[data-kline-range]").forEach((button) => {
+          if (button.dataset.bound) return;
+          button.dataset.bound = "1";
+          button.addEventListener("click", () => {
+            openKlineModal(Number(button.dataset.klineRange || 240));
+          });
+        });
+
+        const opportunityButton = $("#klineOpportunityBtn");
+        if (opportunityButton && !opportunityButton.dataset.bound) {
+          opportunityButton.dataset.bound = "1";
+          opportunityButton.addEventListener("click", () => {
+            const context = state.klineModalContext;
+            if (context) startStockOpportunity(context, opportunityButton).catch((error) => alert(error.message));
+          });
+        }
+
+        const analysisButton = $("#klineAnalysisBtn");
+        if (analysisButton && !analysisButton.dataset.bound) {
+          analysisButton.dataset.bound = "1";
+          analysisButton.addEventListener("click", () => {
+            const context = state.klineModalContext;
+            if (context) startStockAnalysis(context, analysisButton).catch((error) => alert(error.message));
+          });
+        }
+
+        const tradingButton = $("#klineTradingBtn");
+        if (tradingButton && !tradingButton.dataset.bound) {
+          tradingButton.dataset.bound = "1";
+          tradingButton.addEventListener("click", () => {
+            const context = state.klineModalContext;
+            const firstClient = context?.trading_clients?.clients?.[0];
+            if (context && firstClient) openTradingClientFromContext(context, firstClient.id, tradingButton);
+          });
+        }
+      }
+
+      function syncModalOpenState() {
+        const anyOpen = ["#klineModal", "#stockContextModal"].some((selector) => {
+          const modal = $(selector);
+          return modal && !modal.hidden;
+        });
+        document.body.classList.toggle("modal-open", anyOpen);
+      }
+
+      function closeOtherStockModals(activeSelector) {
+        if (activeSelector !== "#stockContextModal") {
+          const stockModal = $("#stockContextModal");
+          if (stockModal && !stockModal.hidden) {
+            stockModal.hidden = true;
+            stockModal.setAttribute("aria-hidden", "true");
+          }
+        }
+      }
+
+      function renderKlineInsight(context) {
+        const target = $("#klineStockInsight");
+        if (!target || !context) return;
+        const reports = context.reports || [];
+        const analysisRows = context.analysis_results || [];
+        const newsRows = context.news || [];
+        const clients = context.trading_clients?.clients || [];
+        target.innerHTML = `
+          <div class="kline-insight-section">
+            ${stockContextSummary(context)}
+          </div>
+          <div class="kline-insight-section">
+            <div class="panel-header compact-panel-header">
+              <h3 class="panel-title">投资机会挖掘</h3>
+              <span class="panel-meta">${html(context.opportunity_report?.updated_at || "--")}</span>
+            </div>
+            <div class="list">${opportunityDetailHtml(context.opportunity)}</div>
+          </div>
+          <div class="kline-insight-section">
+            <div class="panel-header compact-panel-header">
+              <h3 class="panel-title">个股分析</h3>
+              <span class="panel-meta">${analysisRows.length} 条</span>
+            </div>
+            <div class="list">${analysisRowsHtml(analysisRows)}</div>
+          </div>
+          <div class="kline-insight-section">
+            <div class="panel-header compact-panel-header">
+              <h3 class="panel-title">相关新闻 / 研报</h3>
+              <span class="panel-meta">${newsRows.length + reports.length} 条</span>
+            </div>
+            <div class="list">${newsRowsHtml(newsRows, reports)}</div>
+          </div>
+          <div class="kline-insight-section">
+            <div class="panel-header compact-panel-header">
+              <h3 class="panel-title">雪球 / 韭研公社</h3>
+              <span class="panel-meta">外部信息</span>
+            </div>
+            <div class="list">${socialRowsHtml(context.social || [])}</div>
+          </div>
+        `;
+        const status = $("#klineInsightStatus");
+        if (status) {
+          status.textContent = `已读取 ${analysisRows.length + reports.length + newsRows.length} 条信息`;
+          status.className = "pill ok";
+        }
+        $("#klineOpportunityBtn").disabled = false;
+        $("#klineAnalysisBtn").disabled = false;
+        $("#klineTradingBtn").disabled = !clients.length;
+      }
+
+      async function loadKlineModalContext() {
+        const target = $("#klineStockInsight");
+        const code = normalizeStockCode(state.currentKline?.code);
+        if (!target || !code) return;
+        target.innerHTML = `
+          <div class="kline-insight-title">
+            <h3>${html(state.currentKline?.name || "股票分析工作台")} ${html(code)}</h3>
+            <span>机会 · 分析 · 资讯</span>
+          </div>
+          <div class="stock-context-loading">正在读取股票分析...</div>
+        `;
+        const status = $("#klineInsightStatus");
+        if (status) {
+          status.textContent = "股票分析读取中";
+          status.className = "pill warn";
+        }
+        $("#klineOpportunityBtn").disabled = true;
+        $("#klineAnalysisBtn").disabled = true;
+        $("#klineTradingBtn").disabled = true;
+        try {
+          const name = state.currentKline?.name || "";
+          const context = await fetchJson(`/api/stock-context/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}`);
+          state.klineModalContext = context;
+          state.currentStockContext = context;
+          renderKlineInsight(context);
+        } catch (error) {
+          target.innerHTML = `<div class="notice status error">${html(error.message)}</div>`;
+          if (status) {
+            status.textContent = "股票分析失败";
+            status.className = "pill bad";
+          }
+        }
+      }
+
+      function openKlineModal(limit = 240) {
+        if (!state.currentKline) return;
+        closeOtherStockModals("#klineModal");
+        const modal = $("#klineModal");
+        modal.hidden = false;
+        modal.setAttribute("aria-hidden", "false");
+        syncModalOpenState();
+        $("#klineModalTitle").textContent = `${state.currentKline.name || ""} ${state.currentKline.code || ""} 股票K线与分析`;
+        $("#klineModalMeta").textContent = `${state.currentKline.source || "--"} · ${state.currentKline.records?.length || 0} 条 · ${klineAxisTitle(limit)}`;
+        $("#klineModalSource").textContent = state.currentKline.source || "--";
+        const records = limit >= 500 ? (state.currentKline.records || []) : (state.currentKline.records || []).slice(-limit);
+        const stats = klineStats(records);
+        $("#klineModalRange").textContent = `区间 ${stats.delta}% · 高 ${stats.high} / 低 ${stats.low}`;
+        $("#klineModalVolume").textContent = `均量 ${stats.volume}`;
+        loadKlineModalContext();
+        window.setTimeout(() => {
+          renderKlineChart("klineModalChart", state.currentKline, { mode: "modal", limit });
+        }, 30);
+      }
+
+      function closeKlineModal() {
+        const modal = $("#klineModal");
+        if (!modal) return;
+        if (window.Plotly && $("#klineModalChart")) {
+          Plotly.purge("klineModalChart");
+        }
+        modal.hidden = true;
+        modal.setAttribute("aria-hidden", "true");
+        state.klineModalContext = null;
+        syncModalOpenState();
+      }
+
+      document.addEventListener("keydown", (event) => {
+        const modal = $("#klineModal");
+        if (event.key === "Escape" && modal && !modal.hidden) {
+          closeKlineModal();
+          return;
+        }
+        const stockModal = $("#stockContextModal");
+        if (event.key === "Escape" && stockModal && !stockModal.hidden) {
+          closeStockContext();
+        }
+      });
+
+      const JOB_TYPE_LABELS = {
+        opportunity_discovery: "机会挖掘",
+        batch_analysis: "批量分析",
+        pattern_refresh: "指纹库刷新",
+      };
+      const JOB_STATUS_LABELS = {
+        queued: "排队中",
+        running: "运行中",
+        finished: "已完成",
+        failed: "失败",
+      };
+
+      function isActiveJob(job) {
+        return ["queued", "running"].includes(job?.status);
+      }
+
+      function jobTypeLabel(job) {
+        return JOB_TYPE_LABELS[job?.type] || job?.type || "后台任务";
+      }
+
+      function jobStatusLabel(status) {
+        return JOB_STATUS_LABELS[status] || status || "--";
+      }
+
+      function jobPillClass(status) {
+        if (status === "finished") return "ok";
+        if (status === "failed") return "bad";
+        if (status === "running" || status === "queued") return "warn";
+        return "";
+      }
+
+      function jobStatusClass(status) {
+        if (status === "finished") return "success";
+        if (status === "failed") return "error";
+        if (status === "running" || status === "queued") return "warning";
+        return "info";
+      }
+
+      function latestJobLog(job) {
+        return (job?.logs || []).slice(-1)[0] || "";
+      }
+
+      function jobCreatedAt(job) {
+        return String(job?.created_at || job?.started_at || "").replace("T", " ").slice(0, 19);
+      }
+
+      function jobResultLinks(job) {
+        const result = job?.result || {};
+        const links = [];
+        if (result.report_url) links.push(`<a class="button secondary" href="${html(result.report_url)}" target="_blank" rel="noreferrer">打开报告</a>`);
+        if (result.csv_url) links.push(`<a class="button secondary" href="${html(result.csv_url)}" target="_blank" rel="noreferrer">打开CSV</a>`);
+        if (result.json_url) links.push(`<a class="button secondary" href="${html(result.json_url)}" target="_blank" rel="noreferrer">打开明细</a>`);
+        return links.join("");
+      }
+
+      function jobResultText(job) {
+        const result = job?.result || {};
+        if (job?.status === "failed") return job.error || "任务失败，请查看日志。";
+        if (job?.type === "opportunity_discovery" && result.report_path) return `报告已生成：${result.report_path}`;
+        if (job?.type === "batch_analysis" && result.rows != null) return `批量分析完成，通过股票 ${result.rows} 只`;
+        if (job?.status === "finished") return "任务已完成。";
+        return latestJobLog(job) || "任务正在执行。";
+      }
+
+      function updateTaskHeader(jobs) {
+        const target = $("#activeTaskMeta");
+        if (!target) return;
+        const active = (jobs || []).find(isActiveJob);
+        const latest = active || (jobs || [])[0];
+        if (!latest) {
+          target.className = "task-meta";
+          target.textContent = "暂无任务";
+          return;
+        }
+        target.className = `task-meta ${jobPillClass(latest.status)}`;
+        const prefix = isActiveJob(latest) ? "进行中" : "最近结果";
+        const log = latestJobLog(latest).replace(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*/, "");
+        target.textContent = `${prefix}: ${jobTypeLabel(latest)} · ${jobStatusLabel(latest.status)}${log ? " · " + log.slice(0, 42) : ""}`;
+      }
+
+      function updateFeatureJobPill(jobs) {
+        const target = $("#featureJobStatus");
+        if (!target) return;
+        const active = (jobs || []).find(isActiveJob);
+        const latest = active || (jobs || [])[0];
+        if (!latest) {
+          target.textContent = "暂无任务";
+          target.className = "pill";
+          return;
+        }
+        target.textContent = `${jobTypeLabel(latest)} ${jobStatusLabel(latest.status)}`;
+        target.className = `pill ${jobPillClass(latest.status)}`;
+      }
+
+      function renderJobDetail(job) {
+        const summary = $("#jobDetailSummary");
+        const logs = $("#jobLogStream");
+        if (!summary || !logs) return;
+        if (!job) {
+          $("#jobDetailTitle").textContent = "任务日志";
+          $("#jobDetailMeta").textContent = "选择或启动任务";
+          summary.className = "notice status info";
+          summary.textContent = "启动任务后这里会实时展示进度、日志和结果。";
+          $("#jobDetailActions").innerHTML = "";
+          logs.innerHTML = `<div class="job-log-empty">暂无日志</div>`;
+          return;
+        }
+
+        $("#jobDetailTitle").textContent = `${jobTypeLabel(job)} · ${job.id}`;
+        $("#jobDetailMeta").textContent = `${jobStatusLabel(job.status)} · ${jobCreatedAt(job) || "--"}`;
+        summary.className = `notice status ${jobStatusClass(job.status)}`;
+        summary.textContent = jobResultText(job);
+        $("#jobDetailActions").innerHTML = jobResultLinks(job);
+
+        const rows = (job.logs || []).map((line) => `<div class="job-log-line">${html(line)}</div>`).join("");
+        logs.innerHTML = rows || `<div class="job-log-empty">暂无日志</div>`;
+        logs.scrollTop = logs.scrollHeight;
       }
 
       function renderJobs(jobs) {
         const target = $("#jobList");
         if (!target) return;
-        target.innerHTML = (jobs || []).map((job) => `
-          <div class="item">
-            <div class="item-top">
-              <p class="item-title">${html(job.type)} · ${html(job.id)}</p>
-              <span class="pill ${job.status === "finished" ? "ok" : job.status === "failed" ? "bad" : "warn"}">${html(job.status)}</span>
+        target.innerHTML = (jobs || []).map((job) => {
+          const active = state.activeJobId === job.id ? " active" : "";
+          const resultLinks = jobResultLinks(job);
+          return `
+            <div class="item job-item${active}" data-job-id="${html(job.id)}" role="button" tabindex="0">
+              <div class="item-top">
+                <p class="item-title">${html(jobTypeLabel(job))} · ${html(job.id)}</p>
+                <span class="pill ${jobPillClass(job.status)}">${html(jobStatusLabel(job.status))}</span>
+              </div>
+              <p class="item-meta">${html(jobCreatedAt(job) || "--")} · ${html(latestJobLog(job) || "暂无日志")}</p>
+              ${resultLinks ? `<div class="job-result-row">${resultLinks}</div>` : ""}
             </div>
-            <p class="item-meta">${html((job.logs || []).slice(-2).join(" / ") || "暂无日志")}</p>
-          </div>
-        `).join("");
-        if (!jobs?.length) empty(target, "暂无任务。");
+          `;
+        }).join("");
+        if (!jobs?.length) {
+          empty(target, "暂无任务。");
+          renderJobDetail(null);
+          return;
+        }
+        target.querySelectorAll("[data-job-id]").forEach((el) => {
+          const select = () => {
+            state.activeJobId = el.dataset.jobId;
+            renderJobs(state.jobs);
+            renderJobDetail(state.jobs.find((job) => job.id === state.activeJobId));
+          };
+          el.addEventListener("click", (event) => {
+            if (event.target.closest("a")) return;
+            select();
+          });
+          el.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              select();
+            }
+          });
+        });
       }
 
-      async function loadJobs() {
+      function mergeJobSnapshot(job) {
+        if (!job?.id) return;
+        state.jobs = [job, ...(state.jobs || []).filter((item) => item.id !== job.id)];
+        if (!state.activeJobId || state.activeJobId === job.id || isActiveJob(job)) {
+          state.activeJobId = job.id;
+        }
+        renderJobs(state.jobs);
+        updateTaskHeader(state.jobs);
+        updateFeatureJobPill(state.jobs);
+        renderJobDetail(state.jobs.find((item) => item.id === state.activeJobId) || job);
+      }
+
+      function scheduleJobPolling(jobs) {
+        if (!(jobs || []).some(isActiveJob) || state.jobPollTimer) return;
+        state.jobPollTimer = window.setTimeout(async () => {
+          state.jobPollTimer = null;
+          try {
+            await loadJobs();
+          } catch (error) {
+            const target = $("#activeTaskMeta");
+            if (target) target.textContent = `任务刷新失败: ${error.message}`;
+          }
+        }, 1500);
+      }
+
+      async function loadJobs(options = {}) {
         const data = await fetchJson("/api/jobs");
-        renderJobs(data.jobs || []);
+        state.jobs = data.jobs || [];
+        if (options.selectJobId) state.activeJobId = options.selectJobId;
+        if (!state.activeJobId && state.jobs.length) {
+          state.activeJobId = (state.jobs.find(isActiveJob) || state.jobs[0]).id;
+        }
+        renderJobs(state.jobs);
+        updateTaskHeader(state.jobs);
+        updateFeatureJobPill(state.jobs);
+        renderJobDetail(state.jobs.find((job) => job.id === state.activeJobId) || state.jobs[0] || null);
+        scheduleJobPolling(state.jobs);
+        return state.jobs;
+      }
+
+      async function refreshVisibleResultsAfterJob(job) {
+        if (job?.status !== "finished") return;
+        if (!["opportunity_discovery", "batch_analysis"].includes(job.type)) return;
+        try {
+          const data = await loadDashboard();
+          if ($("#opportunityList")) renderOpportunities(data);
+          if ($("#reportList")) renderReports(data);
+        } catch (error) {
+          console.warn("刷新任务结果失败", error);
+        }
+      }
+
+      async function pollJob(jobId, options = {}) {
+        const {
+          statusEl = null,
+          onDone = null,
+          onUpdate = null,
+          intervalMs = 1500,
+          maxAttempts = 120,
+        } = options;
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+          const data = await fetchJson(`/api/jobs/${encodeURIComponent(jobId)}`);
+          const job = data.job || {};
+          mergeJobSnapshot(job);
+          if (statusEl) {
+            const latestLog = latestJobLog(job);
+            statusEl.className = `notice status ${jobStatusClass(job.status)}`;
+            statusEl.textContent = `${jobStatusLabel(job.status)} · ${latestLog || jobId}`;
+          }
+          if (onUpdate) await onUpdate(job);
+          if (["finished", "failed"].includes(job.status)) {
+            if (onDone) await onDone(job);
+            await loadJobs({ selectJobId: job.id });
+            return job;
+          }
+          await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
+        return null;
+      }
+
+      async function startTrackedJob(endpoint, payload, submitButton = null) {
+        if (submitButton) submitButton.disabled = true;
+        try {
+          const data = await fetchJson(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const job = data.job;
+          if (job) {
+            mergeJobSnapshot(job);
+            await loadJobs({ selectJobId: job.id });
+            pollJob(job.id, {
+              onDone: refreshVisibleResultsAfterJob,
+            }).catch((error) => {
+              const summary = $("#jobDetailSummary");
+              if (summary) {
+                summary.className = "notice status error";
+                summary.textContent = error.message;
+              }
+            });
+            return job;
+          }
+          return data;
+        } catch (error) {
+          alert(error.message);
+          return null;
+        } finally {
+          if (submitButton) submitButton.disabled = false;
+        }
+      }
+
+      function stockContextSummary(context) {
+        const stock = context.stock || {};
+        const quote = context.quote || {};
+        const kline = context.kline_summary || {};
+        const opportunity = context.opportunity || {};
+        const quoteText = quote ? `${num(quote.price)} · ${num(quote.change_pct)}%` : "--";
+        const klineText = kline.available
+          ? `${kline.records || 0} 条 · 收 ${num(kline.latest_close)} · 区间 ${num(kline.range_change_pct)}%`
+          : (kline.message || "暂无K线数据");
+        return `
+          <div class="stock-context-summary">
+            <div class="metric compact-metric">
+              <span>行情</span>
+              <strong class="${changeClass(quote.change_pct)}">${html(quoteText)}</strong>
+              <small class="muted">${html(quote.updated_at || quote.source || "--")}</small>
+            </div>
+            <div class="metric compact-metric">
+              <span>机会评分</span>
+              <strong>${opportunity.score != null ? num(opportunity.score) : "--"}</strong>
+              <small class="muted">${html(opportunity.rating || opportunity.recommendation || "未入选最新机会榜")}</small>
+            </div>
+            <div class="metric compact-metric">
+              <span>K线</span>
+              <strong>${html(kline.available ? num(kline.latest_close) : "--")}</strong>
+              <small class="muted">${html(klineText)}</small>
+            </div>
+          </div>
+        `;
+      }
+
+      function opportunityDetailHtml(opportunity) {
+        if (!opportunity) {
+          return `<div class="item empty-state"><p class="item-meta">最新机会榜暂无该股票，启动机会挖掘后会在任务日志和报告里更新。</p></div>`;
+        }
+        const fields = [
+          ["入选原因", opportunity.reason || opportunity.summary],
+          ["板块", opportunity.sector || opportunity.industry],
+          ["技术", opportunity.technical],
+          ["量化", opportunity.quant],
+          ["情绪资金", opportunity.sentiment],
+          ["风险/加减分", opportunity.risk],
+        ].filter(([, value]) => value);
+        const title = opportunity.stock_name || opportunity.name || opportunity.stock_code;
+        const targetAttr = klineTargetAttr(opportunity.stock_code, opportunity.stock_name || opportunity.name);
+        return `
+          <div class="item">
+            <div class="item-top">
+              <p class="item-title" ${targetAttr}>${html(title)}</p>
+              <span class="pill ${Number(opportunity.score || 0) >= 80 ? "ok" : "warn"}">${html(opportunity.rating || "评分")} ${num(opportunity.score)}</span>
+            </div>
+            <p class="item-meta">${html(opportunity.recommendation || "")}</p>
+            <div class="stock-context-fields">
+              ${fields.map(([label, value]) => `<div><b>${html(label)}</b><span>${html(value)}</span></div>`).join("")}
+            </div>
+          </div>
+        `;
+      }
+
+      function reportRowsHtml(reports = []) {
+        if (!reports.length) {
+          return `<div class="item empty-state"><p class="item-meta">暂无该股票本地报告。</p></div>`;
+        }
+        return reports.map((item) => `
+          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+            <div class="item-top">
+              <p class="item-title">${html(item.file)}</p>
+              <span class="pill">${html(item.type || "报告")}</span>
+            </div>
+            <p class="item-meta">${html(item.updated_at || "--")} · ${html(item.size_kb || "--")} KB</p>
+          </a>
+        `).join("");
+      }
+
+      function analysisRowsHtml(rows = []) {
+        if (!rows.length) {
+          return `
+            <div class="item empty-state">
+              <p class="item-meta">暂无该股票本地批量分析结果。</p>
+              <div class="actions">
+                <button class="button secondary compact" type="button" data-stock-action="analysis">立即分析</button>
+              </div>
+            </div>
+          `;
+        }
+        return rows.map((item) => `
+          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+            <div class="item-top">
+              <p class="item-title">${html(item.file || "批量分析结果")}</p>
+              <span class="pill">${html(item.updated_at || "--")}</span>
+            </div>
+            <div class="stock-context-fields">
+              ${(item.fields || []).slice(0, 8).map((field) => `<div><b>${html(field.label)}</b><span>${html(field.value)}</span></div>`).join("")}
+            </div>
+          </a>
+        `).join("");
+      }
+
+      function socialRowsHtml(social = []) {
+        if (!social.length) {
+          return `<div class="item empty-state"><p class="item-meta">暂无社区入口。</p></div>`;
+        }
+        return social.map((item) => `
+          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+            <div class="item-top">
+              <p class="item-title">${html(item.platform)} · ${html(item.title)}</p>
+              <span class="pill">${html(item.status === "external_link" ? "直达" : "缓存")}</span>
+            </div>
+            <p class="item-meta">${html(item.summary || "")}</p>
+          </a>
+        `).join("");
+      }
+
+      function newsRowsHtml(news = [], reports = []) {
+        const newsRows = (news || []).map((item) => `
+          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+            <div class="item-top">
+              <p class="item-title">${html(item.platform || "资讯")} · ${html(item.title || "")}</p>
+              <span class="pill">${html(item.status === "external_link" ? "检索" : "本地")}</span>
+            </div>
+            <p class="item-meta">${html(item.summary || "")}</p>
+          </a>
+        `);
+        const reportRows = (reports || []).slice(0, 4).map((item) => `
+          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+            <div class="item-top">
+              <p class="item-title">本地报告 · ${html(item.file)}</p>
+              <span class="pill">${html(item.type || "报告")}</span>
+            </div>
+            <p class="item-meta">${html(item.updated_at || "--")} · ${html(item.size_kb || "--")} KB</p>
+          </a>
+        `);
+        const rows = [...newsRows, ...reportRows];
+        return rows.length ? rows.join("") : `<div class="item empty-state"><p class="item-meta">暂无相关新闻或研报入口。</p></div>`;
+      }
+
+      function tradingClientRowsHtml(context) {
+        const clients = context.trading_clients?.clients || [];
+        if (!clients.length) {
+          return `
+            <div class="item empty-state">
+              <p class="item-meta">未发现可跳转的本地交易软件。</p>
+              <div class="actions">
+                <button class="button secondary compact" type="button" data-stock-action="refresh-trading-clients">重新检测</button>
+              </div>
+            </div>
+          `;
+        }
+        const stock = context.stock || {};
+        return clients.map((client) => `
+          <button class="item stock-trading-client" type="button" data-client-id="${html(client.id)}">
+            <div class="item-top">
+              <p class="item-title">${html(client.display_name || client.name || "交易软件")}</p>
+              <span class="pill">${html((client.capabilities?.direct_targets || []).includes("stock") ? "协议直连" : "快捷输入")}</span>
+            </div>
+            <p class="item-meta">${html(stock.code || "--")} · ${html(client.path || client.bundle_id || client.platform || "")}</p>
+          </button>
+        `).join("");
+      }
+
+      function renderStockContext(context) {
+        const stock = context.stock || {};
+        const body = $("#stockContextBody");
+        const reports = context.reports || [];
+        const analysisRows = context.analysis_results || [];
+        $("#stockContextTitle").textContent = stockDisplayName(stock);
+        $("#stockContextMeta").textContent = `${stock.code || "--"} · ${stock.sector || "--"} · ${stock.symbol || "--"}`;
+        body.innerHTML = `
+          <div class="stock-context-grid">
+            <section class="stock-context-main">
+              ${stockContextSummary(context)}
+              <div class="panel">
+                <div class="panel-header">
+                  <h3 class="panel-title">个股机会</h3>
+                  <span class="panel-meta">${html(context.opportunity_report?.updated_at || "--")}</span>
+                </div>
+                <div class="panel-body list">${opportunityDetailHtml(context.opportunity)}</div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h3 class="panel-title">个股分析结果</h3>
+                  <span class="panel-meta">${analysisRows.length} 条</span>
+                </div>
+                <div class="panel-body list">${analysisRowsHtml(analysisRows)}</div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h3 class="panel-title">本地报告</h3>
+                  <span class="panel-meta">${reports.length} 条</span>
+                </div>
+                <div class="panel-body list">${reportRowsHtml(reports)}</div>
+              </div>
+            </section>
+            <aside class="stock-context-side">
+              <div class="panel">
+                <div class="panel-header">
+                  <h3 class="panel-title">操作</h3>
+                  <span class="panel-meta">股票级</span>
+                </div>
+                <div class="panel-body">
+                  <div class="stock-context-actions">
+                    <button class="button" type="button" data-stock-action="trading-primary" ${context.trading_clients?.clients?.length ? "" : "disabled"}>打开交易软件</button>
+                    <button class="button" type="button" data-stock-action="opportunity">机会挖掘</button>
+                    <button class="button secondary" type="button" data-stock-action="analysis">个股分析</button>
+                    <button class="button secondary" type="button" data-stock-action="kline">K线大图</button>
+                  </div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h3 class="panel-title">交易软件</h3>
+                  <div class="panel-header-actions">
+                    <span class="panel-meta">${context.trading_clients?.platform || "--"}</span>
+                    <button class="button secondary compact" type="button" data-stock-action="refresh-trading-clients">刷新</button>
+                  </div>
+                </div>
+                <div class="panel-body list">${tradingClientRowsHtml(context)}</div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h3 class="panel-title">雪球 / 韭研公社</h3>
+                  <span class="panel-meta">外部信息</span>
+                </div>
+                <div class="panel-body list">${socialRowsHtml(context.social || [])}</div>
+              </div>
+            </aside>
+          </div>
+        `;
+        bindStockContextActions(context);
+      }
+
+      async function startStockOpportunity(context, button = null) {
+        const code = context.stock?.code;
+        if (!code) return;
+        const job = await startTrackedJob("/api/opportunity-discovery/start", {
+          limit: 20,
+          workers: 4,
+          source: "multi",
+          stock_codes: code,
+        }, button);
+        if (job) showStockContextJobNotice(job, "机会挖掘已启动", button);
+      }
+
+      async function startStockAnalysis(context, button = null) {
+        const code = context.stock?.code;
+        if (!code) return;
+        const job = await startTrackedJob("/api/batch-analysis/start", {
+          stock_codes: code,
+          filter_strategy: "balanced",
+          max_concurrent: 1,
+          data_types: ["comprehensive"],
+        }, button);
+        if (job) showStockContextJobNotice(job, "个股分析已启动", button);
+      }
+
+      function stockNoticeTarget(button = null) {
+        if (button?.closest?.("#klineModal")) return $("#klineStockInsight");
+        return $("#stockContextBody") || $("#klineStockInsight");
+      }
+
+      function prependStockContextNotice(message, type = "info", button = null) {
+        const body = stockNoticeTarget(button);
+        if (!body) return;
+        const notice = document.createElement("div");
+        notice.className = `notice status ${type}`;
+        notice.textContent = message;
+        body.prepend(notice);
+      }
+
+      function showStockContextJobNotice(job, fallback, button = null) {
+        prependStockContextNotice(
+          job?.id ? `${fallback}: ${job.id}，日志已同步到顶部任务状态和任务队列。` : fallback,
+          "info",
+          button,
+        );
+      }
+
+      async function openTradingClientFromContext(context, clientId, button = null) {
+        const stock = context.stock || {};
+        if (!clientId || !stock.code) return;
+        if (button) button.disabled = true;
+        try {
+          const payload = await fetchJson("/api/trading-clients/open", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              client_id: clientId,
+              target: {
+                type: "stock",
+                stock_code: stock.code,
+                stock_name: stock.name || "",
+                board_name: stock.sector || "",
+              },
+            }),
+          });
+          const meta = button?.querySelector(".item-meta");
+          const message = payload.message || `${payload.client || "交易软件"} 已打开 ${stock.code}`;
+          if (meta) meta.textContent = message;
+          else prependStockContextNotice(message, "success", button);
+        } catch (error) {
+          const meta = button?.querySelector(".item-meta");
+          if (meta) meta.textContent = error.message;
+          else prependStockContextNotice(error.message, "error", button);
+        } finally {
+          if (button) button.disabled = false;
+        }
+      }
+
+      async function refreshTradingClientsForContext(context, button = null) {
+        if (button) button.disabled = true;
+        try {
+          const payload = await fetchJson("/api/trading-clients?refresh=true");
+          const clients = (payload.clients || []).filter((client) => client.capabilities?.stock);
+          const nextContext = {
+            ...context,
+            trading_clients: {
+              platform: payload.platform,
+              generated_at: payload.generated_at,
+              clients,
+            },
+          };
+          state.currentStockContext = nextContext;
+          renderStockContext(nextContext);
+        } catch (error) {
+          const body = $("#stockContextBody");
+          const notice = document.createElement("div");
+          notice.className = "notice status error";
+          notice.textContent = error.message;
+          body.prepend(notice);
+        } finally {
+          if (button) button.disabled = false;
+        }
+      }
+
+      function bindStockContextActions(context) {
+        const body = $("#stockContextBody");
+        body.querySelectorAll("[data-stock-action]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const action = button.dataset.stockAction;
+            if (action === "trading-primary") {
+              const firstClient = context.trading_clients?.clients?.[0];
+              if (firstClient) openTradingClientFromContext(context, firstClient.id, button);
+            }
+            if (action === "refresh-trading-clients") refreshTradingClientsForContext(context, button);
+            if (action === "opportunity") startStockOpportunity(context, button).catch((error) => alert(error.message));
+            if (action === "analysis") startStockAnalysis(context, button).catch((error) => alert(error.message));
+            if (action === "kline") openStockKlineModal(context.stock?.code).catch((error) => alert(error.message));
+          });
+        });
+        body.querySelectorAll(".stock-trading-client").forEach((button) => {
+          button.addEventListener("click", () => {
+            openTradingClientFromContext(context, button.dataset.clientId, button);
+          });
+        });
+      }
+
+      async function openStockContext(target) {
+        const code = normalizeStockCode(target?.stock_code || target?.stockCode || target?.code || target?.stock);
+        if (!code) return;
+        closeOtherStockModals("#stockContextModal");
+        const modal = $("#stockContextModal");
+        modal.hidden = false;
+        modal.setAttribute("aria-hidden", "false");
+        syncModalOpenState();
+        $("#stockContextTitle").textContent = stockDisplayName({ code, name: target.stock_name || target.stockName || "" });
+        $("#stockContextMeta").textContent = "读取中...";
+        $("#stockContextBody").innerHTML = `<div class="stock-context-loading">正在读取股票上下文...</div>`;
+        resetStockSuiteTabs();
+        initStockSuiteTabs();
+        const name = target.stock_name || target.stockName || "";
+        try {
+          const context = await fetchJson(`/api/stock-context/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}`);
+          state.currentStockContext = context;
+          renderStockContext(context);
+        } catch (error) {
+          $("#stockContextMeta").textContent = "读取失败";
+          $("#stockContextBody").innerHTML = `<div class="notice status error">${html(error.message)}</div>`;
+        }
+        try {
+          const suite = await fetchJson(`/api/stock-analysis-suite/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}`);
+          state.currentSuitePayload = suite;
+        } catch (error) {
+          state.currentSuitePayload = { success: false, error: String(error?.message || error) };
+        }
+      }
+
+      function closeStockContext() {
+        const modal = $("#stockContextModal");
+        if (!modal) return;
+        modal.hidden = true;
+        modal.setAttribute("aria-hidden", "true");
+        syncModalOpenState();
+      }
+
+      function bindStockContextModal() {
+        const modal = $("#stockContextModal");
+        const closeButton = $("#closeStockContextBtn");
+        if (closeButton && !closeButton.dataset.bound) {
+          closeButton.dataset.bound = "1";
+          closeButton.addEventListener("click", closeStockContext);
+        }
+        if (modal && !modal.dataset.bound) {
+          modal.dataset.bound = "1";
+          modal.addEventListener("click", (event) => {
+            if (event.target === modal) closeStockContext();
+          });
+        }
+      }
+
+      function resetStockSuiteTabs() {
+        state.currentSuitePayload = null;
+        const nav = $("#stockSuiteTabs");
+        if (nav) {
+          nav.querySelectorAll("button.suite-tab").forEach((b) => {
+            b.classList.toggle("active", b.dataset.suiteTab === "quick");
+          });
+        }
+        const panels = $("#stockSuitePanels");
+        if (panels) {
+          panels.querySelectorAll(".suite-pane").forEach((p) => {
+            p.classList.toggle("hidden", p.dataset.suitePane !== "quick");
+            if (p.dataset.suitePane !== "quick") {
+              p.innerHTML = "";
+              delete p.dataset.rendered;
+            }
+          });
+        }
+      }
+
+      function initStockSuiteTabs() {
+        const nav = $("#stockSuiteTabs");
+        if (!nav || nav.dataset.bound === "1") return;
+        nav.dataset.bound = "1";
+        nav.addEventListener("click", (event) => {
+          const btn = event.target.closest("button.suite-tab");
+          if (!btn) return;
+          if (btn.disabled) {
+            showToast(btn.title || "该面板即将上线");
+            return;
+          }
+          const tab = btn.dataset.suiteTab;
+          nav.querySelectorAll("button.suite-tab").forEach((b) => b.classList.toggle("active", b === btn));
+          document.querySelectorAll("#stockSuitePanels .suite-pane").forEach((p) => {
+            p.classList.toggle("hidden", p.dataset.suitePane !== tab);
+          });
+          const payload = state.currentSuitePayload;
+          if (tab === "overview") {
+            renderSuiteOverview(payload);
+          } else if (tab === "risk_control") {
+            renderSuiteRiskControl(payload);
+          } else if (tab === "ai_interpretation") {
+            renderSuiteAi(payload);
+          }
+        });
+      }
+
+      function showToast(msg) {
+        let toast = document.getElementById("kronosToast");
+        if (!toast) {
+          toast = document.createElement("div");
+          toast.id = "kronosToast";
+          document.body.appendChild(toast);
+        }
+        toast.textContent = String(msg || "");
+        toast.style.opacity = "1";
+        clearTimeout(showToast._timer);
+        showToast._timer = setTimeout(() => {
+          toast.style.opacity = "0";
+        }, 2200);
+      }
+
+      function renderSuiteOverview(payload) {
+        const pane = document.getElementById("suitePaneOverview");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        if (!payload || payload.success === false || !payload.overview) {
+          pane.innerHTML = `<div class="suite-ai-empty"><p>${html(payload?.error || "综合总览数据加载失败")}</p></div>`;
+          return;
+        }
+        const ov = payload.overview;
+        const keySignalsHtml = (ov.key_signals || []).map((s) => `
+          <div class="suite-key-card tone-${s.tone || "neutral"}">
+            <div class="suite-key-label">${html(s.label)}</div>
+            <div class="suite-key-value">${html(s.value)}</div>
+          </div>`).join("");
+        const deepSignalsHtml = (ov.deep_signals || []).map((s) => `
+          <div class="suite-deep-signal">
+            <span class="suite-deep-tag">${html(s.tag || "—")}</span>
+            <span>${html(s.text)}</span>
+          </div>`).join("") || `<div class="suite-deep-signal" style="color:rgba(255,255,255,0.5)">暂无深度信号</div>`;
+        pane.innerHTML = `
+          <div class="suite-radar-section">
+            <div id="suiteRadarChart" class="suite-radar-chart"></div>
+            <div class="suite-key-signals">
+              ${keySignalsHtml}
+              <div id="suiteProbabilityDonut" class="suite-probability-donut"></div>
+            </div>
+          </div>
+          <div class="suite-deep-signals">${deepSignalsHtml}</div>
+        `;
+        drawRadarChart(ov.radar);
+        drawProbabilityDonut(ov.scenario_probability);
+      }
+
+      function drawRadarChart(radar) {
+        const el = document.getElementById("suiteRadarChart");
+        if (!el) return;
+        const labels = ["主力阶段", "市场周期", "量价博弈", "筹码结构", "业绩预期"];
+        const keys = ["main_force_phase", "market_cycle", "volume_price_game", "chip_structure", "performance"];
+        const values = keys.map((k) => (radar?.[k]?.score ?? 0));
+        if (typeof Plotly === "undefined") {
+          el.innerHTML = renderRadarSvgFallback(labels, values);
+          return;
+        }
+        Plotly.newPlot(el, [{
+          type: "scatterpolar",
+          r: [...values, values[0]],
+          theta: [...labels, labels[0]],
+          fill: "toself",
+          line: { color: "#5b8def" },
+          fillcolor: "rgba(91,141,239,0.3)",
+        }], {
+          polar: {
+            radialaxis: { range: [0, 100], visible: true, color: "rgba(255,255,255,0.6)" },
+            angularaxis: { color: "rgba(255,255,255,0.8)" },
+            bgcolor: "rgba(0,0,0,0.2)",
+          },
+          paper_bgcolor: "rgba(0,0,0,0)",
+          font: { color: "#fff", size: 11 },
+          showlegend: false,
+          margin: { t: 30, l: 40, r: 40, b: 30 },
+        }, { displayModeBar: false, responsive: true });
+      }
+
+      function renderRadarSvgFallback(labels, values) {
+        const cx = 160, cy = 160, r = 120;
+        const norm = values.map((v) => Math.max(0, Math.min(1, (v || 0) / 100)));
+        const pts = norm.map((v, i) => {
+          const a = -Math.PI / 2 + i * 2 * Math.PI / 5;
+          return [cx + Math.cos(a) * r * v, cy + Math.sin(a) * r * v];
+        });
+        const polyPoints = pts.map((p) => p.map((x) => x.toFixed(1)).join(",")).join(" ");
+        const labelTags = labels.map((l, i) => {
+          const a = -Math.PI / 2 + i * 2 * Math.PI / 5;
+          return `<text x="${(cx + Math.cos(a) * (r + 18)).toFixed(1)}" y="${(cy + Math.sin(a) * (r + 18)).toFixed(1)}" text-anchor="middle" fill="#fff" font-size="12">${html(l)}</text>`;
+        }).join("");
+        return `<svg viewBox="0 0 320 320" width="100%" height="320" preserveAspectRatio="xMidYMid meet">
+          <polygon points="${polyPoints}" fill="rgba(91,141,239,0.3)" stroke="#5b8def" stroke-width="2"/>
+          ${labelTags}
+        </svg>`;
+      }
+
+      function drawProbabilityDonut(prob) {
+        const el = document.getElementById("suiteProbabilityDonut");
+        if (!el || typeof Plotly === "undefined") return;
+        Plotly.newPlot(el, [{
+          type: "pie",
+          hole: 0.5,
+          labels: ["看涨", "看跌", "震荡"],
+          values: [prob?.bullish ?? 33, prob?.bearish ?? 33, prob?.sideways ?? 34],
+          marker: { colors: ["#4caf50", "#e25c5c", "#888"] },
+          textinfo: "label+percent",
+          textfont: { color: "#fff", size: 11 },
+        }], {
+          paper_bgcolor: "rgba(0,0,0,0)",
+          font: { color: "#fff" },
+          showlegend: false,
+          margin: { t: 10, l: 10, r: 10, b: 10 },
+          height: 200,
+        }, { displayModeBar: false, responsive: true });
+      }
+
+      function renderSuiteRiskControl(payload) {
+        const pane = document.getElementById("suitePaneRiskControl");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        const rc = payload?.risk_control;
+        if (!rc) {
+          pane.innerHTML = `<div class="suite-ai-empty"><p>操盘风控数据加载失败</p></div>`;
+          return;
+        }
+        if (rc.available === false) {
+          pane.innerHTML = `<div class="suite-ai-empty"><p>${html(rc.reason || "数据不足")}</p></div>`;
+          return;
+        }
+        const ep = rc.execution_plan || {};
+        const sl = ep.stop_loss || {};
+        const rr = ep.risk_reward || {};
+        const scaledHtml = (rc.scaled_entry || []).map((e) => `
+          <div class="suite-price-row"><span>${html(e.label)}</span>
+            <span class="price">${html(e.price)} <span class="meta">${html(e.position_pct)}%</span></span>
+          </div>`).join("");
+        const takeProfitHtml = (rc.tiered_take_profit || []).map((t) => `
+          <div class="suite-price-row"><span>${html(t.label)}</span>
+            <span class="price">${html(t.price)} <span class="meta">${html(t.sell_pct)}%</span></span>
+          </div>`).join("");
+        const deepHtml = (rc.deep_signals || []).map((s) => `
+          <div class="suite-deep-signal"><span>${html(s.text)}</span></div>`).join("")
+          || `<p style="color:rgba(255,255,255,0.5)">暂无深度信号</p>`;
+        const hiddenHtml = (rc.hidden_risks || []).map((h) => `
+          <div class="suite-deep-signal"><span>${html(h.text || h)}</span></div>`).join("")
+          || `<p style="color:rgba(255,255,255,0.5)">暂无隐性风险</p>`;
+        pane.innerHTML = `
+          <div class="suite-risk-grid">
+            <div class="suite-risk-col">
+              <h4>操盘执行方案</h4>
+              <div class="suite-price-row"><span>止损价</span><span class="price">${html(sl.price ?? "—")} <span class="meta">(${html(sl.drop_pct ?? "—")}%)</span></span></div>
+              <div class="suite-price-row"><span>盈亏比</span><span class="price">${html(rr.ratio ?? "—")} <span class="meta">${html(rr.expected_return_pct ?? "—")}%</span></span></div>
+              <h4 style="margin-top:16px">分批建仓</h4>
+              ${scaledHtml}
+              <h4 style="margin-top:16px">分层止盈</h4>
+              ${takeProfitHtml}
+            </div>
+            <div class="suite-risk-col">
+              <h4>深度信号</h4>
+              ${deepHtml}
+            </div>
+            <div class="suite-risk-col">
+              <h4>隐性风险预警</h4>
+              ${hiddenHtml}
+            </div>
+          </div>
+        `;
+      }
+
+      function renderSuiteAi(payload) {
+        const pane = document.getElementById("suitePaneAi");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        const ai = payload?.ai_interpretation;
+        if (ai && ai.status === "ready" && ai.report) {
+          renderAiReady(pane, ai);
+          return;
+        }
+        pane.innerHTML = `
+          <div class="suite-ai-empty">
+            <h3>AI 操盘手深度解读</h3>
+            <p>基于多因子模型 + DeepSeek 推理引擎<br>约 3-5k tokens / 单次 5-30 秒</p>
+            <button id="suiteAiGenBtn" class="suite-ai-button" type="button">生成深度解读</button>
+          </div>
+        `;
+        const btn = document.getElementById("suiteAiGenBtn");
+        if (btn) {
+          btn.addEventListener("click", () => {
+            const stock = payload?.stock || {};
+            triggerSuiteAi(stock.code, stock.name || "");
+          });
+        }
+      }
+
+      function renderAiReady(pane, ai) {
+        pane.innerHTML = `
+          <div class="suite-ai-report">${renderSuiteMarkdown(ai.report)}</div>
+          <div class="suite-ai-footer">Token 使用：${html(ai.token_usage ?? "—")} · 生成时间：${html(ai.generated_at || "—")}</div>
+        `;
+      }
+
+      async function triggerSuiteAi(code, name) {
+        if (!code) {
+          showToast("缺少股票代码");
+          return;
+        }
+        const pane = document.getElementById("suitePaneAi");
+        const btn = document.getElementById("suiteAiGenBtn");
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = "正在调用 DeepSeek…";
+        }
+        const progress = document.createElement("div");
+        progress.className = "suite-ai-progress";
+        progress.textContent = "⏳ 正在调用 DeepSeek 进行深度解读…";
+        pane.appendChild(progress);
+        try {
+          const resp = await fetch(`/api/stock-analysis-suite/${encodeURIComponent(code)}/ai`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: name || "", force_refresh: false }),
+          });
+          const data = await resp.json();
+          if (data.success && data.report) {
+            if (state.currentSuitePayload) {
+              state.currentSuitePayload.ai_interpretation = {
+                status: "ready",
+                report: data.report,
+                token_usage: data.token_usage,
+                generated_at: data.generated_at,
+              };
+            }
+            renderAiReady(pane, {
+              report: data.report,
+              token_usage: data.token_usage,
+              generated_at: data.generated_at,
+            });
+          } else {
+            pane.innerHTML = `
+              <div class="suite-ai-empty">
+                <p>LLM 调用失败：${html(data.error || data.status || "未知错误")}</p>
+                <button class="suite-ai-button" type="button" id="suiteAiRetryBtn">重试</button>
+              </div>
+            `;
+            const retry = document.getElementById("suiteAiRetryBtn");
+            if (retry) retry.addEventListener("click", () => triggerSuiteAi(code, name));
+          }
+        } catch (error) {
+          pane.innerHTML = `
+            <div class="suite-ai-empty">
+              <p>网络错误：${html(String(error?.message || error))}</p>
+              <button class="suite-ai-button" type="button" id="suiteAiRetryBtn">重试</button>
+            </div>
+          `;
+          const retry = document.getElementById("suiteAiRetryBtn");
+          if (retry) retry.addEventListener("click", () => triggerSuiteAi(code, name));
+        }
+      }
+
+      function renderSuiteMarkdown(md) {
+        const escaped = String(md || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+        const lines = escaped.split(/\r?\n/);
+        const out = [];
+        let inParagraph = false;
+        const closePara = () => {
+          if (inParagraph) {
+            out.push("</p>");
+            inParagraph = false;
+          }
+        };
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            closePara();
+            continue;
+          }
+          const h3 = trimmed.match(/^###\s+(.+)$/);
+          const h2 = trimmed.match(/^##\s+(.+)$/);
+          const h1 = trimmed.match(/^#\s+(.+)$/);
+          if (h3) { closePara(); out.push(`<h3>${h3[1]}</h3>`); continue; }
+          if (h2) { closePara(); out.push(`<h2>${h2[1]}</h2>`); continue; }
+          if (h1) { closePara(); out.push(`<h2>${h1[1]}</h2>`); continue; }
+          if (!inParagraph) {
+            out.push("<p>");
+            inParagraph = true;
+          } else {
+            out.push("<br>");
+          }
+          out.push(trimmed);
+        }
+        closePara();
+        return out.join("");
+      }
+
+      function opportunityPayloadFromForm() {
+        const formEl = $("#opportunityForm");
+        const payload = formEl ? Object.fromEntries(new FormData(formEl).entries()) : {
+          limit: 80,
+          workers: 8,
+          source: "multi",
+          stock_codes: "",
+        };
+        payload.limit = Number(payload.limit || 80);
+        payload.workers = Number(payload.workers || 8);
+        return payload;
+      }
+
+      function batchPayloadFromForm() {
+        const formEl = $("#batchForm");
+        const payload = formEl ? Object.fromEntries(new FormData(formEl).entries()) : {
+          stock_codes: "600519, 300750, 000001, 002230, 601138",
+          filter_strategy: "balanced",
+          max_concurrent: 5,
+        };
+        payload.max_concurrent = Number(payload.max_concurrent || 5);
+        payload.data_types = ["comprehensive"];
+        return payload;
+      }
+
+      async function startOpportunityFromContext(button = null) {
+        await startTrackedJob("/api/opportunity-discovery/start", opportunityPayloadFromForm(), button);
+      }
+
+      async function startBatchFromContext(button = null) {
+        await startTrackedJob("/api/batch-analysis/start", batchPayloadFromForm(), button);
       }
 
       function setupWorkbench(data) {
-        renderJobs(data.jobs || []);
-        $("#opportunityForm").addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const form = new FormData(event.currentTarget);
-          const payload = Object.fromEntries(form.entries());
-          payload.limit = Number(payload.limit);
-          payload.workers = Number(payload.workers);
-          try {
-            await fetchJson("/api/opportunity-discovery/start", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-            });
-            await loadJobs();
-          } catch (error) {
-            alert(error.message);
-          }
-        });
-        $("#batchForm").addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const form = new FormData(event.currentTarget);
-          const payload = Object.fromEntries(form.entries());
-          payload.max_concurrent = Number(payload.max_concurrent);
-          payload.data_types = ["comprehensive"];
-          try {
-            await fetchJson("/api/batch-analysis/start", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-            });
-            await loadJobs();
-          } catch (error) {
-            alert(error.message);
-          }
-        });
+        state.jobs = data.jobs || [];
+        updateTaskHeader(state.jobs);
+        updateFeatureJobPill(state.jobs);
+        renderJobs(state.jobs);
+        if (!state.activeJobId && state.jobs.length) {
+          state.activeJobId = (state.jobs.find(isActiveJob) || state.jobs[0]).id;
+        }
+        renderJobDetail(state.jobs.find((job) => job.id === state.activeJobId) || state.jobs[0] || null);
+        scheduleJobPolling(state.jobs);
+
+        const opportunityForm = $("#opportunityForm");
+        if (opportunityForm && !opportunityForm.dataset.bound) {
+          opportunityForm.dataset.bound = "1";
+          opportunityForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            await startOpportunityFromContext(event.submitter);
+          });
+        }
+
+        const batchForm = $("#batchForm");
+        if (batchForm && !batchForm.dataset.bound) {
+          batchForm.dataset.bound = "1";
+          batchForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            await startBatchFromContext(event.submitter);
+          });
+        }
       }
 
       function renderReports(data) {
         const reports = $("#reportList");
-        reports.innerHTML = (data.reports || []).map((item) => `
-          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
-            <div class="item-top">
-              <p class="item-title">${html(item.file)}</p>
-              <span class="pill">${html(item.type)}</span>
-            </div>
-            <p class="item-meta">${html(item.updated_at)} · ${item.size_kb} KB</p>
-          </a>
-        `).join("");
-        if (!data.reports?.length) empty(reports, "暂无报告。");
+        if (reports) {
+          reports.innerHTML = (data.reports || []).map((item) => `
+            <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+              <div class="item-top">
+                <p class="item-title">${html(item.file)}</p>
+                <span class="pill">${html(item.type)}</span>
+              </div>
+              <p class="item-meta">${html(item.updated_at)} · ${item.size_kb} KB</p>
+            </a>
+          `).join("");
+          if (!data.reports?.length) {
+            empty(reports, "暂无报告。", emptyAction("start-opportunity", "生成机会报告"));
+          }
+        }
 
         const modules = $("#moduleList");
-        modules.innerHTML = (data.modules || []).map((item) => `
-          <div class="item">
-            <div class="item-top">
-              <p class="item-title">${html(item.name)}</p>
-              <span class="pill ${item.status === "ready" ? "ok" : "warn"}">${html(item.status)}</span>
+        if (modules) {
+          modules.innerHTML = (data.modules || []).map((item) => `
+            <div class="item">
+              <div class="item-top">
+                <p class="item-title">${html(item.name)}</p>
+                <span class="pill ${item.status === "ready" ? "ok" : "warn"}">${html(item.status)}</span>
+              </div>
+              <p class="item-meta">${html(item.scope)} · ${html(item.module)}</p>
             </div>
-            <p class="item-meta">${html(item.scope)} · ${html(item.module)}</p>
-          </div>
-        `).join("");
+          `).join("");
+        }
 
         const batch = data.batch || {};
-        $("#batchMeta").textContent = `分析 ${batch.analysis_count || 0} · 预测 ${batch.prediction_count || 0}`;
+        if ($("#batchMeta")) {
+          $("#batchMeta").textContent = `分析 ${batch.analysis_count || 0} · 预测 ${batch.prediction_count || 0}`;
+        }
         const runs = [...(batch.analysis_runs || []), ...(batch.prediction_runs || [])];
         const batchRuns = $("#batchRuns");
-        batchRuns.innerHTML = runs.map((item) => `
-          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
-            <div class="item-top">
-              <p class="item-title">${html(item.file)}</p>
-              <span class="pill">${item.rows || 0} 行</span>
-            </div>
-            <p class="item-meta">${html(item.updated_at)} · 最高评分 ${num(item.top_score)}</p>
-          </a>
-        `).join("");
-        if (!runs.length) empty(batchRuns, "暂无批量结果。");
+        if (batchRuns) {
+          batchRuns.innerHTML = runs.map((item) => `
+            <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+              <div class="item-top">
+                <p class="item-title">${html(item.file)}</p>
+                <span class="pill">${item.rows || 0} 行</span>
+              </div>
+              <p class="item-meta">${html(item.updated_at)} · 最高评分 ${num(item.top_score)}</p>
+            </a>
+          `).join("");
+          if (!runs.length) {
+            empty(batchRuns, "暂无批量结果。", emptyAction("start-batch", "启动批量分析"));
+          }
+        }
       }
 
       function normalizeCurve(values) {
@@ -622,6 +2759,82 @@
         return normalizeCurve(values);
       }
 
+      function resampleSeries(values, length = 60) {
+        const source = (values || []).map(Number).filter((value) => Number.isFinite(value));
+        if (!source.length) return [];
+        if (source.length === 1) return Array.from({ length }, () => source[0]);
+        const output = [];
+        const span = source.length - 1;
+        for (let i = 0; i < length; i += 1) {
+          const position = (span * i) / Math.max(length - 1, 1);
+          const leftIndex = Math.floor(position);
+          const rightIndex = Math.min(source.length - 1, leftIndex + 1);
+          const ratio = position - leftIndex;
+          output.push(source[leftIndex] + (source[rightIndex] - source[leftIndex]) * ratio);
+        }
+        return output;
+      }
+
+      function patternCompareMetrics(queryCurve, stockCurve) {
+        const length = Math.max(60, queryCurve.length, stockCurve.length, 2);
+        const query = normalizeCurve(resampleSeries(queryCurve, length));
+        const stock = normalizeCurve(resampleSeries(stockCurve, length));
+        const diff = query.map((value, index) => Number((stock[index] - value).toFixed(4)));
+        const absDiff = diff.map((value) => Math.abs(value));
+        const mae = absDiff.reduce((sum, value) => sum + value, 0) / Math.max(absDiff.length, 1);
+        const rmse = Math.sqrt(diff.reduce((sum, value) => sum + (value * value), 0) / Math.max(diff.length, 1));
+        const maxDiff = Math.max(...absDiff, 0);
+        let sameDirection = 0;
+        let directionTotal = 0;
+        for (let index = 1; index < length; index += 1) {
+          const queryStep = query[index] - query[index - 1];
+          const stockStep = stock[index] - stock[index - 1];
+          if (Math.abs(queryStep) < 0.001 && Math.abs(stockStep) < 0.001) continue;
+          directionTotal += 1;
+          if ((queryStep >= 0 && stockStep >= 0) || (queryStep < 0 && stockStep < 0)) {
+            sameDirection += 1;
+          }
+        }
+        const directionRate = directionTotal ? sameDirection / directionTotal : 0;
+        const similarity = Math.max(0, 1 - mae);
+        return { query, stock, diff, mae, rmse, maxDiff, directionRate, similarity };
+      }
+
+      function localCurveExtrema(values, limit = 8) {
+        const peaks = [];
+        const troughs = [];
+        for (let index = 1; index < values.length - 1; index += 1) {
+          const prev = values[index - 1];
+          const current = values[index];
+          const next = values[index + 1];
+          const contrast = Math.abs(current - ((prev + next) / 2));
+          if (contrast < 0.015) continue;
+          if (current >= prev && current >= next && (current > prev || current > next)) {
+            peaks.push({ index, value: current, contrast });
+          }
+          if (current <= prev && current <= next && (current < prev || current < next)) {
+            troughs.push({ index, value: current, contrast });
+          }
+        }
+        const pick = (points) => points.sort((a, b) => b.contrast - a.contrast).slice(0, limit).sort((a, b) => a.index - b.index);
+        return { peaks: pick(peaks), troughs: pick(troughs) };
+      }
+
+      function extremaTrace(points, x, name, color, symbol) {
+        if (!points.length) return null;
+        return {
+          x: points.map((point) => x[point.index]),
+          y: points.map((point) => point.value),
+          type: "scatter",
+          mode: "markers",
+          name,
+          marker: { color, size: 8, symbol, line: { color: "#ffffff", width: 1 } },
+          hovertemplate: "%{x}<br>%{y:.3f}<extra></extra>",
+          xaxis: "x",
+          yaxis: "y",
+        };
+      }
+
       function setupPatternCanvas() {
         const canvas = $("#patternCanvas");
         const ctx = canvas.getContext("2d");
@@ -631,21 +2844,31 @@
           const width = canvas.width;
           const height = canvas.height;
           ctx.clearRect(0, 0, width, height);
-          ctx.strokeStyle = "#d9e1ec";
-          ctx.lineWidth = 1;
-          for (let i = 1; i < 5; i += 1) {
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, width, height);
+          for (let i = 1; i < 24; i += 1) {
+            const major = i % 4 === 0;
+            ctx.strokeStyle = major ? "#d9e1ec" : "#edf2f7";
+            ctx.lineWidth = major ? 1 : 0.6;
             ctx.beginPath();
-            ctx.moveTo((width * i) / 5, 0);
-            ctx.lineTo((width * i) / 5, height);
+            ctx.moveTo((width * i) / 24, 0);
+            ctx.lineTo((width * i) / 24, height);
             ctx.stroke();
+          }
+          for (let i = 1; i < 12; i += 1) {
+            const major = i % 3 === 0;
+            ctx.strokeStyle = major ? "#d9e1ec" : "#edf2f7";
+            ctx.lineWidth = major ? 1 : 0.6;
             ctx.beginPath();
-            ctx.moveTo(0, (height * i) / 5);
-            ctx.lineTo(width, (height * i) / 5);
+            ctx.moveTo(0, (height * i) / 12);
+            ctx.lineTo(width, (height * i) / 12);
             ctx.stroke();
           }
           if (state.drawPoints.length > 1) {
-            ctx.strokeStyle = "#0a84ff";
-            ctx.lineWidth = 3;
+            ctx.strokeStyle = "#2f6fdd";
+            ctx.lineWidth = 3.2;
+            ctx.lineJoin = "round";
+            ctx.lineCap = "round";
             ctx.beginPath();
             state.drawPoints.forEach((point, index) => {
               const x = point.x * width;
@@ -656,6 +2879,7 @@
             ctx.stroke();
           }
           $("#matchDrawBtn").disabled = state.drawPoints.length < 5;
+          $("#savePatternBtn").disabled = state.drawPoints.length < 2;
         }
 
         function point(event) {
@@ -687,14 +2911,103 @@
           state.selectedCurve = null;
           draw();
         });
+        $("#savePatternBtn").addEventListener("click", () => {
+          saveDrawnPattern(canvas);
+        });
         draw();
+      }
+
+      function saveDrawnPattern(canvas) {
+        if (!canvas || state.drawPoints.length < 2) return;
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const payload = {
+          type: "kronos-pattern-drawing",
+          version: 1,
+          saved_at: new Date().toISOString(),
+          points: state.drawPoints,
+          normalized_curve: state.selectedCurve || resample(state.drawPoints),
+        };
+        const jsonBlob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+        downloadBlob(jsonBlob, `kronos_pattern_${stamp}.json`);
+        canvas.toBlob((blob) => {
+          if (blob) downloadBlob(blob, `kronos_pattern_${stamp}.png`);
+        });
+        const status = $("#patternStatus");
+        if (status) {
+          status.className = "notice status success";
+          status.textContent = "图形已保存为 PNG 和 JSON。";
+        }
+      }
+
+      function downloadBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      function patternStatusText(status) {
+        if (status.available) {
+          const stale = status.staleness_days != null ? ` · ${status.staleness_days} 天前` : "";
+          const warning = status.warning ? ` · ${status.warning}` : "";
+          return `指纹库 ${status.total_stocks} 只股票 · 快照 ${status.snapshot_date || "--"}${stale}${warning}`;
+        }
+        return status.warning || "指纹库尚未生成，请先点击刷新";
+      }
+
+      function renderPatternStatus(status, statusEl = null, metaEl = null) {
+        const available = Boolean(status.available);
+        const statusClass = available && !status.warning ? "success" : "warning";
+        if (statusEl) {
+          statusEl.className = `notice status ${statusClass}`;
+          statusEl.textContent = patternStatusText(status);
+        }
+        if (metaEl) {
+          metaEl.textContent = available ? `${status.total_stocks || 0} 只` : "未生成";
+        }
       }
 
       async function loadPatternStatus() {
         const status = await fetchJson("/api/pattern-search/status");
-        $("#patternStatus").textContent = status.available
-          ? `指纹库 ${status.total_stocks} 只股票 · 快照 ${status.snapshot_date || "--"}`
-          : status.warning || "指纹库尚未生成";
+        renderPatternStatus(status, $("#patternStatus"));
+        renderPatternStatus(status, $("#featurePatternStatus"), $("#featurePatternMeta"));
+        return status;
+      }
+
+      async function refreshPatternDatabase({ button = null, statusEl = null, workers = 16 } = {}) {
+        if (button) button.disabled = true;
+        const target = statusEl || $("#patternStatus") || $("#featurePatternStatus");
+        try {
+          const data = await fetchJson("/api/pattern-search/refresh", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workers }),
+          });
+          if (target) target.textContent = `刷新任务已创建：${data.job_id}`;
+          await pollJob(data.job_id, {
+            statusEl: target,
+            onDone: async (job) => {
+              if (job.status === "finished") {
+                await loadPatternStatus();
+              } else if (target) {
+                target.className = "notice status error";
+                target.textContent = `刷新失败：${job.error || "请查看任务日志"}`;
+              }
+            },
+          });
+        } catch (error) {
+          if (target) {
+            target.className = "notice status error";
+            target.textContent = error.message;
+          }
+          alert(error.message);
+        } finally {
+          if (button) button.disabled = false;
+        }
       }
 
       async function runPatternMatch(curve) {
@@ -718,7 +3031,7 @@
       function renderPatternResults(matches, queryCurve) {
         const target = $("#patternResults");
         target.innerHTML = matches.map((item, index) => `
-          <button class="item" type="button" data-pattern-index="${index}" data-stock-code="${html(item.stock_code || "")}" data-stock-name="${html(item.stock_name || "")}" data-sector="${html(item.industry || "")}">
+          <button class="item pattern-result-item" type="button" data-pattern-index="${index}" data-stock-code="${html(item.stock_code || "")}" data-stock-name="${html(item.stock_name || "")}" data-sector="${html(item.industry || "")}" title="双击打开K线大图">
             <div class="item-top">
               <p class="item-title">${index + 1}. ${html(item.stock_name || item.stock_code)}</p>
               <strong>${num(Number(item.score || 0) * 100, 1)}%</strong>
@@ -729,8 +3042,23 @@
         if (!matches.length) empty(target, "暂无匹配结果。");
         target.querySelectorAll("[data-pattern-index]").forEach((el) => {
           el.addEventListener("click", () => {
+            window.clearTimeout(state.patternClickTimer);
+            state.patternClickTimer = window.setTimeout(() => {
+              const item = matches[Number(el.dataset.patternIndex)];
+              plotPatternCompare(queryCurve, item);
+              openStockContext({
+                type: "stock",
+                stock_code: item?.stock_code || el.dataset.stockCode,
+                stock_name: item?.stock_name || el.dataset.stockName || "",
+                board_name: item?.industry || el.dataset.sector || "",
+              }).catch((error) => console.warn("打开股票上下文失败", error));
+            }, 180);
+          });
+          el.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            window.clearTimeout(state.patternClickTimer);
             const item = matches[Number(el.dataset.patternIndex)];
-            plotPatternCompare(queryCurve, item);
+            openStockKlineModal(item?.stock_code || el.dataset.stockCode).catch((error) => alert(error.message));
           });
         });
         if (matches[0]) plotPatternCompare(queryCurve, matches[0]);
@@ -738,20 +3066,131 @@
 
       function plotPatternCompare(queryCurve, item) {
         $("#patternCompareTitle").textContent = `${item.stock_name || item.stock_code} 形态对比`;
-        $("#patternCompareMeta").textContent = `${num(Number(item.score || 0) * 100, 1)}%`;
         const stockCurve = item.matched_curve || item.normalized_curve || item.curve || item.close_curve || [];
-        if (!window.Plotly || !stockCurve.length) {
+        if (!window.Plotly || !queryCurve?.length || !stockCurve.length) {
           $("#patternCompareChart").innerHTML = `<p class="muted">暂无可绘制曲线。</p>`;
+          $("#patternCompareMeta").textContent = `${num(Number(item.score || 0) * 100, 1)}%`;
           return;
         }
-        Plotly.newPlot("patternCompareChart", [
-          { y: queryCurve, type: "scatter", mode: "lines", name: "查询形态", line: { color: "#0a84ff", width: 3 } },
-          { y: stockCurve, type: "scatter", mode: "lines", name: item.stock_name || item.stock_code, line: { color: "#d92d20", width: 3 } },
-        ], {
-          margin: { l: 36, r: 12, t: 10, b: 28 },
-          yaxis: { range: [-0.05, 1.05] },
+
+        const metrics = patternCompareMetrics(queryCurve, stockCurve);
+        const x = metrics.query.map((_, index) => index + 1);
+        const lower = metrics.query.map((value, index) => Math.min(value, metrics.stock[index]));
+        const upper = metrics.query.map((value, index) => Math.max(value, metrics.stock[index]));
+        const extrema = localCurveExtrema(metrics.stock, 6);
+        const maxDiffRange = Math.max(metrics.maxDiff * 1.25, 0.08);
+        const traces = [
+          {
+            x,
+            y: lower,
+            type: "scatter",
+            mode: "lines",
+            line: { color: "rgba(0,0,0,0)", width: 0 },
+            hoverinfo: "skip",
+            showlegend: false,
+            xaxis: "x",
+            yaxis: "y",
+          },
+          {
+            x,
+            y: upper,
+            type: "scatter",
+            mode: "lines",
+            fill: "tonexty",
+            fillcolor: "rgba(217, 45, 32, 0.12)",
+            line: { color: "rgba(0,0,0,0)", width: 0 },
+            name: "偏差带",
+            hoverinfo: "skip",
+            xaxis: "x",
+            yaxis: "y",
+          },
+          {
+            x,
+            y: metrics.query,
+            type: "scatter",
+            mode: "lines",
+            name: "查询形态",
+            line: { color: "#2f6fdd", width: 3 },
+            hovertemplate: "位置 %{x}<br>查询 %{y:.3f}<extra></extra>",
+            xaxis: "x",
+            yaxis: "y",
+          },
+          {
+            x,
+            y: metrics.stock,
+            type: "scatter",
+            mode: "lines",
+            name: item.stock_name || item.stock_code,
+            line: { color: "#c43d36", width: 3 },
+            hovertemplate: "位置 %{x}<br>匹配 %{y:.3f}<extra></extra>",
+            xaxis: "x",
+            yaxis: "y",
+          },
+          {
+            x,
+            y: metrics.diff,
+            type: "scatter",
+            mode: "lines",
+            name: "差值",
+            fill: "tozeroy",
+            fillcolor: "rgba(111, 85, 216, 0.10)",
+            line: { color: "#6f55d8", width: 2 },
+            hovertemplate: "位置 %{x}<br>差值 %{y:.4f}<extra></extra>",
+            xaxis: "x2",
+            yaxis: "y2",
+          },
+        ];
+        [extremaTrace(extrema.peaks, x, "局部高点", "#a86d00", "triangle-up"), extremaTrace(extrema.troughs, x, "局部低点", "#11756f", "triangle-down")]
+          .filter(Boolean)
+          .forEach((trace) => traces.push(trace));
+
+        $("#patternCompareMeta").textContent = [
+          `相似 ${num(metrics.similarity * 100, 1)}%`,
+          `MAE ${num(metrics.mae, 3)}`,
+          `RMSE ${num(metrics.rmse, 3)}`,
+          `最大偏差 ${num(metrics.maxDiff, 3)}`,
+          `方向一致 ${num(metrics.directionRate * 100, 1)}%`,
+        ].join(" · ");
+
+        Plotly.react("patternCompareChart", traces, {
+          margin: { l: 42, r: 16, t: 12, b: 34 },
+          hovermode: "x unified",
+          legend: {
+            orientation: "h",
+            x: 0,
+            y: 1.08,
+            font: { size: 11, color: "#344256" },
+          },
+          xaxis: {
+            domain: [0, 1],
+            anchor: "y",
+            showgrid: false,
+            zeroline: false,
+          },
+          yaxis: {
+            domain: [0.34, 1],
+            range: [-0.05, 1.05],
+            title: "标准化走势",
+            gridcolor: "#edf2f7",
+            zeroline: false,
+          },
+          xaxis2: {
+            domain: [0, 1],
+            anchor: "y2",
+            matches: "x",
+            title: "形态位置",
+            gridcolor: "#edf2f7",
+          },
+          yaxis2: {
+            domain: [0, 0.22],
+            range: [-maxDiffRange, maxDiffRange],
+            title: "差值",
+            gridcolor: "#edf2f7",
+            zeroline: true,
+            zerolinecolor: "#c6d0dd",
+          },
           paper_bgcolor: "transparent",
-          plot_bgcolor: "transparent",
+          plot_bgcolor: "#ffffff",
         }, { displayModeBar: false, responsive: true });
       }
 
@@ -776,7 +3215,7 @@
           const data = await fetchJson(`/api/pattern-search/stocks?q=${encodeURIComponent(q)}&limit=8`);
           const target = $("#stockSuggestions");
           target.innerHTML = (data.stocks || []).map((item) => `
-            <button class="item" type="button" data-stock-code="${html(item.stock_code)}" data-stock-name="${html(item.stock_name || "")}" data-sector="${html(item.industry || "")}">
+            <button class="item" type="button" data-stock-code="${html(item.stock_code)}" data-stock-name="${html(item.stock_name || "")}" data-sector="${html(item.industry || "")}" title="双击打开K线大图">
               <div class="item-top">
                 <p class="item-title">${html(item.stock_name || item.stock_code)}</p>
                 <span class="pill">${html(item.stock_code)}</span>
@@ -787,6 +3226,8 @@
           if (!data.stocks?.length) empty(target, "没有匹配股票。");
           target.querySelectorAll("[data-stock-code]").forEach((el) => {
             el.addEventListener("click", async () => {
+              window.clearTimeout(state.patternClickTimer);
+              state.patternClickTimer = window.setTimeout(async () => {
               const payload = await fetchJson(`/api/pattern-search/stock-curve/${encodeURIComponent(el.dataset.stockCode)}`);
               state.selectedStock = payload;
               state.selectedCurve = payload.normalized_curve;
@@ -799,33 +3240,249 @@
                 normalized_curve: payload.normalized_curve,
                 score: 1,
               });
+              openStockContext({
+                type: "stock",
+                stock_code: payload.stock_code,
+                stock_name: payload.stock_name || "",
+                board_name: payload.industry || "",
+              }).catch((error) => console.warn("打开股票上下文失败", error));
+              }, 180);
+            });
+            el.addEventListener("dblclick", (event) => {
+              event.preventDefault();
+              window.clearTimeout(state.patternClickTimer);
+              openStockKlineModal(el.dataset.stockCode).catch((error) => alert(error.message));
             });
           });
         });
         $("#matchStockBtn").addEventListener("click", () => runPatternMatch(state.selectedCurve).catch((error) => alert(error.message)));
-        $("#refreshPatternDbBtn").addEventListener("click", async () => {
-          const data = await fetchJson("/api/pattern-search/refresh", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ workers: 16 }),
-          });
-          alert(`刷新任务已创建: ${data.job_id}`);
+        $("#refreshPatternDbBtn").addEventListener("click", () => {
+          refreshPatternDatabase({ button: $("#refreshPatternDbBtn"), statusEl: $("#patternStatus") });
         });
       }
 
+      function renderFeatureOverview(data) {
+        renderOverview(data);
+        renderOpportunities(data);
+        renderReports(data);
+        setupWorkbench(data);
+
+        const settings = data.settings || {};
+        const jobs = data.jobs || [];
+        const market = data.market || {};
+        const llmReady = Boolean(settings.llm?.configured);
+        const tushareReady = Boolean(settings.tushare?.configured);
+        $("#featureOverviewStatus").textContent = `市场粒子 ${market.total_particles ?? "--"}`;
+        $("#featureOverviewStatus").className = "pill ok";
+        updateFeatureJobPill(jobs);
+        $("#featureConfigPill").textContent = `AI ${llmReady ? "已配置" : "未配置"} · TuShare ${tushareReady ? "已配置" : "未配置"}`;
+        $("#featureConfigPill").className = `pill ${llmReady && tushareReady ? "ok" : "warn"}`;
+        $("#featureConfigStatus").textContent = llmReady && tushareReady ? "已配置" : "待配置";
+        $("#featureSettingsSummary").textContent = `AI ${llmReady ? "已配置" : "未配置"} · TuShare ${tushareReady ? "已配置 " + (settings.tushare?.token_masked || "") : "未配置"}`;
+
+        loadPatternStatus().catch((error) => {
+          const target = $("#featurePatternStatus");
+          if (target) {
+            target.className = "notice status error";
+            target.textContent = error.message;
+          }
+        });
+        const patternBtn = $("#featureRefreshPatternDbBtn");
+        if (patternBtn && !patternBtn.dataset.bound) {
+          patternBtn.dataset.bound = "1";
+          patternBtn.addEventListener("click", () => {
+            refreshPatternDatabase({ button: patternBtn, statusEl: $("#featurePatternStatus") });
+          });
+        }
+        setupKronosModelControls();
+        loadKronosStatus().catch((error) => {
+          $("#kronosModelMeta").textContent = "读取失败";
+          $("#kronosModelStatus").className = "notice status error";
+          $("#kronosModelStatus").textContent = error.message;
+        });
+      }
+
+      function providerModelRows(settings) {
+        const providers = settings.llm?.providers || [];
+        if (!providers.length) {
+          return `<div class="item"><p class="item-meta">未找到模型 Provider 配置。</p></div>`;
+        }
+        return providers.map((provider) => `
+          <div class="item" data-provider="${html(provider.name)}">
+            <div class="item-top">
+              <p class="item-title">${html(provider.name)}</p>
+              <span class="pill ${provider.has_api_key ? "ok" : "warn"}">${provider.has_api_key ? "Key " + html(provider.api_key_masked) : "未配置 Key"}</span>
+            </div>
+            <div class="form-grid">
+              <label>API Key
+                <input type="password" data-provider-key="${html(provider.name)}" placeholder="留空不覆盖现有 Key" autocomplete="off" />
+              </label>
+              <label>Provider 状态
+                <input value="${provider.enabled ? "启用" : "配置保留"} · ${html(provider.api_style)}" disabled />
+              </label>
+            </div>
+            <div class="check-row" style="margin-top: 10px;">
+              ${(provider.models || []).map((model) => `
+                <label title="${html(model.description || model.model_id || "")}">
+                  <input type="checkbox" data-llm-model="${html(model.full_key)}" ${model.selected ? "checked" : ""} />
+                  ${html(model.key)}
+                </label>
+              `).join("")}
+            </div>
+          </div>
+        `).join("");
+      }
+
+      async function loadSettings() {
+        const settings = await fetchJson("/api/settings");
+        $("#llmProviderList").innerHTML = providerModelRows(settings);
+        $("#llmConfigMeta").textContent = settings.llm?.configured ? "已配置" : "未配置";
+        $("#llmConfigPath").textContent = `保存位置：${settings.llm?.config_path || "--"}`;
+        $("#tushareConfigMeta").textContent = settings.tushare?.configured ? `已配置 ${settings.tushare.token_masked}` : "未配置";
+        $("#tushareConfigPath").textContent = `保存位置：${settings.tushare?.config_path || "--"}`;
+        $("#tushareSettingsForm [name='timeout']").value = settings.tushare?.timeout || 30;
+        $("#tushareSettingsForm [name='retry_count']").value = settings.tushare?.retry_count || 3;
+        return settings;
+      }
+
+      async function loadKronosStatus() {
+        const [status, models] = await Promise.all([
+          fetchJson("/api/model-status"),
+          fetchJson("/api/available-models"),
+        ]);
+        const select = $("#kronosModelSelect");
+        const previous = select?.value;
+        select.innerHTML = Object.entries(models.models || {}).map(([key, meta]) => `
+          <option value="${html(key)}">${html(meta.name || key)} · ${html(meta.params || "")}</option>
+        `).join("");
+        if (previous && [...select.options].some((option) => option.value === previous)) {
+          select.value = previous;
+        }
+        $("#kronosModelMeta").textContent = status.loaded ? "已载入" : status.available ? "可载入" : "不可用";
+        $("#kronosModelStatus").className = `notice status ${status.loaded ? "success" : status.available ? "info" : "warning"}`;
+        $("#kronosModelStatus").textContent = status.message || "--";
+        $("#loadKronosModelBtn").disabled = !status.available;
+        return status;
+      }
+
+      function setupKronosModelControls() {
+        const button = $("#loadKronosModelBtn");
+        if (!button || button.dataset.bound) return;
+        button.dataset.bound = "1";
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          $("#kronosModelStatus").className = "notice status info";
+          $("#kronosModelStatus").textContent = "正在载入模型...";
+          let loadError = null;
+          try {
+            const data = await fetchJson("/api/load-model", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model_key: $("#kronosModelSelect").value,
+                device: $("#kronosDeviceSelect").value,
+              }),
+            });
+            $("#kronosModelStatus").className = "notice status success";
+            $("#kronosModelStatus").textContent = data.message || "模型已载入";
+          } catch (error) {
+            loadError = error;
+            $("#kronosModelStatus").className = "notice status error";
+            $("#kronosModelStatus").textContent = error.message;
+          } finally {
+            try {
+              const status = await loadKronosStatus();
+              if (loadError) {
+                $("#kronosModelStatus").className = "notice status error";
+                $("#kronosModelStatus").textContent = loadError.message;
+                button.disabled = !status.available;
+              }
+            } catch (error) {
+              button.disabled = false;
+            }
+          }
+        });
+      }
+
+      function setupSettings() {
+        loadSettings().catch((error) => {
+          $("#llmConfigMeta").textContent = "读取失败";
+          $("#llmProviderList").innerHTML = `<div class="item"><p class="item-meta">${html(error.message)}</p></div>`;
+        });
+        loadKronosStatus().catch((error) => {
+          $("#kronosModelMeta").textContent = "读取失败";
+          $("#kronosModelStatus").textContent = error.message;
+        });
+        setupKronosModelControls();
+
+        $("#llmSettingsForm").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const enabledModels = [...document.querySelectorAll("[data-llm-model]:checked")].map((input) => input.dataset.llmModel);
+          const apiKeys = {};
+          document.querySelectorAll("[data-provider-key]").forEach((input) => {
+            if (input.value.trim()) apiKeys[input.dataset.providerKey] = input.value.trim();
+          });
+          try {
+            const data = await fetchJson("/api/settings/llm", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ enabled_models: enabledModels, api_keys: apiKeys }),
+            });
+            $("#llmConfigMeta").textContent = "已保存";
+            $("#llmProviderList").innerHTML = providerModelRows(data.settings);
+          } catch (error) {
+            alert(error.message);
+          }
+        });
+
+        $("#tushareSettingsForm").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          const payload = Object.fromEntries(form.entries());
+          payload.timeout = Number(payload.timeout);
+          payload.retry_count = Number(payload.retry_count);
+          payload.clear_token = payload.clear_token === "1";
+          try {
+            const data = await fetchJson("/api/settings/tushare", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            $("#tushareConfigMeta").textContent = data.settings.tushare?.configured ? `已保存 ${data.settings.tushare.token_masked}` : "未配置";
+            event.currentTarget.elements.token.value = "";
+          } catch (error) {
+            alert(error.message);
+          }
+        });
+
+      }
+
       async function boot() {
-        $("#refreshBtn").addEventListener("click", () => location.reload());
-        const dashboardPages = ["overview", "opportunities", "workbench", "reports"];
+        updateTaskHeader([]);
+        bindStockContextModal();
+        $("#refreshBtn").addEventListener("click", () => {
+          refreshCurrentView().catch((error) => {
+            $("#refreshMeta").textContent = "刷新失败";
+            alert(error.message);
+          });
+        });
+        const dashboardPages = ["overview", "workbench", "reports", "features"];
         if (dashboardPages.includes(page)) {
           const data = await loadDashboard();
-          if (page === "overview") renderOverview(data);
-          if (page === "opportunities") renderOpportunities(data);
-          if (page === "workbench") setupWorkbench(data);
-          if (page === "reports") renderReports(data);
+          renderDashboardPage(data);
         }
         if (page === "patterns") {
           $("#refreshMeta").textContent = "形态检索";
           setupPatterns();
+        }
+        if (page === "settings") {
+          $("#refreshMeta").textContent = "后台配置";
+          setupSettings();
+        }
+        if (!dashboardPages.includes(page)) {
+          loadJobs().catch((error) => {
+            $("#activeTaskMeta").textContent = `任务读取失败: ${error.message}`;
+          });
         }
       }
 
