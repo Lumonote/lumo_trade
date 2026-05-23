@@ -606,7 +606,32 @@ def get_native_route_manifest() -> list[dict[str, str]]:
 def run_server() -> None:
     host, port, _debug = webui_core.get_server_config()
     configure_server_from_env()
-    app.start(host=host, port=port, _check_port=True)
+    _ensure_port_available(host, port)
+    app.start(host=host, port=port, _check_port=False)
+
+
+def _ensure_port_available(host: str, port: int) -> None:
+    """Fail fast with a clear message instead of Robyn's interactive port prompt.
+
+    Robyn's default _check_port=True loops on input() when the port is busy,
+    which hangs Tauri-spawned backends (no tty attached). We probe with a
+    fresh socket (no SO_REUSEADDR) and exit non-zero so the host process
+    can recover.
+    """
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((host, port))
+    except OSError as exc:
+        msg = (
+            f"❌ Port {port} on {host} is already in use ({exc}). "
+            "Kill the stale Kronos backend or set ROBYN_PORT to a free port."
+        )
+        print(msg, file=sys.stderr, flush=True)
+        sys.exit(1)
+    finally:
+        probe.close()
 
 
 if __name__ == "__main__":
