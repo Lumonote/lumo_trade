@@ -731,14 +731,18 @@
           <nav class="stock-suite-tabs" role="tablist" id="stockSuiteTabs">
             <button data-suite-tab="quick"               class="suite-tab active" type="button">快速信息</button>
             <button data-suite-tab="overview"            class="suite-tab" type="button">综合总览</button>
-            <button data-suite-tab="market_cycle"        class="suite-tab" type="button" disabled title="即将上线 · 与市场环境模块联调中">市场周期</button>
-            <button data-suite-tab="main_force_phase"    class="suite-tab" type="button" disabled title="即将上线 · 与主力博弈模块联调中">主力阶段</button>
-            <button data-suite-tab="volume_price_game"   class="suite-tab" type="button" disabled title="即将上线 · 与量价模型联调中">量价博弈</button>
-            <button data-suite-tab="chip_structure"      class="suite-tab" type="button" disabled title="即将上线 · 与筹码模块联调中">筹码结构</button>
-            <button data-suite-tab="performance"         class="suite-tab" type="button" disabled title="即将上线 · 与基本面模块联调中">业绩预期</button>
-            <button data-suite-tab="probability"         class="suite-tab" type="button" disabled title="即将上线 · 与概率推演模块联调中">概率推演</button>
+            <button data-suite-tab="market_cycle"        class="suite-tab" type="button">市场周期</button>
+            <button data-suite-tab="main_force_phase"    class="suite-tab" type="button">主力阶段</button>
+            <button data-suite-tab="volume_price_game"   class="suite-tab" type="button">量价博弈</button>
+            <button data-suite-tab="chip_structure"      class="suite-tab" type="button">筹码结构</button>
+            <button data-suite-tab="performance"         class="suite-tab" type="button">业绩预期</button>
+            <button data-suite-tab="probability"         class="suite-tab" type="button">概率推演</button>
             <button data-suite-tab="risk_control"        class="suite-tab" type="button">操盘风控</button>
-            <button data-suite-tab="limit_up_screening"  class="suite-tab" type="button" disabled title="即将上线 · 与涨停模块联调中">涨停筛选</button>
+            <button data-suite-tab="limit_up_screening"  class="suite-tab" type="button">涨停筛选</button>
+            <button data-suite-tab="main_force_deep"     class="suite-tab" type="button">主力深度</button>
+            <button data-suite-tab="quant_matrix"        class="suite-tab" type="button">量化矩阵</button>
+            <button data-suite-tab="chip_radar"          class="suite-tab" type="button">筹码·控盘雷达</button>
+            <button data-suite-tab="institutional_holdings" class="suite-tab" type="button">机构持仓</button>
             <button data-suite-tab="ai_interpretation"   class="suite-tab" type="button">AI 解读</button>
           </nav>
           <div class="stock-suite-panels" id="stockSuitePanels">
@@ -746,7 +750,18 @@
               <div id="stockContextBody" class="stock-context-loading">正在读取股票上下文...</div>
             </div>
             <div class="suite-pane hidden" data-suite-pane="overview" id="suitePaneOverview"></div>
+            <div class="suite-pane hidden" data-suite-pane="market_cycle" id="suitePaneMarketCycle"></div>
+            <div class="suite-pane hidden" data-suite-pane="main_force_phase" id="suitePaneMainForce"></div>
+            <div class="suite-pane hidden" data-suite-pane="volume_price_game" id="suitePaneVolumePrice"></div>
+            <div class="suite-pane hidden" data-suite-pane="chip_structure" id="suitePaneChip"></div>
+            <div class="suite-pane hidden" data-suite-pane="performance" id="suitePanePerformance"></div>
+            <div class="suite-pane hidden" data-suite-pane="probability" id="suitePaneProbability"></div>
             <div class="suite-pane hidden" data-suite-pane="risk_control" id="suitePaneRiskControl"></div>
+            <div class="suite-pane hidden" data-suite-pane="limit_up_screening" id="suitePaneLimitUp"></div>
+            <div class="suite-pane hidden" data-suite-pane="main_force_deep" id="suitePaneMainForceDeep"></div>
+            <div class="suite-pane hidden" data-suite-pane="quant_matrix" id="suitePaneQuantMatrix"></div>
+            <div class="suite-pane hidden" data-suite-pane="chip_radar" id="suitePaneChipRadar"></div>
+            <div class="suite-pane hidden" data-suite-pane="institutional_holdings" id="suitePaneHoldings"></div>
             <div class="suite-pane hidden" data-suite-pane="ai_interpretation" id="suitePaneAi"></div>
           </div>
         </div>
@@ -769,6 +784,7 @@
         currentKline: null,
         currentStockContext: null,
         currentSuitePayload: null,
+        suiteFetching: false,
         klineModalContext: null,
         patternClickTimer: null,
       };
@@ -827,7 +843,7 @@
       function stockDisplayName(stock = {}) {
         const name = stock.name || stock.stock_name || stock.stockName || "";
         const code = stock.code || stock.stock_code || stock.stockCode || "";
-        return `${name || "股票"} ${code || ""}`.trim();
+        return name || code || "股票";
       }
 
       function stockTargetFromDataset(dataset = {}) {
@@ -2028,7 +2044,7 @@
         const reports = context.reports || [];
         const analysisRows = context.analysis_results || [];
         $("#stockContextTitle").textContent = stockDisplayName(stock);
-        $("#stockContextMeta").textContent = `${stock.code || "--"} · ${stock.sector || "--"} · ${stock.symbol || "--"}`;
+        $("#stockContextMeta").textContent = `${stock.code || "--"} · ${stock.sector || "--"}`;
         body.innerHTML = `
           <div class="stock-context-grid">
             <section class="stock-context-main">
@@ -2038,14 +2054,14 @@
                   <h3 class="panel-title">个股机会</h3>
                   <span class="panel-meta">${html(context.opportunity_report?.updated_at || "--")}</span>
                 </div>
-                <div class="panel-body list">${opportunityDetailHtml(context.opportunity)}</div>
+                <div class="panel-body list" id="stockOpportunityPanel">${opportunityDetailHtml(context.opportunity)}</div>
               </div>
               <div class="panel">
                 <div class="panel-header">
                   <h3 class="panel-title">个股分析结果</h3>
-                  <span class="panel-meta">${analysisRows.length} 条</span>
+                  <span class="panel-meta" id="stockAnalysisPanelMeta">${analysisRows.length} 条</span>
                 </div>
-                <div class="panel-body list">${analysisRowsHtml(analysisRows)}</div>
+                <div class="panel-body list" id="stockAnalysisPanel">${analysisRowsHtml(analysisRows)}</div>
               </div>
               <div class="panel">
                 <div class="panel-header">
@@ -2096,25 +2112,91 @@
       async function startStockOpportunity(context, button = null) {
         const code = context.stock?.code;
         if (!code) return;
+        const panel = $("#stockOpportunityPanel");
         const job = await startTrackedJob("/api/opportunity-discovery/start", {
           limit: 20,
           workers: 4,
           source: "multi",
           stock_codes: code,
         }, button);
-        if (job) showStockContextJobNotice(job, "机会挖掘已启动", button);
+        if (!job) return;
+        if (panel) {
+          panel.innerHTML = `<div class="item empty-state" id="stockOpportunityProgress">
+            <p class="item-meta"><span class="spinner"></span> 机会挖掘进行中… (${html(job.id)})</p>
+          </div>`;
+        }
+        await pollJob(job.id, {
+          onUpdate: (j) => {
+            const note = document.getElementById("stockOpportunityProgress");
+            if (note) {
+              const log = latestJobLog(j) || jobStatusLabel(j.status);
+              note.querySelector("p").innerHTML = `<span class="spinner"></span> ${html(log)}`;
+            }
+          },
+          onDone: async (j) => {
+            await refreshStockContextInPlace(code, context.stock?.name || "");
+            if (j.status === "failed") {
+              prependStockContextNotice(`机会挖掘失败: ${latestJobLog(j) || j.id}`, "error", button);
+            }
+          },
+        });
       }
 
       async function startStockAnalysis(context, button = null) {
         const code = context.stock?.code;
         if (!code) return;
+        const panel = $("#stockAnalysisPanel");
         const job = await startTrackedJob("/api/batch-analysis/start", {
           stock_codes: code,
           filter_strategy: "balanced",
           max_concurrent: 1,
           data_types: ["comprehensive"],
         }, button);
-        if (job) showStockContextJobNotice(job, "个股分析已启动", button);
+        if (!job) return;
+        if (panel) {
+          panel.innerHTML = `<div class="item empty-state" id="stockAnalysisProgress">
+            <p class="item-meta"><span class="spinner"></span> 个股分析进行中… (${html(job.id)})</p>
+          </div>`;
+        }
+        await pollJob(job.id, {
+          onUpdate: (j) => {
+            const note = document.getElementById("stockAnalysisProgress");
+            if (note) {
+              const log = latestJobLog(j) || jobStatusLabel(j.status);
+              note.querySelector("p").innerHTML = `<span class="spinner"></span> ${html(log)}`;
+            }
+          },
+          onDone: async (j) => {
+            await refreshStockContextInPlace(code, context.stock?.name || "");
+            await refreshStockSuiteInPlace(code, context.stock?.name || "");
+            if (j.status === "failed") {
+              prependStockContextNotice(`个股分析失败: ${latestJobLog(j) || j.id}`, "error", button);
+            }
+          },
+        });
+      }
+
+      async function refreshStockContextInPlace(code, name = "") {
+        try {
+          const fresh = await fetchJson(`/api/stock-context/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}`);
+          state.currentStockContext = fresh;
+          renderStockContext(fresh);
+        } catch (error) {
+          console.warn("refresh stock context failed", error);
+        }
+      }
+
+      async function refreshStockSuiteInPlace(code, name = "") {
+        state.suiteFetching = true;
+        try {
+          const fresh = await fetchJson(`/api/stock-analysis-suite/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}&refresh=1`);
+          state.currentSuitePayload = fresh;
+        } catch (error) {
+          console.warn("refresh stock suite failed", error);
+        } finally {
+          state.suiteFetching = false;
+          renderActiveSuiteTab();
+        }
       }
 
       function stockNoticeTarget(button = null) {
@@ -2129,14 +2211,6 @@
         notice.className = `notice status ${type}`;
         notice.textContent = message;
         body.prepend(notice);
-      }
-
-      function showStockContextJobNotice(job, fallback, button = null) {
-        prependStockContextNotice(
-          job?.id ? `${fallback}: ${job.id}，日志已同步到顶部任务状态和任务队列。` : fallback,
-          "info",
-          button,
-        );
       }
 
       async function openTradingClientFromContext(context, clientId, button = null) {
@@ -2240,12 +2314,43 @@
           $("#stockContextMeta").textContent = "读取失败";
           $("#stockContextBody").innerHTML = `<div class="notice status error">${html(error.message)}</div>`;
         }
+        state.suiteFetching = true;
         try {
           const suite = await fetchJson(`/api/stock-analysis-suite/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}`);
           state.currentSuitePayload = suite;
         } catch (error) {
           state.currentSuitePayload = { success: false, error: String(error?.message || error) };
+        } finally {
+          state.suiteFetching = false;
+          renderActiveSuiteTab();
         }
+      }
+
+      function renderActiveSuiteTab() {
+        const activeBtn = document.querySelector("#stockSuiteTabs button.suite-tab.active");
+        if (!activeBtn) return;
+        const tab = activeBtn.dataset.suiteTab;
+        const payload = state.currentSuitePayload;
+        if (tab === "overview") renderSuiteOverview(payload);
+        else if (tab === "market_cycle") renderSuiteDimensionPane(payload, "market_cycle");
+        else if (tab === "main_force_phase") renderSuiteDimensionPane(payload, "main_force_phase");
+        else if (tab === "volume_price_game") renderSuiteDimensionPane(payload, "volume_price_game");
+        else if (tab === "chip_structure") renderSuiteDimensionPane(payload, "chip_structure");
+        else if (tab === "performance") renderSuiteDimensionPane(payload, "performance");
+        else if (tab === "probability") renderSuiteProbabilityPane(payload);
+        else if (tab === "risk_control") renderSuiteRiskControl(payload);
+        else if (tab === "limit_up_screening") renderSuiteLimitUpPane(payload);
+        else if (tab === "main_force_deep") renderSuiteMainForceDeep(payload);
+        else if (tab === "quant_matrix") renderSuiteQuantMatrix(payload);
+        else if (tab === "chip_radar") renderSuiteChipRadar(payload);
+        else if (tab === "institutional_holdings") renderSuiteHoldings(payload);
+        else if (tab === "ai_interpretation") renderSuiteAi(payload);
+      }
+
+      function renderSuiteLoading(paneId, label) {
+        const pane = document.getElementById(paneId);
+        if (!pane) return;
+        pane.innerHTML = `<div class="suite-ai-empty"><p class="suite-empty-note"><span class="spinner"></span> ${html(label)}</p></div>`;
       }
 
       function closeStockContext() {
@@ -2307,14 +2412,42 @@
           document.querySelectorAll("#stockSuitePanels .suite-pane").forEach((p) => {
             p.classList.toggle("hidden", p.dataset.suitePane !== tab);
           });
-          const payload = state.currentSuitePayload;
-          if (tab === "overview") {
-            renderSuiteOverview(payload);
-          } else if (tab === "risk_control") {
-            renderSuiteRiskControl(payload);
-          } else if (tab === "ai_interpretation") {
-            renderSuiteAi(payload);
+          if (tab === "quick") return;
+          if (state.suiteFetching && !state.currentSuitePayload) {
+            const paneIdMap = {
+              overview: "suitePaneOverview",
+              market_cycle: "suitePaneMarketCycle",
+              main_force_phase: "suitePaneMainForce",
+              volume_price_game: "suitePaneVolumePrice",
+              chip_structure: "suitePaneChip",
+              performance: "suitePanePerformance",
+              probability: "suitePaneProbability",
+              risk_control: "suitePaneRiskControl",
+              limit_up_screening: "suitePaneLimitUp",
+              main_force_deep: "suitePaneMainForceDeep",
+              quant_matrix: "suitePaneQuantMatrix",
+              chip_radar: "suitePaneChipRadar",
+              institutional_holdings: "suitePaneHoldings",
+              ai_interpretation: "suitePaneAi",
+            };
+            renderSuiteLoading(paneIdMap[tab] || "suitePaneOverview", "数据加载中…");
+            return;
           }
+          const payload = state.currentSuitePayload;
+          if (tab === "overview") renderSuiteOverview(payload);
+          else if (tab === "market_cycle") renderSuiteDimensionPane(payload, "market_cycle");
+          else if (tab === "main_force_phase") renderSuiteDimensionPane(payload, "main_force_phase");
+          else if (tab === "volume_price_game") renderSuiteDimensionPane(payload, "volume_price_game");
+          else if (tab === "chip_structure") renderSuiteDimensionPane(payload, "chip_structure");
+          else if (tab === "performance") renderSuiteDimensionPane(payload, "performance");
+          else if (tab === "probability") renderSuiteProbabilityPane(payload);
+          else if (tab === "risk_control") renderSuiteRiskControl(payload);
+          else if (tab === "limit_up_screening") renderSuiteLimitUpPane(payload);
+          else if (tab === "main_force_deep") renderSuiteMainForceDeep(payload);
+          else if (tab === "quant_matrix") renderSuiteQuantMatrix(payload);
+          else if (tab === "chip_radar") renderSuiteChipRadar(payload);
+          else if (tab === "institutional_holdings") renderSuiteHoldings(payload);
+          else if (tab === "ai_interpretation") renderSuiteAi(payload);
         });
       }
 
@@ -2351,7 +2484,7 @@
           <div class="suite-deep-signal">
             <span class="suite-deep-tag">${html(s.tag || "—")}</span>
             <span>${html(s.text)}</span>
-          </div>`).join("") || `<div class="suite-deep-signal" style="color:rgba(255,255,255,0.5)">暂无深度信号</div>`;
+          </div>`).join("") || `<div class="suite-deep-signal suite-empty-note">暂无深度信号</div>`;
         pane.innerHTML = `
           <div class="suite-radar-section">
             <div id="suiteRadarChart" class="suite-radar-chart"></div>
@@ -2369,8 +2502,8 @@
       function drawRadarChart(radar) {
         const el = document.getElementById("suiteRadarChart");
         if (!el) return;
-        const labels = ["主力阶段", "市场周期", "量价博弈", "筹码结构", "业绩预期"];
-        const keys = ["main_force_phase", "market_cycle", "volume_price_game", "chip_structure", "performance"];
+        const labels = ["主力阶段", "市场周期", "量价博弈", "筹码结构", "业绩预期", "控盘度", "量化活跃度"];
+        const keys = ["main_force_phase", "market_cycle", "volume_price_game", "chip_structure", "performance", "control_degree", "quant_activity"];
         const values = keys.map((k) => (radar?.[k]?.score ?? 0));
         if (typeof Plotly === "undefined") {
           el.innerHTML = renderRadarSvgFallback(labels, values);
@@ -2381,16 +2514,16 @@
           r: [...values, values[0]],
           theta: [...labels, labels[0]],
           fill: "toself",
-          line: { color: "#5b8def" },
-          fillcolor: "rgba(91,141,239,0.3)",
+          line: { color: "#2f6fdd" },
+          fillcolor: "rgba(47,111,221,0.18)",
         }], {
           polar: {
-            radialaxis: { range: [0, 100], visible: true, color: "rgba(255,255,255,0.6)" },
-            angularaxis: { color: "rgba(255,255,255,0.8)" },
-            bgcolor: "rgba(0,0,0,0.2)",
+            radialaxis: { range: [0, 100], visible: true, color: "#6b778a", gridcolor: "rgba(0,0,0,0.08)" },
+            angularaxis: { color: "#344256", gridcolor: "rgba(0,0,0,0.08)" },
+            bgcolor: "rgba(0,0,0,0)",
           },
           paper_bgcolor: "rgba(0,0,0,0)",
-          font: { color: "#fff", size: 11 },
+          font: { color: "#172033", size: 11 },
           showlegend: false,
           margin: { t: 30, l: 40, r: 40, b: 30 },
         }, { displayModeBar: false, responsive: true });
@@ -2398,18 +2531,19 @@
 
       function renderRadarSvgFallback(labels, values) {
         const cx = 160, cy = 160, r = 120;
+        const n = labels.length || 1;
         const norm = values.map((v) => Math.max(0, Math.min(1, (v || 0) / 100)));
         const pts = norm.map((v, i) => {
-          const a = -Math.PI / 2 + i * 2 * Math.PI / 5;
+          const a = -Math.PI / 2 + i * 2 * Math.PI / n;
           return [cx + Math.cos(a) * r * v, cy + Math.sin(a) * r * v];
         });
         const polyPoints = pts.map((p) => p.map((x) => x.toFixed(1)).join(",")).join(" ");
         const labelTags = labels.map((l, i) => {
-          const a = -Math.PI / 2 + i * 2 * Math.PI / 5;
-          return `<text x="${(cx + Math.cos(a) * (r + 18)).toFixed(1)}" y="${(cy + Math.sin(a) * (r + 18)).toFixed(1)}" text-anchor="middle" fill="#fff" font-size="12">${html(l)}</text>`;
+          const a = -Math.PI / 2 + i * 2 * Math.PI / n;
+          return `<text x="${(cx + Math.cos(a) * (r + 18)).toFixed(1)}" y="${(cy + Math.sin(a) * (r + 18)).toFixed(1)}" text-anchor="middle" fill="#344256" font-size="12">${html(l)}</text>`;
         }).join("");
         return `<svg viewBox="0 0 320 320" width="100%" height="320" preserveAspectRatio="xMidYMid meet">
-          <polygon points="${polyPoints}" fill="rgba(91,141,239,0.3)" stroke="#5b8def" stroke-width="2"/>
+          <polygon points="${polyPoints}" fill="rgba(47,111,221,0.18)" stroke="#2f6fdd" stroke-width="2"/>
           ${labelTags}
         </svg>`;
       }
@@ -2422,16 +2556,254 @@
           hole: 0.5,
           labels: ["看涨", "看跌", "震荡"],
           values: [prob?.bullish ?? 33, prob?.bearish ?? 33, prob?.sideways ?? 34],
-          marker: { colors: ["#4caf50", "#e25c5c", "#888"] },
+          marker: { colors: ["#198754", "#c43d36", "#6b778a"] },
           textinfo: "label+percent",
-          textfont: { color: "#fff", size: 11 },
+          textfont: { color: "#ffffff", size: 11 },
         }], {
           paper_bgcolor: "rgba(0,0,0,0)",
-          font: { color: "#fff" },
+          font: { color: "#172033" },
           showlegend: false,
           margin: { t: 10, l: 10, r: 10, b: 10 },
           height: 200,
         }, { displayModeBar: false, responsive: true });
+      }
+
+      const SUITE_DIMENSION_META = {
+        market_cycle: {
+          title: "市场周期",
+          desc: "大盘风格 + 资金流入比衡量当前 A 股市场处于牛/震荡/熊周期",
+          tagFilter: ["大盘周期", "仓位上限"],
+          deepTags: [],
+          scoreLabel: "周期得分",
+        },
+        main_force_phase: {
+          title: "主力阶段",
+          desc: "主力控盘度 + 近 5 日主力净流入推测主力建仓/拉升/撤离阶段",
+          tagFilter: ["主力阶段"],
+          deepTags: ["资金"],
+          scoreLabel: "主力阶段得分",
+        },
+        volume_price_game: {
+          title: "量价博弈",
+          desc: "30 个量化模型买卖票数归一化反映多空博弈强度",
+          tagFilter: ["量能质量"],
+          deepTags: [],
+          scoreLabel: "博弈得分",
+        },
+        chip_structure: {
+          title: "筹码结构",
+          desc: "90% 成本集中度 + 获利盘比率衡量筹码健康度",
+          tagFilter: ["筹码集中度"],
+          deepTags: ["筹码"],
+          scoreLabel: "筹码得分",
+        },
+        performance: {
+          title: "业绩预期",
+          desc: "PE 行业排位 + ROE + 净利润同比增速综合打分",
+          tagFilter: [],
+          deepTags: [],
+          scoreLabel: "业绩得分",
+        },
+      };
+
+      function scoreTone(score) {
+        if (score == null) return "neutral";
+        if (score >= 70) return "info";
+        if (score >= 40) return "warn";
+        return "warn";
+      }
+
+      function renderSuiteDimensionPane(payload, key) {
+        const meta = SUITE_DIMENSION_META[key] || {};
+        const paneIdMap = {
+          market_cycle: "suitePaneMarketCycle",
+          main_force_phase: "suitePaneMainForce",
+          volume_price_game: "suitePaneVolumePrice",
+          chip_structure: "suitePaneChip",
+          performance: "suitePanePerformance",
+        };
+        const pane = document.getElementById(paneIdMap[key]);
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        if (!payload || payload.success === false || !payload.overview) {
+          pane.innerHTML = `<div class="suite-ai-empty"><p>${html(payload?.error || meta.title + "数据加载失败")}</p></div>`;
+          return;
+        }
+        const radar = payload.overview.radar || {};
+        const entry = radar[key] || {};
+        const score = entry.score;
+        const label = entry.label || "—";
+        const reason = entry.reason || "—";
+        const tone = scoreTone(score);
+        const keySignals = (payload.overview.key_signals || []).filter((s) => (meta.tagFilter || []).includes(s.label));
+        const deepSignals = (payload.overview.deep_signals || []).filter((s) => (meta.deepTags || []).includes(s.tag));
+        const keyHtml = keySignals.map((s) => `
+          <div class="suite-key-card tone-${html(s.tone || "neutral")}">
+            <div class="suite-key-label">${html(s.label)}</div>
+            <div class="suite-key-value">${html(s.value)}</div>
+          </div>`).join("");
+        const deepHtml = deepSignals.length
+          ? deepSignals.map((s) => `<div class="suite-deep-signal"><span class="suite-deep-tag">${html(s.tag)}</span><span>${html(s.text)}</span></div>`).join("")
+          : `<p class="suite-empty-note">暂无关联深度信号</p>`;
+        const gaugeId = `suiteGauge_${key}`;
+        pane.innerHTML = `
+          <div class="suite-radar-section">
+            <div class="suite-dimension-summary">
+              <h3 style="margin:0 0 8px;font-size:16px;color:var(--ink);">${html(meta.title || key)}</h3>
+              <p class="suite-empty-note" style="margin:0 0 16px;">${html(meta.desc || "")}</p>
+              <div class="suite-key-card tone-${tone}" style="margin-bottom:12px;">
+                <div class="suite-key-label">${html(meta.scoreLabel || "得分")}</div>
+                <div class="suite-key-value" style="font-size:28px;">${score == null ? "—" : score}</div>
+              </div>
+              <div class="suite-key-card tone-info" style="margin-bottom:12px;">
+                <div class="suite-key-label">当前定性</div>
+                <div class="suite-key-value">${html(label)}</div>
+              </div>
+              <div class="suite-key-card tone-neutral">
+                <div class="suite-key-label">分析依据</div>
+                <div class="suite-key-value" style="font-size:13px;">${html(reason)}</div>
+              </div>
+            </div>
+            <div class="suite-key-signals">
+              <div id="${gaugeId}" class="suite-radar-chart" style="height:240px;"></div>
+              ${keyHtml || `<div class="suite-key-card tone-neutral"><div class="suite-key-label">关联信号</div><div class="suite-key-value" style="font-size:13px;">暂无</div></div>`}
+            </div>
+          </div>
+          <div class="suite-deep-signals">${deepHtml}</div>
+        `;
+        drawScoreGauge(gaugeId, score, meta.title || key);
+      }
+
+      function drawScoreGauge(elementId, score, title) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        const value = Math.max(0, Math.min(100, Number(score) || 0));
+        if (typeof Plotly === "undefined") {
+          el.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:48px;color:var(--ink);font-weight:600;">${score == null ? "—" : score}</div>`;
+          return;
+        }
+        Plotly.newPlot(el, [{
+          type: "indicator",
+          mode: "gauge+number",
+          value,
+          gauge: {
+            axis: { range: [0, 100], tickcolor: "#6b778a" },
+            bar: { color: "#2f6fdd" },
+            steps: [
+              { range: [0, 40], color: "rgba(196,61,54,0.18)" },
+              { range: [40, 70], color: "rgba(247,193,82,0.22)" },
+              { range: [70, 100], color: "rgba(25,135,84,0.22)" },
+            ],
+          },
+          number: { font: { color: "#172033", size: 32 } },
+        }], {
+          paper_bgcolor: "rgba(0,0,0,0)",
+          font: { color: "#172033" },
+          margin: { t: 20, l: 20, r: 20, b: 20 },
+        }, { displayModeBar: false, responsive: true });
+      }
+
+      function renderSuiteProbabilityPane(payload) {
+        const pane = document.getElementById("suitePaneProbability");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        if (!payload || payload.success === false || !payload.overview) {
+          pane.innerHTML = `<div class="suite-ai-empty"><p>${html(payload?.error || "概率推演数据加载失败")}</p></div>`;
+          return;
+        }
+        const prob = payload.overview.scenario_probability || {};
+        const bullish = prob.bullish, bearish = prob.bearish, sideways = prob.sideways;
+        if (bullish == null && bearish == null && sideways == null) {
+          pane.innerHTML = `<div class="suite-ai-empty"><p>${html(prob.source || "30 量化模型未产出可推演的多空信号")}</p></div>`;
+          return;
+        }
+        pane.innerHTML = `
+          <div class="suite-radar-section">
+            <div id="suiteProbBigDonut" class="suite-radar-chart" style="height:280px;"></div>
+            <div class="suite-key-signals">
+              <div class="suite-key-card tone-info">
+                <div class="suite-key-label">看涨概率</div>
+                <div class="suite-key-value" style="font-size:24px;">${bullish ?? "—"}%</div>
+              </div>
+              <div class="suite-key-card tone-warn">
+                <div class="suite-key-label">看跌概率</div>
+                <div class="suite-key-value" style="font-size:24px;">${bearish ?? "—"}%</div>
+              </div>
+              <div class="suite-key-card tone-neutral">
+                <div class="suite-key-label">震荡概率</div>
+                <div class="suite-key-value" style="font-size:24px;">${sideways ?? "—"}%</div>
+              </div>
+              <div class="suite-key-card tone-neutral">
+                <div class="suite-key-label">数据来源</div>
+                <div class="suite-key-value" style="font-size:12px;">${html(prob.source || "30 量化模型")}</div>
+              </div>
+            </div>
+          </div>
+        `;
+        const el = document.getElementById("suiteProbBigDonut");
+        if (el && typeof Plotly !== "undefined") {
+          Plotly.newPlot(el, [{
+            type: "pie",
+            hole: 0.55,
+            labels: ["看涨", "看跌", "震荡"],
+            values: [bullish ?? 0, bearish ?? 0, sideways ?? 0],
+            marker: { colors: ["#198754", "#c43d36", "#6b778a"] },
+            textinfo: "label+percent",
+            textfont: { color: "#ffffff", size: 13 },
+          }], {
+            paper_bgcolor: "rgba(0,0,0,0)",
+            font: { color: "#172033" },
+            showlegend: false,
+            margin: { t: 20, l: 20, r: 20, b: 20 },
+          }, { displayModeBar: false, responsive: true });
+        }
+      }
+
+      function renderSuiteLimitUpPane(payload) {
+        const pane = document.getElementById("suitePaneLimitUp");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        if (!payload || payload.success === false || !payload.overview) {
+          pane.innerHTML = `<div class="suite-ai-empty"><p>${html(payload?.error || "涨停筛选数据加载失败")}</p></div>`;
+          return;
+        }
+        const radar = payload.overview.radar || {};
+        const vp = radar.volume_price_game || {};
+        const mf = radar.main_force_phase || {};
+        const chip = radar.chip_structure || {};
+        const cycle = radar.market_cycle || {};
+        const factors = [
+          { label: "量价共振", score: vp.score, hint: "量价博弈得分≥60，量能放大配合", pass: (vp.score ?? 0) >= 60 },
+          { label: "主力承接", score: mf.score, hint: "主力阶段得分≥60，控盘+净流入", pass: (mf.score ?? 0) >= 60 },
+          { label: "筹码集中", score: chip.score, hint: "筹码结构得分≥60，主力锁仓充分", pass: (chip.score ?? 0) >= 60 },
+          { label: "顺势环境", score: cycle.score, hint: "市场周期得分≥60，处于牛/拉升环境", pass: (cycle.score ?? 0) >= 60 },
+        ];
+        const passCount = factors.filter((f) => f.pass).length;
+        const verdict = passCount >= 3 ? { tag: "高潜涨停", tone: "info" }
+                      : passCount === 2 ? { tag: "条件性候选", tone: "warn" }
+                      : { tag: "不建议追涨", tone: "warn" };
+        const factorHtml = factors.map((f) => `
+          <div class="suite-key-card tone-${f.pass ? "info" : "neutral"}">
+            <div class="suite-key-label">${html(f.label)} · ${f.pass ? "通过" : "未达标"}</div>
+            <div class="suite-key-value">${f.score == null ? "—" : f.score}</div>
+            <div class="suite-empty-note" style="margin-top:4px;font-size:12px;">${html(f.hint)}</div>
+          </div>`).join("");
+        pane.innerHTML = `
+          <div class="suite-radar-section">
+            <div class="suite-dimension-summary">
+              <h3 style="margin:0 0 8px;font-size:16px;color:var(--ink);">涨停筛选 · 多因子打分</h3>
+              <p class="suite-empty-note" style="margin:0 0 16px;">基于量价、主力、筹码、周期 4 因子综合评估涨停潜力，每项 ≥60 视为通过</p>
+              <div class="suite-key-card tone-${verdict.tone}" style="margin-bottom:12px;">
+                <div class="suite-key-label">综合判定</div>
+                <div class="suite-key-value" style="font-size:22px;">${html(verdict.tag)} · ${passCount}/4 通过</div>
+              </div>
+              <p class="suite-empty-note" style="font-size:12px;">注：本面板基于工作台已加载的量化打分快速判定。若需完整涨停黑马追踪，请到「机会挖掘」运行 limit_up 任务。</p>
+            </div>
+            <div class="suite-key-signals">
+              ${factorHtml}
+            </div>
+          </div>
+        `;
       }
 
       function renderSuiteRiskControl(payload) {
@@ -2460,10 +2832,10 @@
           </div>`).join("");
         const deepHtml = (rc.deep_signals || []).map((s) => `
           <div class="suite-deep-signal"><span>${html(s.text)}</span></div>`).join("")
-          || `<p style="color:rgba(255,255,255,0.5)">暂无深度信号</p>`;
+          || `<p class="suite-empty-note">暂无深度信号</p>`;
         const hiddenHtml = (rc.hidden_risks || []).map((h) => `
           <div class="suite-deep-signal"><span>${html(h.text || h)}</span></div>`).join("")
-          || `<p style="color:rgba(255,255,255,0.5)">暂无隐性风险</p>`;
+          || `<p class="suite-empty-note">暂无隐性风险</p>`;
         pane.innerHTML = `
           <div class="suite-risk-grid">
             <div class="suite-risk-col">
@@ -2485,6 +2857,223 @@
             </div>
           </div>
         `;
+      }
+
+      // === 个股深度挖掘 M1 helpers ===
+      function suiteFormatAmount(v) {
+        if (v == null || isNaN(v)) return "—";
+        const abs = Math.abs(v);
+        if (abs >= 1e8) return (v / 1e8).toFixed(2) + " 亿";
+        if (abs >= 1e4) return (v / 1e4).toFixed(2) + " 万";
+        return Number(v).toFixed(0);
+      }
+
+      function suiteUnavailableBanner(reason, withDiag) {
+        const diag = withDiag
+          ? ` <a href="/api/diagnostics/data-sources" target="_blank" rel="noopener">查看诊断</a>`
+          : "";
+        return `<div class="suite-unavailable-banner">数据源暂不可用：${html(reason || "未知原因")}${diag}</div>`;
+      }
+
+      function suiteStaleBanner(lastUpdated) {
+        return `<div class="suite-stale-banner">最近一次入库：${html(lastUpdated || "未知")}（本期 M1 仅展示历史快照）</div>`;
+      }
+
+      function renderSuiteMainForceDeep(payload) {
+        const pane = document.getElementById("suitePaneMainForceDeep");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        const section = (payload && payload.main_force_deep) || {};
+        if (!payload || payload.success === false || section.data_status === "unavailable") {
+          pane.innerHTML = suiteUnavailableBanner(section.reason || payload?.error, true);
+          return;
+        }
+        const isStale = section.data_status === "stale";
+        const banner = isStale ? suiteStaleBanner(section.last_updated) : "";
+        const dt = section.dragon_tiger || {};
+        const hsgt = section.hsgt || {};
+        const stageTl = section.stage_timeline;
+        const qs = section.quant_signature;
+        const ctrl = payload.overview?.radar?.control_degree?.score;
+        const seatRows = (dt.highlight_seats || []).map((s) => `
+          <tr>
+            <td>${html(s.trade_date)}</td>
+            <td>${html(s.inst_name)}${s.is_quant ? `<span class="quant-seat-pill" data-confidence="${html(s.quant_confidence || "")}">量化</span>` : ""}</td>
+            <td>${html(s.side)}</td>
+            <td>${suiteFormatAmount(s.net_amount)}</td>
+            <td>${s.is_quant ? html(s.quant_confidence || "") : ""}</td>
+          </tr>`).join("") || `<tr><td colspan="5" class="suite-empty-note">暂无龙虎榜数据</td></tr>`;
+        pane.innerHTML = `
+          ${banner}
+          <div class="suite-kpi-bar">
+            <div class="suite-kpi-card"><div class="suite-kpi-label">阶段</div><div class="suite-kpi-value">${html(stageTl?.current_label || "—")}</div></div>
+            <div class="suite-kpi-card"><div class="suite-kpi-label">控盘度</div><div class="suite-kpi-value">${ctrl ?? "—"}</div></div>
+            <div class="suite-kpi-card"><div class="suite-kpi-label">量化席位 90 日</div><div class="suite-kpi-value">${dt.quant_seat_appearances ?? "—"}</div></div>
+            <div class="suite-kpi-card"><div class="suite-kpi-label">北向占流通股 (%)</div><div class="suite-kpi-value">${hsgt.latest?.hold_ratio != null ? Number(hsgt.latest.hold_ratio).toFixed(2) : "—"}</div></div>
+          </div>
+          <h4>主力四阶段时间轴（近 60 交易日）</h4>
+          <div class="suite-stage-axis">${(stageTl?.rows || []).slice(-60).map((r) => `<div class="suite-stage-cell" data-stage="${html(r.label)}" title="${html(r.date)}: ${html(r.label)}"></div>`).join("") || `<div class="suite-empty-note">阶段判定将于 M3 上线后可用</div>`}</div>
+          <h4>龙虎榜机构席位（近 90 日）</h4>
+          <table class="suite-table"><thead><tr><th>日期</th><th>席位</th><th>方向</th><th>净额</th><th>标记</th></tr></thead><tbody>${seatRows}</tbody></table>
+          <h4>北向资金 30 日趋势</h4>
+          <div id="suiteHsgtTrendChart" style="height:180px"></div>
+          <h4>量化行为签名</h4>
+          <div class="suite-empty-note">${qs ? `活跃度 ${html(String(qs.score))}，事件 ${(qs.events || []).length} 个` : "将于 M3 上线后可用"}</div>
+        `;
+        if (hsgt.trend_30d && hsgt.trend_30d.length && typeof Plotly !== "undefined") {
+          Plotly.newPlot("suiteHsgtTrendChart", [{
+            type: "scatter", mode: "lines", line: { color: "#2f6fdd", shape: "spline" },
+            x: hsgt.trend_30d.map((r) => r.trade_date),
+            y: hsgt.trend_30d.map((r) => r.hold_ratio),
+          }], {
+            margin: { t: 10, l: 44, r: 16, b: 28 }, paper_bgcolor: "rgba(0,0,0,0)",
+            plot_bgcolor: "rgba(0,0,0,0)", font: { color: "#172033", size: 11 },
+            yaxis: { title: "持股比 (%)" },
+          }, { displayModeBar: false, responsive: true });
+        }
+      }
+
+      function renderSuiteQuantMatrix(payload) {
+        const pane = document.getElementById("suitePaneQuantMatrix");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        const section = (payload && payload.quant_matrix) || {};
+        // M1: 永远走 unavailable 分支（M4 才填充）
+        pane.innerHTML = `
+          <div class="suite-unavailable-banner">
+            量化矩阵将在 M4 里程碑（30 模型信号矩阵 + 多周期共振 + 历史命中率）上线。
+            ${section.reason ? `<br>当前原因：${html(section.reason)}` : ""}
+          </div>
+          <div class="suite-preview-block">
+            <h4>预览结构（占位）</h4>
+            <ul>
+              <li>30 × 4 信号热力矩阵（日内 / 3 日 / 10 日 / 30 日）</li>
+              <li>当前态势卡片（强势多头 / 震荡偏多 / 震荡 / 震荡偏空 / 强势空头）</li>
+              <li>多周期共振环形图</li>
+              <li>30 日历史命中率柱状图</li>
+            </ul>
+          </div>
+        `;
+      }
+
+      function renderSuiteChipRadar(payload) {
+        const pane = document.getElementById("suitePaneChipRadar");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        const s = (payload && payload.chip_control) || {};
+        if (!payload || payload.success === false || s.data_status === "unavailable") {
+          pane.innerHTML = `
+            ${suiteUnavailableBanner(s.reason || payload?.error, false)}
+            <div class="suite-preview-block">
+              <h4>预览结构（M2/M3 接入后可用）</h4>
+              <ul>
+                <li>控盘度仪表盘（0–100）</li>
+                <li>筹码集中度雷达（90 / 70 / 50 / Top10）</li>
+                <li>官方筹码分布直方图（stock_cyq_em）</li>
+              </ul>
+            </div>
+          `;
+          return;
+        }
+        pane.innerHTML = `
+          <div class="suite-kpi-bar">
+            <div class="suite-kpi-card"><div class="suite-kpi-label">控盘度</div><div class="suite-kpi-value">${s.control_degree ?? "—"}</div></div>
+            <div class="suite-kpi-card"><div class="suite-kpi-label">控盘标签</div><div class="suite-kpi-value">${html(s.control_label ?? "—")}</div></div>
+            <div class="suite-kpi-card"><div class="suite-kpi-label">筹码集中度 90%</div><div class="suite-kpi-value">${s.concentration_90 ?? "—"}</div></div>
+            <div class="suite-kpi-card"><div class="suite-kpi-label">Top10 持股集中度</div><div class="suite-kpi-value">${s.top10_concentration ?? "—"}</div></div>
+          </div>
+          <div id="suiteChipRadarChart" style="height:260px"></div>
+          <div id="suiteCyqHistogram" style="height:240px"></div>
+        `;
+        if (typeof Plotly !== "undefined") {
+          Plotly.newPlot("suiteChipRadarChart", [{
+            type: "scatterpolar", fill: "toself", line: { color: "#2f6fdd" },
+            r: [s.concentration_90 ?? 0, s.concentration_70 ?? 0, s.concentration_50 ?? 0, s.top10_concentration ?? 0,
+                s.concentration_90 ?? 0],
+            theta: ["90% 集中", "70% 集中", "50% 集中", "Top10 持股", "90% 集中"],
+          }], {
+            polar: { radialaxis: { range: [0, 100], visible: true } },
+            margin: { t: 30, l: 40, r: 40, b: 30 }, paper_bgcolor: "rgba(0,0,0,0)",
+            font: { color: "#172033", size: 11 }, showlegend: false,
+          }, { displayModeBar: false, responsive: true });
+          const cyq = s.cyq_distribution;
+          if (cyq && cyq.prices && cyq.prices.length) {
+            Plotly.newPlot("suiteCyqHistogram", [{
+              type: "bar", x: cyq.prices, y: cyq.ratios, marker: { color: "#2f6fdd" },
+            }], {
+              margin: { t: 16, l: 44, r: 16, b: 32 }, paper_bgcolor: "rgba(0,0,0,0)",
+              plot_bgcolor: "rgba(0,0,0,0)", font: { color: "#172033", size: 11 },
+              xaxis: { title: "价位" }, yaxis: { title: "持仓比 (%)" },
+            }, { displayModeBar: false, responsive: true });
+          }
+        }
+      }
+
+      function renderSuiteHoldings(payload) {
+        const pane = document.getElementById("suitePaneHoldings");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        const s = (payload && payload.institutional_holdings) || {};
+        if (!payload || payload.success === false || s.data_status === "unavailable") {
+          pane.innerHTML = suiteUnavailableBanner(s.reason || payload?.error, true);
+          return;
+        }
+        const isStale = s.data_status === "stale";
+        const banner = isStale ? suiteStaleBanner(s.last_updated) : "";
+        const t10 = s.top10_floatholders || {};
+        const hn = s.holder_number || {};
+        const surveys = (s.surveys && s.surveys.recent_90d) || [];
+        const funds = (s.fund_holds && s.fund_holds.rows) || [];
+        const t10Rows = (t10.rows || []).map((r) => `
+          <tr>
+            <td>${r.holder_rank}</td>
+            <td>${html(r.holder_name)}</td>
+            <td>${r.hold_amount != null ? (r.hold_amount / 1e4).toFixed(2) : "—"}</td>
+            <td>${r.hold_ratio != null ? Number(r.hold_ratio).toFixed(2) : "—"}</td>
+            <td>${suiteHoldingChangeBadge(r.change_type, r.change_amount)}</td>
+          </tr>`).join("") || `<tr><td colspan="5" class="suite-empty-note">无数据</td></tr>`;
+        const surveyItems = surveys.slice(0, 10).map((r) => `<li>${html(r.survey_date)} — ${html(r.inst_name)}：${html(r.topic || "")}</li>`).join("") || `<li class="suite-empty-note">无调研记录</li>`;
+        pane.innerHTML = `
+          ${banner}
+          <h4>Top10 流通股东（${html(t10.period || "—")}）</h4>
+          <table class="suite-table"><thead><tr><th>#</th><th>股东</th><th>持仓 (万股)</th><th>占流通比 (%)</th><th>变动</th></tr></thead><tbody>${t10Rows}</tbody></table>
+          <h4>股东户数变化</h4>
+          <div>最新户数：<b>${hn.latest_num ?? "—"}</b>　环比：<b>${hn.pct_change_qoq != null ? Number(hn.pct_change_qoq).toFixed(2) + "%" : "—"}</b></div>
+          <div id="suiteHolderNumSpark" style="height:120px"></div>
+          <h4>机构调研（近 90 日）</h4>
+          <ul>${surveyItems}</ul>
+          <h4>重仓基金（${html((s.fund_holds && s.fund_holds.period) || "—")}）</h4>
+          <div id="suiteFundHoldBar" style="height:240px"></div>
+        `;
+        if (typeof Plotly !== "undefined") {
+          if (hn.history && hn.history.length) {
+            Plotly.newPlot("suiteHolderNumSpark", [{
+              type: "scatter", mode: "lines", line: { color: "#2f6fdd", shape: "spline" },
+              x: hn.history.map((r) => r.end_date), y: hn.history.map((r) => r.holder_num),
+            }], {
+              margin: { t: 8, l: 8, r: 8, b: 8 }, paper_bgcolor: "rgba(0,0,0,0)",
+              plot_bgcolor: "rgba(0,0,0,0)", xaxis: { visible: false }, yaxis: { visible: false },
+            }, { displayModeBar: false, responsive: true });
+          }
+          if (funds.length) {
+            Plotly.newPlot("suiteFundHoldBar", [{
+              type: "bar", orientation: "h", marker: { color: "#2f6fdd" },
+              y: funds.map((f) => f.fund_name), x: funds.map((f) => f.nv_ratio),
+            }], {
+              margin: { t: 16, l: 120, r: 16, b: 32 }, paper_bgcolor: "rgba(0,0,0,0)",
+              plot_bgcolor: "rgba(0,0,0,0)", font: { color: "#172033", size: 11 },
+              xaxis: { title: "占基金净值 (%)" },
+            }, { displayModeBar: false, responsive: true });
+          }
+        }
+      }
+
+      function suiteHoldingChangeBadge(type, amount) {
+        if (!type || type === "unchanged") return "—";
+        const colorMap = { new: "#198754", add: "#198754", cut: "#c43d36", exit: "#6b778a" };
+        const labelMap = { new: "新进", add: "增持", cut: "减持", exit: "退出" };
+        const amt = amount ? ` ${(amount / 1e4).toFixed(0)} 万` : "";
+        return `<span style="color:${colorMap[type] || "#6b778a"}">${html(labelMap[type] || type)}${amt}</span>`;
       }
 
       function renderSuiteAi(payload) {
