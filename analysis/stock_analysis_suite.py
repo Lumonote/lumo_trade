@@ -99,6 +99,14 @@ def compute_performance_score(
     return int(round(pe_score * 0.35 + roe_score * 0.35 + growth_score * 0.30))
 
 
+def _unavailable_section(reason: str) -> dict:
+    return {
+        "data_status": "unavailable",
+        "last_updated": None,
+        "reason": reason,
+    }
+
+
 def _missing(label: str = "数据不足", reason: str = "数据采集失败") -> Dict[str, Any]:
     return {"score": None, "label": label, "reason": reason}
 
@@ -135,11 +143,13 @@ class StockAnalysisSuite:
         self,
         ttl_seconds: float = _DEFAULT_TTL_SECONDS,
         reports_root: Optional[Path] = None,
+        institutional_providers: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._ttl = float(ttl_seconds)
         self._cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
         self._lock = RLock()
         self._reports_root = Path(reports_root) if reports_root else Path("reports/stock_suite")
+        self._inst_providers = institutional_providers or {}
 
     def get_full_payload(self, code: str) -> Dict[str, Any]:
         now = time.monotonic()
@@ -209,6 +219,11 @@ class StockAnalysisSuite:
         except Exception as exc:  # noqa: BLE001
             cached = {"opportunity": _report_entry(None), "batch_analysis": _report_entry(None)}
             warnings_.append(f"cached_reports 读取失败：{exc}")
+        # M1: 4 个机构深度挖掘顶层 key（骨架阶段全 unavailable）
+        main_force_deep = self._collect_main_force_deep(code)
+        institutional_holdings = self._collect_institutional_holdings(code)
+        chip_control = self._collect_chip_control(code)
+        quant_matrix = self._collect_quant_matrix(code)
         return {
             "overview": overview,
             "risk_control": risk,
@@ -225,6 +240,101 @@ class StockAnalysisSuite:
                 "chip_structure", "performance", "probability", "limit_up_screening",
             ],
             "warnings": warnings_,
+            "main_force_deep": main_force_deep,
+            "institutional_holdings": institutional_holdings,
+            "chip_control": chip_control,
+            "quant_matrix": quant_matrix,
+        }
+
+    def _collect_main_force_deep(self, ts_code: str) -> dict:
+        """主力深度：龙虎榜 + 陆股通。M1 骨架：读库回 stale，无库回 unavailable。"""
+        lhb = self._inst_providers.get("lhb")
+        hsgt = self._inst_providers.get("hsgt")
+        if not lhb and not hsgt:
+            return _unavailable_section("no provider configured")
+        lhb_res = lhb.get(ts_code) if lhb else None
+        hsgt_res = hsgt.get(ts_code) if hsgt else None
+        results = [r for r in (lhb_res, hsgt_res) if r is not None]
+        if not results:
+            return _unavailable_section("no provider configured")
+        statuses = [r.data_status for r in results]
+        overall = "unavailable" if all(s == "unavailable" for s in statuses) else "stale"
+        last_updated = max((r.last_updated or "" for r in results), default=None) or None
+        reasons = [r.reason for r in results if r.reason]
+        return {
+            "data_status": overall,
+            "last_updated": last_updated,
+            "reason": "; ".join(reasons) if reasons else None,
+            "dragon_tiger": lhb_res.data if (lhb_res and lhb_res.data) else None,
+            "hsgt": hsgt_res.data if (hsgt_res and hsgt_res.data) else None,
+            "stage_timeline": None,        # M3 填充
+            "quant_signature": None,       # M3 填充
+        }
+
+    def _collect_institutional_holdings(self, ts_code: str) -> dict:
+        """机构持仓：Top10 股东 + 股东户数 + 调研 + 基金。M1 骨架。"""
+        holders = self._inst_providers.get("holders")
+        survey = self._inst_providers.get("survey")
+        fund = self._inst_providers.get("fund")
+        providers = [(name, p) for name, p in
+                     (("holders", holders), ("survey", survey), ("fund", fund)) if p]
+        if not providers:
+            return _unavailable_section("no provider configured")
+        results = [(name, p.get(ts_code)) for name, p in providers]
+        statuses = [r.data_status for _, r in results]
+        overall = "unavailable" if all(s == "unavailable" for s in statuses) else "stale"
+        last_updated = max((r.last_updated or "" for _, r in results), default=None) or None
+        reasons = [r.reason for _, r in results if r.reason]
+        out = {
+            "data_status": overall,
+            "last_updated": last_updated,
+            "reason": "; ".join(reasons) if reasons else None,
+            "top10_floatholders": None,
+            "holder_number": None,
+            "surveys": None,
+            "fund_holds": None,
+        }
+        for name, r in results:
+            if r.data:
+                if name == "holders":
+                    out["top10_floatholders"] = r.data.get("top10_floatholders")
+                    out["holder_number"] = r.data.get("holder_number")
+                elif name == "survey":
+                    out["surveys"] = r.data
+                elif name == "fund":
+                    out["fund_holds"] = r.data
+        return out
+
+    def _collect_chip_control(self, ts_code: str) -> dict:
+        """筹码控盘度：官方筹码分布 + 控盘度计算。M1 骨架。"""
+        cyq = self._inst_providers.get("cyq")
+        if not cyq:
+            return _unavailable_section("no provider configured")
+        cyq_res = cyq.get(ts_code)
+        return {
+            "data_status": cyq_res.data_status,
+            "last_updated": cyq_res.last_updated,
+            "reason": cyq_res.reason,
+            "control_degree": None,        # M2/M3 从 ChipAnalyzer 透传
+            "control_label": None,
+            "concentration_90": None,
+            "concentration_70": None,
+            "concentration_50": None,
+            "top10_concentration": None,
+            "cyq_distribution": cyq_res.data,
+        }
+
+    def _collect_quant_matrix(self, ts_code: str) -> dict:
+        """量化矩阵：30 模型信号 + 多周期共振 + 历史命中率。M1 骨架，M4 实现。"""
+        return _unavailable_section("M1: quant_matrix not yet implemented (planned for M4)")
+
+    def _build_payload_with_institutional(self, code: str) -> dict:
+        """Build only the institutional portion of the payload (for testing)."""
+        return {
+            "main_force_deep": self._collect_main_force_deep(code),
+            "institutional_holdings": self._collect_institutional_holdings(code),
+            "chip_control": self._collect_chip_control(code),
+            "quant_matrix": self._collect_quant_matrix(code),
         }
 
     def _compute_radar(self, inputs: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -306,6 +416,9 @@ class StockAnalysisSuite:
                 }
         except (KeyError, TypeError, ValueError):
             radar["performance"] = _missing()
+        # M1: 控盘度 + 量化活跃度（骨架阶段默认 0，M2/M3 填充真实值）
+        radar["control_degree"] = {"score": 0, "label": "未知"}
+        radar["quant_activity"] = {"score": 0, "label": "未知"}
         return radar
 
     def _collect_inputs(self, code: str) -> Dict[str, Any]:
@@ -463,19 +576,19 @@ class StockAnalysisSuite:
         }
 
     def _load_ohlcv(self, code: str) -> pd.DataFrame:
-        """Load OHLCV CSV from data/.
+        """Load OHLCV from data_store.ohlcv_repo (SQLite).
 
-        Tries day-level first (data/{XSHE|XSHG}_day_{code}.csv) then 5min.
+        Prefers day-level (`1d`); falls back to 5-minute (`5m`).
+        Raises FileNotFoundError if neither has ≥60 rows for parity with the
+        previous CSV-backed behavior.
         """
-        data_dir = Path(os.environ.get("KRONOS_DATA_DIR", "data"))
-        exchange = "XSHE" if code.startswith(("0", "3")) else "XSHG"
-        for suffix in (f"{exchange}_day_{code}.csv", f"{exchange}_5min_{code}.csv"):
-            path = data_dir / suffix
-            if path.exists():
-                df = pd.read_csv(path, parse_dates=["timestamps"])
-                if len(df) >= 60:
-                    return df
-        raise FileNotFoundError(f"no OHLCV file for {code} in {data_dir}")
+        from data_store import ohlcv_repo
+
+        for frequency in ("1d", "5m"):
+            df = ohlcv_repo.load_dataframe(code, frequency)
+            if len(df) >= 60:
+                return df
+        raise FileNotFoundError(f"no OHLCV in store for {code} (1d/5m)")
 
     def _classify_market_regime(self) -> "tuple[str, float]":
         """Map sentiment-analyzer overall market reading → (regime, capital_flow_ratio).

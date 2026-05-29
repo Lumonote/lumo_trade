@@ -35,7 +35,13 @@ class _FakeSuite:
         }
 
 
-def test_get_suite_returns_jsonable_dict():
+def test_get_suite_returns_jsonable_dict(monkeypatch):
+    # Pin sector resolution to its graceful-degradation default so the assertion
+    # does not depend on Tushare cache availability in the test environment.
+    monkeypatch.setattr(
+        "webui.services.stock_suite_service._resolve_sector",
+        lambda code: ("—", ""),
+    )
     fake = _FakeSuite()
     svc = StockSuiteService(orchestrator=fake)
     out = svc.get_suite("000001", name="平安银行")

@@ -344,3 +344,58 @@ def test_trigger_ai_interpretation_force_refresh_invalidates_cache(tmp_path, mon
     # force_refresh should re-compute
     suite.trigger_ai_interpretation("000001", name="x", force_refresh=True)
     assert len(calls) == 2
+
+
+# --- M1 扩展测试 ---
+
+
+def test_payload_has_four_new_top_level_keys():
+    """payload 必含 main_force_deep / institutional_holdings / chip_control / quant_matrix，
+    且骨架阶段 data_status 均为 unavailable。"""
+    from analysis.institutional.base import ProviderResult
+
+    class _Stub:
+        def get(self, ts_code, **kw):
+            return ProviderResult.unavailable(reason="stub")
+
+    suite = StockAnalysisSuite(
+        institutional_providers={
+            "lhb": _Stub(), "hsgt": _Stub(), "holders": _Stub(),
+            "survey": _Stub(), "fund": _Stub(), "cyq": _Stub(),
+        },
+    )
+    # Bypass real data loading
+    suite._compute_full_payload_inner = suite._compute_full_payload
+    def _mock_compute(code):
+        # Call the real method but stub _collect_inputs
+        return suite._build_payload_with_institutional(code)
+    suite._compute_full_payload = _mock_compute
+
+    payload = suite._build_payload_with_institutional("000001")
+
+    for key in ("main_force_deep", "institutional_holdings",
+                "chip_control", "quant_matrix"):
+        assert key in payload, f"missing top-level key: {key}"
+        assert payload[key]["data_status"] == "unavailable"
+        assert "last_updated" in payload[key]
+        assert "reason" in payload[key]
+
+
+def test_overview_radar_has_two_new_axes():
+    from analysis.institutional.base import ProviderResult
+
+    class _Stub:
+        def get(self, ts_code, **kw):
+            return ProviderResult.unavailable(reason="stub")
+
+    suite = StockAnalysisSuite(
+        institutional_providers={
+            "lhb": _Stub(), "hsgt": _Stub(), "holders": _Stub(),
+            "survey": _Stub(), "fund": _Stub(), "cyq": _Stub(),
+        },
+    )
+    radar = suite._compute_radar({})
+    assert "control_degree" in radar
+    assert "quant_activity" in radar
+    assert radar["control_degree"]["score"] == 0
+    assert radar["quant_activity"]["score"] == 0
