@@ -21,6 +21,7 @@
 import os
 import sys
 import json
+import shutil
 import logging
 import pandas as pd
 import numpy as np
@@ -77,6 +78,75 @@ def _to_baostock_code(code: str) -> str:
     if normalized.startswith(('0', '1', '2', '3')):
         return f'sz.{normalized}'
     return ''
+
+
+def _collapse_to_daily(daily_df: "pd.DataFrame") -> "pd.DataFrame":
+    """Collapse rows to one bar per calendar day (open=first, high=max,
+    low=min, close=last), sorted ascending.
+
+    Robust against the handful of codes whose intraday 5-minute bars were
+    mis-labelled '1d' in the store: any intraday rows for a day are folded into
+    that day's OHLC instead of being treated as separate "days".
+    """
+    cols = ['date', 'open', 'high', 'low', 'close']
+    if daily_df is None or len(daily_df) == 0 or 'timestamps' not in daily_df.columns:
+        return pd.DataFrame(columns=cols)
+    d = daily_df.copy()
+    d['_dt'] = pd.to_datetime(d['timestamps'], errors='coerce')
+    d = d.dropna(subset=['_dt']).sort_values('_dt')
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    d['date'] = d['_dt'].dt.normalize()
+    agg = d.groupby('date').agg(
+        open=('open', 'first'), high=('high', 'max'),
+        low=('low', 'min'), close=('close', 'last'),
+    ).reset_index()
+    return agg
+
+
+def compute_forward_returns(daily_df: "pd.DataFrame", report_date,
+                            horizons=(1, 3, 5, 10)) -> Dict:
+    """Forward returns for one recommendation, next-open-buy methodology.
+
+    Buy at the OPEN of the first trading day strictly *after* ``report_date``;
+    sell at the CLOSE of the N-th trading day (1-indexed from the buy day).
+    Mirrors how a recommendation generated end-of-day is actually tradeable.
+
+    Args:
+        daily_df: OHLCV with a 'timestamps' column plus 'open'/'close'
+            (need not be sorted or deduplicated).
+        report_date: recommendation date (anything ``pd.to_datetime`` parses).
+        horizons: trading-day holding periods to compute.
+
+    Returns:
+        ``{'buy_price': float, 'return_{N}d': pct, ...}``. A horizon with too
+        few forward bars is omitted; ``{}`` if no bar exists after report_date.
+    """
+    daily = _collapse_to_daily(daily_df)
+    if daily.empty:
+        return {}
+    rd = pd.to_datetime(report_date, errors='coerce')
+    if pd.isna(rd):
+        return {}
+    fwd = daily[daily['date'] > rd.normalize()].reset_index(drop=True)
+    if fwd.empty:
+        return {}
+    try:
+        buy = float(fwd.loc[0, 'open'])
+    except (TypeError, ValueError):
+        return {}
+    if buy != buy or buy <= 0:  # NaN or non-positive
+        return {}
+    out: Dict = {'buy_price': buy}
+    for n in horizons:
+        if len(fwd) >= n:
+            try:
+                sell = float(fwd.loc[n - 1, 'close'])
+            except (TypeError, ValueError):
+                continue
+            if sell == sell and sell > 0:
+                out[f'return_{n}d'] = (sell / buy - 1.0) * 100.0
+    return out
 
 
 def save_recommendations(passed_stocks: List[Dict], report_date: str = None):
@@ -145,107 +215,103 @@ def save_recommendations(passed_stocks: List[Dict], report_date: str = None):
     logger.info(f"已保存 {len(records)} 条推荐记录到 {RECOMMENDATIONS_FILE}")
 
 
-def update_returns(days_back: int = 30):
-    """
-    更新历史推荐的实际收益数据
+def update_returns(days_back: int = 30, recompute_all: bool = False,
+                   throttle: float = 0.15) -> Dict:
+    """更新历史推荐的实际收益（次日开盘买入、第 N 日收盘卖出）。
+
+    价源走 sqlite-native 取数层（``data_store.ohlcv_fetch``：东方财富免费源为主、
+    Tushare 为补充），**不再依赖 baostock**。每只票拉取一段一致的前复权日线，
+    用 :func:`compute_forward_returns` 计算 1/3/5/10 日收益。
 
     Args:
-        days_back: 回溯天数
+        days_back: 仅处理 report_date 在最近这么多天内的记录（0/None=不限）。
+            非 recompute_all 时还会跳过已填好 return_5d 的行以提速。
+        recompute_all: 重算全部已结算行（覆盖旧值），动手前自动备份 CSV。
+        throttle: 每只票取数之间的休眠秒数（礼貌限速）。
+
+    Returns:
+        ``{'updated': n, 'rows': total, 'targets': m, 'reason': str}``
     """
     if not os.path.exists(RECOMMENDATIONS_FILE):
         logger.warning("没有历史推荐记录")
-        return
+        return {'updated': 0, 'rows': 0, 'targets': 0, 'reason': 'no_recommendations'}
 
     df = pd.read_csv(RECOMMENDATIONS_FILE)
+    for col in ('buy_price', 'return_1d', 'return_3d', 'return_5d', 'return_10d'):
+        if col not in df.columns:
+            df[col] = np.nan
 
-    # 找需要更新的记录（有空收益的）
-    needs_update = df[
-        (df['return_5d'].isna()) &
-        (pd.to_datetime(df['report_date']) <= datetime.now() - timedelta(days=1))
-    ]
-
-    if len(needs_update) == 0:
-        logger.info("所有记录已有收益数据，无需更新")
-        return
-
-    logger.info(f"需要更新收益的记录: {len(needs_update)} 条")
-
-    # 尝试导入数据获取模块
-    try:
-        from scripts.fetch_data import fetch_stock_data
-        has_fetcher = True
-    except ImportError:
-        has_fetcher = False
-
-    try:
-        import baostock as bs
-        bs.login()
-        has_baostock = True
-    except Exception:
-        has_baostock = False
-
-    updated_count = 0
-    for idx, row in needs_update.iterrows():
-        code = _normalize_stock_code(row['code'])
-        report_date = row['report_date']
-
+    if recompute_all:
+        backup = RECOMMENDATIONS_FILE.replace(
+            '.csv', f'.backup_{datetime.now():%Y%m%d_%H%M%S}.csv')
         try:
-            report_dt = pd.to_datetime(report_date)
-            days_since = (datetime.now() - report_dt).days
-
-            if days_since < 1:
-                continue
-
-            # 使用baostock获取后续价格
-            if has_baostock:
-                bs_code = _to_baostock_code(code)
-                if not bs_code:
-                    logger.debug(f"跳过baostock暂不支持的代码: {code}")
-                    continue
-
-                start_date = report_dt.strftime('%Y-%m-%d')
-                end_date = (report_dt + timedelta(days=20)).strftime('%Y-%m-%d')
-
-                rs = bs.query_history_k_data_plus(
-                    bs_code,
-                    "date,close",
-                    start_date=start_date,
-                    end_date=end_date,
-                    frequency="d",
-                    adjustflag="2"
-                )
-
-                prices = []
-                while (rs.error_code == '0') and rs.next():
-                    prices.append(rs.get_row_data())
-
-                if len(prices) >= 2:
-                    buy_price = float(prices[0][1])  # 推荐当日收盘价
-                    df.at[idx, 'buy_price'] = buy_price
-
-                    if len(prices) >= 2:
-                        df.at[idx, 'return_1d'] = (float(prices[1][1]) / buy_price - 1) * 100
-                    if len(prices) >= 4:
-                        df.at[idx, 'return_3d'] = (float(prices[3][1]) / buy_price - 1) * 100
-                    if len(prices) >= 6:
-                        df.at[idx, 'return_5d'] = (float(prices[5][1]) / buy_price - 1) * 100
-                    if len(prices) >= 11:
-                        df.at[idx, 'return_10d'] = (float(prices[10][1]) / buy_price - 1) * 100
-
-                    updated_count += 1
-
+            shutil.copy2(RECOMMENDATIONS_FILE, backup)
+            logger.info(f"已备份 recommendations.csv -> {backup}")
         except Exception as e:
-            logger.warning(f"更新 {code} 收益失败: {e}")
-            continue
+            logger.warning(f"备份失败（继续）: {e}")
 
-    if has_baostock:
+    report_dt = pd.to_datetime(df['report_date'], errors='coerce')
+    settled = report_dt <= (datetime.now() - timedelta(days=1))
+    if recompute_all:
+        mask = settled
+    else:
+        mask = settled & df['return_5d'].isna()
+        if days_back:
+            mask = mask & (report_dt >= (datetime.now() - timedelta(days=days_back)))
+
+    target_idx = list(df.index[mask.fillna(False)])
+    if not target_idx:
+        logger.info("没有需要更新收益的记录")
+        return {'updated': 0, 'rows': len(df), 'targets': 0, 'reason': 'nothing_to_update'}
+
+    logger.info(f"需要计算收益的记录: {len(target_idx)} 条"
+                f"（口径: 次日开盘买入；recompute_all={recompute_all}）")
+
+    from data_store import ohlcv_fetch
+
+    # 按 code 分组：每只票只拉一次覆盖其所有报告日的宽窗口日线
+    by_code: Dict[str, list] = {}
+    for idx in target_idx:
+        by_code.setdefault(_normalize_stock_code(df.at[idx, 'code']), []).append(idx)
+
+    updated = 0
+    no_data_codes = 0
+    for code, idxs in by_code.items():
+        rds = report_dt.loc[idxs].dropna()
+        if rds.empty:
+            continue
+        beg = (rds.min() - timedelta(days=5)).strftime('%Y%m%d')
+        end = (rds.max() + timedelta(days=30)).strftime('%Y%m%d')  # ~30 日历日 ≈ ≥10 交易日
         try:
-            bs.logout()
-        except Exception:
-            pass
+            series = ohlcv_fetch.ensure_daily(code, beg, end, throttle=throttle)
+        except Exception as e:
+            logger.warning(f"取数失败 {code}: {e}")
+            continue
+        if series is None or series.empty:
+            no_data_codes += 1
+            continue
+        for idx in idxs:
+            rd = report_dt.loc[idx]
+            if pd.isna(rd):
+                continue
+            res = compute_forward_returns(series, rd.strftime('%Y-%m-%d'))
+            if not res:
+                continue
+            df.at[idx, 'buy_price'] = round(res['buy_price'], 4)
+            wrote = False
+            for n in (1, 3, 5, 10):
+                key = f'return_{n}d'
+                if key in res:
+                    df.at[idx, key] = round(res[key], 4)
+                    wrote = True
+            if wrote:
+                updated += 1
 
     df.to_csv(RECOMMENDATIONS_FILE, index=False, encoding='utf-8-sig')
-    logger.info(f"已更新 {updated_count} 条记录的收益数据")
+    logger.info(f"已更新 {updated}/{len(target_idx)} 条记录的收益"
+                f"（{len(by_code)} 只票，其中 {no_data_codes} 只无数据；源: Eastmoney/Tushare）")
+    return {'updated': updated, 'rows': len(df), 'targets': len(target_idx), 'reason': 'ok'}
+
 
 
 def generate_backtest_report(days_back: int = None) -> str:
@@ -446,7 +512,20 @@ def generate_backtest_report(days_back: int = None) -> str:
     return report_path
 
 
-def optimize_scoring_config(days_back: int = 120, min_samples: int = 30) -> Dict:
+def optimize_scoring_config(days_back: int = 120, min_samples: int = 30,
+                            recent_days: int = 45, min_recent: int = 12,
+                            max_staleness_days: int = 30, max_drift: float = 0.06) -> Dict:
+    """根据回填收益自动微调运行时评分配置（增强版）。
+
+    相比旧版的三点强化：
+      1. **陈旧/不足数据熔断**：窗口内总样本不足、或近 ``recent_days`` 天的有效
+         收益样本太少 / 最新收益距今超过 ``max_staleness_days``，直接拒绝优化并
+         记 reason —— 避免在残缺旧数据上空跑出“近似 0 相关性”而误调。
+      2. **覆盖率 + 多因子相关性日志**：打印窗口样本、近端样本、最新样本距今、
+         各因子与 5 日收益的相关性，写入配置元数据，便于审计。
+      3. **相关性缩放的有界调整**：按 |corr| 缩放权重步长（上限 ``max_drift``），
+         比旧版固定 ±0.02 更有力，但仍有界并重新归一。
+    """
     ensure_dirs()
     result = {
         'applied': False,
@@ -459,19 +538,43 @@ def optimize_scoring_config(days_back: int = 120, min_samples: int = 30) -> Dict
         result['reason'] = 'no_recommendations'
         return result
 
-    df = pd.read_csv(RECOMMENDATIONS_FILE)
-    if 'return_5d' not in df.columns:
+    raw = pd.read_csv(RECOMMENDATIONS_FILE)
+    if 'return_5d' not in raw.columns:
         result['reason'] = 'missing_return_column'
         return result
 
-    cutoff = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
-    df = df[df['report_date'] >= cutoff]
-    df = df[df['return_5d'].notna()].copy()
+    report_dt = pd.to_datetime(raw['report_date'], errors='coerce')
+    win_mask = (report_dt >= (datetime.now() - timedelta(days=days_back))) & raw['return_5d'].notna()
+    df = raw[win_mask.fillna(False)].copy()
+    df_dt = pd.to_datetime(df['report_date'], errors='coerce')
     result['samples'] = len(df)
 
+    # ---- 1) 陈旧/不足数据熔断 ----
     if len(df) < min_samples:
         result['reason'] = 'insufficient_samples'
         return result
+    recent_n = int((df_dt >= (datetime.now() - timedelta(days=recent_days))).sum())
+    newest = df_dt.max()
+    staleness = (datetime.now() - newest).days if pd.notna(newest) else 9999
+    result['recent_samples'] = recent_n
+    result['newest_return_age_days'] = int(staleness)
+    if recent_n < min_recent or staleness > max_staleness_days:
+        result['reason'] = (f'stale_or_insufficient_recent_returns'
+                            f'(recent={recent_n}<{min_recent} or newest_age={staleness}>{max_staleness_days})')
+        logger.warning("跳过自动优化（数据陈旧/不足）: %s", result['reason'])
+        return result
+
+    # ---- 2) 多因子相关性 + 覆盖率日志 ----
+    corrs: Dict[str, float] = {}
+    for col in ['score', 'quant_score', 'chase_risk', 'rsi', 'sell_signals',
+                'buy_signals', 'sector_score', 'tech_score', 'change_5d']:
+        if col in df.columns:
+            pair = df[[col, 'return_5d']].apply(pd.to_numeric, errors='coerce').dropna()
+            if len(pair) >= 12 and pair[col].std() > 0:
+                corrs[col] = float(pair[col].corr(pair['return_5d']))
+    result['factor_corr_5d'] = {k: round(v, 4) for k, v in corrs.items()}
+    logger.info("优化器覆盖率: 窗口样本=%d 近%d天=%d 最新距今=%dd | 因子相关性=%s",
+                len(df), recent_days, recent_n, staleness, result['factor_corr_5d'])
 
     from analysis.opportunity_scorer import OpportunityScorer
 
@@ -484,47 +587,70 @@ def optimize_scoring_config(days_back: int = 120, min_samples: int = 30) -> Dict
     optimized_exclusion = dict(base_exclusion)
     signals = []
 
-    score_corr = 0.0
+    score_corr = corrs.get('score', 0.0)
+
+    # ---- 3) 相关性缩放的有界权重调整 ----
+    def _step(corr: float) -> float:
+        return max(0.0, min(max_drift, abs(corr) * 0.35))
+
+    # csv 因子 -> 它所对应的评分维度
+    factor_dims = {
+        'quant_score': 'quantitative',
+        'chase_risk': 'position_timing',
+        'tech_score': 'technical',
+        'sector_score': 'sector',
+    }
+    for factor, dim in factor_dims.items():
+        c = corrs.get(factor)
+        if c is None or dim not in optimized_weights:
+            continue
+        step = _step(c)
+        if step < 0.005:
+            continue
+        if c < 0:  # 与收益负相关 -> 降权，转移到位置/时机维度
+            optimized_weights[dim] = max(0.0, optimized_weights[dim] - step)
+            optimized_weights['position_timing'] = optimized_weights.get('position_timing', 0) + step
+            signals.append(f'{factor}_neg_corr')
+        elif c > 0.05:  # 确有正贡献 -> 轻微提权
+            optimized_weights[dim] = optimized_weights[dim] + step * 0.5
+            signals.append(f'{factor}_pos_corr')
+
+    # 量化分饱和：>=95 桶若显著弱于中段桶，额外降 quantitative 权重
+    if 'quant_score' in df.columns:
+        qs = pd.to_numeric(df['quant_score'], errors='coerce')
+        hi = df.loc[qs >= 95, 'return_5d'].dropna()
+        mid = df.loc[(qs >= 50) & (qs < 90), 'return_5d'].dropna()
+        if len(hi) >= 8 and len(mid) >= 8 and float(mid.mean() - hi.mean()) > 0.8:
+            optimized_weights['quantitative'] = max(0.0, optimized_weights.get('quantitative', 0) - 0.03)
+            optimized_weights['position_timing'] = optimized_weights.get('position_timing', 0) + 0.03
+            signals.append('quant_saturation')
+
+    # 评级拥挤：高分段不及中分段 -> 抬高 S / A+ 阈值
     if 'score' in df.columns:
-        valid = df[['score', 'return_5d']].dropna()
-        if len(valid) >= 12:
-            score_corr = float(valid['score'].corr(valid['return_5d']))
-            if score_corr < 0:
-                optimized_weights['position_timing'] = optimized_weights.get('position_timing', 0) + 0.03
-                optimized_weights['quantitative'] = max(0.0, optimized_weights.get('quantitative', 0) - 0.02)
-                optimized_weights['technical'] = max(0.0, optimized_weights.get('technical', 0) - 0.01)
-                signals.append('score_negative_corr')
-            elif score_corr < 0.03:
-                optimized_weights['position_timing'] = optimized_weights.get('position_timing', 0) + 0.01
-                optimized_weights['quantitative'] = max(0.0, optimized_weights.get('quantitative', 0) - 0.01)
-                signals.append('score_weak_corr')
-
-    if 'chase_risk' in df.columns:
-        low = df[df['chase_risk'] <= 35]['return_5d'].dropna()
-        high = df[df['chase_risk'] >= 70]['return_5d'].dropna()
-        if len(low) >= 8 and len(high) >= 8:
-            diff = float(low.mean() - high.mean())
-            if diff > 1.2:
-                optimized_weights['position_timing'] = optimized_weights.get('position_timing', 0) + 0.02
-                optimized_exclusion['max_change_20d'] = max(20, optimized_exclusion.get('max_change_20d', 40) - 2)
-                signals.append('chase_risk_effective')
-
-    if 'rsi' in df.columns:
-        overbought = df[df['rsi'] >= 78]['return_5d'].dropna()
-        neutral = df[(df['rsi'] >= 45) & (df['rsi'] <= 65)]['return_5d'].dropna()
-        if len(overbought) >= 8 and len(neutral) >= 8:
-            if float(neutral.mean() - overbought.mean()) > 0.8:
-                optimized_exclusion['max_consecutive_up'] = max(4, optimized_exclusion.get('max_consecutive_up', 6) - 1)
-                signals.append('rsi_overbought_penalty')
-
-    if 'score' in df.columns:
-        high_score = df[df['score'] >= 85]['return_5d'].dropna()
-        mid_score = df[(df['score'] >= 70) & (df['score'] < 85)]['return_5d'].dropna()
+        hs = pd.to_numeric(df['score'], errors='coerce')
+        high_score = df.loc[hs >= 85, 'return_5d'].dropna()
+        mid_score = df.loc[(hs >= 70) & (hs < 85), 'return_5d'].dropna()
         if len(high_score) >= 6 and len(mid_score) >= 10:
             if float(mid_score.mean() - high_score.mean()) > 0.8:
                 optimized_thresholds['S'] = min(95, optimized_thresholds.get('S', 85) + 2)
                 optimized_thresholds['A+'] = min(92, optimized_thresholds.get('A+', 82) + 1)
                 signals.append('high_score_crowded')
+
+    # 追高有效性 / RSI 超买（保留，作一票否决收紧）
+    if 'chase_risk' in df.columns:
+        cr = pd.to_numeric(df['chase_risk'], errors='coerce')
+        low = df.loc[cr <= 35, 'return_5d'].dropna()
+        high = df.loc[cr >= 70, 'return_5d'].dropna()
+        if len(low) >= 8 and len(high) >= 8 and float(low.mean() - high.mean()) > 1.2:
+            optimized_exclusion['max_change_20d'] = max(20, optimized_exclusion.get('max_change_20d', 40) - 2)
+            signals.append('chase_risk_effective')
+    if 'rsi' in df.columns:
+        rsi = pd.to_numeric(df['rsi'], errors='coerce')
+        overbought = df.loc[rsi >= 78, 'return_5d'].dropna()
+        neutral = df.loc[(rsi >= 45) & (rsi <= 65), 'return_5d'].dropna()
+        if len(overbought) >= 8 and len(neutral) >= 8 and float(neutral.mean() - overbought.mean()) > 0.8:
+            optimized_exclusion['max_consecutive_up'] = max(4, optimized_exclusion.get('max_consecutive_up', 6) - 1)
+            signals.append('rsi_overbought_penalty')
 
     weight_sum = sum(optimized_weights.values())
     if weight_sum > 0:
@@ -566,8 +692,11 @@ def optimize_scoring_config(days_back: int = 120, min_samples: int = 30) -> Dict
         'generated_at': datetime.now().isoformat(),
         'window_days': days_back,
         'sample_count': len(df),
+        'recent_samples': recent_n,
+        'newest_return_age_days': int(staleness),
         'signals': signals,
         'score_corr_5d': round(score_corr, 6),
+        'factor_corr_5d': result['factor_corr_5d'],
         'rating_thresholds': optimized_thresholds,
         'dimension_weights': optimized_weights,
         'exclusion_rules': optimized_exclusion,
@@ -691,6 +820,8 @@ def main():
     parser.add_argument('--days', type=int, default=None, help='回溯天数')
     parser.add_argument('--report-only', action='store_true', help='仅生成报告，不更新收益数据')
     parser.add_argument('--update-only', action='store_true', help='仅更新收益数据，不生成报告')
+    parser.add_argument('--recompute-all', action='store_true',
+                        help='重算全部已结算行的收益（次日开盘买入口径，覆盖旧值，自动备份）')
     parser.add_argument('--optimize', action='store_true', help='执行自动参数优化并写入运行时配置')
     parser.add_argument('--optimize-days', type=int, default=120, help='自动优化使用的回溯天数')
     parser.add_argument('--min-samples', type=int, default=30, help='自动优化最少样本数')
@@ -710,7 +841,7 @@ def main():
         return
 
     if not args.report_only:
-        update_returns(days_back=args.days or 30)
+        update_returns(days_back=args.days or 30, recompute_all=args.recompute_all)
 
     if not args.update_only:
         generate_backtest_report(days_back=args.days)
