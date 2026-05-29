@@ -17,8 +17,20 @@ def conn(tmp_path, monkeypatch):
     migrate(c)
 
     # 用 monkeypatch 替换全局 get_conn，让 repo 模块走该 conn
+    _getter = lambda: c  # noqa: E731
     from data_store import connection
-    monkeypatch.setattr(connection, "get_conn", lambda: c)
+    monkeypatch.setattr(connection, "get_conn", _getter)
+    # Patch the already-imported get_conn in each repo module
+    from data_store import (
+        dragon_tiger_repo, hsgt_repo, holders_repo,
+        survey_repo, fund_hold_repo, sync_log_repo,
+    )
+    monkeypatch.setattr(dragon_tiger_repo, "get_conn", _getter)
+    monkeypatch.setattr(hsgt_repo, "get_conn", _getter)
+    monkeypatch.setattr(holders_repo, "get_conn", _getter)
+    monkeypatch.setattr(survey_repo, "get_conn", _getter)
+    monkeypatch.setattr(fund_hold_repo, "get_conn", _getter)
+    monkeypatch.setattr(sync_log_repo, "get_conn", _getter)
     yield c
     c.close()
 
