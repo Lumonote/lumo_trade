@@ -458,13 +458,26 @@ def get_stock_context(request: Request, stock_code=None) -> Response:
 def get_stock_analysis_suite(request: Request, stock_code=None) -> Response:
     code = _path_param(request, "stock_code", stock_code)
     name = _query_value(request, "name", "")
+    force_refresh = str(_query_value(request, "refresh", "") or "").lower() in {"1", "true", "yes"}
     try:
-        payload = webui_core.STOCK_SUITE_SERVICE.get_suite(code, name=name)
+        payload = webui_core.STOCK_SUITE_SERVICE.get_suite(code, name=name, force_refresh=force_refresh)
     except ValueError as exc:
         return _json_response({"success": False, "error": str(exc)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
         return _json_response({"success": False, "error": str(exc)}, status_code=500)
     return _json_response(payload)
+
+
+@_native_get("/api/diagnostics/data-sources")
+def get_diagnostics_data_sources(request: Request) -> Response:
+    """最近 24h 各数据源同步摘要（从 sync_log 读取）。"""
+    try:
+        from data_store import sync_log_repo
+
+        summary = sync_log_repo.summary_last_24h()
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"error": str(exc)}, status_code=500)
+    return _json_response(summary)
 
 
 @_native_post("/api/stock-analysis-suite/:stock_code/ai")

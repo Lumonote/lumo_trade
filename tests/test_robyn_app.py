@@ -202,7 +202,7 @@ def test_robyn_stock_analysis_suite_get(robyn_module, monkeypatch):
     from robyn.testing import TestClient
 
     class _StubSvc:
-        def get_suite(self, code, name=""):
+        def get_suite(self, code, name="", **_kwargs):
             return {
                 "success": True,
                 "stock": {"code": code, "name": name, "market": "XSHE", "sector": "—"},
@@ -224,7 +224,7 @@ def test_robyn_stock_analysis_suite_invalid_code(robyn_module, monkeypatch):
     from robyn.testing import TestClient
 
     class _ErrSvc:
-        def get_suite(self, code, name=""):
+        def get_suite(self, code, name="", **_kwargs):
             raise ValueError(f"invalid stock code: {code!r}")
 
     monkeypatch.setattr(robyn_module.webui_core, "STOCK_SUITE_SERVICE", _ErrSvc())
@@ -296,3 +296,32 @@ def test_robyn_stock_analysis_suite_ai_post_invalid_code(robyn_module, monkeypat
     body = response.json()
     assert body["success"] is False
     assert "invalid" in body["error"]
+
+
+def test_diagnostics_data_sources_returns_summary(robyn_module, tmp_path, monkeypatch):
+    """/api/diagnostics/data-sources 返回最近 24h sync_log 摘要。"""
+    from robyn.testing import TestClient
+
+    monkeypatch.setenv("KRONOS_SQLITE_PATH", str(tmp_path / "diag.sqlite"))
+    from data_store import connection, sync_log_repo
+
+    connection.reset_for_testing()
+    try:
+        import datetime as _dt
+        now = _dt.datetime.now()
+        recent = (now - _dt.timedelta(hours=1)).isoformat(timespec="seconds")
+        recent2 = (now - _dt.timedelta(hours=2)).isoformat(timespec="seconds")
+        sync_log_repo.append("lhb", "000001.SZ", recent, "ok", rows=42)
+        sync_log_repo.append("hsgt", "", recent2, "failed", error="429")
+
+        with TestClient(robyn_module.app) as client:
+            response = client.get("/api/diagnostics/data-sources")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "lhb" in body
+        assert body["lhb"]["ok"] == 1
+        assert "hsgt" in body
+        assert body["hsgt"]["failed"] == 1
+    finally:
+        connection.reset_for_testing()
