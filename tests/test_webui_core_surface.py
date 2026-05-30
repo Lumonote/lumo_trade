@@ -82,3 +82,14 @@ def test_desktop_html_has_panel_tab():
     # 接入两处 dispatch + paneIdMap
     assert html.count('renderSuitePanel(payload)') >= 2
     assert 'panel: "suitePanePanel"' in html
+
+
+def test_desktop_html_has_panel_overlay_wiring():
+    """LLM 覆盖层的渲染函数 / 升档按钮 / 端点调用都已接线。"""
+    from pathlib import Path
+    repo_root = Path(__file__).resolve().parents[1]
+    html = (repo_root / "webui" / "templates" / "desktop.html").read_text(encoding="utf-8")
+    assert "function renderPanelOverlay" in html
+    assert "function triggerPanelOverlay" in html
+    assert "/panel-overlay" in html
+    assert "analysis_overlay" in html
