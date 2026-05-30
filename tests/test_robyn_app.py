@@ -325,3 +325,44 @@ def test_diagnostics_data_sources_returns_summary(robyn_module, tmp_path, monkey
         assert body["hsgt"]["failed"] == 1
     finally:
         connection.reset_for_testing()
+
+
+def test_panel_overlay_endpoint_returns_overlay(robyn_module, monkeypatch):
+    """POST /…/panel-overlay 返回 {success, overlay, merged_panel}。service 层 stub（经 robyn_module.webui_core）。"""
+    from robyn.testing import TestClient
+
+    fake = {
+        "success": True,
+        "overlay": {"reviewed": True, "tier": "deep", "data_status": "fresh",
+                    "great_divide_override": {"punchline": "多头占优"}, "risks": ["x"],
+                    "panel_insights": {}, "buy_zones": {"value": [], "growth": [],
+                    "technical": [], "youzi": []}, "narrative_override": None,
+                    "last_updated": "2026-05-30T14:00:00", "reason": None},
+        "merged_panel": {"great_divide": {"punchline": "多头占优"}},
+    }
+    monkeypatch.setattr(robyn_module.webui_core.STOCK_SUITE_SERVICE, "trigger_panel_overlay",
+                        lambda code, tier="deep", force_refresh=False: fake)
+
+    with TestClient(robyn_module.app) as client:
+        resp = client.post("/api/stock-analysis-suite/000001/panel-overlay",
+                           json_data={"tier": "deep"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["overlay"]["reviewed"] is True
+    assert body["merged_panel"]["great_divide"]["punchline"] == "多头占优"
+
+
+def test_panel_overlay_endpoint_bad_code_returns_400(robyn_module, monkeypatch):
+    from robyn.testing import TestClient
+
+    def _raise(code, tier="deep", force_refresh=False):
+        raise ValueError("bad code")
+
+    monkeypatch.setattr(robyn_module.webui_core.STOCK_SUITE_SERVICE, "trigger_panel_overlay", _raise)
+
+    with TestClient(robyn_module.app) as client:
+        resp = client.post("/api/stock-analysis-suite/zzz/panel-overlay", json_data={"tier": "deep"})
+
+    assert resp.status_code == 400

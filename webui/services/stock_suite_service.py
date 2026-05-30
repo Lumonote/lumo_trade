@@ -129,5 +129,14 @@ class StockSuiteService:
             force_refresh=force_refresh,
         )
 
+    def trigger_panel_overlay(
+        self,
+        code: str,
+        tier: str = "deep",
+        force_refresh: bool = False,
+    ) -> Dict[str, Any]:
+        code = self._validate_code(code)
+        return self._suite.trigger_panel_overlay(code, tier=tier, force_refresh=force_refresh)
+
 
 STOCK_SUITE_SERVICE = StockSuiteService()

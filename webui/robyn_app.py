@@ -501,6 +501,23 @@ def post_stock_analysis_suite_ai(request: Request, stock_code=None) -> Response:
     return _json_response(payload)
 
 
+@_native_post("/api/stock-analysis-suite/:stock_code/panel-overlay")
+def post_stock_analysis_suite_panel_overlay(request: Request, stock_code=None) -> Response:
+    code = _path_param(request, "stock_code", stock_code)
+    body = _request_json(request) or {}
+    tier = str(body.get("tier") or "deep")
+    force_refresh = bool(body.get("force_refresh", False))
+    try:
+        payload = webui_core.STOCK_SUITE_SERVICE.trigger_panel_overlay(
+            code, tier=tier, force_refresh=force_refresh,
+        )
+    except ValueError as exc:
+        return _json_response({"success": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"success": False, "error": str(exc)}, status_code=500)
+    return _json_response(payload)
+
+
 @_native_post("/api/opportunity-discovery/start")
 def start_opportunity_discovery(request: Request) -> Response:
     params, error = webui_core.ANALYSIS_JOB_PARSER.opportunity_params(_request_json(request))
