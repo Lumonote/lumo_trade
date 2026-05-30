@@ -3468,11 +3468,23 @@
         });
       }
 
-      // P0-A：LLM 覆盖层渲染（reviewed=true 显示 AI 点评；否则显示升档按钮，回退规则文案）
+      // P0-A/P0-B：reviewed=true 显 AI 点评(+黄旗警告)；质量拦截显红条+回退规则文案；未生成显升档按钮
       function renderPanelOverlay(payload) {
         const ov = (payload && payload.analysis_overlay) || {};
         const stock = (payload && payload.stock) || {};
+        const q = ov.quality || {};
+        const criticals = q.criticals || [];
         if (!ov.reviewed) {
+          if (criticals.length) {
+            // P0-B：AI 已生成但被机械质量门拦截 —— 红条 + 重新生成；下方仍渲染规则版 panel
+            return `
+              <div class="bbp-overlay-redbar">
+                <span class="bbp-overlay-redbar-title">⚠ AI 点评未通过质量门</span>
+                <span class="bbp-overlay-redbar-reason">${html(criticals.join("；"))}</span>
+                <button class="bbp-overlay-btn" type="button"
+                  onclick="triggerPanelOverlay('${html(stock.code || "")}')">重新生成</button>
+              </div>`;
+          }
           const reason = ov.reason ? `<span class="bbp-overlay-reason">${html(ov.reason)}</span>` : "";
           return `
             <div class="bbp-overlay-empty">
@@ -3488,6 +3500,8 @@
           return items ? `<div class="bbp-zone"><span class="bbp-zone-label">${label}</span>${items}</div>` : "";
         };
         const nar = ov.narrative_override ? `<div class="bbp-overlay-nar">${html(ov.narrative_override)}</div>` : "";
+        const warnings = (q.warnings || []).map((w) => `<div class="bbp-overlay-flag">⚠ ${html(w)}</div>`).join("");
+        const flags = warnings ? `<div class="bbp-overlay-flags">${warnings}</div>` : "";
         return `
           <div class="bbp-overlay-card" data-status="${html(ov.data_status || "")}">
             <div class="bbp-overlay-tag">AI 点评 · ${html(ov.tier || "")}${ov.data_status === "stale" ? " · 历史" : ""}</div>
@@ -3497,6 +3511,7 @@
               ${zoneRow("value", "价值")}${zoneRow("growth", "成长")}
               ${zoneRow("technical", "技术")}${zoneRow("youzi", "游资")}
             </div>
+            ${flags}
           </div>`;
       }
 
@@ -3510,10 +3525,17 @@
             body: JSON.stringify({ tier: "deep" }),
           });
           const data = await resp.json();
+          const blocked = data.overlay && (data.overlay.quality || {}).criticals
+            && data.overlay.quality.criticals.length;
           if (data.success && state.currentSuitePayload) {
             state.currentSuitePayload.analysis_overlay = data.overlay;
             if (data.merged_panel) state.currentSuitePayload.panel = data.merged_panel;
             renderSuitePanel(state.currentSuitePayload);   // 整面重渲（含覆盖后的金句/逐人 insight）
+          } else if (blocked && state.currentSuitePayload) {
+            // P0-B：被质量门拦截 —— 落 state 整面重渲（红条 + 规则版 panel），与重载表现一致
+            state.currentSuitePayload.analysis_overlay = data.overlay;
+            if (data.merged_panel) state.currentSuitePayload.panel = data.merged_panel;
+            renderSuitePanel(state.currentSuitePayload);
           } else if (box) {
             box.innerHTML = `<div class="bbp-overlay-empty">
               <span class="bbp-overlay-reason">生成失败：${html((data.overlay && data.overlay.reason) || data.error || "未知错误")}</span>

@@ -93,3 +93,14 @@ def test_desktop_html_has_panel_overlay_wiring():
     assert "function triggerPanelOverlay" in html
     assert "/panel-overlay" in html
     assert "analysis_overlay" in html
+
+
+def test_desktop_html_has_quality_gate_wiring():
+    """P0-B：质量门红条 + 黄旗渲染分支已接线。"""
+    from pathlib import Path
+    repo_root = Path(__file__).resolve().parents[1]
+    html = (repo_root / "webui" / "templates" / "desktop.html").read_text(encoding="utf-8")
+    assert "bbp-overlay-redbar" in html          # 红条
+    assert "ov.quality" in html                  # 读 quality 字段
+    assert "未通过质量门" in html                  # 红条文案
+    assert "bbp-overlay-flag" in html            # 黄旗
