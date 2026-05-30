@@ -1,0 +1,43 @@
+# G 量化派（6 人：全 stub）
+- id: simons
+  name: 西蒙斯
+  school: G
+  tier: stub
+  rule: school_default
+  voice: 统计套利
+  key_metrics: [momentum, volatility]
+- id: griffin
+  name: 肯·格里芬
+  school: G
+  tier: stub
+  rule: school_default
+  voice: 多策略量化
+  key_metrics: [momentum, volatility]
+- id: deshaw
+  name: 大卫·肖
+  school: G
+  tier: stub
+  rule: school_default
+  voice: 算法交易
+  key_metrics: [momentum, volatility]
+- id: asness
+  name: 阿斯内斯
+  school: G
+  tier: stub
+  rule: school_default
+  voice: 多因子
+  key_metrics: [momentum, pe_industry_rank]
+- id: thorp
+  name: 爱德华·索普
+  school: G
+  tier: stub
+  rule: school_default
+  voice: 数学化套利
+  key_metrics: [momentum, volatility]
+- id: zan
+  name: 格里高利·赞恩
+  school: G
+  tier: stub
+  rule: school_default
+  voice: 高频做市
+  key_metrics: [momentum, volume]

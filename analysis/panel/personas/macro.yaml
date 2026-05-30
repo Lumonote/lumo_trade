@@ -1,0 +1,50 @@
+# C 宏观派（7 人：2 旗舰 + 5 stub）
+- id: soros
+  name: 索罗斯
+  school: C
+  tier: flagship
+  rule: soros
+  voice: 反身性与趋势
+  key_metrics: [trend, momentum]
+- id: dalio
+  name: 达里奥
+  school: C
+  tier: flagship
+  rule: dalio
+  voice: 经济机器与风险平价
+  key_metrics: [trend, volatility]
+- id: tudor
+  name: 都铎·琼斯
+  school: C
+  tier: stub
+  rule: school_default
+  voice: 宏观择时
+  key_metrics: [trend, momentum]
+- id: druckenmiller
+  name: 德鲁肯米勒
+  school: C
+  tier: stub
+  rule: school_default
+  voice: 集中宏观
+  key_metrics: [trend, momentum]
+- id: paulson
+  name: 约翰·保尔森
+  school: C
+  tier: stub
+  rule: school_default
+  voice: 事件驱动宏观
+  key_metrics: [trend, volatility]
+- id: icahn
+  name: 卡尔·伊坎
+  school: C
+  tier: stub
+  rule: school_default
+  voice: 激进维权
+  key_metrics: [trend, momentum]
+- id: rogers
+  name: 吉姆·罗杰斯
+  school: C
+  tier: stub
+  rule: school_default
+  voice: 商品周期
+  key_metrics: [trend, momentum]

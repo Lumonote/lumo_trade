@@ -1,0 +1,50 @@
+# F 游资派（7 人：2 旗舰 + 5 stub）
+- id: zhao
+  name: 赵老哥
+  school: F
+  tier: flagship
+  rule: zhao
+  voice: 龙虎榜打板
+  key_metrics: [momentum, volume]
+- id: zhang_mz
+  name: 章盟主
+  school: F
+  tier: flagship
+  rule: zhang_mz
+  voice: 板块龙头
+  key_metrics: [momentum, volume]
+- id: xuxiang
+  name: 徐翔
+  school: F
+  tier: stub
+  rule: school_default
+  voice: 短线之王
+  key_metrics: [momentum, volume]
+- id: yangjia
+  name: 炒股养家
+  school: F
+  tier: stub
+  rule: school_default
+  voice: 情绪周期
+  key_metrics: [momentum, volume]
+- id: tuixue
+  name: 退学炒股
+  school: F
+  tier: stub
+  rule: school_default
+  voice: 接力打板
+  key_metrics: [momentum, volume]
+- id: qiaobang
+  name: 乔帮主
+  school: F
+  tier: stub
+  rule: school_default
+  voice: 龙头战法
+  key_metrics: [momentum, volume]
+- id: sunge
+  name: 孙哥
+  school: F
+  tier: stub
+  rule: school_default
+  voice: 中军卡位
+  key_metrics: [momentum, volume]

@@ -1,0 +1,57 @@
+# B 成长派（8 人：3 旗舰 + 5 stub）
+- id: fisher
+  name: 费雪
+  school: B
+  tier: flagship
+  rule: fisher
+  voice: 高成长精选
+  key_metrics: [net_profit_yoy, revenue_yoy, roe]
+- id: lynch
+  name: 彼得·林奇
+  school: B
+  tier: flagship
+  rule: lynch
+  voice: 合理价格成长(GARP)
+  key_metrics: [net_profit_yoy, pe_industry_rank]
+- id: wood
+  name: 木头姐
+  school: B
+  tier: flagship
+  rule: wood
+  voice: 颠覆式创新
+  key_metrics: [revenue_yoy, net_profit_yoy]
+- id: miller
+  name: 比尔·米勒
+  school: B
+  tier: stub
+  rule: school_default
+  voice: 价值成长
+  key_metrics: [net_profit_yoy, pe_industry_rank]
+- id: price
+  name: 普莱斯
+  school: B
+  tier: stub
+  rule: school_default
+  voice: 成长股之父
+  key_metrics: [net_profit_yoy, revenue_yoy]
+- id: robertson
+  name: 朱利安·罗伯逊
+  school: B
+  tier: stub
+  rule: school_default
+  voice: 成长多空
+  key_metrics: [net_profit_yoy, roe]
+- id: zhanglei
+  name: 张磊
+  school: B
+  tier: stub
+  rule: school_default
+  voice: 长期主义成长
+  key_metrics: [revenue_yoy, net_profit_yoy]
+- id: gltt
+  name: 葛兰
+  school: B
+  tier: stub
+  rule: school_default
+  voice: 医药成长
+  key_metrics: [net_profit_yoy, revenue_yoy]

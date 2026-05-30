@@ -1,0 +1,50 @@
+# E 中国价投（7 人：2 旗舰 + 5 stub）
+- id: duan
+  name: 段永平
+  school: E
+  tier: flagship
+  rule: duan
+  voice: 本分与商业模式
+  key_metrics: [roe, pe_industry_rank]
+- id: zhangkun
+  name: 张坤
+  school: E
+  tier: flagship
+  rule: zhangkun
+  voice: 优质龙头长持
+  key_metrics: [roe, net_profit_yoy]
+- id: dengbin
+  name: 但斌
+  school: E
+  tier: stub
+  rule: school_default
+  voice: 时间的玫瑰
+  key_metrics: [roe, pe_industry_rank]
+- id: linyuan
+  name: 林园
+  school: E
+  tier: stub
+  rule: school_default
+  voice: 消费垄断
+  key_metrics: [roe, net_profit_yoy]
+- id: lilu
+  name: 李录
+  school: E
+  tier: stub
+  rule: school_default
+  voice: 价值投资东方实践
+  key_metrics: [roe, pe_industry_rank]
+- id: fengliu
+  name: 冯柳
+  school: E
+  tier: stub
+  rule: school_default
+  voice: 弱者体系逆向
+  key_metrics: [pe_industry_rank, roe]
+- id: qiuguolu
+  name: 邱国鹭
+  school: E
+  tier: stub
+  rule: school_default
+  voice: 便宜的好公司
+  key_metrics: [pe_industry_rank, roe]

@@ -1,0 +1,50 @@
+# D 技术派（7 人：全 stub）
+- id: livermore
+  name: 利弗莫尔
+  school: D
+  tier: stub
+  rule: school_default
+  voice: 趋势投机
+  key_metrics: [trend, momentum]
+- id: oneil
+  name: 威廉·欧奈尔
+  school: D
+  tier: stub
+  rule: school_default
+  voice: CANSLIM 突破
+  key_metrics: [momentum, volume]
+- id: minervini
+  name: 米勒维尼
+  school: D
+  tier: stub
+  rule: school_default
+  voice: 强势突破
+  key_metrics: [momentum, trend]
+- id: weinstein
+  name: 斯坦·温斯坦
+  school: D
+  tier: stub
+  rule: school_default
+  voice: 阶段分析
+  key_metrics: [trend, volume]
+- id: murphy
+  name: 约翰·墨菲
+  school: D
+  tier: stub
+  rule: school_default
+  voice: 技术分析体系
+  key_metrics: [trend, momentum]
+- id: sperandeo
+  name: 斯波朗迪
+  school: D
+  tier: stub
+  rule: school_default
+  voice: 趋势 2B 法则
+  key_metrics: [trend, momentum]
+- id: williams
+  name: 拉瑞·威廉姆斯
+  school: D
+  tier: stub
+  rule: school_default
+  voice: 短线动量
+  key_metrics: [momentum, volatility]

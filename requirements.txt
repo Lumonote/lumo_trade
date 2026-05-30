@@ -19,3 +19,4 @@ akshare>=1.16.0
 baostock
 robyn>=0.84.0,<1.0
 pytest>=8.3.0
+pyyaml>=6.0
