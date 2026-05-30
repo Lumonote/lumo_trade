@@ -55,3 +55,63 @@ def test_deep_valid_passes():
 
 def test_non_dict_is_error():
     assert validate_overlay(["not", "a", "dict"], "deep") == ["overlay 必须是 JSON 对象"]
+
+
+# --- prompt / JSON 抽取 ---
+from analysis.analysis_overlay.prompt import build_overlay_prompt, extract_overlay_json
+
+
+def _panel():
+    return {
+        "data_status": "fresh",
+        "consensus": {"score": 61, "label": "偏多", "bull": 28, "neutral": 11, "bear": 12},
+        "great_divide": {
+            "bull": {"id": "zhao", "name": "赵老哥", "school": "F", "score": 92},
+            "bear": {"id": "graham", "name": "格雷厄姆", "school": "A", "score": 25},
+            "punchline": "赵老哥 看到 量化席位活跃，格雷厄姆 担心 估值超出安全边际",
+        },
+        "schools": [{"key": "F", "name": "游资派", "count": 7, "lean": "偏多", "lean_score": 64}],
+        "analysts": [
+            {"id": "zhao", "name": "赵老哥", "school": "F", "signal": "bull", "score": 92,
+             "headline": "量化席位活跃", "source": "handwritten", "reasons": ["量化席位 90 日 3 次活跃"]},
+            {"id": "graham", "name": "格雷厄姆", "school": "A", "signal": "bear", "score": 25,
+             "headline": "估值超出安全边际", "source": "handwritten", "reasons": ["估值超出安全边际，不碰"]},
+        ],
+        "indicators": [
+            {"group": "capital", "key": "main_capital", "label": "主力资金",
+             "value_text": "净流入 1.20 亿", "signal": "up", "strength": 0.6, "data_status": "fresh"},
+        ],
+    }
+
+
+def test_build_prompt_contains_tier_fields_and_json_directive():
+    p = build_overlay_prompt(_panel(), {"stock": {"code": "000001", "name": "平安银行"}}, "deep")
+    assert "只返回 JSON" in p or "只输出 JSON" in p
+    # deep 档要求的字段名应在提示中出现
+    for token in ("panel_insights", "great_divide_override", "buy_zones", "risks"):
+        assert token in p
+    # panel 摘要信息进了提示
+    assert "61" in p and "偏多" in p
+    assert "赵老哥" in p and "格雷厄姆" in p
+
+
+def test_build_prompt_medium_omits_deep_only_fields():
+    p = build_overlay_prompt(_panel(), {}, "medium")
+    assert "great_divide_override" in p and "risks" in p
+    assert "buy_zones" not in p and "panel_insights" not in p
+
+
+def test_extract_json_from_fenced_block():
+    text = '点评如下：\n```json\n{"risks": ["a", "b"]}\n```\n谢谢'
+    assert extract_overlay_json(text) == {"risks": ["a", "b"]}
+
+
+def test_extract_json_from_bare_object():
+    text = '{"great_divide_override": {"punchline": "多头占优"}}'
+    assert extract_overlay_json(text)["great_divide_override"]["punchline"] == "多头占优"
+
+
+def test_extract_json_returns_none_on_garbage():
+    assert extract_overlay_json("这不是 JSON") is None
+    assert extract_overlay_json("") is None
+    assert extract_overlay_json("```json\n{坏的 JSON}\n```") is None
