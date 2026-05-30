@@ -32,6 +32,14 @@ def test_blocks_on_placeholder_in_risk():
     assert any("占位符" in c for c in rep["criticals"])
 
 
+def test_does_not_flag_legit_zhanwei_prose():
+    """裸『占位』是 A 股常见多头表述（主力占位/资金占位），不得误判为占位符残留而拦截。"""
+    ov = _medium_overlay(great_divide_override={"punchline": "主力占位明显，资金占位拉升，多头格局已成"})
+    rep = evaluate_overlay(ov, {}, {}, "medium")
+    assert rep["passed"] is True
+    assert rep["criticals"] == []
+
+
 def test_blocks_on_empty_punchline():
     ov = _medium_overlay(great_divide_override={"punchline": "   "})
     rep = evaluate_overlay(ov, {}, {}, "medium")
