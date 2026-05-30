@@ -38,6 +38,8 @@
 	            {% endif %}
 	            <span id="activeTaskMeta" class="task-meta">任务读取中</span>
 	            <span id="refreshMeta" class="panel-meta">--</span>
+	            <button id="openReportDrawerBtn" class="button secondary" type="button" title="报告库（点击弹出）">📊 报告库</button>
+	            <button id="openTaskDrawerBtn" class="button secondary" type="button" title="任务队列（点击弹出）">📋 任务</button>
 	            <button id="refreshBtn" class="button secondary" type="button">刷新</button>
 	          </div>
         </header>
@@ -203,10 +205,10 @@
               </div>
               <div class="panel">
                 <div class="panel-header">
-                  <h2 class="panel-title">报告库</h2>
-                  <span class="panel-meta">本地生成</span>
+                  <h2 class="panel-title">🔥 板块热点</h2>
+                  <span id="hotConceptMeta" class="panel-meta">东财概念</span>
                 </div>
-                <div id="reportList" class="panel-body list"></div>
+                <div id="hotConceptList" class="panel-body list"></div>
               </div>
             </section>
           </div>
@@ -214,22 +216,26 @@
           <aside class="workbench-side">
             <section class="panel">
               <div class="panel-header">
-                <h2 class="panel-title">任务队列</h2>
-                <span class="panel-meta">最近20条</span>
+                <h2 class="panel-title">🚀 涨幅 · 涨停榜</h2>
+                <span id="hotGainersMeta" class="panel-meta">实时</span>
               </div>
-              <div id="jobList" class="panel-body list"></div>
+              <div id="hotGainersList" class="panel-body list"></div>
             </section>
 
             <section class="panel">
               <div class="panel-header">
-                <h2 id="jobDetailTitle" class="panel-title">任务日志</h2>
-                <span id="jobDetailMeta" class="panel-meta">选择或启动任务</span>
+                <h2 class="panel-title">💰 个股热度榜</h2>
+                <span id="hotStocksMeta" class="panel-meta">主力净流入</span>
               </div>
-              <div class="panel-body">
-                <div id="jobDetailSummary" class="notice">启动任务后这里会实时展示进度、日志和结果。</div>
-                <div id="jobDetailActions" class="actions"></div>
-                <div id="jobLogStream" class="job-log-stream" style="margin-top: 12px;"></div>
+              <div id="hotStocksList" class="panel-body list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">⚡ 金十快讯</h2>
+                <span id="hotFlashMeta" class="panel-meta">实时</span>
               </div>
+              <div id="hotFlashList" class="panel-body list"></div>
             </section>
           </aside>
         </section>
@@ -309,6 +315,13 @@
               <span id="patternResultMeta" class="panel-meta">--</span>
             </div>
             <div id="patternResults" class="panel-body list"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">历史图形</h2>
+              <span id="savedPatternMeta" class="panel-meta">--</span>
+            </div>
+            <div id="savedPatternList" class="panel-body list"></div>
           </div>
         </section>
         {% endif %}
@@ -768,6 +781,46 @@
       </div>
     </div>
 
+    <div id="filePreviewModal" class="modal-backdrop" aria-hidden="true" hidden>
+      <div class="modal-shell modal-large" role="dialog" aria-modal="true" aria-labelledby="filePreviewTitle">
+        <div class="modal-header">
+          <div>
+            <h2 id="filePreviewTitle">预览</h2>
+            <p id="filePreviewMeta">--</p>
+          </div>
+          <div class="modal-header-actions">
+            <a id="filePreviewOpenBtn" class="button secondary compact" href="#" target="_blank" rel="noreferrer">在浏览器打开</a>
+            <button id="closeFilePreviewBtn" class="button secondary compact" type="button">关闭</button>
+          </div>
+        </div>
+        <div class="modal-body" id="filePreviewBody" style="overflow:auto;padding:1rem;"></div>
+      </div>
+    </div>
+
+    <div id="reportDrawer" class="drawer-backdrop" aria-hidden="true" hidden>
+      <div class="drawer-shell" role="dialog" aria-modal="true" aria-label="报告库">
+        <div class="drawer-header">
+          <h2>📊 报告库</h2>
+          <button class="button secondary compact" type="button" data-drawer-close="reportDrawer">关闭</button>
+        </div>
+        <div class="drawer-body">
+          <div id="reportDrawerList" class="list"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="taskDrawer" class="drawer-backdrop" aria-hidden="true" hidden>
+      <div class="drawer-shell" role="dialog" aria-modal="true" aria-label="任务队列">
+        <div class="drawer-header">
+          <h2>📋 任务队列</h2>
+          <button class="button secondary compact" type="button" data-drawer-close="taskDrawer">关闭</button>
+        </div>
+        <div class="drawer-body">
+          <div id="taskDrawerList" class="list"></div>
+        </div>
+      </div>
+    </div>
+
     <script src="/static/kronos_desktop_shell.js"></script>
     <script src="/static/provider_context_menu.js"></script>
     <script>
@@ -787,6 +840,7 @@
         suiteFetching: false,
         klineModalContext: null,
         patternClickTimer: null,
+        savedPatterns: [],
       };
 
       function html(value) {
@@ -897,6 +951,163 @@
         return data;
       }
 
+      function renderReportsDrawer(reports) {
+        const list = $("#reportDrawerList");
+        if (!list) return;
+        list.innerHTML = (reports || []).map((item) => `
+          <div class="item item-clickable" role="button" tabindex="0" data-preview-url="${html(item.url || '')}" data-preview-label="${html(item.file || '报告')}">
+            <div class="item-top">
+              <p class="item-title">${html(item.file)}</p>
+              <span class="pill">${html(item.type)}</span>
+            </div>
+            <p class="item-meta">${html(item.updated_at)} · ${item.size_kb} KB</p>
+          </div>
+        `).join("");
+        if (!reports?.length) empty(list, "暂无报告。在工作台启动机会挖掘 / 批量分析后会生成报告。");
+      }
+
+      function renderJobsDrawer(jobs) {
+        const list = $("#taskDrawerList");
+        if (!list) return;
+        list.innerHTML = (jobs || []).map((job) => {
+          const resultLinks = jobResultLinks(job);
+          return `
+            <div class="item job-item" data-job-id="${html(job.id)}">
+              <div class="item-top">
+                <p class="item-title">${html(jobTypeLabel(job))} · ${html(job.id)}</p>
+                <span class="pill ${jobPillClass(job.status)}">${html(jobStatusLabel(job.status))}</span>
+              </div>
+              <p class="item-meta">${html(jobCreatedAt(job) || "--")} · ${html(latestJobLog(job) || "暂无日志")}</p>
+              ${resultLinks ? `<div class="job-result-row">${resultLinks}</div>` : ""}
+            </div>
+          `;
+        }).join("");
+        if (!jobs?.length) empty(list, "暂无任务。");
+      }
+
+      function hotStockRow(s, i) {
+        const pct = Number(s.change_pct || 0);
+        const cls = pct >= 0 ? "hot-up" : "hot-down";
+        const sub = s.main_net_inflow_text ? `主力 ${html(s.main_net_inflow_text)}` : (s.price != null ? `¥${html(s.price)}` : "");
+        return `
+          <div class="item hot-rank-row item-clickable" data-stock-code="${html(s.code || '')}" data-stock-name="${html(s.name || '')}" role="button" tabindex="0" title="点击查看个股">
+            <span class="hot-rank-no">${i + 1}</span>
+            <div style="flex:1;min-width:0;">
+              <p class="item-title">${html(s.name)} <span class="muted">${html(s.code || '')}</span></p>
+              <p class="item-meta">${sub}</p>
+            </div>
+            <strong class="${cls}">${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%</strong>
+          </div>
+        `;
+      }
+
+      function hotBoardRow(b, i) {
+        const pct = Number(b.change_pct || 0);
+        const cls = pct >= 0 ? "hot-up" : "hot-down";
+        return `
+          <div class="item hot-rank-row">
+            <span class="hot-rank-no">${i + 1}</span>
+            <div style="flex:1;min-width:0;">
+              <p class="item-title">${html(b.name)}</p>
+              <p class="item-meta">主力净流入 ${html(b.main_net_inflow_text || '--')}</p>
+            </div>
+            <strong class="${cls}">${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%</strong>
+          </div>
+        `;
+      }
+
+      function bindHotStockClicks(container) {
+        if (!container) return;
+        container.querySelectorAll("[data-stock-code]").forEach((el) => {
+          el.addEventListener("click", () => {
+            const code = el.dataset.stockCode;
+            if (!code) return;
+            openStockContext({
+              type: "stock",
+              stock_code: code,
+              stock_name: el.dataset.stockName || "",
+              board_name: "",
+            }).catch((error) => console.warn("打开个股失败", error));
+          });
+        });
+      }
+
+      function renderHotTopics(intel) {
+        const em = (intel && intel.eastmoney) || {};
+        const concept = $("#hotConceptList");
+        if (concept) {
+          const boards = em.concept_boards || [];
+          concept.innerHTML = boards.map((b, i) => hotBoardRow(b, i)).join("");
+          if (!boards.length) empty(concept, "板块数据暂不可用（检查网络 / 稍后刷新）。");
+        }
+        const gainers = $("#hotGainersList");
+        if (gainers) {
+          const rows = em.top_gainers || [];
+          gainers.innerHTML = rows.map((s, i) => hotStockRow(s, i)).join("");
+          if (!rows.length) empty(gainers, "涨幅榜暂不可用。");
+          bindHotStockClicks(gainers);
+        }
+        const hot = $("#hotStocksList");
+        if (hot) {
+          const rows = em.hot_stocks || [];
+          hot.innerHTML = rows.map((s, i) => hotStockRow(s, i)).join("");
+          if (!rows.length) empty(hot, "个股热度暂不可用。");
+          bindHotStockClicks(hot);
+        }
+        const flash = $("#hotFlashList");
+        if (flash) {
+          const items = (intel && intel.jinshi) || [];
+          flash.innerHTML = items.map((n) => `
+            <div class="item">
+              <div class="item-top">
+                <p class="item-title">${html(n.title)}</p>
+                ${n.important ? `<span class="pill warn">重要</span>` : ""}
+              </div>
+              <p class="item-meta">${html(n.source || "金十")} · ${html(n.time || "")}</p>
+            </div>
+          `).join("");
+          if (!items.length) empty(flash, "快讯暂不可用。");
+        }
+      }
+
+      function setupDrawers() {
+        const openDrawer = (id) => {
+          const d = $("#" + id);
+          if (!d) return;
+          d.hidden = false;
+          void d.offsetWidth;
+          d.classList.add("open");
+          d.setAttribute("aria-hidden", "false");
+        };
+        const closeDrawer = (d) => {
+          if (!d) return;
+          d.classList.remove("open");
+          d.setAttribute("aria-hidden", "true");
+          window.setTimeout(() => { d.hidden = true; }, 220);
+        };
+        $("#openReportDrawerBtn")?.addEventListener("click", async () => {
+          openDrawer("reportDrawer");
+          try { if (!state.dashboard) await loadDashboard(); } catch (error) { console.warn(error); }
+          renderReportsDrawer(state.dashboard?.reports || []);
+        });
+        $("#openTaskDrawerBtn")?.addEventListener("click", async () => {
+          openDrawer("taskDrawer");
+          renderJobsDrawer(state.jobs || []);
+          try { await loadJobs(); } catch (error) { console.warn(error); }
+        });
+        document.querySelectorAll("[data-drawer-close]").forEach((btn) => {
+          btn.addEventListener("click", () => closeDrawer($("#" + btn.dataset.drawerClose)));
+        });
+        document.querySelectorAll(".drawer-backdrop").forEach((d) => {
+          d.addEventListener("click", (event) => { if (event.target === d) closeDrawer(d); });
+        });
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") {
+            document.querySelectorAll(".drawer-backdrop:not([hidden])").forEach(closeDrawer);
+          }
+        });
+      }
+
       function renderDashboardPage(data) {
         if (page === "overview") {
           renderOverview(data);
@@ -906,6 +1117,7 @@
           setupWorkbench(data);
           renderOpportunities(data);
           renderReports(data);
+          renderHotTopics(data.market?.intelligence);
           bindKlineInteractions();
           return;
         }
@@ -957,6 +1169,27 @@
       function emptyAction(action, label, extraAttrs = "") {
         return `<button class="button secondary" type="button" data-action="${html(action)}" ${extraAttrs}>${html(label)}</button>`;
       }
+
+      document.addEventListener("click", (event) => {
+        const previewEl = event.target.closest("[data-preview-url]");
+        if (!previewEl) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const url = previewEl.dataset.previewUrl;
+        const label = previewEl.dataset.previewLabel || "预览";
+        if (url) openFilePreview(url, label);
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        const previewEl = event.target.closest?.("[data-preview-url]");
+        if (!previewEl) return;
+        if (event.target.closest("input, textarea, select")) return;
+        event.preventDefault();
+        const url = previewEl.dataset.previewUrl;
+        const label = previewEl.dataset.previewLabel || "预览";
+        if (url) openFilePreview(url, label);
+      });
 
       document.addEventListener("click", (event) => {
         const actionEl = event.target.closest("[data-action]");
@@ -1656,9 +1889,9 @@
       function jobResultLinks(job) {
         const result = job?.result || {};
         const links = [];
-        if (result.report_url) links.push(`<a class="button secondary" href="${html(result.report_url)}" target="_blank" rel="noreferrer">打开报告</a>`);
-        if (result.csv_url) links.push(`<a class="button secondary" href="${html(result.csv_url)}" target="_blank" rel="noreferrer">打开CSV</a>`);
-        if (result.json_url) links.push(`<a class="button secondary" href="${html(result.json_url)}" target="_blank" rel="noreferrer">打开明细</a>`);
+        if (result.report_url) links.push(`<button class="button secondary" type="button" data-preview-url="${html(result.report_url)}" data-preview-label="报告">打开报告</button>`);
+        if (result.csv_url)    links.push(`<button class="button secondary" type="button" data-preview-url="${html(result.csv_url)}" data-preview-label="CSV">打开CSV</button>`);
+        if (result.json_url)   links.push(`<button class="button secondary" type="button" data-preview-url="${html(result.json_url)}" data-preview-label="明细">打开明细</button>`);
         return links.join("");
       }
 
@@ -1727,6 +1960,7 @@
       }
 
       function renderJobs(jobs) {
+        renderJobsDrawer(jobs);
         const target = $("#jobList");
         if (!target) return;
         target.innerHTML = (jobs || []).map((job) => {
@@ -1942,13 +2176,13 @@
           return `<div class="item empty-state"><p class="item-meta">暂无该股票本地报告。</p></div>`;
         }
         return reports.map((item) => `
-          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+          <div class="item item-clickable" role="button" tabindex="0" data-preview-url="${html(item.url||'')}" data-preview-label="${html(item.file||'报告')}">
             <div class="item-top">
               <p class="item-title">${html(item.file)}</p>
               <span class="pill">${html(item.type || "报告")}</span>
             </div>
             <p class="item-meta">${html(item.updated_at || "--")} · ${html(item.size_kb || "--")} KB</p>
-          </a>
+          </div>
         `).join("");
       }
 
@@ -1964,7 +2198,7 @@
           `;
         }
         return rows.map((item) => `
-          <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+          <div class="item item-clickable" role="button" tabindex="0" data-preview-url="${html(item.url||'')}" data-preview-label="${html(item.file||'批量分析结果')}">
             <div class="item-top">
               <p class="item-title">${html(item.file || "批量分析结果")}</p>
               <span class="pill">${html(item.updated_at || "--")}</span>
@@ -1972,7 +2206,7 @@
             <div class="stock-context-fields">
               ${(item.fields || []).slice(0, 8).map((field) => `<div><b>${html(field.label)}</b><span>${html(field.value)}</span></div>`).join("")}
             </div>
-          </a>
+          </div>
         `).join("");
       }
 
@@ -2937,24 +3171,53 @@
         const pane = document.getElementById("suitePaneQuantMatrix");
         if (!pane) return;
         pane.dataset.rendered = "1";
-        const section = (payload && payload.quant_matrix) || {};
-        // M1: 永远走 unavailable 分支（M4 才填充）
+        const s = (payload && payload.quant_matrix) || {};
+        if (!payload || payload.success === false || s.data_status === "unavailable") {
+          pane.innerHTML = `
+            ${suiteUnavailableBanner(s.reason || payload?.error, false)}
+            <div class="suite-preview-block">
+              <h4>预览结构（多周期热力 / 历史命中率 M4 接入）</h4>
+              <ul>
+                <li>30 模型信号矩阵（多周期列：日内 / 3 日 / 10 日 / 30 日 — M4）</li>
+                <li>当前态势卡片（强势多头 / 震荡偏多 / 震荡 / 震荡偏空 / 强势空头）</li>
+                <li>多周期共振环形图</li>
+                <li>30 日历史命中率柱状图（M4）</li>
+              </ul>
+            </div>
+          `;
+          return;
+        }
+        const reso = s.multi_period_resonance || { bull: 0, bear: 0, neutral: 0 };
+        const sigText = (v) => v === 1 ? "买入" : (v === -1 ? "卖出" : "观望");
+        const sigColor = (v) => v === 1 ? "#d23f3f" : (v === -1 ? "#2f9e5a" : "#6b778a");
+        const rows = (s.signals_matrix || []).map((m) => `
+          <tr><td>${html(m.model)}</td><td>${html(m.period)}</td>
+          <td style="color:${sigColor(m.signal)}">${sigText(m.signal)}</td></tr>`).join("");
         pane.innerHTML = `
-          <div class="suite-unavailable-banner">
-            量化矩阵将在 M4 里程碑（30 模型信号矩阵 + 多周期共振 + 历史命中率）上线。
-            ${section.reason ? `<br>当前原因：${html(section.reason)}` : ""}
+          <div class="suite-kpi-bar">
+            <div class="suite-kpi-card"><div class="suite-kpi-label">当前态势</div><div class="suite-kpi-value">${html(s.current_posture ?? "—")}</div></div>
+            <div class="suite-kpi-card"><div class="suite-kpi-label">看多模型</div><div class="suite-kpi-value" style="color:#d23f3f">${reso.bull}</div></div>
+            <div class="suite-kpi-card"><div class="suite-kpi-label">看空模型</div><div class="suite-kpi-value" style="color:#2f9e5a">${reso.bear}</div></div>
+            <div class="suite-kpi-card"><div class="suite-kpi-label">观望模型</div><div class="suite-kpi-value">${reso.neutral}</div></div>
           </div>
-          <div class="suite-preview-block">
-            <h4>预览结构（占位）</h4>
-            <ul>
-              <li>30 × 4 信号热力矩阵（日内 / 3 日 / 10 日 / 30 日）</li>
-              <li>当前态势卡片（强势多头 / 震荡偏多 / 震荡 / 震荡偏空 / 强势空头）</li>
-              <li>多周期共振环形图</li>
-              <li>30 日历史命中率柱状图</li>
-            </ul>
-          </div>
+          <div id="suiteQuantResonanceChart" style="height:240px"></div>
+          <h4 style="margin:14px 0 6px">30 模型信号（日线）</h4>
+          <table class="suite-table"><thead><tr><th>模型</th><th>周期</th><th>信号</th></tr></thead><tbody>${rows || '<tr><td colspan="3">无信号</td></tr>'}</tbody></table>
         `;
+        if (typeof Plotly !== "undefined") {
+          Plotly.newPlot("suiteQuantResonanceChart", [{
+            type: "pie", hole: 0.55,
+            labels: ["看多", "看空", "观望"],
+            values: [reso.bull, reso.bear, reso.neutral],
+            marker: { colors: ["#d23f3f", "#2f9e5a", "#9aa6b8"] },
+            textinfo: "label+value",
+          }], {
+            margin: { t: 20, l: 20, r: 20, b: 20 }, paper_bgcolor: "rgba(0,0,0,0)",
+            font: { color: "#172033", size: 11 }, showlegend: false,
+          }, { displayModeBar: false, responsive: true });
+        }
       }
+
 
       function renderSuiteChipRadar(payload) {
         const pane = document.getElementById("suitePaneChipRadar");
@@ -3268,16 +3531,17 @@
       }
 
       function renderReports(data) {
+        renderReportsDrawer(data.reports);
         const reports = $("#reportList");
         if (reports) {
           reports.innerHTML = (data.reports || []).map((item) => `
-            <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+            <div class="item item-clickable" role="button" tabindex="0" data-preview-url="${html(item.url||'')}" data-preview-label="${html(item.file||'报告')}">
               <div class="item-top">
                 <p class="item-title">${html(item.file)}</p>
                 <span class="pill">${html(item.type)}</span>
               </div>
               <p class="item-meta">${html(item.updated_at)} · ${item.size_kb} KB</p>
-            </a>
+            </div>
           `).join("");
           if (!data.reports?.length) {
             empty(reports, "暂无报告。", emptyAction("start-opportunity", "生成机会报告"));
@@ -3305,13 +3569,13 @@
         const batchRuns = $("#batchRuns");
         if (batchRuns) {
           batchRuns.innerHTML = runs.map((item) => `
-            <a class="item" href="${html(item.url || "#")}" target="_blank" rel="noreferrer">
+            <div class="item item-clickable" role="button" tabindex="0" data-preview-url="${html(item.url||'')}" data-preview-label="${html(item.file||'批量结果')}">
               <div class="item-top">
                 <p class="item-title">${html(item.file)}</p>
                 <span class="pill">${item.rows || 0} 行</span>
               </div>
               <p class="item-meta">${html(item.updated_at)} · 最高评分 ${num(item.top_score)}</p>
-            </a>
+            </div>
           `).join("");
           if (!runs.length) {
             empty(batchRuns, "暂无批量结果。", emptyAction("start-batch", "启动批量分析"));
@@ -3506,25 +3770,131 @@
         draw();
       }
 
-      function saveDrawnPattern(canvas) {
+      async function saveDrawnPattern(canvas) {
         if (!canvas || state.drawPoints.length < 2) return;
+        const curve = state.selectedCurve || resample(state.drawPoints);
+        const status = $("#patternStatus");
+        // 1) 持久化到后端历史图形库（供"历史图形选股"复用）
+        try {
+          await fetchJson("/api/pattern-search/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: `手绘 ${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+              normalized_curve: curve,
+              points: state.drawPoints,
+              source: "draw",
+            }),
+          });
+          if (status) {
+            status.className = "notice status success";
+            status.textContent = "图形已存入「历史图形」，可在右侧直接复用选股。";
+          }
+          await loadSavedPatterns();
+        } catch (error) {
+          if (status) {
+            status.className = "notice status warning";
+            status.textContent = `保存到历史库失败：${error.message}（已尝试本地导出）`;
+          }
+        }
+        // 2) 同时导出 PNG / JSON 到本地（保留原有便利功能）
         const stamp = new Date().toISOString().replace(/[:.]/g, "-");
         const payload = {
           type: "kronos-pattern-drawing",
           version: 1,
           saved_at: new Date().toISOString(),
           points: state.drawPoints,
-          normalized_curve: state.selectedCurve || resample(state.drawPoints),
+          normalized_curve: curve,
         };
         const jsonBlob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
         downloadBlob(jsonBlob, `kronos_pattern_${stamp}.json`);
         canvas.toBlob((blob) => {
           if (blob) downloadBlob(blob, `kronos_pattern_${stamp}.png`);
         });
-        const status = $("#patternStatus");
-        if (status) {
-          status.className = "notice status success";
-          status.textContent = "图形已保存为 PNG 和 JSON。";
+      }
+
+      async function loadSavedPatterns() {
+        const list = $("#savedPatternList");
+        if (!list) return;
+        try {
+          const data = await fetchJson("/api/pattern-search/saved?limit=50");
+          state.savedPatterns = data.patterns || [];
+          renderSavedPatterns(state.savedPatterns);
+        } catch (error) {
+          empty(list, `历史图形读取失败：${error.message}`);
+        }
+      }
+
+      function renderSavedPatterns(patterns) {
+        const list = $("#savedPatternList");
+        const meta = $("#savedPatternMeta");
+        if (!list) return;
+        if (meta) meta.textContent = `${patterns.length} 条`;
+        if (!patterns.length) {
+          empty(list, "暂无历史图形。在左侧手绘后点「保存图形」即可入库复用。");
+          return;
+        }
+        list.innerHTML = patterns
+          .map((p) => `
+            <div class="item" data-saved-id="${p.id}">
+              <div class="item-top">
+                <p class="item-title">${html(p.name || "未命名形态")}</p>
+                <span class="pill">${String(p.source || "draw").startsWith("stock") ? "个股" : "手绘"}</span>
+              </div>
+              <p class="item-meta">${html(p.created_at || "")} · ${p.normalized_curve?.length || 0} 点</p>
+              <div class="actions" style="margin-top: 8px;">
+                <button class="button compact" type="button" data-saved-use="${p.id}">用此形态选股</button>
+                <button class="button secondary compact" type="button" data-saved-preview="${p.id}">预览</button>
+                <button class="button secondary compact" type="button" data-saved-del="${p.id}">删除</button>
+              </div>
+            </div>
+          `)
+          .join("");
+        list.querySelectorAll("[data-saved-use]").forEach((el) => {
+          el.addEventListener("click", () => {
+            const p = patterns.find((x) => String(x.id) === el.dataset.savedUse);
+            if (p) useSavedPattern(p, { run: true });
+          });
+        });
+        list.querySelectorAll("[data-saved-preview]").forEach((el) => {
+          el.addEventListener("click", () => {
+            const p = patterns.find((x) => String(x.id) === el.dataset.savedPreview);
+            if (p) useSavedPattern(p, { run: false });
+          });
+        });
+        list.querySelectorAll("[data-saved-del]").forEach((el) => {
+          el.addEventListener("click", () => deleteSavedPattern(el.dataset.savedDel));
+        });
+      }
+
+      function useSavedPattern(pattern, { run = false } = {}) {
+        if (!pattern?.normalized_curve?.length) return;
+        state.selectedCurve = pattern.normalized_curve;
+        const matchDraw = $("#matchDrawBtn");
+        const matchStock = $("#matchStockBtn");
+        if (matchDraw) matchDraw.disabled = false;
+        if (matchStock) matchStock.disabled = false;
+        const title = $("#patternCompareTitle");
+        const cmeta = $("#patternCompareMeta");
+        if (title) title.textContent = `${pattern.name || "历史形态"} 预览`;
+        if (cmeta) cmeta.textContent = pattern.created_at || "--";
+        plotPatternCompare(pattern.normalized_curve, {
+          stock_code: pattern.name || "saved",
+          stock_name: pattern.name || "历史形态",
+          normalized_curve: pattern.normalized_curve,
+          score: 1,
+        });
+        if (run) {
+          runPatternMatch(pattern.normalized_curve).catch((error) => alert(error.message));
+        }
+      }
+
+      async function deleteSavedPattern(id) {
+        try {
+          await fetchJson(`/api/pattern-search/saved/${encodeURIComponent(id)}/delete`, { method: "POST" });
+          await loadSavedPatterns();
+        } catch (error) {
+          alert(`删除失败：${error.message}`);
         }
       }
 
@@ -3788,6 +4158,7 @@
         loadPatternStatus().catch((error) => {
           $("#patternStatus").textContent = error.message;
         });
+        loadSavedPatterns().catch((error) => console.warn("历史图形读取失败", error));
         document.querySelectorAll("[data-pattern-tab]").forEach((button) => {
           button.addEventListener("click", () => {
             document.querySelectorAll("[data-pattern-tab]").forEach((el) => el.classList.remove("active"));
@@ -4049,6 +4420,7 @@
       async function boot() {
         updateTaskHeader([]);
         bindStockContextModal();
+        setupDrawers();
         $("#refreshBtn").addEventListener("click", () => {
           refreshCurrentView().catch((error) => {
             $("#refreshMeta").textContent = "刷新失败";
@@ -4080,6 +4452,91 @@
         console.error(error);
         alert(error.message);
       });
+
+      // ── 文件预览 modal ──────────────────────────────────────────────
+      async function openFilePreview(url, label) {
+        if (!url) return;
+        const modal = $("#filePreviewModal");
+        const body  = $("#filePreviewBody");
+        const title = $("#filePreviewTitle");
+        const meta  = $("#filePreviewMeta");
+        const openBtn = $("#filePreviewOpenBtn");
+
+        title.textContent = label || "预览";
+        meta.textContent  = url;
+        openBtn.href      = url;
+        body.innerHTML    = `<div class="stock-context-loading">加载中…</div>`;
+        modal.hidden      = false;
+        modal.setAttribute("aria-hidden", "false");
+
+        const ext = url.split("?")[0].split(".").pop().toLowerCase();
+        try {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+          if (ext === "html") {
+            const blob = await res.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            body.innerHTML = `<iframe src="${blobUrl}" style="width:100%;height:70vh;border:none;border-radius:6px;"></iframe>`;
+          } else if (ext === "md") {
+            const text = await res.text();
+            body.innerHTML = `<div class="file-preview-md">${renderMarkdown(text)}</div>`;
+          } else if (ext === "csv") {
+            const text = await res.text();
+            body.innerHTML = renderCsvTable(text);
+          } else if (ext === "json") {
+            const text = await res.text();
+            body.innerHTML = `<pre style="white-space:pre-wrap;word-break:break-all;font-size:0.8rem;">${html(text)}</pre>`;
+          } else {
+            // fallback: iframe
+            body.innerHTML = `<iframe src="${html(url)}" style="width:100%;height:70vh;border:none;border-radius:6px;"></iframe>`;
+          }
+        } catch (err) {
+          body.innerHTML = `<div class="notice status error">加载失败：${html(err.message)}</div>`;
+        }
+      }
+
+      function renderMarkdown(text) {
+        // minimal md→html: headers, bold, code blocks, line breaks
+        return text
+          .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+          .replace(/^#{3}\s+(.+)$/gm, "<h3>$1</h3>")
+          .replace(/^#{2}\s+(.+)$/gm, "<h2>$1</h2>")
+          .replace(/^#{1}\s+(.+)$/gm, "<h1>$1</h1>")
+          .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+          .replace(/`([^`]+)`/g, "<code>$1</code>")
+          .replace(/```[\s\S]*?```/g, (m) => `<pre><code>${m.slice(3, -3).replace(/^[^\n]*\n/, "")}</code></pre>`)
+          .replace(/\n\n/g, "</p><p>")
+          .replace(/\n/g, "<br>");
+      }
+
+      function renderCsvTable(text) {
+        const lines = text.trim().split("\n").slice(0, 500);
+        if (!lines.length) return "<p>空文件</p>";
+        const parse = (line) => line.split(",").map((c) => c.replace(/^"|"$/g, "").trim());
+        const headers = parse(lines[0]);
+        const rows = lines.slice(1).map(parse);
+        const th = headers.map((h) => `<th>${html(h)}</th>`).join("");
+        const tr = rows.map((r) => `<tr>${r.map((c) => `<td>${html(c)}</td>`).join("")}</tr>`).join("");
+        return `<div style="overflow:auto;max-height:70vh;"><table class="csv-preview-table"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`;
+      }
+
+      (function initFilePreviewModal() {
+        document.addEventListener("keydown", (e) => {
+          if (e.key === "Escape" && !$("#filePreviewModal").hidden) closeFilePreview();
+        });
+        $("#closeFilePreviewBtn").addEventListener("click", closeFilePreview);
+        $("#filePreviewModal").addEventListener("click", (e) => {
+          if (e.target === e.currentTarget) closeFilePreview();
+        });
+      })();
+
+      function closeFilePreview() {
+        const modal = $("#filePreviewModal");
+        modal.hidden = true;
+        modal.setAttribute("aria-hidden", "true");
+        $("#filePreviewBody").innerHTML = "";
+      }
     </script>
   </body>
 </html>
