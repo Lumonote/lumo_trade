@@ -656,19 +656,71 @@ def test_trigger_panel_overlay_generates_and_persists(monkeypatch):
     suite = StockAnalysisSuite()
     suite._load_ohlcv = lambda code: _fake_ohlcv(120)  # type: ignore[attr-defined]
 
+    # deep 质量门（P0-B）要求逐人覆盖大分歧两位头牌 —— 先取规则面板拿到其 id 再据此造 insight。
+    gd = suite.get_full_payload("000001")["panel"]["great_divide"]
+    bull_id, bear_id = gd["bull"]["id"], gd["bear"]["id"]
+
     import json as _json
     good = "```json\n" + _json.dumps({
         "great_divide_override": {"punchline": "放量突破压制估值"},
         "risks": ["估值", "解禁", "题材退潮"],
-        "panel_insights": {"buffett": "回调即买"},
+        "panel_insights": {bull_id: "回调即买", bear_id: "估值偏贵需警惕"},
         "buy_zones": {"value": ["12 以下"], "growth": [], "technical": [], "youzi": []},
     }, ensure_ascii=False) + "\n```"
 
     result = suite.trigger_panel_overlay("000001", tier="deep", llm_caller=lambda p: (True, good))
     assert result["success"] is True
     assert result["overlay"]["reviewed"] is True
+    assert result["overlay"]["quality"]["passed"] is True   # P0-B：完整 deep 覆盖过质量门
     assert ("analysis_overlay", "000001") in saved          # 已落 kv
     assert result["merged_panel"]["great_divide"]["punchline"] == "放量突破压制估值"
+
+
+def test_trigger_panel_overlay_blocked_still_persists(monkeypatch):
+    """P0-B：deep 覆盖缺大分歧头牌逐人点评 → 质量门拦截（reviewed=False），但拦截 overlay 仍落 kv 供审计/重载红条复现（spec §8.1）。"""
+    from analysis import stock_analysis_suite as mod
+    from data_store import kv_repo
+
+    saved = {}
+    monkeypatch.setattr(kv_repo, "set_", lambda ns, key, payload, ttl_seconds=0: saved.update({(ns, key): payload}))
+    monkeypatch.setattr(kv_repo, "get", lambda ns, key: None)
+
+    class _Chip:
+        def analyze(self, code, df):
+            return {"details": {"main_force_control": 70, "concentration_90": 15.9, "profit_ratio": 50}, "signals": []}
+
+    class _Cap:
+        def analyze(self, code, df):
+            return {"details": {"order_analysis": {"main_net_inflow": -1e6, "retail_net_inflow": 6e5},
+                                "positive_days_5d": 4}, "signals": []}
+
+    class _Fundam:
+        def __init__(self, code, minimal_api_mode=True): pass
+        def get_comprehensive_data(self):
+            return {"financial_indicators": {"pe": 4.8, "roe": 14.2}, "industry_comparison": {"pe_rank": 10.0}, "financial_reports": {"net_profit_yoy": 12.0}}
+
+    monkeypatch.setattr(mod, "ChipAnalyzer", _Chip)
+    monkeypatch.setattr(mod, "CapitalFlowAnalyzer", _Cap)
+    monkeypatch.setattr(mod, "FundamentalDataCollector", _Fundam)
+
+    suite = StockAnalysisSuite()
+    suite._load_ohlcv = lambda code: _fake_ohlcv(120)  # type: ignore[attr-defined]
+
+    import json as _json
+    # panel_insights 仅含一个绝非大分歧头牌的 id → 缺两位头牌逐人点评 → deep 逐人覆盖 critical
+    incomplete = "```json\n" + _json.dumps({
+        "great_divide_override": {"punchline": "放量突破压制估值"},
+        "risks": ["估值", "解禁", "题材退潮"],
+        "panel_insights": {"__nobody__": "市场情绪偏暖"},
+        "buy_zones": {"value": ["12 以下"], "growth": [], "technical": [], "youzi": []},
+    }, ensure_ascii=False) + "\n```"
+
+    result = suite.trigger_panel_overlay("000001", tier="deep", llm_caller=lambda p: (True, incomplete))
+    assert result["success"] is False                       # 被质量门拦截
+    assert result["overlay"]["reviewed"] is False
+    assert result["overlay"]["quality"]["passed"] is False
+    assert any("头牌" in c for c in result["overlay"]["quality"]["criticals"])
+    assert ("analysis_overlay", "000001") in saved          # 拦截 overlay 仍落 kv（审计/重载红条）
 
 
 def test_trigger_panel_overlay_lite_returns_unavailable(monkeypatch):
