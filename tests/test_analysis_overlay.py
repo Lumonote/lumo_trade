@@ -115,3 +115,95 @@ def test_extract_json_returns_none_on_garbage():
     assert extract_overlay_json("这不是 JSON") is None
     assert extract_overlay_json("") is None
     assert extract_overlay_json("```json\n{坏的 JSON}\n```") is None
+
+
+# --- 引擎：build_overlay / merge_overlay ---
+from analysis.analysis_overlay.engine import build_overlay, merge_overlay
+
+
+_FIXED_NOW = "2026-05-30T14:00:00"
+
+
+def _good_deep_json_text():
+    import json as _json
+    return "```json\n" + _json.dumps({
+        "great_divide_override": {"punchline": "放量突破压制估值担忧"},
+        "risks": ["估值透支", "题材退潮", "解禁压力"],
+        "panel_insights": {"zhao": "量化席位进场，打板情绪高", "graham": "估值偏贵需谨慎"},
+        "buy_zones": {"value": ["12.4 以下分批"], "growth": [], "technical": ["站上 20 日线"], "youzi": []},
+        "narrative_override": "多头占优但防估值",
+    }, ensure_ascii=False) + "\n```"
+
+
+def test_lite_does_not_call_llm():
+    calls = []
+    def caller(prompt):
+        calls.append(prompt)
+        return True, "{}"
+    ov = build_overlay(_panel(), {}, "lite", llm_caller=caller, now_iso=_FIXED_NOW)
+    assert calls == []
+    assert ov["reviewed"] is False
+    assert ov["data_status"] == "unavailable"
+    assert ov["tier"] == "lite"
+    assert ov["reason"]
+
+
+def test_deep_success_first_try():
+    def caller(prompt):
+        return True, _good_deep_json_text()
+    ov = build_overlay(_panel(), {}, "deep", llm_caller=caller, now_iso=_FIXED_NOW)
+    assert ov["reviewed"] is True
+    assert ov["data_status"] == "fresh"
+    assert ov["last_updated"] == _FIXED_NOW
+    assert ov["great_divide_override"]["punchline"] == "放量突破压制估值担忧"
+    assert "zhao" in ov["panel_insights"]
+    assert set(ov["buy_zones"].keys()) == {"value", "growth", "technical", "youzi"}
+
+
+def test_retries_then_succeeds():
+    seq = ["这不是 JSON", _good_deep_json_text()]
+    attempts = {"n": 0}
+    def caller(prompt):
+        i = attempts["n"]; attempts["n"] += 1
+        return True, seq[i]
+    ov = build_overlay(_panel(), {}, "deep", llm_caller=caller, retries=2, now_iso=_FIXED_NOW)
+    assert attempts["n"] == 2          # 重试了一次
+    assert ov["reviewed"] is True
+
+
+def test_all_attempts_fail_falls_back():
+    def caller(prompt):
+        return True, "始终不是 JSON"
+    ov = build_overlay(_panel(), {}, "medium", llm_caller=caller, retries=2, now_iso=_FIXED_NOW)
+    assert ov["reviewed"] is False
+    assert ov["data_status"] == "unavailable"
+    assert ov["reason"]
+
+
+def test_not_configured_short_circuits_without_retry():
+    attempts = {"n": 0}
+    def caller(prompt):
+        attempts["n"] += 1
+        return False, "模型 DeepSeek官方/DeepSeek-V4 未配置 API Key"
+    ov = build_overlay(_panel(), {}, "deep", llm_caller=caller, retries=3, now_iso=_FIXED_NOW)
+    assert attempts["n"] == 1           # 未配置 → 不重试
+    assert ov["reviewed"] is False
+    assert "API Key" in ov["reason"] or "未配置" in ov["reason"]
+
+
+def test_merge_overlay_overrides_punchline_and_attaches_insight():
+    ov = build_overlay(_panel(), {}, "deep", llm_caller=lambda p: (True, _good_deep_json_text()),
+                       now_iso=_FIXED_NOW)
+    merged = merge_overlay(_panel(), ov)
+    assert merged["great_divide"]["punchline"] == "放量突破压制估值担忧"
+    zhao = next(a for a in merged["analysts"] if a["id"] == "zhao")
+    assert zhao["insight"] == "量化席位进场，打板情绪高"
+    # 原 panel 不被修改（深拷贝）
+    assert _panel()["great_divide"]["punchline"] != merged["great_divide"]["punchline"]
+
+
+def test_merge_overlay_noop_when_not_reviewed():
+    ov = build_overlay(_panel(), {}, "lite", llm_caller=lambda p: (True, "{}"), now_iso=_FIXED_NOW)
+    merged = merge_overlay(_panel(), ov)
+    assert merged["great_divide"]["punchline"] == _panel()["great_divide"]["punchline"]
+    assert all("insight" not in a for a in merged["analysts"])
