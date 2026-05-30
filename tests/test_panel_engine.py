@@ -30,3 +30,34 @@ def test_registry_entries_have_required_fields():
 def test_registry_ids_unique():
     ids = [p["id"] for p in load_personas()]
     assert len(ids) == len(set(ids))
+
+
+from analysis.panel.style import classify_style, load_style_weights, school_style_weight
+
+
+def test_classify_style_small_spec():
+    # 高控盘 + 放量 + 无基本面 → 小盘投机
+    style = classify_style({"control_degree": 80, "volume_ratio": 2.2,
+                            "roe": None, "quant_seat_appearances": 3})
+    assert style == "small_spec"
+
+
+def test_classify_style_baima_default():
+    style = classify_style({"roe": 20, "net_profit_yoy": 12, "control_degree": 30})
+    assert style in ("baima", "growth")
+
+
+def test_load_style_weights_has_matrix():
+    w = load_style_weights()
+    assert "matrix" in w and "default" in w
+
+
+def test_school_style_weight_lookup():
+    w = load_style_weights()
+    # 小盘投机时游资派(F)权重应 > 价值派(A)
+    assert school_style_weight("F", "small_spec", w) > school_style_weight("A", "small_spec", w)
+
+
+def test_school_style_weight_falls_back_to_default():
+    w = {"default": 1.0, "matrix": {}}
+    assert school_style_weight("A", "unknown_style", w) == 1.0
