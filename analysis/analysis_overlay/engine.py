@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from analysis.analysis_overlay.prompt import build_overlay_prompt, extract_overlay_json
 from analysis.analysis_overlay.schema import TIERS, validate_overlay
+from analysis.report_quality import evaluate_overlay
 
 LlmCaller = Callable[[str], Tuple[bool, str]]
 
@@ -105,7 +106,14 @@ def build_overlay(
             continue
         errors = validate_overlay(obj, tier)
         if not errors:
-            return _success(obj, tier, now_iso)
+            overlay = _success(obj, tier, now_iso)
+            report = evaluate_overlay(overlay, panel, payload, tier)
+            overlay["quality"] = report
+            if not report["passed"]:
+                # 🔴 critical → 降级 reviewed,复用既有回退链；前端按 quality.criticals 显红条
+                overlay["reviewed"] = False
+                overlay["reason"] = "质量门拦截：" + "；".join(report["criticals"])
+            return overlay
         last_errors = errors
         last_reason = "；".join(errors)
 

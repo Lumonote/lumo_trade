@@ -207,3 +207,34 @@ def test_merge_overlay_noop_when_not_reviewed():
     merged = merge_overlay(_panel(), ov)
     assert merged["great_divide"]["punchline"] == _panel()["great_divide"]["punchline"]
     assert all("insight" not in a for a in merged["analysts"])
+
+
+def _placeholder_deep_json_text():
+    import json as _json
+    return "```json\n" + _json.dumps({
+        "great_divide_override": {"punchline": "TODO 待补充金句"},
+        "risks": ["估值透支", "题材退潮", "解禁压力"],
+        "panel_insights": {"zhao": "量化席位进场", "graham": "估值偏贵"},
+        "buy_zones": {"value": ["12.4 以下"], "growth": [], "technical": [], "youzi": []},
+        "narrative_override": "多头占优",
+    }, ensure_ascii=False) + "\n```"
+
+
+def test_build_overlay_blocks_on_quality_critical():
+    """schema 合法但含占位符 → 质量门拦截：reviewed 降级 + 挂 quality + reason。"""
+    ov = build_overlay(_panel(), {}, "deep",
+                       llm_caller=lambda p: (True, _placeholder_deep_json_text()),
+                       now_iso=_FIXED_NOW)
+    assert ov["reviewed"] is False
+    assert ov["quality"]["passed"] is False
+    assert any("占位符" in c for c in ov["quality"]["criticals"])
+    assert ov["reason"].startswith("质量门拦截")
+
+
+def test_build_overlay_attaches_quality_on_success():
+    """clean 成功 → reviewed 保持 True 且挂 quality.passed=True。"""
+    ov = build_overlay(_panel(), {}, "deep",
+                       llm_caller=lambda p: (True, _good_deep_json_text()),
+                       now_iso=_FIXED_NOW)
+    assert ov["reviewed"] is True
+    assert ov["quality"]["passed"] is True
