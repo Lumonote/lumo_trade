@@ -142,6 +142,60 @@
 
 诊断走既有 `/api/diagnostics/data-sources`;扩展 `tests/test_stock_analysis_suite.py`。
 
+### 8.1 实现设计（P0-B v1，范围裁定）
+
+**模块接口** —— 纯函数,无 I/O,可单测:
+
+```
+analysis/report_quality.py
+def evaluate_overlay(overlay, panel, payload, tier) -> QualityReport
+# QualityReport = {"passed": bool, "criticals": [str], "warnings": [str]}
+```
+
+仅在「结构合法」的 overlay 上运行(即已过 `schema.validate_overlay`、`build_overlay` 即将返回 `reviewed=True` 时);LLM 未配置/返回非法的 overlay 走既有「未生成」路径,不算质量拦截。
+
+**分档检查(tier-aware):**
+
+🔴 Critical(拦截 → `reviewed=False` + 红条 + 回退规则文案):
+
+- **无占位符** —— overlay 任一字符串(punchline / risks[] / panel_insights 值 / narrative_override / buy_zones 项)不得含 `[脚本占位]`/`TODO`/`占位`/`待补充`/`XXX`/未填充 `{...}`。复用 `analysis/sector_api.py` 的 `_is_placeholder_text` 范式。
+- **punchline 非空**(medium 及以上)。
+- **逐人覆盖**(仅 deep) —— `panel_insights` 必须同时点评 `great_divide.bull.id` 与 `great_divide.bear.id`(两位头牌不得空白)。
+- **buy_zones 内容**(仅 deep) —— 四档键齐全(schema 已保证)且 ≥1 档非空(至少一个可操作区间)。
+
+🟡 Warning(软旗标,不拦截):
+
+- **风险 ≥ 3 条** —— 不足则黄旗。
+- **FACTCHECK(轻量)** —— 从 overlay 文本抽数字 token,任一无法在 payload 数值集合内按取整容差(支持 `亿/万`、`%`、1–2 位小数)匹配 → 黄旗列出。刻意保守以免误报。
+
+**本期不做(显式裁定,非静默截断):** 行业映射 sanity + 编造产业链红旗(需 sector 交叉校验、启发式模糊,v1 后另议)。
+
+**接入点 / 控制流** —— `build_overlay`(`analysis/analysis_overlay/engine.py`)在 schema 合法的 `_success(...)` 之后:
+
+```
+overlay = _success(obj, tier, now_iso)        # reviewed=True
+report  = evaluate_overlay(overlay, panel, payload, tier)
+overlay["quality"] = report                   # 新增契约字段,恒存在
+if not report["passed"]:
+    overlay["reviewed"] = False               # 复用既有回退链
+    overlay["reason"]   = "质量门拦截：" + "；".join(report["criticals"])
+return overlay
+```
+
+单一收口点,生成与重生成路径都被门控。`quality` 成为 overlay 上恒存在的新字段。
+
+**前端(`renderPanelOverlay`,`desktop.html`)** —— 用新 `quality` 字段三分支:
+
+- `reviewed===true` → 照常渲染 AI 卡;若 `quality.warnings.length` → 卡内黄旗条。
+- `reviewed===false` 且 `quality.criticals.length` → 顶部红条(`bbp-overlay-redbar`)+ 原因 + 重试按钮;下方仍渲染规则版 panel。
+- `reviewed===false` 且无 criticals → 既有「AI 深度点评」升档按钮(未生成)。
+
+**持久化 / 重载** —— `trigger_panel_overlay` 落 kv 时**含被拦截的 overlay**(审计 / diff / 回滚);重载时红条 + 重试复现,重试走 `force_refresh`。
+
+**向后兼容** —— `quality` 为增量字段;P0-A 旧持久化 overlay 无此字段,前端将「缺 quality」视作「无警告」。
+
+**测试(TDD,见 §12):** 新增 `tests/test_report_quality.py`(每条 🔴/🟡 一个 red→green:占位符被拦、逐人覆盖缺失被拦、buy_zones 空被拦、风险<3 黄旗、FACTCHECK 抓编造数字 / 放行真实数字、passed happy path);扩展 `tests/test_analysis_overlay.py`(build_overlay 命中 critical 时 `reviewed→False` 且挂 `quality`);webui 表面断言红条分支。
+
 ## 9. 前端：Tab #13「多空评审团」
 
 - 位置：12-Tab 工作台新增第 13 Tab,放 `ai_interpretation` 之前。
