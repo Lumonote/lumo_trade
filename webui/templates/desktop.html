@@ -3438,6 +3438,9 @@
         pane.innerHTML = `${banner}
           <div class="bbp-root">
             ${head}
+            <div class="bbp-overlay" id="bbpOverlay">
+              ${renderPanelOverlay(payload)}
+            </div>
             <div class="bbp-section-title">量化指标（16）</div>
             ${groupHtml}
             <div class="bbp-section-title">投资人评审团（51 · 按流派折叠）</div>
@@ -3457,12 +3460,72 @@
               <div class="bbp-member" style="animation-delay:${i * 30}ms">
                 <span class="bbp-dot" style="background:${bbpSignalColor(a.signal)}"></span>
                 <span class="bbp-member-name">${html(a.name)}${a.source === "rule" ? '<em class="bbp-rule-tag">规则推断</em>' : ""}</span>
-                <span class="bbp-member-head">${html(a.headline)}</span>
+                <span class="bbp-member-head">${html(a.insight || a.headline)}</span>
                 <span class="bbp-member-score" style="color:${bbpSignalColor(a.signal)}">${a.score}</span>
               </div>`).join("");
             box.dataset.rendered = "1";
           });
         });
+      }
+
+      // P0-A：LLM 覆盖层渲染（reviewed=true 显示 AI 点评；否则显示升档按钮，回退规则文案）
+      function renderPanelOverlay(payload) {
+        const ov = (payload && payload.analysis_overlay) || {};
+        const stock = (payload && payload.stock) || {};
+        if (!ov.reviewed) {
+          const reason = ov.reason ? `<span class="bbp-overlay-reason">${html(ov.reason)}</span>` : "";
+          return `
+            <div class="bbp-overlay-empty">
+              <button class="bbp-overlay-btn" type="button"
+                onclick="triggerPanelOverlay('${html(stock.code || "")}')">AI 深度点评</button>
+              ${reason}
+            </div>`;
+        }
+        const risks = (ov.risks || []).map((r) => `<li>${html(r)}</li>`).join("");
+        const zones = ov.buy_zones || {};
+        const zoneRow = (k, label) => {
+          const items = (zones[k] || []).map((z) => `<span class="bbp-zone-pill">${html(z)}</span>`).join("");
+          return items ? `<div class="bbp-zone"><span class="bbp-zone-label">${label}</span>${items}</div>` : "";
+        };
+        const nar = ov.narrative_override ? `<div class="bbp-overlay-nar">${html(ov.narrative_override)}</div>` : "";
+        return `
+          <div class="bbp-overlay-card" data-status="${html(ov.data_status || "")}">
+            <div class="bbp-overlay-tag">AI 点评 · ${html(ov.tier || "")}${ov.data_status === "stale" ? " · 历史" : ""}</div>
+            ${nar}
+            ${risks ? `<div class="bbp-overlay-risks"><b>风险</b><ul>${risks}</ul></div>` : ""}
+            <div class="bbp-overlay-zones">
+              ${zoneRow("value", "价值")}${zoneRow("growth", "成长")}
+              ${zoneRow("technical", "技术")}${zoneRow("youzi", "游资")}
+            </div>
+          </div>`;
+      }
+
+      async function triggerPanelOverlay(code) {
+        if (!code) { showToast("缺少股票代码"); return; }
+        const box = document.getElementById("bbpOverlay");
+        if (box) box.innerHTML = `<div class="bbp-overlay-empty">⏳ 正在调用 DeepSeek 生成深度点评…</div>`;
+        try {
+          const resp = await fetch(`/api/stock-analysis-suite/${encodeURIComponent(code)}/panel-overlay`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tier: "deep" }),
+          });
+          const data = await resp.json();
+          if (data.success && state.currentSuitePayload) {
+            state.currentSuitePayload.analysis_overlay = data.overlay;
+            if (data.merged_panel) state.currentSuitePayload.panel = data.merged_panel;
+            renderSuitePanel(state.currentSuitePayload);   // 整面重渲（含覆盖后的金句/逐人 insight）
+          } else if (box) {
+            box.innerHTML = `<div class="bbp-overlay-empty">
+              <span class="bbp-overlay-reason">生成失败：${html((data.overlay && data.overlay.reason) || data.error || "未知错误")}</span>
+              <button class="bbp-overlay-btn" type="button" onclick="triggerPanelOverlay('${html(code)}')">重试</button>
+            </div>`;
+          }
+        } catch (err) {
+          if (box) box.innerHTML = `<div class="bbp-overlay-empty">
+            <span class="bbp-overlay-reason">网络错误：${html(String(err && err.message || err))}</span>
+            <button class="bbp-overlay-btn" type="button" onclick="triggerPanelOverlay('${html(code)}')">重试</button>
+          </div>`;
+        }
       }
 
       function renderSuiteAi(payload) {

@@ -2166,3 +2166,21 @@ body.modal-open {
   .bbp-thermo-slider, .bbp-ind-bar i { transition:none; }
   .bbp-school[open] .bbp-member { animation:none; }
 }
+
+/* ===== 多空评审团 — LLM 覆盖层（P0-A）===== */
+.bbp-overlay { margin: 10px 0; }
+.bbp-overlay-empty { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
+.bbp-overlay-btn { padding: 6px 14px; border-radius: 8px; border: none; cursor: pointer;
+  background: linear-gradient(90deg, #2f6fdd, #4f8bff); color: #fff; font-weight: 600; }
+.bbp-overlay-reason { font-size: 12px; color: #6b778a; }
+.bbp-overlay-card { border: 1px solid #e1e6ee; border-left: 3px solid #2f6fdd;
+  border-radius: 8px; padding: 10px 14px; background: #f7f9fc; }
+.bbp-overlay-card[data-status="stale"] { border-left-color: #d97706; }
+.bbp-overlay-tag { font-size: 11px; color: #2f6fdd; font-weight: 700; margin-bottom: 6px; }
+.bbp-overlay-nar { font-size: 13px; margin-bottom: 6px; }
+.bbp-overlay-risks ul { margin: 4px 0 0; padding-left: 18px; }
+.bbp-overlay-risks li { font-size: 12px; color: #92400e; }
+.bbp-overlay-zones { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.bbp-zone { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.bbp-zone-label { font-size: 11px; color: #6b778a; min-width: 32px; }
+.bbp-zone-pill { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: #e7effd; color: #2f6fdd; }
