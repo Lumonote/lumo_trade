@@ -76,17 +76,6 @@ def _technical_features(df: Optional[pd.DataFrame]) -> Dict[str, Any]:
     return out
 
 
-def _trend(latest: Any, previous: Any, *, down_label: str, up_label: str) -> Optional[str]:
-    a, b = _num(latest), _num(previous)
-    if a is None or b is None:
-        return None
-    if a < b:
-        return down_label
-    if a > b:
-        return up_label
-    return "flat"
-
-
 def extract_features(inputs: Dict[str, Any], sections: Dict[str, Any]) -> Dict[str, Any]:
     inputs = inputs or {}
     sections = sections or {}
@@ -108,10 +97,10 @@ def extract_features(inputs: Dict[str, Any], sections: Dict[str, Any]) -> Dict[s
 
     mfd = sections.get("main_force_deep") or {}
     hsgt = mfd.get("hsgt") or {}
-    f["north_delta_30d"] = _num(hsgt.get("delta"))
+    f["north_delta_30d"] = _num(hsgt.get("delta_30d_pct"))
     dt = mfd.get("dragon_tiger") or {}
     f["quant_seat_appearances"] = _num(dt.get("quant_seat_appearances"))
-    f["lhb_net_inst_buy"] = _num(dt.get("net_inst_buy"))
+    f["lhb_net_inst_buy"] = _num(dt.get("net_inst_buy_30d"))
 
     f.update(_technical_features(inputs.get("ohlcv")))
 
@@ -119,11 +108,19 @@ def extract_features(inputs: Dict[str, Any], sections: Dict[str, Any]) -> Dict[s
     f["control_degree"] = _num(cc.get("control_degree"))
     ih = sections.get("institutional_holdings") or {}
     hn = ih.get("holder_number") or {}
-    f["holder_number_trend"] = _trend(hn.get("latest"), hn.get("previous"),
-                                      down_label="down", up_label="up")
-    fh = ih.get("fund_holds") or {}
-    f["fund_hold_trend"] = _trend(fh.get("latest_funds"), fh.get("previous_funds"),
-                                  down_label="down", up_label="up")
+    # 户数 QoQ 变化：<0 = 户数减少（筹码集中, 多）→ "down"，>0 → "up"，0 → "flat"
+    qoq = _num(hn.get("pct_change_qoq"))
+    if qoq is None:
+        f["holder_number_trend"] = None
+    elif qoq < 0:
+        f["holder_number_trend"] = "down"
+    elif qoq > 0:
+        f["holder_number_trend"] = "up"
+    else:
+        f["holder_number_trend"] = "flat"
+    # Phase 1: 基金持仓 provider 仅返回单期（latest period），无上一期数据，
+    # 无法计算趋势——延后到后续阶段补齐上一期再派生 trend。
+    f["fund_hold_trend"] = None
 
     qm = sections.get("quant_matrix") or {}
     reso = qm.get("multi_period_resonance") or {}

@@ -31,12 +31,15 @@ def _inputs():
 def _sections():
     return {
         "main_force_deep": {"data_status": "fresh",
-            "dragon_tiger": {"quant_seat_appearances": 2, "net_inst_buy": 5e7},
-            "hsgt": {"latest": {"hold_ratio": 4.1}, "delta": 0.6}},
+            "dragon_tiger": {"quant_seat_appearances": 2, "net_inst_buy_30d": 5e7},
+            "hsgt": {"latest": {"hold_ratio": 4.1}, "delta_30d_pct": 0.6}},
         "chip_control": {"data_status": "fresh", "control_degree": 72},
         "institutional_holdings": {"data_status": "stale",
-            "holder_number": {"latest": 50000, "previous": 56000},
-            "fund_holds": {"latest_funds": 30, "previous_funds": 24}},
+            "holder_number": {"latest_num": 50000, "pct_change_qoq": -3.2,
+                "history": [{"end_date": "2025-12-31", "holder_num": 56000, "pct_change": 0.0},
+                            {"end_date": "2026-03-31", "holder_num": 50000, "pct_change": -3.2}]},
+            "fund_holds": {"period": "2026-03-31",
+                "rows": [{"fund_name": "易方达蓝筹", "nv_ratio": 3.4}], "total_nv_pct": 3.4}},
         "quant_matrix": {"data_status": "fresh",
             "multi_period_resonance": {"bull": 18, "bear": 6, "neutral": 6}},
     }
@@ -57,8 +60,9 @@ def test_extract_features_sections_and_model_ratio():
     assert f["control_degree"] == 72
     assert f["model_total"] == 30
     assert abs(f["model_bull_ratio"] - 0.6) < 1e-6
+    assert f["lhb_net_inst_buy"] == 5e7
     assert f["holder_number_trend"] == "down"   # 户数减少 = 筹码集中
-    assert f["fund_hold_trend"] == "up"          # 基金增持
+    assert f["fund_hold_trend"] is None          # Phase 1: fund provider exposes no prior period
 
 
 def test_extract_features_technical_computed():
@@ -79,3 +83,20 @@ def test_extract_features_tolerates_empty():
     f = extract_features({}, {})
     assert f["roe"] is None and f["rsi"] is None and f["model_bull_ratio"] is None
     assert f["market_regime"] is None
+
+
+def test_extract_features_reads_real_provider_keys():
+    """Guard against features.py drifting from the actual institutional provider output keys."""
+    sections = {
+        "main_force_deep": {"data_status": "fresh",
+            "dragon_tiger": {"quant_seat_appearances": 2, "net_inst_buy_30d": 5e7},
+            "hsgt": {"delta_30d_pct": 0.6}},
+        "institutional_holdings": {"data_status": "stale",
+            "holder_number": {"latest_num": 50000, "pct_change_qoq": -3.2},
+            "fund_holds": {"period": "2026-03-31", "rows": [], "total_nv_pct": 3.4}},
+    }
+    f = extract_features({}, sections)
+    assert f["north_delta_30d"] == 0.6
+    assert f["lhb_net_inst_buy"] == 5e7
+    assert f["holder_number_trend"] == "down"
+    assert f["fund_hold_trend"] is None
