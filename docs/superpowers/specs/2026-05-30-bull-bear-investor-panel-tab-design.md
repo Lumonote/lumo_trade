@@ -215,7 +215,7 @@ return overlay
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | **Phase 1**（首个实现计划） | Tab #13 UI（终端+折叠+③动画）+ `analysis/panel/`（12 手写 + 39 stub）+ 16 指标接既有数据 + 共识/大分歧（**纯规则,无 LLM**,headline/punchline 用模板） | Tab 渲染 51 人分 7 折叠;16 指标有真实数据;共识温度计+大分歧;`test_panel_*` 全绿 |
-| **Phase 2** | LLM 覆盖层（P0-A）+ schema 校验 + `kv_repo` 持久化 + 机械质量门（P0-B） | AI 点评输出结构化 JSON;critical 不过则回退规则文案 + 红条 |
+| **Phase 2** | LLM 覆盖层（P0-A）+ schema 校验 + `kv_repo` 持久化 + 机械质量门（P0-B） | AI 点评输出结构化 JSON;critical 不过则回退规则文案 + 红条（P0-A 覆盖层 ✅；P0-B 质量门 ✅ 完成于 2026-05-30） |
 | **Phase 3** | 回测校准（F4）+ 升级 stub 规则 | 回测显示某派/某指标 alpha 显著性 > 阈值 |
 
 ## 12. 测试策略
