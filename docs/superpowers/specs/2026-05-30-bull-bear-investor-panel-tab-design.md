@@ -158,7 +158,7 @@ def evaluate_overlay(overlay, panel, payload, tier) -> QualityReport
 
 🔴 Critical(拦截 → `reviewed=False` + 红条 + 回退规则文案):
 
-- **无占位符** —— overlay 任一字符串(punchline / risks[] / panel_insights 值 / narrative_override / buy_zones 项)不得含 `[脚本占位]`/`TODO`/`占位`/`待补充`/`XXX`/未填充 `{...}`。复用 `analysis/sector_api.py` 的 `_is_placeholder_text` 范式。
+- **无占位符** —— overlay 任一字符串(punchline / risks[] / panel_insights 值 / narrative_override / buy_zones 项)不得含 `[脚本占位]`/`占位符`/`TODO`/`TBD`/`待补充`/`待填写`/未填充 `{{...}}`(裸『占位』常见于"主力占位/资金占位"等正常多头表述,故排除以免误拦)。就地实现该检测(不 import `analysis/sector_api.py`,避免触发其 Tushare 行业缓存的重副作用 import)。
 - **punchline 非空**(medium 及以上)。
 - **逐人覆盖**(仅 deep) —— `panel_insights` 必须同时点评 `great_divide.bull.id` 与 `great_divide.bear.id`(两位头牌不得空白)。
 - **buy_zones 内容**(仅 deep) —— 四档键齐全(schema 已保证)且 ≥1 档非空(至少一个可操作区间)。
