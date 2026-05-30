@@ -581,6 +581,24 @@ def test_payload_includes_analysis_overlay_key_backward_compatible(monkeypatch):
 
     monkeypatch.setattr(kv_repo, "get", lambda ns, key: None)  # kv 空
 
+    class _Chip:
+        def analyze(self, code, df):
+            return {"details": {"main_force_control": 70, "concentration_90": 15.9, "profit_ratio": 50}, "signals": []}
+
+    class _Cap:
+        def analyze(self, code, df):
+            return {"details": {"order_analysis": {"main_net_inflow": -1e6, "retail_net_inflow": 6e5},
+                                "positive_days_5d": 4}, "signals": []}
+
+    class _Fundam:
+        def __init__(self, code, minimal_api_mode=True): pass
+        def get_comprehensive_data(self):
+            return {"financial_indicators": {"pe": 4.8, "roe": 14.2}, "industry_comparison": {"pe_rank": 10.0}, "financial_reports": {"net_profit_yoy": 12.0}}
+
+    monkeypatch.setattr(mod, "ChipAnalyzer", _Chip)
+    monkeypatch.setattr(mod, "CapitalFlowAnalyzer", _Cap)
+    monkeypatch.setattr(mod, "FundamentalDataCollector", _Fundam)
+
     suite = StockAnalysisSuite()
     suite._load_ohlcv = lambda code: _fake_ohlcv(120)  # type: ignore[attr-defined]
     payload = suite._compute_full_payload("000001")
@@ -617,6 +635,24 @@ def test_trigger_panel_overlay_generates_and_persists(monkeypatch):
     monkeypatch.setattr(kv_repo, "set_", lambda ns, key, payload, ttl_seconds=0: saved.update({(ns, key): payload}))
     monkeypatch.setattr(kv_repo, "get", lambda ns, key: None)
 
+    class _Chip:
+        def analyze(self, code, df):
+            return {"details": {"main_force_control": 70, "concentration_90": 15.9, "profit_ratio": 50}, "signals": []}
+
+    class _Cap:
+        def analyze(self, code, df):
+            return {"details": {"order_analysis": {"main_net_inflow": -1e6, "retail_net_inflow": 6e5},
+                                "positive_days_5d": 4}, "signals": []}
+
+    class _Fundam:
+        def __init__(self, code, minimal_api_mode=True): pass
+        def get_comprehensive_data(self):
+            return {"financial_indicators": {"pe": 4.8, "roe": 14.2}, "industry_comparison": {"pe_rank": 10.0}, "financial_reports": {"net_profit_yoy": 12.0}}
+
+    monkeypatch.setattr(mod, "ChipAnalyzer", _Chip)
+    monkeypatch.setattr(mod, "CapitalFlowAnalyzer", _Cap)
+    monkeypatch.setattr(mod, "FundamentalDataCollector", _Fundam)
+
     suite = StockAnalysisSuite()
     suite._load_ohlcv = lambda code: _fake_ohlcv(120)  # type: ignore[attr-defined]
 
@@ -639,6 +675,27 @@ def test_trigger_panel_overlay_lite_returns_unavailable(monkeypatch):
     from data_store import kv_repo
     monkeypatch.setattr(kv_repo, "set_", lambda *a, **k: None)
     monkeypatch.setattr(kv_repo, "get", lambda ns, key: None)
+
+    from analysis import stock_analysis_suite as mod
+
+    class _Chip:
+        def analyze(self, code, df):
+            return {"details": {"main_force_control": 70, "concentration_90": 15.9, "profit_ratio": 50}, "signals": []}
+
+    class _Cap:
+        def analyze(self, code, df):
+            return {"details": {"order_analysis": {"main_net_inflow": -1e6, "retail_net_inflow": 6e5},
+                                "positive_days_5d": 4}, "signals": []}
+
+    class _Fundam:
+        def __init__(self, code, minimal_api_mode=True): pass
+        def get_comprehensive_data(self):
+            return {"financial_indicators": {"pe": 4.8, "roe": 14.2}, "industry_comparison": {"pe_rank": 10.0}, "financial_reports": {"net_profit_yoy": 12.0}}
+
+    monkeypatch.setattr(mod, "ChipAnalyzer", _Chip)
+    monkeypatch.setattr(mod, "CapitalFlowAnalyzer", _Cap)
+    monkeypatch.setattr(mod, "FundamentalDataCollector", _Fundam)
+
     suite = StockAnalysisSuite()
     suite._load_ohlcv = lambda code: _fake_ohlcv(120)  # type: ignore[attr-defined]
     called = []
