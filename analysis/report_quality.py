@@ -8,12 +8,18 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable, List, Optional
 
 # 占位符标记（高精度集合,避免误拦合法中文点评）。
 _PLACEHOLDER_MARKERS = (
     "[脚本占位]", "占位符", "占位", "todo", "tbd", "待补充", "待填写", "{{", "}}",
 )
+
+# 抽数字 token（千分位 / 小数 / 负号）。% 与 亿/万 单位后缀由匹配时多尺度容差处理。
+_NUM_RE = re.compile(r"-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?")
+_FACTCHECK_MIN_ABS = 10.0   # |v|<10 的数（序号/小计数/常识）豁免,避免误报
+_FACTCHECK_REL_TOL = 0.02   # 容差 |n-v| <= max(0.5, |v|*2%)
 
 
 def evaluate_overlay(
@@ -50,6 +56,15 @@ def evaluate_overlay(
         # 🔴 buy_zones ≥1 档非空（至少一个可操作区间）
         if not _has_actionable_zone(overlay.get("buy_zones")):
             criticals.append("buy_zones 四档均为空（无可操作区间）")
+
+    # 🟡 风险 ≥ 3 条
+    if sum(1 for r in (overlay.get("risks") or []) if isinstance(r, str) and r.strip()) < 3:
+        warnings.append("风险条目少于 3 条")
+
+    # 🟡 FACTCHECK（轻量）：overlay 引用数字须能在 payload 找到出处
+    unverifiable = _factcheck_numbers(texts, panel, payload or {})
+    if unverifiable:
+        warnings.append("以下数字未能在数据中找到出处：" + "、".join(unverifiable[:5]))
 
     return {"passed": not criticals, "criticals": criticals, "warnings": warnings}
 
@@ -100,3 +115,63 @@ def _has_actionable_zone(buy_zones: Any) -> bool:
     if not isinstance(buy_zones, dict):
         return False
     return any(isinstance(v, list) and len(v) > 0 for v in buy_zones.values())
+
+
+def _norm_num(token: str) -> Optional[float]:
+    try:
+        return float(token.replace(",", ""))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _payload_number_set(panel: Dict[str, Any], payload: Dict[str, Any]) -> set:
+    """递归收集 panel+payload 内所有数值（含字符串里的数字），归一化为浮点。"""
+    found: set = set()
+
+    def walk(obj: Any) -> None:
+        if isinstance(obj, bool):
+            return
+        if isinstance(obj, (int, float)):
+            found.add(round(float(obj), 2))
+        elif isinstance(obj, str):
+            for tok in _NUM_RE.findall(obj):
+                v = _norm_num(tok)
+                if v is not None:
+                    found.add(round(v, 2))
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, (list, tuple)):
+            for v in obj:
+                walk(v)
+
+    walk(panel)
+    walk(payload)
+    return found
+
+
+def _close_to_any(v: float, number_set: set) -> bool:
+    """v 在 原值/万/亿 三种尺度上任一接近 payload 数值即视作有出处（保守,少误报）。"""
+    for scale in (1.0, 1e4, 1e8):
+        scaled = v * scale
+        tol = max(0.5, abs(scaled) * _FACTCHECK_REL_TOL)
+        if any(abs(n - scaled) <= tol for n in number_set):
+            return True
+    return False
+
+
+def _factcheck_numbers(texts: List[str], panel: Dict[str, Any], payload: Dict[str, Any]) -> List[str]:
+    number_set = _payload_number_set(panel, payload)
+    unverifiable: List[str] = []
+    seen: set = set()
+    for text in texts:
+        for tok in _NUM_RE.findall(text):
+            if tok in seen:
+                continue
+            seen.add(tok)
+            v = _norm_num(tok)
+            if v is None or abs(v) < _FACTCHECK_MIN_ABS:
+                continue
+            if not _close_to_any(v, number_set):
+                unverifiable.append(tok)
+    return unverifiable

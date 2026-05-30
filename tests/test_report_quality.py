@@ -78,3 +78,31 @@ def test_deep_passes_with_both_insights_and_one_zone():
     rep = evaluate_overlay(_deep_overlay(), _DEEP_PANEL, {}, "deep")
     assert rep["passed"] is True
     assert rep["criticals"] == []
+
+
+def test_warns_when_fewer_than_three_risks():
+    ov = _deep_overlay(risks=["仅一条风险"])
+    rep = evaluate_overlay(ov, _DEEP_PANEL, {}, "deep")
+    assert rep["passed"] is True                       # 🟡 不拦截
+    assert any("风险" in w for w in rep["warnings"])
+
+
+def test_factcheck_flags_unverifiable_number():
+    # 金句引用 888.88，payload/panel 里没有这个数 → 黄旗
+    ov = _deep_overlay(great_divide_override={"punchline": "目标价直指 888.88 元"})
+    rep = evaluate_overlay(ov, _DEEP_PANEL, {"overview": {"price": 12.40}}, "deep")
+    assert rep["passed"] is True
+    assert any("888.88" in w for w in rep["warnings"])
+
+
+def test_factcheck_passes_number_present_in_payload():
+    ov = _deep_overlay(great_divide_override={"punchline": "控盘度高达 72"})
+    payload = {"chip_control": {"control_degree": 72}}
+    rep = evaluate_overlay(ov, _DEEP_PANEL, payload, "deep")
+    assert not any("72" in w for w in rep["warnings"])  # 能在 payload 找到出处
+
+
+def test_small_numbers_exempt_from_factcheck():
+    ov = _deep_overlay(great_divide_override={"punchline": "未来 3 个月看多 2 成仓位"})
+    rep = evaluate_overlay(ov, _DEEP_PANEL, {}, "deep")
+    assert not any(w.startswith("以下数字") for w in rep["warnings"])  # <10 豁免
