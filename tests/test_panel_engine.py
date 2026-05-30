@@ -143,3 +143,58 @@ def test_consensus_and_lean_labels():
     assert consensus_label(40) == "偏空"
     assert consensus_label(30) == "强烈看空"
     assert lean_label(58) == "偏多" and lean_label(42) == "偏空"
+
+
+# --- Phase 1 Task 7: build_panel 编排器 ---
+
+from analysis.panel import build_panel
+
+
+def _full_inputs():
+    import numpy as np, pandas as pd
+    rng = np.random.default_rng(2)
+    close = pd.Series(10 + rng.normal(0, 0.2, 80).cumsum() * 0.1)
+    df = pd.DataFrame({
+        "timestamps": pd.date_range("2026-01-01", periods=80, freq="D"),
+        "open": close * 0.99, "high": close * 1.02, "low": close * 0.98,
+        "close": close, "volume": pd.Series(rng.integers(1e6, 5e6, 80).astype(float)),
+        "amount": close * 1e6})
+    return {
+        "ohlcv": df,
+        "capital_flow": {"details": {"order_analysis": {"main_net_inflow": 1.2e8,
+                         "super_large_net": 8e7, "retail_net_inflow": -3e7},
+                         "positive_days_5d": 3}},
+        "fundamental": {"pe": 18.0, "pb": 2.1, "roe": 22.0,
+                        "pe_industry_rank": 28.0, "net_profit_yoy": 35.0},
+        "market_regime": "bull"}
+
+
+def _full_sections():
+    return {
+        "main_force_deep": {"data_status": "fresh",
+            "dragon_tiger": {"quant_seat_appearances": 2, "net_inst_buy": 5e7},
+            "hsgt": {"latest": {"hold_ratio": 4.1}, "delta": 0.6}},
+        "chip_control": {"data_status": "fresh", "control_degree": 72},
+        "institutional_holdings": {"data_status": "stale",
+            "holder_number": {"latest": 50000, "previous": 56000},
+            "fund_holds": {"latest_funds": 30, "previous_funds": 24}},
+        "quant_matrix": {"data_status": "fresh",
+            "multi_period_resonance": {"bull": 18, "bear": 6, "neutral": 6}}}
+
+
+def test_build_panel_full_shape():
+    panel = build_panel(_full_inputs(), _full_sections())
+    assert panel["data_status"] in ("fresh", "stale")
+    assert len(panel["analysts"]) == 51
+    assert len(panel["schools"]) == 7
+    assert len(panel["indicators"]) == 16
+    assert {"score", "label", "bull", "neutral", "bear"} <= set(panel["consensus"].keys())
+    assert {"bull", "bear", "punchline"} <= set(panel["great_divide"].keys())
+    assert panel["last_updated"] is not None
+
+
+def test_build_panel_degrades_when_all_empty():
+    panel = build_panel({}, {})
+    # 无任何数据源 → unavailable，但结构仍完整（51 人走中性默认）
+    assert panel["data_status"] == "unavailable"
+    assert len(panel["analysts"]) == 51

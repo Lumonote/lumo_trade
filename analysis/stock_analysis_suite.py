@@ -227,6 +227,13 @@ class StockAnalysisSuite:
         institutional_holdings = self._collect_institutional_holdings(code)
         chip_control = self._collect_chip_control(code, chip=inputs.get("chip"))
         quant_matrix = self._collect_quant_matrix(code, models=inputs.get("models"))
+        panel = self._collect_panel(code, inputs, {
+            "main_force_deep": main_force_deep,
+            "institutional_holdings": institutional_holdings,
+            "chip_control": chip_control,
+            "quant_matrix": quant_matrix,
+            "overview": overview,
+        })
         return {
             "overview": overview,
             "risk_control": risk,
@@ -247,7 +254,21 @@ class StockAnalysisSuite:
             "institutional_holdings": institutional_holdings,
             "chip_control": chip_control,
             "quant_matrix": quant_matrix,
+            "panel": panel,
         }
+
+    def _collect_panel(self, code: str, inputs: dict | None, sections: dict) -> dict:
+        """多空评审团：51 persona 规则裁决 + 16 指标 + 共识/大分歧（spec §0/§11 Phase 1）。
+        纯规则，无 LLM。任何异常降级 unavailable，不影响其它 Tab。"""
+        try:
+            from analysis.panel import build_panel
+            return build_panel(inputs or {}, sections)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                **_unavailable_section(f"panel 计算失败：{exc}"),
+                "consensus": None, "great_divide": None,
+                "schools": [], "analysts": [], "indicators": [],
+            }
 
     def _collect_main_force_deep(self, ts_code: str) -> dict:
         """主力深度：龙虎榜 + 陆股通。provider 查库为空时自动经 akshare 拉取写库，仍无则降级 unavailable。"""
@@ -390,11 +411,19 @@ class StockAnalysisSuite:
 
     def _build_payload_with_institutional(self, code: str) -> dict:
         """Build only the institutional portion of the payload (for testing)."""
+        mfd = self._collect_main_force_deep(code)
+        ih = self._collect_institutional_holdings(code)
+        cc = self._collect_chip_control(code)
+        qm = self._collect_quant_matrix(code)
         return {
-            "main_force_deep": self._collect_main_force_deep(code),
-            "institutional_holdings": self._collect_institutional_holdings(code),
-            "chip_control": self._collect_chip_control(code),
-            "quant_matrix": self._collect_quant_matrix(code),
+            "main_force_deep": mfd,
+            "institutional_holdings": ih,
+            "chip_control": cc,
+            "quant_matrix": qm,
+            "panel": self._collect_panel(code, {}, {
+                "main_force_deep": mfd, "institutional_holdings": ih,
+                "chip_control": cc, "quant_matrix": qm, "overview": None,
+            }),
         }
 
     def _compute_radar(self, inputs: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:

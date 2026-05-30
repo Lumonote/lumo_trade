@@ -511,3 +511,61 @@ def test_quant_matrix_posture_strong_bull():
     section = suite._collect_quant_matrix("000001.SZ", models=models)
     assert section["current_posture"] == "强势多头"
 
+
+
+# --- Phase 1 panel 集成测试 ---
+
+
+def test_compute_full_payload_includes_panel(monkeypatch):
+    """payload 必含 panel 顶层 key，且 51 人 / 16 指标 / 7 流派齐全；既有 key 不丢。"""
+    from analysis import stock_analysis_suite as mod
+
+    class _Chip:
+        def analyze(self, code, df):
+            return {"details": {"main_force_control": 72, "concentration_90": 15.9,
+                                "profit_ratio": 50}, "signals": []}
+
+    class _Cap:
+        def analyze(self, code, df):
+            return {"details": {"order_analysis": {"main_net_inflow": 1.2e8,
+                    "super_large_net": 8e7, "retail_net_inflow": -3e7},
+                    "positive_days_5d": 3}, "signals": []}
+
+    class _Fundam:
+        def __init__(self, code, minimal_api_mode=True): pass
+        def get_comprehensive_data(self):
+            return {"financial_indicators": {"pe": 18.0, "roe": 22.0},
+                    "industry_comparison": {"pe_rank": 28.0},
+                    "financial_reports": {"net_profit_yoy": 35.0}}
+
+    monkeypatch.setattr(mod, "ChipAnalyzer", _Chip)
+    monkeypatch.setattr(mod, "CapitalFlowAnalyzer", _Cap)
+    monkeypatch.setattr(mod, "FundamentalDataCollector", _Fundam)
+
+    suite = StockAnalysisSuite()
+    suite._load_ohlcv = lambda code: _fake_ohlcv(120)  # type: ignore[attr-defined]
+    suite._classify_market_regime = lambda: ("bull", 0.6)  # type: ignore[attr-defined]
+    suite._run_quant_models = lambda code, df: {"buy_signal_count": 18, "sell_signal_count": 6, "hold_signal_count": 6, "total": 30, "per_model": []}  # type: ignore[attr-defined]
+
+    payload = suite._compute_full_payload("000001")
+    # 既有 key 不丢（向后兼容）
+    for key in ("overview", "risk_control", "main_force_deep", "quant_matrix"):
+        assert key in payload
+    # 新 panel key
+    assert "panel" in payload
+    panel = payload["panel"]
+    assert len(panel["analysts"]) == 51
+    assert len(panel["indicators"]) == 16
+    assert len(panel["schools"]) == 7
+    assert panel["consensus"]["bull"] + panel["consensus"]["neutral"] + panel["consensus"]["bear"] == 51
+
+
+def test_collect_panel_degrades_on_failure(monkeypatch):
+    """build_panel 抛异常时，panel 降级 unavailable 且不影响 payload 其它部分。"""
+    suite = StockAnalysisSuite()
+    import analysis.panel as panel_mod
+    monkeypatch.setattr(panel_mod, "build_panel",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    section = suite._collect_panel("000001", {}, {})
+    assert section["data_status"] == "unavailable"
+    assert section["analysts"] == []
