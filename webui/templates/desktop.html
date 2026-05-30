@@ -756,6 +756,7 @@
             <button data-suite-tab="quant_matrix"        class="suite-tab" type="button">量化矩阵</button>
             <button data-suite-tab="chip_radar"          class="suite-tab" type="button">筹码·控盘雷达</button>
             <button data-suite-tab="institutional_holdings" class="suite-tab" type="button">机构持仓</button>
+            <button data-suite-tab="panel"               class="suite-tab" type="button">多空评审团</button>
             <button data-suite-tab="ai_interpretation"   class="suite-tab" type="button">AI 解读</button>
           </nav>
           <div class="stock-suite-panels" id="stockSuitePanels">
@@ -775,6 +776,7 @@
             <div class="suite-pane hidden" data-suite-pane="quant_matrix" id="suitePaneQuantMatrix"></div>
             <div class="suite-pane hidden" data-suite-pane="chip_radar" id="suitePaneChipRadar"></div>
             <div class="suite-pane hidden" data-suite-pane="institutional_holdings" id="suitePaneHoldings"></div>
+            <div class="suite-pane hidden" data-suite-pane="panel" id="suitePanePanel"></div>
             <div class="suite-pane hidden" data-suite-pane="ai_interpretation" id="suitePaneAi"></div>
           </div>
         </div>
@@ -2578,6 +2580,7 @@
         else if (tab === "quant_matrix") renderSuiteQuantMatrix(payload);
         else if (tab === "chip_radar") renderSuiteChipRadar(payload);
         else if (tab === "institutional_holdings") renderSuiteHoldings(payload);
+        else if (tab === "panel") renderSuitePanel(payload);
         else if (tab === "ai_interpretation") renderSuiteAi(payload);
       }
 
@@ -2662,6 +2665,7 @@
               quant_matrix: "suitePaneQuantMatrix",
               chip_radar: "suitePaneChipRadar",
               institutional_holdings: "suitePaneHoldings",
+              panel: "suitePanePanel",
               ai_interpretation: "suitePaneAi",
             };
             renderSuiteLoading(paneIdMap[tab] || "suitePaneOverview", "数据加载中…");
@@ -2681,6 +2685,7 @@
           else if (tab === "quant_matrix") renderSuiteQuantMatrix(payload);
           else if (tab === "chip_radar") renderSuiteChipRadar(payload);
           else if (tab === "institutional_holdings") renderSuiteHoldings(payload);
+          else if (tab === "panel") renderSuitePanel(payload);
           else if (tab === "ai_interpretation") renderSuiteAi(payload);
         });
       }
@@ -3337,6 +3342,18 @@
         const labelMap = { new: "新进", add: "增持", cut: "减持", exit: "退出" };
         const amt = amount ? ` ${(amount / 1e4).toFixed(0)} 万` : "";
         return `<span style="color:${colorMap[type] || "#6b778a"}">${html(labelMap[type] || type)}${amt}</span>`;
+      }
+
+      function renderSuitePanel(payload) {
+        const pane = document.getElementById("suitePanePanel");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        const p = (payload && payload.panel) || {};
+        if (!payload || payload.success === false || p.data_status === "unavailable") {
+          pane.innerHTML = suiteUnavailableBanner(p.reason || payload?.error, false);
+          return;
+        }
+        pane.innerHTML = `<div class="bbp-placeholder">多空评审团（共识 ${html(String(p.consensus?.score ?? "—"))}）渲染占位 — Task 9 填充</div>`;
       }
 
       function renderSuiteAi(payload) {
