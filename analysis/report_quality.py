@@ -44,6 +44,13 @@ def evaluate_overlay(
     if not punchline:
         criticals.append("great_divide_override.punchline 为空")
 
+    if tier == "deep":
+        # 🔴 逐人覆盖：两位头牌（bull/bear）必须有非空 insight
+        criticals.extend(_missing_headline_insights(overlay, panel))
+        # 🔴 buy_zones ≥1 档非空（至少一个可操作区间）
+        if not _has_actionable_zone(overlay.get("buy_zones")):
+            criticals.append("buy_zones 四档均为空（无可操作区间）")
+
     return {"passed": not criticals, "criticals": criticals, "warnings": warnings}
 
 
@@ -71,3 +78,25 @@ def _iter_overlay_texts(overlay: Dict[str, Any]) -> Iterable[str]:
 def _has_placeholder(text: str) -> bool:
     low = (text or "").lower()
     return any(marker.lower() in low for marker in _PLACEHOLDER_MARKERS)
+
+
+def _missing_headline_insights(overlay: Dict[str, Any], panel: Dict[str, Any]) -> List[str]:
+    """deep 档：great_divide 的 bull/bear 头牌必须在 panel_insights 里有非空点评。"""
+    gd = (panel or {}).get("great_divide") or {}
+    insights = overlay.get("panel_insights") or {}
+    out: List[str] = []
+    for role in ("bull", "bear"):
+        person = gd.get(role) or {}
+        pid = person.get("id")
+        if not pid:
+            continue
+        val = insights.get(pid)
+        if not (isinstance(val, str) and val.strip()):
+            out.append(f"逐人点评缺失头牌：{person.get('name') or pid}（{role}）")
+    return out
+
+
+def _has_actionable_zone(buy_zones: Any) -> bool:
+    if not isinstance(buy_zones, dict):
+        return False
+    return any(isinstance(v, list) and len(v) > 0 for v in buy_zones.values())
