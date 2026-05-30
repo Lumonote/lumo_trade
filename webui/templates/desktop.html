@@ -3344,6 +3344,17 @@
         return `<span style="color:${colorMap[type] || "#6b778a"}">${html(labelMap[type] || type)}${amt}</span>`;
       }
 
+      // 多空评审团：终端风格。红=多 #d23f3f，绿=空 #2f9e5a，黄=中性 #c9a227。
+      const BBP_SCHOOL_ORDER = ["A", "B", "C", "D", "E", "F", "G"];
+      function bbpSignalColor(sig) {
+        return sig === "bull" || sig === "up" ? "#d23f3f"
+             : sig === "bear" || sig === "down" ? "#2f9e5a" : "#c9a227";
+      }
+      function bbpSignalText(sig) {
+        return sig === "bull" ? "多" : sig === "bear" ? "空"
+             : sig === "up" ? "↑" : sig === "down" ? "↓" : "—";
+      }
+
       function renderSuitePanel(payload) {
         const pane = document.getElementById("suitePanePanel");
         if (!pane) return;
@@ -3353,7 +3364,105 @@
           pane.innerHTML = suiteUnavailableBanner(p.reason || payload?.error, false);
           return;
         }
-        pane.innerHTML = `<div class="bbp-placeholder">多空评审团（共识 ${html(String(p.consensus?.score ?? "—"))}）渲染占位 — Task 9 填充</div>`;
+        const c = p.consensus || { score: 50, label: "—", bull: 0, neutral: 0, bear: 0 };
+        const gd = p.great_divide || {};
+        const banner = p.data_status === "stale" ? suiteStaleBanner(p.last_updated) : "";
+        const sliderPct = Math.max(0, Math.min(100, c.score));
+
+        // 顶部：温度计 + 计数 + 大分歧（常动区）
+        const head = `
+          <div class="bbp-head">
+            <div class="bbp-thermo">
+              <div class="bbp-thermo-label"><span>极空</span><span>多空温度计</span><span>极多</span></div>
+              <div class="bbp-thermo-track">
+                <div class="bbp-thermo-slider" style="left:${sliderPct}%"></div>
+              </div>
+              <div class="bbp-thermo-score" style="color:${bbpSignalColor(c.score >= 55 ? "bull" : c.score <= 45 ? "bear" : "neutral")}">
+                ${html(String(c.score))} · ${html(c.label)}
+              </div>
+            </div>
+            <div class="bbp-counts">
+              <span class="bbp-count bull">多 ${c.bull}</span>
+              <span class="bbp-count neutral">观望 ${c.neutral}</span>
+              <span class="bbp-count bear">空 ${c.bear}</span>
+            </div>
+          </div>
+          <div class="bbp-divide">
+            <div class="bbp-divide-side bull">
+              <div class="bbp-divide-tag">最强多头</div>
+              <div class="bbp-divide-name">${html(gd.bull?.name || "—")} <small>${html(gd.bull?.score != null ? String(gd.bull.score) : "")}</small></div>
+            </div>
+            <div class="bbp-divide-vs">VS</div>
+            <div class="bbp-divide-side bear">
+              <div class="bbp-divide-tag">最强空头</div>
+              <div class="bbp-divide-name">${html(gd.bear?.name || "—")} <small>${html(gd.bear?.score != null ? String(gd.bear.score) : "")}</small></div>
+            </div>
+          </div>
+          <div class="bbp-punchline">${html(gd.punchline || "")}</div>`;
+
+        // 16 指标栏（4 组）
+        const groupTitles = { capital: "资金面", technical: "技术面", chip: "筹码·机构", model: "模型·预测" };
+        const inds = p.indicators || [];
+        const groupHtml = Object.keys(groupTitles).map((g) => {
+          const cells = inds.filter((it) => it.group === g).map((it) => {
+            const off = it.data_status === "unavailable";
+            const col = off ? "#6b778a" : bbpSignalColor(it.signal);
+            const w = Math.round((it.strength || 0) * 100);
+            return `<div class="bbp-ind ${off ? "off" : ""}">
+              <div class="bbp-ind-top"><span class="bbp-ind-label">${html(it.label)}</span>
+                <span class="bbp-ind-sig" style="color:${col}">${bbpSignalText(it.signal)}</span></div>
+              <div class="bbp-ind-val">${html(it.value_text)}</div>
+              <div class="bbp-ind-bar"><i style="width:${w}%;background:${col}"></i></div>
+            </div>`;
+          }).join("");
+          return `<div class="bbp-ind-group"><h5>${groupTitles[g]}</h5><div class="bbp-ind-grid">${cells}</div></div>`;
+        }).join("");
+
+        // 7 流派折叠（懒渲染：展开时才填成员，避免一次渲 51 行）
+        const analysts = p.analysts || [];
+        const schools = (p.schools || []).slice().sort(
+          (a, b) => BBP_SCHOOL_ORDER.indexOf(a.key) - BBP_SCHOOL_ORDER.indexOf(b.key));
+        const schoolHtml = schools.map((s) => {
+          const lean = s.lean_score >= 55 ? "bull" : s.lean_score <= 45 ? "bear" : "neutral";
+          return `<details class="bbp-school" data-school="${html(s.key)}">
+            <summary>
+              <span class="bbp-school-name">▶ ${html(s.name)}</span>
+              <span class="bbp-school-meta">${s.count} 人</span>
+              <span class="bbp-minibar"><i style="width:${Math.max(0, Math.min(100, s.lean_score))}%;background:${bbpSignalColor(lean)}"></i></span>
+              <span class="bbp-school-lean" style="color:${bbpSignalColor(lean)}">${html(s.lean)} ${s.lean_score}</span>
+            </summary>
+            <div class="bbp-members" data-rendered="0"></div>
+          </details>`;
+        }).join("");
+
+        pane.innerHTML = `${banner}
+          <div class="bbp-root">
+            ${head}
+            <div class="bbp-section-title">量化指标（16）</div>
+            ${groupHtml}
+            <div class="bbp-section-title">投资人评审团（51 · 按流派折叠）</div>
+            <div class="bbp-schools">${schoolHtml}</div>
+          </div>`;
+
+        // 懒渲染：首次展开某流派时才生成成员行
+        pane.querySelectorAll("details.bbp-school").forEach((det) => {
+          det.addEventListener("toggle", () => {
+            if (!det.open) return;
+            const box = det.querySelector(".bbp-members");
+            if (box.dataset.rendered === "1") return;
+            const key = det.dataset.school;
+            const members = analysts.filter((a) => a.school === key)
+              .sort((a, b) => b.score - a.score);
+            box.innerHTML = members.map((a, i) => `
+              <div class="bbp-member" style="animation-delay:${i * 30}ms">
+                <span class="bbp-dot" style="background:${bbpSignalColor(a.signal)}"></span>
+                <span class="bbp-member-name">${html(a.name)}${a.source === "rule" ? '<em class="bbp-rule-tag">规则推断</em>' : ""}</span>
+                <span class="bbp-member-head">${html(a.headline)}</span>
+                <span class="bbp-member-score" style="color:${bbpSignalColor(a.signal)}">${a.score}</span>
+              </div>`).join("");
+            box.dataset.rendered = "1";
+          });
+        });
       }
 
       function renderSuiteAi(payload) {
