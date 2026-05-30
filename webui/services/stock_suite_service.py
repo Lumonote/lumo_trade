@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from analysis.analysis_overlay import merge_overlay
 from analysis.stock_analysis_suite import StockAnalysisSuite
 
 
@@ -99,6 +100,14 @@ class StockSuiteService:
             self._suite.invalidate(code)
         try:
             payload = self._suite.get_full_payload(code)
+            # 展示层重载一致性：已审阅 overlay 的金句 override / 逐人 insight 在此 merge 进 panel，
+            # 与刚生成时 trigger_panel_overlay 返回的 merged_panel 保持一致。仅在此展示边界 merge——
+            # compute/cache/regenerate 仍喂原始 panel 给 LLM（否则模型会把自己上一轮的金句当基线）。
+            # merge_overlay 内部深拷贝，不改写编排器缓存里按引用返回的原始 panel。
+            overlay = payload.get("analysis_overlay")
+            panel = payload.get("panel")
+            if isinstance(overlay, dict) and overlay.get("reviewed") and isinstance(panel, dict):
+                payload = {**payload, "panel": merge_overlay(panel, overlay)}
         except Exception as exc:  # noqa: BLE001
             return {
                 "success": False,

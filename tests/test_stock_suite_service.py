@@ -86,3 +86,92 @@ def test_get_suite_handles_orchestrator_error():
     assert out["success"] is False
     assert "boom" in out["error"]
     assert out["stock"]["code"] == "000001"
+
+
+# --- 重载一致性：已审阅 overlay 在展示层 merge 进 panel（spec §7 P0-A 终检补强）---
+# 重载走 GET→get_suite→get_full_payload，拿到的是「原始 panel + 已审阅 overlay（reviewed=True）」。
+# 若不在展示层 merge，则持久化的金句 override / 逐人 insight 不可见，且与「刚点重生成」时
+# trigger_panel_overlay 返回的 merged_panel 不一致。merge 只能落在 get_suite 这个展示边界——
+# compute/cache/regenerate 仍须喂原始 panel 给 LLM（否则模型会看到自己上一轮的金句作基线）。
+
+
+def _baseline_panel():
+    """规则基线 panel：punchline 为规则文案，analysts 无 insight。"""
+    return {
+        "data_status": "fresh",
+        "great_divide": {
+            "bull": {"id": "zhao", "name": "赵老哥"},
+            "bear": {"id": "graham", "name": "格雷厄姆"},
+            "punchline": "规则基线金句",
+        },
+        "analysts": [
+            {"id": "zhao", "name": "赵老哥", "headline": "量化席位活跃"},
+            {"id": "graham", "name": "格雷厄姆", "headline": "估值偏贵"},
+        ],
+    }
+
+
+def _reviewed_overlay():
+    """已审阅历史 overlay：金句 override + 逐人 insight。重载读历史 → data_status=stale，reviewed 保留 True。"""
+    return {
+        "data_status": "stale",
+        "reviewed": True,
+        "tier": "deep",
+        "great_divide_override": {"punchline": "LLM 升档金句"},
+        "panel_insights": {"zhao": "量化席位进场，打板情绪高"},
+        "risks": ["估值透支"],
+        "buy_zones": {"value": [], "growth": [], "technical": [], "youzi": []},
+        "narrative_override": "多头占优但防估值",
+    }
+
+
+class _OverlaySuite:
+    """get_full_payload 按引用返回同一 payload（模拟编排器 5 分钟缓存按引用返回 cached[1]）。"""
+
+    def __init__(self, panel, overlay):
+        self.payload = {
+            "overview": {"radar": {}},
+            "risk_control": {"available": True},
+            "cached_reports": {},
+            "ai_interpretation": {
+                "status": "not_generated", "report": None, "token_usage": None,
+                "generated_at": None,
+                "trigger_endpoint": "/api/stock-analysis-suite/000001/ai",
+            },
+            "stub_tabs": [], "warnings": [],
+            "panel": panel,
+            "analysis_overlay": overlay,
+        }
+
+    def get_full_payload(self, code):
+        return self.payload
+
+
+def test_get_suite_merges_reviewed_overlay_into_panel_on_reload():
+    """重载时，已审阅 overlay 的金句/逐人 insight 应在展示层 merge 进 panel。"""
+    panel = _baseline_panel()
+    fake = _OverlaySuite(panel, _reviewed_overlay())
+    svc = StockSuiteService(orchestrator=fake)
+    out = svc.get_suite("000001", name="x")
+    # 金句被 override
+    assert out["panel"]["great_divide"]["punchline"] == "LLM 升档金句"
+    # 逐人 insight 挂到对应 analyst
+    zhao = next(a for a in out["panel"]["analysts"] if a["id"] == "zhao")
+    assert zhao["insight"] == "量化席位进场，打板情绪高"
+    # 源 panel（缓存对象）不被原地改写 —— 否则会污染下次重生成喂给 LLM 的规则基线
+    assert panel["great_divide"]["punchline"] == "规则基线金句"
+    assert all("insight" not in a for a in panel["analysts"])
+
+
+def test_get_suite_leaves_panel_raw_when_overlay_not_reviewed():
+    """未生成/未审阅 overlay（reviewed=False）时不 merge，panel 保持规则基线（向后兼容）。"""
+    panel = _baseline_panel()
+    overlay = {
+        "data_status": "unavailable", "reviewed": False, "tier": "lite",
+        "great_divide_override": None, "panel_insights": {}, "risks": [],
+        "buy_zones": None, "narrative_override": None,
+    }
+    svc = StockSuiteService(orchestrator=_OverlaySuite(panel, overlay))
+    out = svc.get_suite("000001", name="x")
+    assert out["panel"]["great_divide"]["punchline"] == "规则基线金句"
+    assert all("insight" not in a for a in out["panel"]["analysts"])
