@@ -256,6 +256,39 @@ def test_build_llm_payload_contains_required_sections():
     assert payload["model_full_key"] is None
 
 
+def test_build_llm_payload_includes_fresh_deep_sections():
+    """spec §4.3.4: 控盘度 / 量化矩阵等 fresh 字段应进入 prompt。"""
+    suite = StockAnalysisSuite()
+    suite_data = {
+        "overview": {"radar": {}, "key_signals": [], "deep_signals": [],
+                     "scenario_probability": {}},
+        "risk_control": {},
+        "chip_control": {"data_status": "fresh", "control_degree": 78,
+                         "control_label": "高控", "concentration_90": 11.5},
+        "quant_matrix": {"data_status": "fresh", "current_posture": "震荡偏多",
+                         "multi_period_resonance": {"bull": 18, "bear": 6, "neutral": 6}},
+    }
+    text = suite.build_llm_payload("000001", "平安银行", suite_data)["prompt"]
+    assert "高控" in text and "78" in text
+    assert "震荡偏多" in text
+
+
+def test_build_llm_payload_skips_unavailable_sections():
+    """spec §4.3.4: unavailable 字段不得进入 prompt（避免 LLM 编造）。"""
+    suite = StockAnalysisSuite()
+    suite_data = {
+        "overview": {"radar": {}, "key_signals": [], "deep_signals": [],
+                     "scenario_probability": {}},
+        "risk_control": {},
+        "chip_control": {"data_status": "unavailable", "reason": "no data"},
+        "quant_matrix": {"data_status": "unavailable", "reason": "no data"},
+    }
+    text = suite.build_llm_payload("000001", "平安银行", suite_data)["prompt"]
+    # 降级数据不应把占位/原因塞进 prompt
+    assert "no data" not in text
+    assert "震荡偏多" not in text
+
+
 def test_llm_interpret_stock_markdown_returns_raw_text(monkeypatch):
     from analysis.llm_service import LLMAnalyzer
     analyzer = LLMAnalyzer()
@@ -399,3 +432,82 @@ def test_overview_radar_has_two_new_axes():
     assert "quant_activity" in radar
     assert radar["control_degree"]["score"] == 0
     assert radar["quant_activity"]["score"] == 0
+
+
+def test_radar_control_degree_uses_chip_main_force_control():
+    """有 chip 数据时，radar.control_degree.score = ChipAnalyzer 的 main_force_control
+    （spec §0.1: 控盘度已计算但此前被硬编码为 0，本次接线）。"""
+    suite = StockAnalysisSuite()
+    inputs = {
+        "chip": {"details": {"main_force_control": 78, "concentration_90": 12.0,
+                              "profit_ratio": 50}, "signals": []},
+    }
+    radar = suite._compute_radar(inputs)
+    assert radar["control_degree"]["score"] == 78
+    assert radar["control_degree"]["label"] != "未知"
+
+
+def test_collect_chip_control_passes_through_chip_metrics():
+    """传入 chip details 时，chip_control 应透传控盘度与集中度，data_status=fresh，
+    并给出 control_label（低控/中控/高控）。"""
+    suite = StockAnalysisSuite()
+    chip = {"details": {"main_force_control": 75, "concentration_90": 11.5,
+                        "profit_ratio": 50}, "signals": []}
+    section = suite._collect_chip_control("000001", chip=chip)
+    assert section["data_status"] == "fresh"
+    assert section["control_degree"] == 75
+    assert section["concentration_90"] == 11.5
+    assert section["control_label"] == "高控"
+
+
+def test_collect_chip_control_unavailable_without_chip():
+    """无 chip 数据（如 cyq provider 也无）时仍降级为 unavailable，向后兼容。"""
+    suite = StockAnalysisSuite()
+    section = suite._collect_chip_control("000001", chip=None)
+    assert section["data_status"] == "unavailable"
+    assert section["control_degree"] is None
+
+
+def test_collect_quant_matrix_from_local_models():
+    """30 模型投票本地已算，quant_matrix 应据此产出 signals_matrix（日线列）+
+    多周期共振计数 + 当前态势，data_status=fresh。多周期热力/30日命中率留 M4。"""
+    suite = StockAnalysisSuite()
+    models = {
+        "buy_signal_count": 18, "sell_signal_count": 6, "hold_signal_count": 6,
+        "total": 30,
+        "per_model": [
+            {"model": "macd_axis_golden_cross", "signal": 1},
+            {"model": "atr_momentum", "signal": -1},
+            {"model": "turtle_trading_system", "signal": 0},
+        ],
+    }
+    section = suite._collect_quant_matrix("000001.SZ", models=models)
+    assert section["data_status"] == "fresh"
+    # 信号矩阵：逐模型条目（日线周期）
+    assert isinstance(section["signals_matrix"], list)
+    assert len(section["signals_matrix"]) == 3
+    assert {"model", "period", "signal"} <= set(section["signals_matrix"][0].keys())
+    # 多周期共振计数
+    assert section["multi_period_resonance"] == {"bull": 18, "bear": 6, "neutral": 6}
+    # 当前态势：18/30 买入 → 偏多
+    assert section["current_posture"] in (
+        "强势多头", "震荡偏多", "震荡", "震荡偏空", "强势空头")
+    # M4 留空但 key 存在
+    assert "hit_rate_30d" in section
+
+
+def test_collect_quant_matrix_unavailable_without_models():
+    """无本地模型结果（如 OHLCV 加载失败）时降级 unavailable。"""
+    suite = StockAnalysisSuite()
+    section = suite._collect_quant_matrix("000001.SZ", models=None)
+    assert section["data_status"] == "unavailable"
+
+
+def test_quant_matrix_posture_strong_bull():
+    """买入占比高 → 强势多头。"""
+    suite = StockAnalysisSuite()
+    models = {"buy_signal_count": 26, "sell_signal_count": 2,
+              "hold_signal_count": 2, "total": 30, "per_model": []}
+    section = suite._collect_quant_matrix("000001.SZ", models=models)
+    assert section["current_posture"] == "强势多头"
+

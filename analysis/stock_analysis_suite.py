@@ -204,8 +204,10 @@ class StockAnalysisSuite:
     def _compute_full_payload(self, code: str) -> Dict[str, Any]:
         """Assemble overview / risk_control / cached_reports + AI stub. Spec §5.1."""
         warnings_: list = []
+        inputs: Dict[str, Any] = {}
         try:
-            overview = self.compute_overview(code)
+            inputs = self._collect_inputs(code)
+            overview = self.compute_overview(code, inputs=inputs)
         except Exception as exc:  # noqa: BLE001
             overview = None
             warnings_.append(f"overview 装配失败：{exc}")
@@ -219,11 +221,12 @@ class StockAnalysisSuite:
         except Exception as exc:  # noqa: BLE001
             cached = {"opportunity": _report_entry(None), "batch_analysis": _report_entry(None)}
             warnings_.append(f"cached_reports 读取失败：{exc}")
-        # M1: 4 个机构深度挖掘顶层 key（骨架阶段全 unavailable）
+        # 机构深度挖掘顶层 key。chip_control 透传本地已算的控盘度（spec §0.1）；
+        # main_force_deep / institutional_holdings 经 provider 自动拉取 akshare 写库。
         main_force_deep = self._collect_main_force_deep(code)
         institutional_holdings = self._collect_institutional_holdings(code)
-        chip_control = self._collect_chip_control(code)
-        quant_matrix = self._collect_quant_matrix(code)
+        chip_control = self._collect_chip_control(code, chip=inputs.get("chip"))
+        quant_matrix = self._collect_quant_matrix(code, models=inputs.get("models"))
         return {
             "overview": overview,
             "risk_control": risk,
@@ -247,7 +250,7 @@ class StockAnalysisSuite:
         }
 
     def _collect_main_force_deep(self, ts_code: str) -> dict:
-        """主力深度：龙虎榜 + 陆股通。M1 骨架：读库回 stale，无库回 unavailable。"""
+        """主力深度：龙虎榜 + 陆股通。provider 查库为空时自动经 akshare 拉取写库，仍无则降级 unavailable。"""
         lhb = self._inst_providers.get("lhb")
         hsgt = self._inst_providers.get("hsgt")
         if not lhb and not hsgt:
@@ -272,7 +275,7 @@ class StockAnalysisSuite:
         }
 
     def _collect_institutional_holdings(self, ts_code: str) -> dict:
-        """机构持仓：Top10 股东 + 股东户数 + 调研 + 基金。M1 骨架。"""
+        """机构持仓：Top10 股东 + 股东户数（akshare 自动拉取）+ 调研/基金（留待批量导入）。"""
         holders = self._inst_providers.get("holders")
         survey = self._inst_providers.get("survey")
         fund = self._inst_providers.get("fund")
@@ -305,17 +308,41 @@ class StockAnalysisSuite:
                     out["fund_holds"] = r.data
         return out
 
-    def _collect_chip_control(self, ts_code: str) -> dict:
-        """筹码控盘度：官方筹码分布 + 控盘度计算。M1 骨架。"""
+    def _collect_chip_control(self, ts_code: str, chip: dict | None = None) -> dict:
+        """筹码控盘度：透传 ChipAnalyzer 的控盘度/集中度（已计算，spec §0.1），
+        官方 cyq 分布留待 M2。chip 为 ChipAnalyzer.analyze 输出；为 None 时降级。"""
+        details = (chip or {}).get("details") if chip else None
+        control = details.get("main_force_control") if details else None
+        if control is not None:
+            conc_90 = details.get("concentration_90")
+            cyq = self._inst_providers.get("cyq")
+            cyq_res = cyq.get(ts_code) if cyq else None
+            return {
+                "data_status": "fresh",
+                "last_updated": _dt.datetime.now().isoformat(timespec="seconds"),
+                "reason": None,
+                "control_degree": int(round(control)),
+                "control_label": self._label_control(control),
+                "concentration_90": conc_90,
+                "concentration_70": None,   # M2: 由官方 cyq 分布补全
+                "concentration_50": None,
+                "top10_concentration": None,
+                "cyq_distribution": cyq_res.data if (cyq_res and cyq_res.data) else None,
+            }
+        # 无本地控盘度：回落到 cyq provider 的状态
         cyq = self._inst_providers.get("cyq")
         if not cyq:
-            return _unavailable_section("no provider configured")
+            return {**_unavailable_section("no provider configured"),
+                    "control_degree": None, "control_label": None,
+                    "concentration_90": None, "concentration_70": None,
+                    "concentration_50": None, "top10_concentration": None,
+                    "cyq_distribution": None}
         cyq_res = cyq.get(ts_code)
         return {
             "data_status": cyq_res.data_status,
             "last_updated": cyq_res.last_updated,
             "reason": cyq_res.reason,
-            "control_degree": None,        # M2/M3 从 ChipAnalyzer 透传
+            "control_degree": None,
             "control_label": None,
             "concentration_90": None,
             "concentration_70": None,
@@ -324,9 +351,42 @@ class StockAnalysisSuite:
             "cyq_distribution": cyq_res.data,
         }
 
-    def _collect_quant_matrix(self, ts_code: str) -> dict:
-        """量化矩阵：30 模型信号 + 多周期共振 + 历史命中率。M1 骨架，M4 实现。"""
-        return _unavailable_section("M1: quant_matrix not yet implemented (planned for M4)")
+    def _collect_quant_matrix(self, ts_code: str, models: dict | None = None) -> dict:
+        """量化矩阵：30 模型投票本地已算（spec §0.1/§3.6）。本期产出日线信号矩阵 +
+        多周期共振计数 + 当前态势；多周期热力列(3/10/30 日)与 30 日历史命中率需回测
+        数据，留 M4。models 为 _run_quant_models 输出；缺失时降级 unavailable。"""
+        if not models or int(models.get("total", 0)) <= 0:
+            return _unavailable_section("M4: 量化模型未产出信号（OHLCV 不足或加载失败）")
+        buy = int(models.get("buy_signal_count", 0))
+        sell = int(models.get("sell_signal_count", 0))
+        hold = int(models.get("hold_signal_count", 0))
+        total = buy + sell + hold
+        signals_matrix = [
+            {"model": m.get("model"), "period": "daily", "signal": m.get("signal"),
+             "confidence": None}
+            for m in (models.get("per_model") or [])
+        ]
+        return {
+            "data_status": "fresh",
+            "last_updated": _dt.datetime.now().isoformat(timespec="seconds"),
+            "reason": None,
+            "signals_matrix": signals_matrix,
+            "hit_rate_30d": None,       # M4: 需回测历史命中率
+            "multi_period_resonance": {"bull": buy, "bear": sell, "neutral": hold},
+            "current_posture": self._label_posture(buy, total),
+        }
+
+    @staticmethod
+    def _label_posture(buy: int, total: int) -> str:
+        """当前态势（spec §3.6）。按买入信号占比分 5 档。"""
+        if total <= 0:
+            return "震荡"
+        ratio = buy / total
+        if ratio >= 0.8: return "强势多头"
+        if ratio >= 0.6: return "震荡偏多"
+        if ratio >= 0.4: return "震荡"
+        if ratio >= 0.2: return "震荡偏空"
+        return "强势空头"
 
     def _build_payload_with_institutional(self, code: str) -> dict:
         """Build only the institutional portion of the payload (for testing)."""
@@ -416,8 +476,17 @@ class StockAnalysisSuite:
                 }
         except (KeyError, TypeError, ValueError):
             radar["performance"] = _missing()
-        # M1: 控盘度 + 量化活跃度（骨架阶段默认 0，M2/M3 填充真实值）
-        radar["control_degree"] = {"score": 0, "label": "未知"}
+        # 控盘度：透传 ChipAnalyzer.main_force_control（spec §0.1/§3.6）。
+        # 无 chip 数据时回落 0（向后兼容空 inputs 调用）。
+        try:
+            control = inputs["chip"]["details"]["main_force_control"]
+            radar["control_degree"] = {
+                "score": int(round(control)),
+                "label": self._label_control(control),
+            }
+        except (KeyError, TypeError, ValueError):
+            radar["control_degree"] = {"score": 0, "label": "未知"}
+        # 量化活跃度：M3（quant_signature_detector）填充，暂默认 0
         radar["quant_activity"] = {"score": 0, "label": "未知"}
         return radar
 
@@ -464,8 +533,9 @@ class StockAnalysisSuite:
             out["fundamental_error"] = str(exc)
         return out
 
-    def compute_overview(self, code: str) -> Dict[str, Any]:
-        inputs = self._collect_inputs(code)
+    def compute_overview(self, code: str, inputs: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        if inputs is None:
+            inputs = self._collect_inputs(code)
         radar = self._compute_radar(inputs)
         return {
             "radar": radar,
@@ -488,7 +558,7 @@ class StockAnalysisSuite:
             label = entry.get("label", "—")
             return f"{label}({score if score is not None else '—'}分)"
 
-        prompt = "\n".join([
+        lines = [
             f"# 股票深度分析任务：{name}（{code}）",
             "",
             "请按以下 7 个小节输出 Markdown 报告（保留小节标题，每节 3-5 段）：",
@@ -512,7 +582,24 @@ class StockAnalysisSuite:
             f"- 深度信号：{overview.get('deep_signals')}",
             f"- 情景概率：{overview.get('scenario_probability')}",
             f"- 风控数据：{risk}",
-        ])
+        ]
+
+        # spec §4.3.4: 仅纳入 data_status=fresh/stale 的深度字段，unavailable 跳过避免编造。
+        chip = (suite_data or {}).get("chip_control") or {}
+        if chip.get("data_status") in ("fresh", "stale") and chip.get("control_degree") is not None:
+            lines.append(
+                f"- 控盘度：{chip.get('control_label')}（{chip.get('control_degree')}），"
+                f"90% 筹码集中度 {chip.get('concentration_90')}"
+            )
+        qm = (suite_data or {}).get("quant_matrix") or {}
+        if qm.get("data_status") in ("fresh", "stale") and qm.get("current_posture"):
+            reso = qm.get("multi_period_resonance") or {}
+            lines.append(
+                f"- 量化矩阵：当前态势 {qm.get('current_posture')}，"
+                f"多空共振 看多{reso.get('bull', 0)}/看空{reso.get('bear', 0)}/观望{reso.get('neutral', 0)}"
+            )
+
+        prompt = "\n".join(lines)
         return {"prompt": prompt, "model_full_key": None}
 
     def _build_key_signals(self, inputs: Dict[str, Any], radar: Dict[str, Any]) -> list:
@@ -615,6 +702,7 @@ class StockAnalysisSuite:
         models = QuantitativeModels(df)
         models.run_all_models()
         buy = sell = hold = 0
+        per_model: list = []
         for _name, signal_series in (models.signals or {}).items():
             try:
                 last = signal_series[-1] if hasattr(signal_series, "__getitem__") else signal_series
@@ -632,11 +720,13 @@ class StockAnalysisSuite:
                 sell += 1
             else:
                 hold += 1
+            per_model.append({"model": str(_name), "signal": last_val})
         return {
             "buy_signal_count": buy,
             "sell_signal_count": sell,
             "hold_signal_count": hold,
             "total": buy + sell + hold,
+            "per_model": per_model,
         }
 
     def collect_cached_reports(self, code: str, base_dir: "Path | None" = None) -> Dict[str, Any]:
@@ -761,3 +851,10 @@ class StockAnalysisSuite:
         if score >= 50: return "基本面稳健"
         if score >= 30: return "基本面承压"
         return "基本面恶化"
+
+    @staticmethod
+    def _label_control(control_degree: float) -> str:
+        """控盘度标签（spec §3.6: 低控/中控/高控）。与 ChipAnalyzer 阈值一致。"""
+        if control_degree > 70: return "高控"
+        if control_degree > 50: return "中控"
+        return "低控"
