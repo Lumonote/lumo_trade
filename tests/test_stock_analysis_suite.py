@@ -569,3 +569,81 @@ def test_collect_panel_degrades_on_failure(monkeypatch):
     section = suite._collect_panel("000001", {}, {})
     assert section["data_status"] == "unavailable"
     assert section["analysts"] == []
+
+
+# --- P0-A: analysis_overlay 集成 ---
+
+
+def test_payload_includes_analysis_overlay_key_backward_compatible(monkeypatch):
+    """payload 必含 analysis_overlay 顶层 key（默认未生成→unavailable/reviewed=False），既有 key 不丢。"""
+    from analysis import stock_analysis_suite as mod
+    from data_store import kv_repo
+
+    monkeypatch.setattr(kv_repo, "get", lambda ns, key: None)  # kv 空
+
+    suite = StockAnalysisSuite()
+    suite._load_ohlcv = lambda code: _fake_ohlcv(120)  # type: ignore[attr-defined]
+    payload = suite._compute_full_payload("000001")
+
+    for key in ("overview", "risk_control", "panel", "ai_interpretation"):
+        assert key in payload  # 向后兼容
+    ov = payload["analysis_overlay"]
+    assert ov["data_status"] == "unavailable"
+    assert ov["reviewed"] is False
+
+
+def test_collect_analysis_overlay_reads_persisted_as_stale(monkeypatch):
+    from data_store import kv_repo
+
+    stored = {"data_status": "fresh", "reviewed": True, "tier": "deep",
+              "great_divide_override": {"punchline": "多头占优"}, "risks": ["x"],
+              "panel_insights": {"zhao": "进场"}, "buy_zones": {"value": [], "growth": [],
+              "technical": [], "youzi": []}, "narrative_override": None,
+              "last_updated": "2026-05-29T10:00:00", "reason": None}
+    monkeypatch.setattr(kv_repo, "get", lambda ns, key: (stored, 0.0))
+
+    suite = StockAnalysisSuite()
+    ov = suite._collect_analysis_overlay("000001")
+    assert ov["reviewed"] is True
+    assert ov["data_status"] == "stale"          # 读历史 → stale
+    assert ov["great_divide_override"]["punchline"] == "多头占优"
+
+
+def test_trigger_panel_overlay_generates_and_persists(monkeypatch):
+    from analysis import stock_analysis_suite as mod
+    from data_store import kv_repo
+
+    saved = {}
+    monkeypatch.setattr(kv_repo, "set_", lambda ns, key, payload, ttl_seconds=0: saved.update({(ns, key): payload}))
+    monkeypatch.setattr(kv_repo, "get", lambda ns, key: None)
+
+    suite = StockAnalysisSuite()
+    suite._load_ohlcv = lambda code: _fake_ohlcv(120)  # type: ignore[attr-defined]
+
+    import json as _json
+    good = "```json\n" + _json.dumps({
+        "great_divide_override": {"punchline": "放量突破压制估值"},
+        "risks": ["估值", "解禁", "题材退潮"],
+        "panel_insights": {"buffett": "回调即买"},
+        "buy_zones": {"value": ["12 以下"], "growth": [], "technical": [], "youzi": []},
+    }, ensure_ascii=False) + "\n```"
+
+    result = suite.trigger_panel_overlay("000001", tier="deep", llm_caller=lambda p: (True, good))
+    assert result["success"] is True
+    assert result["overlay"]["reviewed"] is True
+    assert ("analysis_overlay", "000001") in saved          # 已落 kv
+    assert result["merged_panel"]["great_divide"]["punchline"] == "放量突破压制估值"
+
+
+def test_trigger_panel_overlay_lite_returns_unavailable(monkeypatch):
+    from data_store import kv_repo
+    monkeypatch.setattr(kv_repo, "set_", lambda *a, **k: None)
+    monkeypatch.setattr(kv_repo, "get", lambda ns, key: None)
+    suite = StockAnalysisSuite()
+    suite._load_ohlcv = lambda code: _fake_ohlcv(120)  # type: ignore[attr-defined]
+    called = []
+    result = suite.trigger_panel_overlay("000001", tier="lite",
+                                         llm_caller=lambda p: called.append(p) or (True, "{}"))
+    assert called == []                                     # lite 不调 LLM
+    assert result["success"] is False
+    assert result["overlay"]["reviewed"] is False

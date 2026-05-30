@@ -17,9 +17,12 @@ from analysis.fundamental_data_collector import FundamentalDataCollector
 from analysis.investor_sentiment import InvestorSentimentAnalyzer
 from analysis.llm_service import LLMAnalyzer
 from analysis.technical_analysis import QuantitativeModels, TechnicalAnalysis
+from analysis.analysis_overlay import build_overlay, merge_overlay
+from data_store import kv_repo
 
 
 _DEFAULT_TTL_SECONDS = 300  # 5 minutes per spec §3
+_OVERLAY_NS = "analysis_overlay"
 
 
 _REGIME_BASE = {"bull": 50, "sideways": 35, "bear": 15}
@@ -201,6 +204,32 @@ class StockAnalysisSuite:
             "cached_path": str(path),
         }
 
+    def trigger_panel_overlay(
+        self,
+        code: str,
+        tier: str = "deep",
+        *,
+        llm_caller=None,
+        force_refresh: bool = False,
+    ) -> Dict[str, Any]:
+        """按需生成多空评审团 LLM 覆盖层（spec §7 P0-A）。
+        lite 不调 LLM；medium/deep 生成 + 校验 + 持久化到 kv_repo（可审计/回滚）。
+        返回 {success, overlay, merged_panel}；失败也返回结构化 overlay（reviewed=False）。"""
+        if force_refresh:
+            self.invalidate(code)
+        suite_data = self.get_full_payload(code)
+        panel = suite_data.get("panel") or {}
+        overlay = build_overlay(panel, suite_data, tier, llm_caller=llm_caller)
+        try:
+            kv_repo.set_(_OVERLAY_NS, str(code), overlay)
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "success": bool(overlay.get("reviewed")),
+            "overlay": overlay,
+            "merged_panel": merge_overlay(panel, overlay),
+        }
+
     def _compute_full_payload(self, code: str) -> Dict[str, Any]:
         """Assemble overview / risk_control / cached_reports + AI stub. Spec §5.1."""
         warnings_: list = []
@@ -255,6 +284,7 @@ class StockAnalysisSuite:
             "chip_control": chip_control,
             "quant_matrix": quant_matrix,
             "panel": panel,
+            "analysis_overlay": self._collect_analysis_overlay(code),
         }
 
     def _collect_panel(self, code: str, inputs: dict | None, sections: dict) -> dict:
@@ -269,6 +299,26 @@ class StockAnalysisSuite:
                 "consensus": None, "great_divide": None,
                 "schools": [], "analysts": [], "indicators": [],
             }
+
+    def _collect_analysis_overlay(self, code: str) -> dict:
+        """读取已持久化的 LLM 覆盖层（spec §7 P0-A）。
+        有历史 → 原样返回但 data_status 置 stale；无 → unavailable/reviewed=False（前端回退规则文案）。
+        任何异常都降级，不影响其它 Tab。"""
+        try:
+            hit = kv_repo.get(_OVERLAY_NS, str(code))
+        except Exception:  # noqa: BLE001
+            hit = None
+        if not hit:
+            return {
+                "data_status": "unavailable", "last_updated": None, "reviewed": False,
+                "tier": "lite", "great_divide_override": None, "risks": [],
+                "panel_insights": {}, "buy_zones": None, "narrative_override": None,
+                "reason": "尚未生成 AI 覆盖层（点击「AI 深度点评」生成）",
+            }
+        overlay, _epoch = hit
+        if isinstance(overlay, dict):
+            overlay = {**overlay, "data_status": "stale"}  # 读历史 → stale
+        return overlay
 
     def _collect_main_force_deep(self, ts_code: str) -> dict:
         """主力深度：龙虎榜 + 陆股通。provider 查库为空时自动经 akshare 拉取写库，仍无则降级 unavailable。"""
