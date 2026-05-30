@@ -67,3 +67,18 @@ def test_webui_core_exposes_required_surface(clean_webui_env):
     module = importlib.import_module("webui.core")
     for name in sorted(EXPECTED_CONSTANTS | EXPECTED_SINGLETONS | EXPECTED_FUNCTIONS):
         assert hasattr(module, name), f"webui.core missing attribute: {name}"
+
+
+def test_desktop_html_has_panel_tab():
+    """多空评审团 Tab 的按钮 / pane / 渲染函数都已接线。"""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    html = (repo_root / "webui" / "templates" / "desktop.html").read_text(encoding="utf-8")
+    assert 'data-suite-tab="panel"' in html
+    assert 'data-suite-pane="panel"' in html
+    assert 'id="suitePanePanel"' in html
+    assert "function renderSuitePanel" in html
+    # 接入两处 dispatch + paneIdMap
+    assert html.count('renderSuitePanel(payload)') >= 2
+    assert 'panel: "suitePanePanel"' in html
