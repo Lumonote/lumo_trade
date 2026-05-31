@@ -114,6 +114,24 @@ def _missing(label: str = "数据不足", reason: str = "数据采集失败") ->
     return {"score": None, "label": label, "reason": reason}
 
 
+def _to_optional_float(v) -> Optional[float]:
+    """把 'N/A'/None/非数值统一成 None，数值（含纯数字字符串）转 float、NaN 也归 None。
+
+    radar 各维度评分函数签名均为 Optional[float]，但真实采集器常回 'N/A' 字符串；
+    不归一会让 `'N/A' >= 15` 等比较抛 TypeError 被 except 吞成「数据不足」（E4 假阴性）。
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        f = float(v)
+        return None if f != f else f  # NaN → None
+    try:
+        f = float(str(v).strip())
+        return None if f != f else f
+    except (TypeError, ValueError):
+        return None
+
+
 def _latest_match(base: Path, patterns: list) -> "Path | None":
     if not base.exists():
         return None
@@ -539,16 +557,18 @@ class StockAnalysisSuite:
             radar["chip_structure"] = _missing()
         try:
             fundam = inputs["fundamental"]
+            # E4：'N/A'/字符串等非数值强制为 None，避免流进 compute_performance_score
+            # 触发 `'N/A' >= 15` 之类 TypeError 被吞成「数据不足」（假阴性）。
+            roe = _to_optional_float(fundam.get("roe"))
             score = compute_performance_score(
-                pe_percentile_rank=fundam.get("pe_industry_rank"),
-                roe_pct=fundam.get("roe"),
-                yoy_growth_pct=fundam.get("net_profit_yoy"),
+                pe_percentile_rank=_to_optional_float(fundam.get("pe_industry_rank")),
+                roe_pct=roe,
+                yoy_growth_pct=_to_optional_float(fundam.get("net_profit_yoy")),
             )
             if score is None:
                 radar["performance"] = _missing()
             else:
-                pe = fundam.get("pe")
-                roe = fundam.get("roe")
+                pe = _to_optional_float(fundam.get("pe"))
                 reason = f"PE {pe}，ROE {roe}%" if pe is not None and roe is not None else "基本面"
                 radar["performance"] = {
                     "score": score,

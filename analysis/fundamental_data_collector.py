@@ -138,6 +138,71 @@ class FundamentalDataCollector:
         else:
             return '0'
 
+    def _to_ts_code(self) -> str:
+        """6 位代码 → 带交易所后缀的 ts_code（与 daily_basic 入库格式一致）。"""
+        code = str(self.stock_code).strip()
+        if code.startswith('6') or code.startswith('900'):
+            return f"{code}.SH"
+        if code.startswith(('4', '8', '92')):
+            return f"{code}.BJ"
+        return f"{code}.SZ"
+
+    def _get_indicators_from_daily_basic(self):
+        """E4：优先复用已入库 daily_basic（spec 2026-05-31 §6.5）作为 PE/PB/PS/市值来源。
+
+        命中返回与 _format_indicators 同构的 dict（额外带 pe/pb 契约键 + data_source）；
+        未命中或异常返回 None，交回原有实时抓取链。
+        """
+        try:
+            from data_store import daily_basic_repo
+            df = daily_basic_repo.get_for_code(self._to_ts_code(), limit=1)
+        except Exception as e:  # noqa: BLE001 —— 库不可用时静默回退实时抓取
+            logger.debug(f"daily_basic 读取异常，回退实时抓取: {e}")
+            return None
+        if df is None or df.empty:
+            return None
+        row = df.iloc[0]
+
+        def _pick(*cols):
+            """按优先级取第一个非空列，缺失统一用 '-'（_format_indicators 的缺失哨兵）。"""
+            for c in cols:
+                v = row.get(c)
+                if v is None:
+                    continue
+                try:
+                    if pd.isna(v):
+                        continue
+                except (TypeError, ValueError):
+                    pass
+                return v
+            return '-'
+
+        def _mv_to_yuan(v):
+            """daily_basic 市值单位为万元 → ×1e4 转元，对齐腾讯/clist 的「元」契约。"""
+            try:
+                if v is None or pd.isna(v):
+                    return '-'
+                return float(v) * 1e4
+            except (TypeError, ValueError):
+                return '-'
+
+        pe = _pick('pe_ttm', 'pe')          # PE 优先 TTM，与腾讯/东财 stock 接口口径一致
+        pb = _pick('pb')
+        ps = _pick('ps_ttm', 'ps')
+        indicators = self._format_indicators(
+            pe, pb, _mv_to_yuan(row.get('total_mv')), _mv_to_yuan(row.get('circ_mv')),
+        )
+        if ps != '-':
+            try:
+                indicators['ps_ratio'] = round(float(ps), 2)
+            except (TypeError, ValueError):
+                pass
+        # 契约键：suite 读 fi.get("pe")/("pb")，补别名（数值 / "亏损(x)" / "N/A"）
+        indicators['pe'] = indicators['pe_ratio']
+        indicators['pb'] = indicators['pb_ratio']
+        indicators['data_source'] = 'daily_basic'
+        return indicators
+
     @exponential_backoff_with_jitter(max_retries=3, base_delay=1.0)
     def get_financial_indicators(self):
         """
@@ -147,6 +212,12 @@ class FundamentalDataCollector:
             dict: 财务指标数据
         """
         try:
+            # 0. 最优先：复用已入库 daily_basic（E4，5482 码已入库，命中即省去实时抓取）
+            db_data = self._get_indicators_from_daily_basic()
+            if db_data:
+                print(f"✅ 通过已入库 daily_basic 获取指标成功")
+                return db_data
+
             # 1. 先使用腾讯接口（稳定、低失败率）
             tencent_data = self._get_financial_indicators_tencent()
             if tencent_data:

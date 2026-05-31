@@ -756,3 +756,35 @@ def test_trigger_panel_overlay_lite_returns_unavailable(monkeypatch):
     assert called == []                                     # lite 不调 LLM
     assert result["success"] is False
     assert result["overlay"]["reviewed"] is False
+
+
+# --- E4: 基本面假阴性修复（'N/A' 字符串毒丸 → 业绩维度被吞成「数据不足」）---
+
+
+def test_performance_survives_na_roe_string():
+    """真实采集器对 roe 返回 'N/A' 字符串；旧逻辑在 compute_performance_score
+    里 `'N/A' >= 15` 抛 TypeError 被 except 吞成 _missing「数据不足」（E4 假阴性）。
+    修复：消费侧把 'N/A'/非数值强制为 None，有真实净利同比时业绩维度应正常评分。"""
+    suite = StockAnalysisSuite()
+    inputs = {
+        "fundamental": {
+            "pe": 4.8,
+            "roe": "N/A",            # 字符串毒丸（采集器历史默认值）
+            "pe_industry_rank": None,
+            "net_profit_yoy": 12.0,  # 真实净利同比 → 应可评分
+        }
+    }
+    radar = suite._compute_radar(inputs)
+    perf = radar["performance"]
+    assert perf["score"] is not None
+    assert "数据不足" not in perf["label"]
+
+
+def test_performance_still_missing_when_all_na():
+    """三项全为 'N/A'/None（确无基本面）时仍须「数据不足」，不得凭空造分（防过度纠正）。"""
+    suite = StockAnalysisSuite()
+    inputs = {"fundamental": {"pe": "N/A", "roe": "N/A",
+                              "pe_industry_rank": "N/A", "net_profit_yoy": "N/A"}}
+    radar = suite._compute_radar(inputs)
+    assert radar["performance"]["score"] is None
+    assert "数据不足" in radar["performance"]["label"]
