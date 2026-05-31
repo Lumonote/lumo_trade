@@ -40,6 +40,7 @@ def build_panel(inputs: Dict[str, Any], sections: Dict[str, Any]) -> Dict[str, A
     return {
         "data_status": _overall_status(inputs, sections),
         "last_updated": _dt.datetime.now().isoformat(timespec="seconds"),
+        "note": features.get("confidence_note"),  # 短历史低置信标注（E6/§6.7）
         "style": style,
         "consensus": compute_consensus(analysts, style),
         "great_divide": compute_great_divide(analysts),

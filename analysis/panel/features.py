@@ -39,8 +39,14 @@ def _technical_features(df: Optional[pd.DataFrame]) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "rsi": None, "macd_hist": None, "kdj_j": None,
         "ma_alignment": None, "boll_position": None, "volume_ratio": None,
+        "history_days": None, "low_confidence": None, "confidence_note": None,
     }
-    if df is None or len(df) < 35:
+    n = len(df) if df is not None else 0
+    if df is not None:
+        out["history_days"] = n
+    if df is None or n < 35:  # 整体不可用：<35 给具体原因（E6/§6.7）
+        if df is not None:
+            out["confidence_note"] = f"历史仅 {n} 日（需 ≥35 日），技术指标暂不可用"
         return out
     close = df["close"]
     out["rsi"] = _last(TA.calculate_rsi(close, 14))
@@ -73,6 +79,11 @@ def _technical_features(df: Optional[pd.DataFrame]) -> Dict[str, Any]:
     cur_vol = _last(df["volume"])
     if vma and vma > 0 and cur_vol is not None:
         out["volume_ratio"] = cur_vol / vma
+    if n < 60:  # 35–59：短历史降级，指标已算但标注低置信（E6/§6.7）
+        out["low_confidence"] = True
+        out["confidence_note"] = f"历史 {n} 日（<60），部分指标置信度低"
+    else:
+        out["low_confidence"] = False
     return out
 
 

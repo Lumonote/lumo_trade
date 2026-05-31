@@ -763,20 +763,29 @@ class StockAnalysisSuite:
             "source": "30 量化模型多空票数归一化",
         }
 
-    def _load_ohlcv(self, code: str) -> pd.DataFrame:
-        """Load OHLCV from data_store.ohlcv_repo (SQLite).
+    def _load_ohlcv(self, code: str, min_rows: int = 35) -> pd.DataFrame:
+        """Load OHLCV from data_store.ohlcv_repo (SQLite)，分级降级（E6/§6.7）。
 
-        Prefers day-level (`1d`); falls back to 5-minute (`5m`).
-        Raises FileNotFoundError if neither has ≥60 rows for parity with the
-        previous CSV-backed behavior.
+        优先返回 ≥60 行的频率（指标充足，保留旧的 1d→5m 偏好）；否则返回最长且
+        ≥``min_rows`` 行的序列（35–59 日为「短历史降级」，可算指标交由下游 + 标注
+        低置信）；都 <``min_rows`` 才抛 FileNotFoundError，message 带「当前行数 +
+        需 ≥N 交易日」明确条件，避免级联多面板泛化「数据不足」。
         """
         from data_store import ohlcv_repo
 
+        best: "pd.DataFrame | None" = None
         for frequency in ("1d", "5m"):
             df = ohlcv_repo.load_dataframe(code, frequency)
-            if len(df) >= 60:
+            if df is not None and len(df) >= 60:
                 return df
-        raise FileNotFoundError(f"no OHLCV in store for {code} (1d/5m)")
+            if df is not None and (best is None or len(df) > len(best)):
+                best = df
+        if best is not None and len(best) >= min_rows:
+            return best
+        have = len(best) if best is not None else 0
+        raise FileNotFoundError(
+            f"OHLCV 历史不足：{code} 最长仅 {have} 行（需 ≥{min_rows} 交易日）"
+        )
 
     def _classify_market_regime(self) -> "tuple[str, float]":
         """Map sentiment-analyzer overall market reading → (regime, capital_flow_ratio).
@@ -845,7 +854,9 @@ class StockAnalysisSuite:
         except Exception as exc:  # noqa: BLE001
             return {"available": False, "reason": f"数据不足，建议先补齐数据 ({exc})"}
         if df is None or len(df) < 60:
-            return {"available": False, "reason": "数据不足，建议先补齐数据"}
+            have = 0 if df is None else len(df)
+            return {"available": False,
+                    "reason": f"数据不足：风控需 ≥60 交易日，当前仅 {have} 日"}
 
         close = df["close"].to_numpy()
         high = df["high"].to_numpy()
