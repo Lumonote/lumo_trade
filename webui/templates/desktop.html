@@ -1900,6 +1900,19 @@
         return links.join("");
       }
 
+      function jobStockLinks(job) {
+        const result = job?.result || {};
+        const stocks = Array.isArray(result.stocks) ? result.stocks : [];
+        if (job?.type !== "batch_analysis" || !stocks.length) return "";
+        const total = result.passed_count != null ? result.passed_count : stocks.length;
+        const hint = `通过 ${total} 只${result.stocks_truncated ? `（显示前 ${stocks.length} 只）` : ""} · 点击查看个股分析`;
+        const btns = stocks.map((s) => {
+          const meta = [s.score != null ? num(s.score) : "", s.rating || ""].filter(Boolean).join(" · ");
+          return `<button class="button secondary job-stock-btn" type="button" data-stock-code="${html(s.code || "")}" data-stock-name="${html(s.name || "")}" title="查看个股分析">${html(s.code || "")}${meta ? ` · ${meta}` : ""}</button>`;
+        }).join("");
+        return `<p class="item-meta" style="margin-top:10px">${hint}</p><div class="job-result-row">${btns}</div>`;
+      }
+
       function jobResultText(job) {
         const result = job?.result || {};
         if (job?.status === "failed") return job.error || "任务失败，请查看日志。";
@@ -1957,7 +1970,8 @@
         $("#jobDetailMeta").textContent = `${jobStatusLabel(job.status)} · ${jobCreatedAt(job) || "--"}`;
         summary.className = `notice status ${jobStatusClass(job.status)}`;
         summary.textContent = jobResultText(job);
-        $("#jobDetailActions").innerHTML = jobResultLinks(job);
+        $("#jobDetailActions").innerHTML = jobResultLinks(job) + jobStockLinks(job);
+        bindHotStockClicks($("#jobDetailActions"));
 
         const rows = (job.logs || []).map((line) => `<div class="job-log-line">${html(line)}</div>`).join("");
         logs.innerHTML = rows || `<div class="job-log-empty">暂无日志</div>`;

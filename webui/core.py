@@ -1717,6 +1717,34 @@ def _run_opportunity_job(job_id, params):
         )
 
 
+def _passed_stocks_from_result_df(result_df, limit=50):
+    """从批量结果 DataFrame 抽取「通过」个股(code/score/rating)，供前端直达个股分析。
+
+    返回 (stocks, passed_count)。passed_count 为通过总数，stocks 最多 limit 条。
+    """
+    if result_df is None or getattr(result_df, 'empty', True) or '股票代码' not in result_df.columns:
+        return [], 0
+    df_pass = result_df
+    if '过滤状态' in result_df.columns:
+        df_pass = result_df[result_df['过滤状态'] == '通过']
+    passed_count = int(len(df_pass))
+    stocks = []
+    for _, srow in df_pass.head(limit).iterrows():
+        code = str(srow.get('股票代码') or '').strip()
+        if not code:
+            continue
+        rating = srow.get('评级')
+        rating = str(rating).strip() if rating is not None else ''
+        if rating in ('nan', 'None'):
+            rating = ''
+        stocks.append({
+            'code': code,
+            'score': _safe_float(srow.get('综合评分'), None),
+            'rating': rating or None,
+        })
+    return stocks, passed_count
+
+
 def _run_batch_analysis_job(job_id, params):
     _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
     _append_job_log(job_id, '开始执行批量分析')
@@ -1748,6 +1776,9 @@ def _run_batch_analysis_job(job_id, params):
                 output_dir=str(RESULTS_DIR),
             )
 
+        # 批量完成后抽取「通过」的个股，供前端完成卡直达个股分析（spec 模块 B）。
+        passed_rows, passed_count = _passed_stocks_from_result_df(result_df)
+
         result = {
             'rows': int(len(result_df)) if result_df is not None else 0,
             'statistics': stats.to_dict() if stats else {},
@@ -1755,6 +1786,9 @@ def _run_batch_analysis_job(job_id, params):
             'json_path': str(json_path) if json_path else '',
             'csv_url': _report_url(csv_path) if csv_path else None,
             'json_url': _report_url(json_path) if json_path else None,
+            'stocks': passed_rows,
+            'passed_count': passed_count,
+            'stocks_truncated': passed_count > len(passed_rows),
         }
         _append_job_log(job_id, f"批量分析完成，通过股票 {result['rows']} 只")
         _update_job(
