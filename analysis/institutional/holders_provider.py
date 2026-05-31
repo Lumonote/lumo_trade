@@ -5,7 +5,7 @@ import logging
 
 import pandas as pd
 
-from analysis.institutional.base import BaseProvider, ProviderResult
+from analysis.institutional.base import BaseProvider, ProviderResult, humanize_unavailable
 from data_store import holders_repo
 from data_store.akshare_adapter import AkshareUnavailable
 
@@ -15,8 +15,10 @@ logger = logging.getLogger(__name__)
 class HoldersProvider(BaseProvider):
     def __init__(self, akshare_adapter):
         self._adapter = akshare_adapter
+        self._last_error: str | None = None
 
     def _fetch_and_save(self, ts_code: str) -> None:
+        self._last_error = None
         symbol = ts_code.split(".")[0]
         # top10 流通股东
         try:
@@ -46,6 +48,8 @@ class HoldersProvider(BaseProvider):
                 holders_repo.upsert_top10(rows)
                 logger.info("top10: saved %d rows for %s", len(rows), ts_code)
         except AkshareUnavailable as exc:
+            if self._last_error is None:
+                self._last_error = str(exc)
             logger.warning("top10 fetch failed for %s: %s", ts_code, exc)
 
         # 股东户数
@@ -69,6 +73,8 @@ class HoldersProvider(BaseProvider):
                 holders_repo.upsert_holdernumber(rows)
                 logger.info("gdhs: saved %d rows for %s", len(rows), ts_code)
         except AkshareUnavailable as exc:
+            if self._last_error is None:
+                self._last_error = str(exc)
             logger.warning("gdhs fetch failed for %s: %s", ts_code, exc)
 
     def get(self, ts_code: str, **kwargs) -> ProviderResult:
@@ -79,7 +85,9 @@ class HoldersProvider(BaseProvider):
             top10 = holders_repo.latest_top10(ts_code)
             history = holders_repo.get_holdernumber_history(ts_code)
         if top10.empty and history.empty:
-            return ProviderResult.unavailable(reason="holders: no data for this code")
+            return ProviderResult.unavailable(
+                reason=humanize_unavailable("十大流通股东/股东户数", self._last_error)
+            )
         latest_period = str(top10.iloc[0]["end_date"]) if not top10.empty else None
         data = {
             "top10_floatholders": {

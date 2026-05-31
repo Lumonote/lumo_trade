@@ -388,6 +388,7 @@ class StockAnalysisSuite:
             conc_90 = details.get("concentration_90")
             cyq = self._inst_providers.get("cyq")
             cyq_res = cyq.get(ts_code) if cyq else None
+            cyq_data = cyq_res.data if (cyq_res and cyq_res.data) else None
             return {
                 "data_status": "fresh",
                 "last_updated": _dt.datetime.now().isoformat(timespec="seconds"),
@@ -395,10 +396,10 @@ class StockAnalysisSuite:
                 "control_degree": int(round(control)),
                 "control_label": self._label_control(control),
                 "concentration_90": conc_90,
-                "concentration_70": None,   # M2: 由官方 cyq 分布补全
-                "concentration_50": None,
+                "concentration_70": (cyq_data or {}).get("concentration_70_pct"),  # 官方 cyq 补全
+                "concentration_50": None,   # cyq_em 无 50 集中度
                 "top10_concentration": None,
-                "cyq_distribution": cyq_res.data if (cyq_res and cyq_res.data) else None,
+                "cyq_distribution": cyq_data,
             }
         # 无本地控盘度：回落到 cyq provider 的状态
         cyq = self._inst_providers.get("cyq")
@@ -409,17 +410,18 @@ class StockAnalysisSuite:
                     "concentration_50": None, "top10_concentration": None,
                     "cyq_distribution": None}
         cyq_res = cyq.get(ts_code)
+        cyq_data = cyq_res.data if cyq_res.data else None
         return {
             "data_status": cyq_res.data_status,
             "last_updated": cyq_res.last_updated,
             "reason": cyq_res.reason,
             "control_degree": None,
             "control_label": None,
-            "concentration_90": None,
-            "concentration_70": None,
+            "concentration_90": (cyq_data or {}).get("concentration_90_pct"),
+            "concentration_70": (cyq_data or {}).get("concentration_70_pct"),
             "concentration_50": None,
             "top10_concentration": None,
-            "cyq_distribution": cyq_res.data,
+            "cyq_distribution": cyq_data,
         }
 
     def _collect_quant_matrix(self, ts_code: str, models: dict | None = None) -> dict:

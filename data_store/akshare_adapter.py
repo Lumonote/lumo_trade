@@ -46,11 +46,12 @@ class AkshareAdapter:
     FALLBACK_CHAINS: dict[str, list[str]] = {
         "lhb_detail":   ["stock_lhb_detail_em", "stock_lhb_detail_daily_sina"],
         "lhb_jgmm":    ["stock_lhb_jgmmtj_em"],
-        "hsgt_hold":    ["stock_hsgt_hold_stock_em", "stock_hsgt_individual_em"],
+        "hsgt_hold":    ["stock_hsgt_individual_em", "stock_hsgt_hold_stock_em"],
         "top10_float":  ["stock_circulate_stock_holder", "stock_main_stock_holder"],
         "gdhs":         ["stock_zh_a_gdhs_detail_em", "stock_zh_a_gdhs"],
         "jgdy":         ["stock_jgdy_detail_em"],
         "fund_hold":    ["stock_report_fund_hold_detail"],
+        "fund_stock_holder": ["stock_fund_stock_holder"],
         "cyq":          ["stock_cyq_em"],
         "minute":       ["stock_zh_a_minute", "stock_zh_a_hist_min_em"],
     }
@@ -81,7 +82,13 @@ class AkshareAdapter:
         self._throttle()
 
         if self._client is None:
-            self._client = self._client_factory()
+            try:
+                self._client = self._client_factory()
+            except ImportError as exc:
+                self._open_breaker(key)
+                raise AkshareUnavailable(
+                    f"akshare not installed: {exc}"
+                ) from exc
 
         last_err: Exception | None = None
         for fn_name in self.FALLBACK_CHAINS[key]:
