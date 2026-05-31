@@ -1299,13 +1299,16 @@
           const leaderHtml = leader
             ? `<span class="sector-leader" ${klineTargetAttr(leader.code, leader.name)}>${html(leader.name || leader.code || "--")}</span> ${num(leader.change)}%`
             : "--";
+          const meta = item.main_net_inflow_text
+            ? `主力净流入 ${html(item.main_net_inflow_text)}`
+            : `监控 ${item.monitored_count || 0} · 龙头 ${leaderHtml}`;
           return `
           <div class="item" data-sector="${html(item.name || "")}">
             <div class="item-top">
               <p class="item-title">${html(item.name)}</p>
               <strong class="${changeClass(item.avg_change)}">${num(item.avg_change)}%</strong>
             </div>
-            <p class="item-meta">监控 ${item.monitored_count || 0} · 龙头 ${leaderHtml}</p>
+            <p class="item-meta">${meta}</p>
           </div>
         `;
         }).join("");

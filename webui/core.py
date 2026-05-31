@@ -132,11 +132,11 @@ REAL_CODES_MAP = {
 }
 
 SECTORS = [
-    { "id": 0, "key": 'ai', "name": 'AGI', "color": '#ff0055', "angle": 0, "count": 800, "hot": True },
-    { "id": 1, "key": 'robot', "name": 'Humanoid Robots', "color": '#00ff88', "angle": 1.2, "count": 600, "hot": True },
-    { "id": 2, "key": 'quantum', "name": 'Quantum Computing', "color": '#00ccff', "angle": 2.4, "count": 500, "hot": False },
-    { "id": 3, "key": 'fusion', "name": 'Nuclear Fusion', "color": '#ffff00', "angle": 3.6, "count": 400, "hot": True },
-    { "id": 4, "key": 'space', "name": 'Deep Space', "color": '#ff8800', "angle": 4.8, "count": 450, "hot": False },
+    { "id": 0, "key": 'ai', "name": '人工智能', "color": '#ff0055', "angle": 0, "count": 800, "hot": True },
+    { "id": 1, "key": 'robot', "name": '人形机器人', "color": '#00ff88', "angle": 1.2, "count": 600, "hot": True },
+    { "id": 2, "key": 'quantum', "name": '量子计算', "color": '#00ccff', "angle": 2.4, "count": 500, "hot": False },
+    { "id": 3, "key": 'fusion', "name": '可控核聚变', "color": '#ffff00', "angle": 3.6, "count": 400, "hot": True },
+    { "id": 4, "key": 'space', "name": '深空探测', "color": '#ff8800', "angle": 4.8, "count": 450, "hot": False },
 ]
 
 # Flatten codes for API fetching
@@ -1414,6 +1414,27 @@ def _load_latest_opportunities():
     }
 
 
+def _real_sector_rows(intelligence):
+    """板块动量：从东财真实行业板块构造（中文名 + 真实涨跌幅 + 主力净流入）。"""
+    boards = ((intelligence or {}).get('eastmoney') or {}).get('industry_boards') or []
+    rows = []
+    for board in boards:
+        name = board.get('name')
+        if not name:
+            continue
+        change = round(_safe_float(board.get('change_pct'), 0.0) or 0.0, 2)
+        rows.append({
+            'name': name,                       # 中文板块名，如「半导体」
+            'key': board.get('code'),           # 东财板块代码 BK....
+            'avg_change': change,
+            'monitored_count': 0,
+            'main_net_inflow_text': board.get('main_net_inflow_text'),
+            'is_hot': change >= 2.0,
+            'leader': None,                      # 领涨股本期后置（spec §10）
+        })
+    return rows
+
+
 def _build_market_dashboard():
     stocks = market_state.get('stocks', [])
     real_stocks = [stock for stock in stocks if stock.get('real_api_code')]
@@ -1423,28 +1444,10 @@ def _build_market_dashboard():
         reverse=True,
     )[:8]
 
-    sector_rows = []
-    for sector in market_state.get('sectors', []):
-        sector_stocks = [
-            stock for stock in stocks
-            if stock.get('sectorId') == sector.get('id') and stock.get('real_api_code')
-        ]
-        changes = [_safe_float(stock.get('change'), 0.0) for stock in sector_stocks]
-        avg_change = round(sum(changes) / len(changes), 2) if changes else 0.0
-        leader = max(sector_stocks, key=lambda stock: _safe_float(stock.get('change'), 0.0), default=None)
-        sector_rows.append({
-            'name': sector.get('name'),
-            'key': sector.get('key'),
-            'color': sector.get('color'),
-            'avg_change': avg_change,
-            'monitored_count': len(sector_stocks),
-            'is_hot': bool(sector.get('hot')),
-            'leader': {
-                'code': leader.get('code'),
-                'name': leader.get('name'),
-                'change': round(_safe_float(leader.get('change'), 0.0), 2),
-            } if leader else None,
-        })
+    intelligence = _load_market_intelligence()
+    # 板块动量：完全由东财真实行业板块驱动（按当日涨跌幅热度降序，含主力净流入）。
+    # 不写死板块——拉取失败时返回空（前端显示「暂无数据」），不回退合成板块。
+    sector_rows = _real_sector_rows(intelligence)
 
     index_last_update = market_state.get("index_last_update")
     index_is_fresh = bool(index_last_update and (time.time() - index_last_update <= 600))
@@ -1498,9 +1501,9 @@ def _build_market_dashboard():
             }
             for stock in top_movers
         ],
-        'sectors': sorted(sector_rows, key=lambda row: row['avg_change'], reverse=True),
+        'sectors': sector_rows,
         'news': market_state.get('news', [])[:8],
-        'intelligence': _load_market_intelligence(),
+        'intelligence': intelligence,
     }
 
 
