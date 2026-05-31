@@ -1837,12 +1837,8 @@ def _run_pattern_refresh_job(job_id, params):
 
 DESKTOP_PAGES = {
     'features': {
-        'title': '功能总览',
-        'subtitle': '桌面端所有功能入口与当前可用状态',
-    },
-    'overview': {
         'title': '总览',
-        'subtitle': '市场状态、核心指标与实时信息',
+        'subtitle': '市场状态、核心指标、热榜与个股快搜',
     },
     'workbench': {
         'title': '分析工作台',
@@ -1864,6 +1860,7 @@ DESKTOP_PAGES = {
 
 DESKTOP_PAGE_ALIASES = {
     'opportunities': 'workbench',
+    'overview': 'features',  # 「总览」「功能总览」已合并为 features 单页
 }
 
 

@@ -44,65 +44,8 @@
 	          </div>
         </header>
 
-        {% if active_page == 'overview' %}
-        <section class="grid three">
-          <div class="panel">
-            <div class="panel-body metric">
-              <span>上证指数</span>
-              <strong id="marketIndex">--</strong>
-              <small id="marketIndexMeta" class="muted">--</small>
-            </div>
-          </div>
-          <div class="panel">
-            <div class="panel-body metric">
-              <span>监控股票</span>
-              <strong id="monitoredCount">--</strong>
-              <small id="particleCount" class="muted">--</small>
-            </div>
-          </div>
-          <div class="panel">
-            <div class="panel-body metric">
-              <span>最新机会</span>
-              <strong id="opportunityCount">--</strong>
-              <small id="opportunityStats" class="muted">--</small>
-            </div>
-          </div>
-        </section>
+        {# 「总览」页已并入 features 单页（见 DESKTOP_PAGE_ALIASES: overview→features） #}
 
-        <section class="grid two" style="margin-top: 14px;">
-          <div class="panel">
-            <div class="panel-header">
-              <h2 class="panel-title">指数与板块</h2>
-              <span class="panel-meta">市场概览</span>
-            </div>
-            <div id="indexList" class="panel-body list"></div>
-          </div>
-          <div class="panel">
-            <div class="panel-header">
-              <h2 class="panel-title">实时异动</h2>
-              <span class="panel-meta">Top movers</span>
-            </div>
-            <div id="topMovers" class="panel-body list"></div>
-          </div>
-        </section>
-
-        <section class="grid two" style="margin-top: 14px;">
-          <div class="panel">
-            <div class="panel-header">
-              <h2 class="panel-title">市场快讯</h2>
-              <span class="panel-meta">本地缓存</span>
-            </div>
-            <div id="marketNews" class="panel-body list"></div>
-          </div>
-          <div class="panel">
-            <div class="panel-header">
-              <h2 class="panel-title">板块动量</h2>
-              <span class="panel-meta">监控均值</span>
-            </div>
-            <div id="sectorList" class="panel-body list"></div>
-          </div>
-        </section>
-        {% endif %}
 
         {% if active_page == 'workbench' %}
         <section class="workbench-layout">
@@ -348,7 +291,7 @@
         {% if active_page == 'features' %}
         <section class="feature-hero">
           <div>
-            <h2>功能总览</h2>
+            <h2>总览</h2>
             <div class="feature-status-strip">
               <span id="featureOverviewStatus" class="pill">市场读取中</span>
               <span id="featureJobStatus" class="pill">任务读取中</span>
@@ -358,6 +301,20 @@
           <div class="actions">
             <a class="button secondary" href="/">系统首页</a>
             <a class="button secondary" href="/desktop/settings">后台配置</a>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-bottom: 14px;">
+          <div class="panel-header">
+            <h2 class="panel-title">个股快搜</h2>
+            <span class="panel-meta">输入代码或名称，回车 / 点击直达个股分析</span>
+          </div>
+          <div class="panel-body">
+            <div class="actions" style="gap:8px;align-items:center;flex-wrap:wrap;">
+              <input id="overviewStockInput" type="text" placeholder="如 600519 或 贵州茅台" autocomplete="off" style="flex:1;min-width:240px;" />
+              <button id="overviewStockSearchBtn" class="button" type="button">搜索个股</button>
+            </div>
+            <div id="overviewStockSuggest" class="list" style="margin-top: 12px;"></div>
           </div>
         </section>
 
@@ -415,7 +372,7 @@
               <div class="panel">
                 <div class="panel-header">
                   <h2 class="panel-title">板块动量</h2>
-                  <span class="panel-meta">监控均值</span>
+                  <span class="panel-meta">东财行业·按热度</span>
                 </div>
                 <div id="sectorList" class="panel-body list"></div>
               </div>
@@ -471,27 +428,37 @@
               </div>
             </section>
 
-            <section class="grid two">
+            <section class="grid three">
               <div class="panel">
                 <div class="panel-header">
-                  <h2 class="panel-title">报告库</h2>
-                  <span class="panel-meta">本地生成</span>
+                  <h2 class="panel-title">🔥 东方财富热榜</h2>
+                  <span id="ovHotEastmoneyMeta" class="panel-meta">主力净流入</span>
                 </div>
-                <div id="reportList" class="panel-body list"></div>
+                <div id="ovHotEastmoney" class="panel-body list"></div>
               </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">❄️ 雪球热榜</h2>
+                  <span id="ovHotXueqiuMeta" class="panel-meta">关注热度</span>
+                </div>
+                <div id="ovHotXueqiu" class="panel-body list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">⚡ 金十数据热榜</h2>
+                  <span id="ovHotJinshiMeta" class="panel-meta">实时快讯</span>
+                </div>
+                <div id="ovHotJinshi" class="panel-body list"></div>
+              </div>
+            </section>
+
+            <section class="grid two">
               <div class="panel">
                 <div class="panel-header">
                   <h2 class="panel-title">模块健康</h2>
                   <span class="panel-meta">导入检查</span>
                 </div>
                 <div id="moduleList" class="panel-body list"></div>
-              </div>
-              <div class="panel">
-                <div class="panel-header">
-                  <h2 class="panel-title">批量结果</h2>
-                  <span id="batchMeta" class="panel-meta">--</span>
-                </div>
-                <div id="batchRuns" class="panel-body list"></div>
               </div>
             </section>
           </div>
@@ -1070,6 +1037,81 @@
           `).join("");
           if (!items.length) empty(flash, "快讯暂不可用。");
         }
+      }
+
+      function renderOverviewHotLists(data) {
+        const intel = (data && data.market && data.market.intelligence) || {};
+        const em = intel.eastmoney || {};
+        const eastmoney = $("#ovHotEastmoney");
+        if (eastmoney) {
+          const rows = em.hot_stocks || [];
+          eastmoney.innerHTML = rows.map((s, i) => hotStockRow(s, i)).join("");
+          if (!rows.length) empty(eastmoney, "东方财富热榜暂不可用（检查网络 / 稍后刷新）。");
+          bindHotStockClicks(eastmoney);
+        }
+        const xueqiu = $("#ovHotXueqiu");
+        if (xueqiu) {
+          const rows = intel.xueqiu_hot || [];
+          xueqiu.innerHTML = rows.map((s, i) => `
+            <div class="item hot-rank-row item-clickable" data-stock-code="${html(s.code || '')}" data-stock-name="${html(s.name || '')}" role="button" tabindex="0" title="点击查看个股">
+              <span class="hot-rank-no">${i + 1}</span>
+              <div style="flex:1;min-width:0;">
+                <p class="item-title">${html(s.name)} <span class="muted">${html(s.code || '')}</span></p>
+                <p class="item-meta">关注 ${html(s.follow_text || s.follow || '--')}</p>
+              </div>
+              ${s.price != null ? `<strong>¥${html(s.price)}</strong>` : ""}
+            </div>
+          `).join("");
+          if (!rows.length) empty(xueqiu, "雪球热榜暂不可用。");
+          bindHotStockClicks(xueqiu);
+        }
+        const jinshi = $("#ovHotJinshi");
+        if (jinshi) {
+          const items = intel.jinshi || [];
+          jinshi.innerHTML = items.map((n) => `
+            <div class="item">
+              <div class="item-top">
+                <p class="item-title">${html(n.title)}</p>
+                ${n.important ? `<span class="pill warn">重要</span>` : ""}
+              </div>
+              <p class="item-meta">${html(n.source || "金十")} · ${html(n.time || "")}</p>
+            </div>
+          `).join("");
+          if (!items.length) empty(jinshi, "金十数据热榜暂不可用。");
+        }
+      }
+
+      function setupOverviewSearch() {
+        const input = $("#overviewStockInput");
+        const btn = $("#overviewStockSearchBtn");
+        const suggest = $("#overviewStockSuggest");
+        if (!input || !btn || !suggest || btn.dataset.bound) return;
+        btn.dataset.bound = "1";
+        const run = async () => {
+          const q = input.value.trim();
+          if (!q) return;
+          try {
+            const data = await fetchJson(`/api/pattern-search/stocks?q=${encodeURIComponent(q)}&limit=8`);
+            const stocks = data.stocks || [];
+            suggest.innerHTML = stocks.map((item) => `
+              <button class="item" type="button" data-stock-code="${html(item.stock_code)}" data-stock-name="${html(item.stock_name || "")}" data-sector="${html(item.industry || "")}" title="查看个股分析">
+                <div class="item-top">
+                  <p class="item-title">${html(item.stock_name || item.stock_code)}</p>
+                  <span class="pill">${html(item.stock_code)}</span>
+                </div>
+                <p class="item-meta">${html(item.market || "--")} · ${html(item.industry || "--")}</p>
+              </button>
+            `).join("");
+            if (!stocks.length) empty(suggest, "没有匹配股票。");
+            bindHotStockClicks(suggest);
+          } catch (error) {
+            empty(suggest, "搜索失败：" + (error?.message || error));
+          }
+        };
+        btn.addEventListener("click", run);
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") { event.preventDefault(); run(); }
+        });
       }
 
       function setupDrawers() {
@@ -4454,6 +4496,8 @@
         renderOpportunities(data);
         renderReports(data);
         setupWorkbench(data);
+        renderOverviewHotLists(data);
+        setupOverviewSearch();
 
         const settings = data.settings || {};
         const jobs = data.jobs || [];
