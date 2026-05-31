@@ -923,6 +923,23 @@ class CapitalFlowAnalyzer:
         self._moneyflow_cache[cache_key] = (_time.time(), None)
         return None
 
+    def _fetch_db_moneyflow(self, stock_code: str, days: int = 20) -> Optional[pd.DataFrame]:
+        """E5：读已入库 market_flow_daily（177k 行，密集逐股，东财各档净额/单位万元）。
+
+        命中返回按 trade_date 降序的 df（附 net_mf_amount 别名，复用连续性循环），否则 None。
+        """
+        try:
+            from data_store import market_snapshot_repo
+            df = market_snapshot_repo.get_flow_by_code(self._to_ts_code(stock_code), limit=days)
+        except Exception as e:  # noqa: BLE001 —— 库不可用时静默回退实时抓取
+            logger.debug(f"market_flow_daily 读取异常({stock_code}): {e}")
+            return None
+        if df is None or df.empty:
+            return None
+        df = df.copy()
+        df['net_mf_amount'] = df['net_amount']  # 仅看符号，与 Tushare moneyflow 字段对齐
+        return df
+
     def _fetch_eastmoney_capital_flow(self, stock_code: str) -> Optional[Dict]:
         """东方财富资金流向数据回退"""
         try:
@@ -976,8 +993,8 @@ class CapitalFlowAnalyzer:
             main_net = order_analysis.get('main_net_inflow', 0)
             data_source = order_analysis.get('data_source', 'synthetic')
 
-            # 真实数据(tushare/eastmoney)阈值: 5000万=大幅, 1000万=中等
-            if data_source in ('tushare', 'eastmoney'):
+            # 真实数据(market_flow_daily/tushare/eastmoney, 单位元)阈值: 5000万=大幅, 1000万=中等
+            if data_source != 'synthetic':
                 thresh_high = 50000000   # 5000万
                 thresh_low = 10000000    # 1000万
                 def _fmt(v): return f"{abs(v)/100000000:.2f}亿" if abs(v) >= 100000000 else f"{abs(v)/10000:.0f}万"
@@ -1033,6 +1050,28 @@ class CapitalFlowAnalyzer:
             'retail_net_inflow': 0,
             'data_source': 'synthetic',
         }
+
+        # 0) 已入库 market_flow_daily（优先，spec §6.6：命中即用本地真实数据，省去实时抓取）
+        dfb = self._fetch_db_moneyflow(stock_code, days=1)
+        if dfb is not None and not dfb.empty:
+            latest = dfb.iloc[0]
+
+            def _f(v):
+                try:
+                    return float(v) if v is not None and not pd.isna(v) else 0.0
+                except (TypeError, ValueError):
+                    return 0.0
+
+            result = dict(default)
+            # 东财 moneyflow_dc：buy_*_amount 已是各档「净额」（万元）→ ×1e4 转元
+            result['super_large_net'] = _f(latest.get('buy_elg_amount')) * 1e4
+            result['large_net'] = _f(latest.get('buy_lg_amount')) * 1e4
+            result['medium_net'] = _f(latest.get('buy_md_amount')) * 1e4
+            result['small_net'] = _f(latest.get('buy_sm_amount')) * 1e4
+            result['main_net_inflow'] = result['super_large_net'] + result['large_net']
+            result['retail_net_inflow'] = result['medium_net'] + result['small_net']
+            result['data_source'] = 'market_flow_daily'
+            return result
 
         # 1) Tushare moneyflow (优先)
         df = self._fetch_tushare_moneyflow(stock_code, days=20)
@@ -1092,8 +1131,10 @@ class CapitalFlowAnalyzer:
             'trend': 'neutral'
         }
 
-        # 尝试用Tushare真实数据(已缓存)
-        df = self._fetch_tushare_moneyflow(stock_code, days=20)
+        # E5: 优先读已入库 market_flow_daily，缺时回退 Tushare（均按 net_mf_amount 符号判断）
+        df = self._fetch_db_moneyflow(stock_code, days=20)
+        if df is None or len(df) < 3:
+            df = self._fetch_tushare_moneyflow(stock_code, days=20)
         if df is not None and len(df) >= 3:
             inflow_days = 0
             outflow_days = 0
