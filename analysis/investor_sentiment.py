@@ -77,6 +77,16 @@ class InvestorSentimentAnalyzer:
             # 缓存目录创建失败不影响主流程
             self.cache_dir = project_root
 
+        # 直连 HTTP 行情/快讯兜底，懒加载（见 _get_http_fallback）
+        self._http_fallback = None
+
+    def _get_http_fallback(self):
+        """直连 HTTP 兜底实例（懒加载）：Tencent/Sina 行情 + 金十/东财快讯。"""
+        if self._http_fallback is None:
+            from analysis.data_sources_fallback import DirectHTTPFallback
+            self._http_fallback = DirectHTTPFallback()
+        return self._http_fallback
+
     # === 缓存与备用源工具方法 ===
     def _get_data_via_curl(self, url, params):
         """使用curl命令行工具获取数据（作为requests的fallback）"""
@@ -577,6 +587,22 @@ class InvestorSentimentAnalyzer:
                                 'name': (v.get('name') if v and v.get('name') else indices[code]['name']),
                                 'current': backup.get('current', (v.get('current') if v else 'N/A')),
                                 'change_pct': backup.get('change_pct', (v.get('change_pct') if v else 'N/A')),
+                                'volume_ratio': (v.get('volume_ratio') if v else 'N/A'),
+                            }
+            except Exception:
+                pass
+
+            # 直连 HTTP 兜底：东财/新浪仍取不到的指数，用 Tencent/Sina 直连补齐
+            try:
+                for code in indices.keys():
+                    v = market_data.get(code)
+                    if (not v) or (not isinstance(v.get('change_pct'), (int, float))):
+                        quote = self._get_http_fallback().fetch_index_quote(code)
+                        if quote and isinstance(quote.get('change_pct'), (int, float)):
+                            market_data[code] = {
+                                'name': (v.get('name') if v and v.get('name') else indices[code]['name']),
+                                'current': quote.get('current', (v.get('current') if v else 'N/A')),
+                                'change_pct': quote.get('change_pct'),
                                 'volume_ratio': (v.get('volume_ratio') if v else 'N/A'),
                             }
             except Exception:
@@ -2121,6 +2147,32 @@ class InvestorSentimentAnalyzer:
         Returns:
             dict: 板块信息和情绪数据
         """
+        # 直连个股行情兜底（Tencent→Sina）：取真实涨跌幅算板块情绪，替代硬编码 N/A/50
+        try:
+            quote = self._get_http_fallback().fetch_stock_quote(self.stock_code)
+            if quote and isinstance(quote.get('change_pct'), (int, float)):
+                change_pct_str = f"{quote['change_pct']:.2f}"
+                sentiment_score = self._calculate_sentiment_from_change(change_pct_str)
+                return {
+                    'sector_name': '综合',
+                    'sector_sentiment': {
+                        'sector_name': '综合',
+                        'sector_code': 'N/A',
+                        'change_pct': change_pct_str,
+                        'turnover_rate': 'N/A',
+                        'sentiment_score': sentiment_score,
+                        'overall': self._get_sentiment_description(sentiment_score),
+                        'emotion': self._get_emotion_from_score(sentiment_score),
+                    },
+                    'stock_name': quote.get('name') or '未知',
+                    'current_price': quote.get('current', 0),
+                    'industry': '综合',
+                    'concept_sectors': [],
+                    'data_source': 'direct_http',
+                }
+        except Exception:
+            pass
+
         try:
             # 尝试从新浪财经获取股票基本信息
             sina_url = f"http://hq.sinajs.cn/list={self.stock_code}"

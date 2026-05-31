@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, asdict
 
+MIN_SUPPORTED_VERSION = (3, 11)
+PYTHON_CANDIDATES = ['python3.13', 'python3.12', 'python3.11', 'python3', 'python']
+
 
 @dataclass
 class PythonEnv:
@@ -204,7 +207,7 @@ class SmartEnvDetector:
 
         # Windows系统Python常见路径
         if self.system == 'Windows':
-            python_names = ['python3.11', 'python3.12', 'python3.10', 'python3', 'python']
+            python_names = PYTHON_CANDIDATES
 
             # 检查PATH中的Python
             for py_name in python_names:
@@ -218,7 +221,7 @@ class SmartEnvDetector:
                         break
         else:
             # macOS/Linux
-            python_names = ['python3.11', 'python3.12', 'python3.10', 'python3', 'python']
+            python_names = PYTHON_CANDIDATES
 
             for py_name in python_names:
                 py_path = self._find_command([py_name])
@@ -277,6 +280,8 @@ class SmartEnvDetector:
                 return None
 
             version = version_match.group(1)
+            if not self._is_supported_version(version):
+                return None
 
             # 检查关键依赖
             has_torch = self._check_package(python_path, 'torch')
@@ -295,6 +300,18 @@ class SmartEnvDetector:
             )
         except Exception:
             return None
+
+    @staticmethod
+    def _parse_version(version: str) -> Optional[Tuple[int, int, int]]:
+        match = re.search(r'(\d+)\.(\d+)\.(\d+)', version or '')
+        if not match:
+            return None
+        return tuple(int(part) for part in match.groups())
+
+    @classmethod
+    def _is_supported_version(cls, version: str) -> bool:
+        parsed = cls._parse_version(version)
+        return bool(parsed and parsed[:2] >= MIN_SUPPORTED_VERSION)
 
     def _check_package(self, python_path: str, package_name: str) -> bool:
         """检查Python环境是否安装了指定包"""
@@ -339,10 +356,12 @@ class SmartEnvDetector:
             if env.has_numpy:
                 env.score += 30
 
-            # Python 3.11优先
-            if env.version.startswith('3.11'):
-                env.score += 50
+            # Python 3.13/3.12 优先，3.11 作为兼容基线
+            if env.version.startswith('3.13'):
+                env.score += 60
             elif env.version.startswith('3.12'):
+                env.score += 50
+            elif env.version.startswith('3.11'):
                 env.score += 40
 
         # 按评分排序

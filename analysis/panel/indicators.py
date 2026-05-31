@@ -152,8 +152,19 @@ def build_indicators(f: Dict[str, Any]) -> List[Dict[str, Any]]:
         inds.append(_ind("model", "model_resonance", "30模型共振",
                          value_text=f"多 {bull} / 空 {bear}",
                          signal=sig, strength=abs(ratio - 0.5) * 2))
-    # ★ 差异化两项：Phase 1 显式降级（模型运行时 Phase 2 / 回测 Phase 3）
+    # ★ Kronos 预测：模型运行时 Phase 2（暂留降级）
     inds.append(_unavailable("model", "kronos_pred", "★Kronos预测", "Phase 2 接入"))
-    inds.append(_unavailable("model", "backtest_winrate", "★回测胜率", "Phase 3 接入"))
+    # ★ 回测胜率（Phase 3）：当前均线形态的历史 N 日前向胜率（纯 OHLCV）
+    bw = f.get("backtest_winrate")
+    if not bw or bw.get("winrate") is None:
+        inds.append(_unavailable("model", "backtest_winrate", "★回测胜率", "样本不足"))
+    else:
+        wr = float(bw["winrate"])
+        sig = "up" if wr >= 0.55 else ("down" if wr <= 0.45 else "neutral")
+        state_txt = {"bull": "多头排列", "bear": "空头排列", "mixed": "均线交织"}.get(bw.get("state"), "全样本")
+        conf = "" if bw.get("confident") else " · 基准"
+        inds.append(_ind("model", "backtest_winrate", "★回测胜率",
+                         value_text=f"{state_txt} {int(bw.get('horizon', 5))}日胜率 {wr * 100:.0f}%（n={int(bw.get('sample', 0))}{conf}）",
+                         signal=sig, strength=min(1.0, abs(wr - 0.5) * 2)))
 
     return inds

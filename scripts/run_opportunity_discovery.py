@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scripts.hot_stocks_fetcher import HotStocksFetcher
 from scripts.stock_filter_utils import filter_st_stocks
+from scripts.stock_filter_utils import load_tushare_token
 from analysis.opportunity_scorer import OpportunityScorer
 from analysis.opportunity_filter import OpportunityFilter
 from scripts.opportunity_report_generator import OpportunityReportGenerator
@@ -88,14 +89,7 @@ class OpportunityDiscovery:
         self.per_stock_timeout = int(os.environ.get('KRONOS_STOCK_TIMEOUT', '60'))
 
     def _load_tushare_token(self) -> str:
-        config_path = os.path.join(project_root, 'config', 'tushare_config.json')
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            return config.get('tushare', {}).get('token', '')
-        except Exception as e:
-            logger.warning(f"加载Tushare配置失败: {e}")
-            return ''
+        return load_tushare_token()
 
     def _resolve_latest_trade_date(self, pro, base_dt: datetime, max_back_days: int = 14) -> str:
         base_str = base_dt.strftime('%Y%m%d')
@@ -186,14 +180,13 @@ class OpportunityDiscovery:
         top_df = df.head(limit).copy()
         top_df['_amount_unit'] = '万元'
 
-        data_dir = os.path.join(project_root, 'data')
-        os.makedirs(data_dir, exist_ok=True)
-        csv_path = os.path.join(data_dir, f"moneyflow_dc_{selected_date}_top{min(limit, len(top_df))}.csv")
+        effective_top_n = min(limit, len(top_df))
         try:
-            top_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-            logger.info(f"✓ 资金流向榜单CSV已保存: {csv_path}")
+            from data_store import moneyflow_repo
+            written = moneyflow_repo.upsert_df(top_df, top_n=effective_top_n)
+            logger.info(f"✓ 资金流向榜单已写入 SQLite (moneyflow_dc): {written} rows, top_n={effective_top_n}")
         except Exception as e:
-            logger.warning(f"保存资金流向CSV失败: {e}")
+            logger.warning(f"写入 moneyflow_dc 失败: {e}")
 
         def map_exchange(ts_code: str) -> str:
             if ts_code.endswith('.SZ'):

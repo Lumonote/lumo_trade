@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
+from analysis.panel.backtest_winrate import compute_backtest_winrate
 from analysis.technical_analysis import TechnicalAnalysis as TA
 
 
@@ -144,7 +145,7 @@ def extract_features(inputs: Dict[str, Any], sections: Dict[str, Any]) -> Dict[s
 
     f["market_regime"] = inputs.get("market_regime")
 
-    # ★ 差异化两项：Phase 1 不接（模型运行时 Phase 2 / 回测 Phase 3）
+    # ★ 差异化两项：Kronos 运行时 Phase 2（暂留 None）；回测胜率 Phase 3 已接入（纯 OHLCV）。
     f["kronos_direction"] = None
-    f["backtest_winrate"] = None
+    f["backtest_winrate"] = compute_backtest_winrate(inputs.get("ohlcv"))
     return f

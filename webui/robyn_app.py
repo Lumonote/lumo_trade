@@ -601,6 +601,36 @@ def pattern_search_refresh(request: Request) -> Response:
     return _json_response({"job_id": job["id"], "status": "queued", "job": webui_core._get_job_snapshot(job["id"])})
 
 
+@_native_post("/api/pattern-search/save")
+def pattern_search_save(request: Request) -> Response:
+    result, status_code = webui_core.PATTERN_SEARCH_SERVICE.save_pattern(_request_json(request))
+    return _json_response(result, status_code=status_code)
+
+
+@_native_get("/api/pattern-search/saved")
+def pattern_search_saved_list(request: Request) -> Response:
+    payload = webui_core.PATTERN_SEARCH_SERVICE.list_saved_patterns(
+        limit=_query_value(request, "limit"),
+    )
+    return _json_response(payload)
+
+
+@_native_get("/api/pattern-search/saved/:pattern_id")
+def pattern_search_saved_get(request: Request, pattern_id=None) -> Response:
+    result, status_code = webui_core.PATTERN_SEARCH_SERVICE.get_saved_pattern(
+        _path_param(request, "pattern_id", pattern_id)
+    )
+    return _json_response(result, status_code=status_code)
+
+
+@_native_post("/api/pattern-search/saved/:pattern_id/delete")
+def pattern_search_saved_delete(request: Request, pattern_id=None) -> Response:
+    result, status_code = webui_core.PATTERN_SEARCH_SERVICE.delete_saved_pattern(
+        _path_param(request, "pattern_id", pattern_id)
+    )
+    return _json_response(result, status_code=status_code)
+
+
 @_native_get("/api/snapshot")
 def get_snapshot(request: Request) -> Response:
     return _json_response(webui_core.market_state)

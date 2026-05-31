@@ -331,6 +331,34 @@
             box-shadow: 0 0 10px #ff3333;
         }
 
+        .loader-detail {
+            max-width: 420px;
+            margin-top: 16px;
+            color: #9ca3af;
+            font-size: 13px;
+            line-height: 1.7;
+            text-align: center;
+        }
+
+        .loader-actions {
+            display: none;
+            gap: 10px;
+            margin-top: 18px;
+        }
+
+        .loader-actions a {
+            border: 1px solid #3b82f6;
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: #dbeafe;
+            text-decoration: none;
+            font-size: 13px;
+        }
+
+        #loader.fallback .loader-actions {
+            display: flex;
+        }
+
         @keyframes load {
             0% {
                 width: 0%;
@@ -358,12 +386,29 @@
 
 <body>
     <div id="loader">
-        <div class="loader-text">System Initializing...</div>
+        <div class="loader-text">市场粒子初始化中...</div>
         <div class="loader-bar">
             <div class="loader-progress"></div>
         </div>
+        <div id="loaderDetail" class="loader-detail">正在加载 3D 图形库和市场快照。</div>
+        <div class="loader-actions">
+            <a href="/desktop/overview">返回市场总览</a>
+            <a href="/desktop/features">打开功能总览</a>
+        </div>
     </div>
     <div id="root"></div>
+
+    <script>
+        window.setTimeout(() => {
+            const loader = document.getElementById('loader');
+            const detail = document.getElementById('loaderDetail');
+            if (!loader || loader.style.display === 'none') return;
+            loader.classList.add('fallback');
+            if (detail) {
+                detail.textContent = '市场粒子是旧版 3D 实验视图，依赖外部 React/Three 图形库。当前环境未能完成加载，请使用桌面市场总览。';
+            }
+        }, 6000);
+    </script>
 
     <script type="text/babel" data-type="module">
         import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react';

@@ -38,6 +38,18 @@ CREATE TABLE IF NOT EXISTS pattern_snapshot_meta (
     finished_at     TIMESTAMP,
     error_log       TEXT
 );
+
+-- 用户手绘 / 个股保存下来的形态，供"历史图形 + 历史图形选股"复用
+CREATE TABLE IF NOT EXISTS saved_patterns (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    name             TEXT,
+    normalized_curve TEXT NOT NULL,          -- JSON: 归一化后的曲线点
+    points           TEXT,                   -- JSON: 原始手绘点（可选，用于重绘画布）
+    window_days      INTEGER,
+    source           TEXT,                   -- 'draw' / 'stock:<code>'
+    created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_saved_created ON saved_patterns(created_at);
 """
 
 
@@ -268,3 +280,79 @@ class PatternStore:
             "last_status": last_snap["status"] if last_snap else None,
             "last_finished_at": last_snap["finished_at"] if last_snap else None,
         }
+
+    # ------------------------------------------------------------------
+    # 已保存形态（历史图形）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _row_to_saved(row: sqlite3.Row) -> dict:
+        return {
+            "id": int(row["id"]),
+            "name": row["name"] or "",
+            "normalized_curve": json.loads(row["normalized_curve"]),
+            "points": json.loads(row["points"]) if row["points"] else None,
+            "window_days": int(row["window_days"]) if row["window_days"] is not None else None,
+            "source": row["source"] or "draw",
+            "created_at": row["created_at"],
+        }
+
+    def save_pattern(
+        self,
+        name: str,
+        normalized_curve: Iterable[float],
+        points: Optional[list] = None,
+        window_days: Optional[int] = None,
+        source: str = "draw",
+    ) -> dict:
+        """保存一条用户形态，返回落库后的完整记录（含自增 id）。"""
+        curve = [float(x) for x in normalized_curve]
+        if len(curve) < 2:
+            raise ValueError("normalized_curve 至少需要 2 个点")
+        curve_json = json.dumps(curve, separators=(",", ":"))
+        points_json = json.dumps(points, separators=(",", ":")) if points else None
+        created = datetime.datetime.now().isoformat(timespec="seconds")
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO saved_patterns (
+                    name, normalized_curve, points, window_days, source, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (name or "").strip() or None,
+                    curve_json,
+                    points_json,
+                    int(window_days) if window_days else None,
+                    (source or "draw").strip() or "draw",
+                    created,
+                ),
+            )
+            pattern_id = int(cursor.lastrowid)
+            row = conn.execute(
+                "SELECT * FROM saved_patterns WHERE id = ?", (pattern_id,)
+            ).fetchone()
+        return self._row_to_saved(row)
+
+    def list_saved_patterns(self, limit: int = 50) -> List[dict]:
+        capped = max(1, min(int(limit or 50), 200))
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM saved_patterns ORDER BY id DESC LIMIT ?", (capped,)
+            )
+            return [self._row_to_saved(row) for row in cursor]
+
+    def get_saved_pattern(self, pattern_id: int) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM saved_patterns WHERE id = ?", (int(pattern_id),)
+            ).fetchone()
+            return self._row_to_saved(row) if row else None
+
+    def delete_saved_pattern(self, pattern_id: int) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM saved_patterns WHERE id = ?", (int(pattern_id),)
+            )
+            return cursor.rowcount > 0
+

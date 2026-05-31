@@ -73,10 +73,15 @@ def test_extract_features_technical_computed():
     assert f["volume_ratio"] is not None and f["volume_ratio"] > 0
 
 
-def test_extract_features_predictions_none_in_phase1():
+def test_extract_features_kronos_none_but_backtest_live():
     f = extract_features(_inputs(), _sections())
-    assert f["kronos_direction"] is None
-    assert f["backtest_winrate"] is None
+    assert f["kronos_direction"] is None          # Phase 2: Kronos 运行时尚未接入
+    bw = f["backtest_winrate"]                     # Phase 3: 纯 OHLCV 历史形态胜率已接入
+    assert isinstance(bw, dict)
+    assert 0.0 <= bw["winrate"] <= 1.0
+    assert bw["horizon"] == 5
+    assert bw["sample"] > 0
+    assert bw["state"] in ("bull", "bear", "mixed")
 
 
 def test_extract_features_tolerates_empty():

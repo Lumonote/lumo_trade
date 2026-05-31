@@ -1,3 +1,6 @@
+# CodeGraph local tool cache (db/config per machine)
+.codegraph/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -14,6 +17,7 @@ integrated_results/
 webui/prediction_results/
 models/
 packaging/builds/
+packaging/backend/
 data/
 eggs/
 .eggs/
@@ -35,6 +39,9 @@ CLAUDE.md
 # PyCharm
 .idea/
 .omc/
+
+# Superpowers brainstorm / visual-companion artifacts
+.superpowers/
 
 # VS Code
 .vscode/

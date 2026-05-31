@@ -136,29 +136,75 @@ clean_build() {
 # 检查Python环境
 check_python() {
     echo -e "${BLUE}📋 检查Python环境...${NC}"
-    
-    # 查找可用的Python版本
+
+    # 查找可用的Python版本，优先使用项目虚拟环境，避免 Homebrew/System Python 的 PEP 668 限制
+    local candidates=()
+    if [ -n "${PYTHON_CMD:-}" ]; then
+        candidates+=("$PYTHON_CMD")
+    fi
+    if [ "$CURRENT_OS" = "windows" ]; then
+        candidates+=(
+            "$PROJECT_ROOT/.venv/Scripts/python.exe"
+            "$PROJECT_ROOT/venv/Scripts/python.exe"
+        )
+    else
+        candidates+=(
+            "$PROJECT_ROOT/.venv/bin/python"
+            "$PROJECT_ROOT/venv/bin/python"
+        )
+    fi
+    candidates+=(python3.13 python3.12 python3.11 python3 python)
+
     PYTHON_CMD=""
-    for py in python3.11 python3 python; do
-        if command -v "$py" &> /dev/null; then
-            VERSION=$($py --version 2>&1)
-            if [[ $VERSION == *"3.11"* ]]; then
+    for py in "${candidates[@]}"; do
+        if [ -x "$py" ] || command -v "$py" &> /dev/null; then
+            if "$py" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) else 1)' 2>/dev/null; then
                 PYTHON_CMD="$py"
                 break
-            elif [[ $VERSION == *"3."* ]] && [ -z "$PYTHON_CMD" ]; then
-                PYTHON_CMD="$py"
             fi
         fi
     done
-    
+
     if [ -z "$PYTHON_CMD" ]; then
-        echo -e "${RED}❌ 未找到Python 3.x${NC}"
+        echo -e "${RED}❌ 未找到Python 3.11+${NC}"
         echo -e "${YELLOW}💡 请安装Python 3.11或更高版本${NC}"
         exit 1
     fi
-    
+
     echo -e "${GREEN}🐍 使用Python版本: $($PYTHON_CMD --version)${NC}"
     echo -e "${GREEN}✅ Python环境检查完成${NC}"
+}
+
+ensure_pyinstaller() {
+    if ! "$PYTHON_CMD" -c "import PyInstaller" >/dev/null 2>&1; then
+        echo -e "${YELLOW}📦 未检测到 PyInstaller，正在安装...${NC}"
+        "$PYTHON_CMD" -m pip install pyinstaller
+    fi
+}
+
+build_bundled_backend() {
+    if [ "${KRONOS_SKIP_BACKEND_BUNDLE:-0}" = "1" ]; then
+        echo -e "${YELLOW}⚠️  已跳过内置 WebUI backend 构建${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}📦 构建内置 WebUI backend (PyInstaller)...${NC}"
+    check_python
+
+    cd "$PROJECT_ROOT"
+    export KRONOS_BACKEND_BUNDLE_MODE="${KRONOS_BACKEND_BUNDLE_MODE:-lite}"
+    export KRONOS_WEB_SERVER="${KRONOS_WEB_SERVER:-robyn}"
+    "$PYTHON_CMD" "$PROJECT_ROOT/packaging/scripts/build_backend.py" --clean --mode "${KRONOS_BACKEND_BUNDLE_MODE:-lite}"
+
+    local backend_exe="$PROJECT_ROOT/packaging/backend/kronos_webui_backend/kronos_webui_backend"
+    if [ "$CURRENT_OS" = "windows" ]; then
+        backend_exe="${backend_exe}.exe"
+    fi
+    if [ ! -f "$backend_exe" ]; then
+        echo -e "${RED}❌ 内置 backend 构建失败: $backend_exe 不存在${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}✅ 内置 backend 构建完成: $backend_exe${NC}"
 }
 
 # 检查Docker环境
@@ -188,7 +234,7 @@ prepare_resources() {
     
     case $version in
         "modern")
-            echo -e "${PURPLE}🎨 使用 Tauri + Flask Web UI 桌面版本${NC}"
+            echo -e "${PURPLE}🎨 使用 Tauri + Web UI 桌面版本${NC}"
             ;;
         "console")
             echo -e "${PURPLE}⌨️  使用控制台版本${NC}"
@@ -232,7 +278,9 @@ copy_tauri_artifacts() {
     fi
 
     mkdir -p "$output_dir"
-    find "$bundle_dir" -maxdepth 3 \( -name "*.dmg" -o -name "*.app" -o -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \) -print | while read -r artifact; do
+    find "$bundle_dir" -maxdepth 3 \( -name "*.dmg" -o -name "*.app" -o -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \) ! -name "rw.*" -print | while read -r artifact; do
+        local target="$output_dir/$(basename "$artifact")"
+        rm -rf "$target" 2>/dev/null || true
         cp -R "$artifact" "$output_dir/" 2>/dev/null || true
         echo -e "${PURPLE}📦 Tauri产物: $artifact${NC}"
     done
@@ -246,9 +294,10 @@ build_tauri_desktop() {
     echo "=========================================="
 
     check_tauri_environment || return 1
+    build_bundled_backend || return 1
     cd "$PROJECT_ROOT"
 
-    KRONOS_PROJECT_ROOT="$PROJECT_ROOT" npm run desktop:build
+    npm run desktop:build
 
     if [ $? -eq 0 ]; then
         copy_tauri_artifacts

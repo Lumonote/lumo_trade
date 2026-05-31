@@ -91,6 +91,29 @@ def test_optimizer_refuses_on_stale_data(tmp_path, monkeypatch):
     assert res['reason'].startswith('stale_or_insufficient_recent_returns')
 
 
+def test_update_returns_incremental_fills_missing_10d(tmp_path, monkeypatch):
+    """Incremental (non-recompute) must re-touch a row missing only return_10d —
+    the case the old `return_5d.isna()` gate skipped."""
+    rec = tmp_path / "recommendations.csv"
+    pd.DataFrame([_row(report_date='2026-03-02', rank=1, code='000001', score=80,
+                       return_1d=1.0, return_3d=2.0, return_5d=3.0, return_10d=None)],
+                 columns=_REC_COLUMNS).to_csv(rec, index=False, encoding='utf-8-sig')
+    monkeypatch.setattr(ab, 'RECOMMENDATIONS_FILE', str(rec))
+
+    def fake_ensure(code, beg, end, throttle=0.0):
+        days = [2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 16, 17]  # 12 trading days, enough for 10d
+        return pd.DataFrame([
+            {'timestamps': f'2026-03-{d:02d} 00:00:00', 'open': 10 + i, 'high': 10 + i,
+             'low': 10 + i, 'close': 10 + i}
+            for i, d in enumerate(days)
+        ])
+    monkeypatch.setattr(ohlcv_fetch, 'ensure_daily', fake_ensure)
+
+    ab.update_returns(days_back=120, recompute_all=False, throttle=0)
+    out = pd.read_csv(rec)
+    assert pd.notna(out.loc[0, 'return_10d'])  # previously-missing horizon now filled
+
+
 def test_optimizer_runs_and_deweights_inverted_quant(tmp_path, monkeypatch):
     """Fresh data where higher quant_score → lower return: quant weight must drop."""
     rec = tmp_path / "recommendations.csv"

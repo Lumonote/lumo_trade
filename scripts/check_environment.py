@@ -14,6 +14,15 @@ import platform
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+SUPPORTED_PYTHON_MIN = (3, 11)
+PYTHON_CANDIDATES = [
+    'python3.13',
+    'python3.12',
+    'python3.11',
+    'python3',
+    'python',
+]
+
 
 # 颜色定义
 class Colors:
@@ -90,12 +99,36 @@ def get_actual_python_path():
     """获取实际的Python解释器路径"""
     import shutil
 
+    def _version_tuple(version_output: str):
+        match = re.search(r'(\d+)\.(\d+)\.(\d+)', version_output or '')
+        if not match:
+            return None
+        return tuple(int(part) for part in match.groups())
+
+    def _is_supported(version_output: str) -> bool:
+        parsed = _version_tuple(version_output)
+        return bool(parsed and parsed[:2] >= SUPPORTED_PYTHON_MIN)
+
+    # 当前解释器优先。使用 .venv/bin/python scripts/check_environment.py 时，
+    # 依赖也安装在该解释器环境中，应避免再切到系统 python3.13。
+    try:
+        current_python = sys.executable
+        result = subprocess.run([current_python, "--version"],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and _is_supported(result.stdout + result.stderr):
+            return current_python
+    except Exception:
+        pass
+
     # Windows：优先使用 Kronos 用户级虚拟环境（与 quick_start.ps1 保持一致）
     if IS_WINDOWS:
         try:
             venv_py = Path(os.environ.get('LOCALAPPDATA', '')) / 'Kronos' / 'venv' / 'Scripts' / 'python.exe'
             if venv_py.exists():
-                return str(venv_py)
+                result = subprocess.run([str(venv_py), "--version"],
+                                        capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and _is_supported(result.stdout + result.stderr):
+                    return str(venv_py)
         except Exception:
             pass
 
@@ -106,16 +139,33 @@ def get_actual_python_path():
         try:
             result = subprocess.run([venv_python, "--version"],
                                     capture_output=True, text=True, timeout=5)
-            if result.returncode == 0 and "3." in result.stdout:
+            if result.returncode == 0 and _is_supported(result.stdout + result.stderr):
                 return venv_python
         except:
             pass
 
-    # 动态检测系统中的Python，优先选择 3.11.x
-    python_names = ['python3.11', 'python3', 'python']
+    # 当前激活虚拟环境优先
+    active_venv = os.environ.get('VIRTUAL_ENV')
+    if active_venv:
+        active_python = (
+            Path(active_venv) / 'Scripts' / 'python.exe'
+            if IS_WINDOWS
+            else Path(active_venv) / 'bin' / 'python'
+        )
+        if active_python.exists():
+            try:
+                result = subprocess.run([str(active_python), "--version"],
+                                        capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and _is_supported(result.stdout + result.stderr):
+                    return str(active_python)
+            except Exception:
+                pass
+
+    # 动态检测系统中的Python，优先选择 3.13 / 3.12 / 3.11
+    python_names = PYTHON_CANDIDATES
 
     best_python = None
-    best_version = ""
+    best_version = None
 
     for py_name in python_names:
         try:
@@ -127,10 +177,9 @@ def get_actual_python_path():
                     version_match = re.search(r'3\.(\d+)\.(\d+)', result.stdout or result.stderr)
                     if version_match:
                         version = version_match.group(0)
-                        # 优先选择 3.11.x
-                        if version.startswith('3.11.'):
-                            return py_path
-                        elif version.startswith('3.') and (not best_python or version > best_version):
+                        if _is_supported(result.stdout + result.stderr) and (
+                            not best_python or _version_tuple(version) > _version_tuple(best_version)
+                        ):
                             best_python = py_path
                             best_version = version
         except:
@@ -267,12 +316,16 @@ def check_required_packages() -> Dict[str, Tuple[bool, str]]:
         'pandas': 'pandas',
         'pytz': 'pytz',
         'torch': 'torch',
+        'modelscope': 'modelscope',
         'matplotlib': 'matplotlib',
         'tqdm': 'tqdm',
         'safetensors': 'safetensors',
         'einops': 'einops',
         'huggingface_hub': 'huggingface_hub',
-        'requests': 'requests'  # LLM API调用必需
+        'requests': 'requests',  # LLM API调用必需
+        'httpx': 'httpx',
+        'robyn': 'robyn',
+        'plotly': 'plotly',
     }
 
     results = {}
@@ -286,7 +339,6 @@ def check_optional_packages() -> Dict[str, Tuple[bool, str]]:
     """检查可选的Python包"""
     optional_packages = {
         'seaborn': 'seaborn',
-        'plotly': 'plotly',
         'jupyter': 'jupyter',
         'tushare': 'tushare',
         'baostock': 'baostock'

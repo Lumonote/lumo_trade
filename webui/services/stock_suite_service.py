@@ -25,8 +25,9 @@ _CODE_RE = re.compile(r"^[036][0-9]{5}$|^[68][0-9]{5}$")
 def _build_institutional_providers() -> Dict[str, Any]:
     """Build institutional provider instances for StockAnalysisSuite.
 
-    M1: All providers read from SQLite (stale) or return unavailable.
-    M2: Will add real akshare fetching.
+    Providers read from SQLite first; on a miss they auto-fetch from akshare
+    (free source) and persist, then re-read. lhb/hsgt/holders fetch per-stock;
+    survey/fund/cyq fall back to batch importers when no per-stock endpoint exists.
     """
     from analysis.institutional import (
         LhbProvider, HsgtProvider, HoldersProvider,

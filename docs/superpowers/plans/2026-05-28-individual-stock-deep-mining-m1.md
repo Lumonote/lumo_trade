@@ -1,5 +1,11 @@
 # 个股深度挖掘 M1 (Foundation) Implementation Plan
 
+> **实施状态（2026-05-29 复核）：代码与测试已全部落地并入库。**
+> - ✅ Phase A–D（数据层 / 业务层 / 编排 payload / 诊断端点）：全部代码与单元测试已完成，相关 58 个用例全绿（`pytest tests/test_schema_migration_v6.py tests/test_institutional_repos.py tests/test_akshare_adapter.py tests/test_quant_seat_registry.py tests/test_institutional_providers.py tests/test_stock_analysis_suite.py tests/test_robyn_app.py`）。全量 156 用例通过。
+> - ✅ Phase E（前端 12 Tab 重排 + 4 个 render 函数 + radar 2 轴）：代码已落地于 `webui/templates/desktop.html` / `webui/static/kronos_desktop.css`。
+> - ⚠️ **遗留：Phase E/F 的「手动浏览器冒烟 + 截图归档」未执行** —— `docs/screenshots/2026-05-28-deep-mining/` 目前仅有 `README.md` 索引，缺实际 PNG。下个迭代补做手动 smoke 与截图后即可关闭 M1。
+> - 🛠 修复：本次发现 SQLite 迁移期遗漏入库的 `data_store/connection.py`、各 repo、整个 `webui/services/` 包及多份测试（已被 HEAD 中已提交代码 import 却从未 `git add`），现已全部纳入版本控制，干净检出导入校验通过。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 落地个股深度挖掘的全栈骨架 —— `AkshareAdapter` + 6 张 SQLite 表 + `analysis/institutional/` 包（含 6 个返回 `unavailable` 的 provider 骨架与量化席位注册表）+ payload schema 扩展 + 前端 Tab 11→12 重排 + 4 个新 render 函数。本期不实现真实数据抓取与业务规则，只搭骨架并让 4 个新 Tab 用 `data_status="unavailable"` 渲染降级 UI。

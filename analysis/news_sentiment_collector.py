@@ -78,8 +78,17 @@ class NewsSentimentCollector:
     # 用于更强关联检索
         self.company_name = None
         self.related_keywords = []
+        # 直连 HTTP 快讯兜底，懒加载（见 _get_http_fallback）
+        self._http_fallback = None
 
 
+
+    def _get_http_fallback(self):
+        """直连 HTTP 兜底实例（懒加载）：金十/东财市场快讯。"""
+        if self._http_fallback is None:
+            from analysis.data_sources_fallback import DirectHTTPFallback
+            self._http_fallback = DirectHTTPFallback()
+        return self._http_fallback
 
     def get_latest_announcements(self, limit=10):
         """
@@ -282,6 +291,10 @@ class NewsSentimentCollector:
                 print(f"   🔁 网页爬取为空,尝试同花顺新闻API备用源")
                 news_list = self._fallback_news_tonghuashun(limit)
 
+            # 同花顺仍为空，最后以市场快讯（金十→东财）直连兜底，降低「数据不足」
+            if not news_list:
+                news_list = self._fallback_flash_news(limit)
+
             return news_list[:limit]
 
         except Exception as e:
@@ -289,6 +302,8 @@ class NewsSentimentCollector:
             news_list = self._scrape_news(limit)
             if not news_list:
                 news_list = self._fallback_news_tonghuashun(limit)
+            if not news_list:
+                news_list = self._fallback_flash_news(limit)
             return news_list[:limit]
 
     def _scrape_sina_news(self, limit=20):
@@ -578,6 +593,34 @@ class NewsSentimentCollector:
             return news_list
         except Exception as e:
             print(f"⚠️ 同花顺备用源获取失败: {str(e)}")
+            return []
+
+    def _fallback_flash_news(self, limit=20):
+        """市场快讯直连兜底（金十→东财快讯）。个股新闻全空时降低「数据不足」。
+
+        返回项标注 scope='market'，与个股新闻区分。
+        """
+        try:
+            flashes = self._get_http_fallback().fetch_flash_news(limit) or []
+            news_list = []
+            for it in flashes[:limit]:
+                title = (it.get('title') or '').strip()
+                if not title:
+                    continue
+                news_list.append({
+                    'title': title,
+                    'date': self._normalize_date_str(str(it.get('time') or '')),
+                    'source': it.get('source') or '市场快讯',
+                    'url': it.get('url') or '',
+                    'summary': self._extract_summary(title),
+                    'sentiment': self._analyze_sentiment(title),
+                    'scope': 'market',
+                })
+            if not news_list:
+                print("   ⚠️ 市场快讯直连兜底未返回有效数据")
+            return news_list
+        except Exception as e:
+            print(f"⚠️ 市场快讯直连兜底失败: {str(e)}")
             return []
 
     def get_research_reports(self, limit=10):

@@ -255,7 +255,11 @@ def update_returns(days_back: int = 30, recompute_all: bool = False,
     if recompute_all:
         mask = settled
     else:
-        mask = settled & df['return_5d'].isna()
+        # 增量：任一收益档位仍缺就纳入，使窗口逐步走完时 1d→3d→5d→10d 渐进补全，
+        # 而不是只看 return_5d（旧逻辑会漏掉「5d 已填、10d 待补」的行）。
+        incomplete = (df['return_1d'].isna() | df['return_3d'].isna()
+                      | df['return_5d'].isna() | df['return_10d'].isna())
+        mask = settled & incomplete
         if days_back:
             mask = mask & (report_dt >= (datetime.now() - timedelta(days=days_back)))
 

@@ -5,23 +5,40 @@
 echo "🚀 Starting Kronos Web UI..."
 echo "================================"
 
-# Check if Python is installed
-if ! command -v python3 &> /dev/null; then
-    echo "❌ Python3 not installed, please install Python3 first"
+find_python() {
+    for cmd in "${PYTHON_CMD:-}" "${PYTHON:-}" python3.13 python3.12 python3.11 python3 python; do
+        if [ -z "$cmd" ]; then
+            continue
+        fi
+        if command -v "$cmd" &> /dev/null && "$cmd" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) else 1)' 2>/dev/null; then
+            echo "$cmd"
+            return 0
+        fi
+    done
+    return 1
+}
+
+PYTHON_BIN=$(find_python)
+if [ -z "$PYTHON_BIN" ]; then
+    echo "❌ Python 3.11+ not installed, please install Python 3.11 or later"
     exit 1
 fi
 
 # Check if in correct directory
-if [ ! -f "app.py" ]; then
+if [ ! -f "run.py" ]; then
     echo "❌ Please run this script in the webui directory"
     exit 1
 fi
 
 # Check dependencies
 echo "📦 Checking dependencies..."
-if ! python3 -c "import flask, flask_cors, pandas, numpy, plotly" &> /dev/null; then
+DEPENDENCY_CHECK="import robyn, httpx, pandas, numpy, plotly"
+if [ "${KRONOS_DISABLE_TORCH:-0}" != "1" ]; then
+    DEPENDENCY_CHECK="${DEPENDENCY_CHECK}, modelscope"
+fi
+if ! "$PYTHON_BIN" -c "$DEPENDENCY_CHECK" &> /dev/null; then
     echo "⚠️  Missing dependencies, installing..."
-    pip3 install -r requirements.txt
+    "$PYTHON_BIN" -m pip install -r requirements.txt
     if [ $? -ne 0 ]; then
         echo "❌ Dependencies installation failed"
         exit 1
@@ -32,9 +49,11 @@ else
 fi
 
 # Start application
+HOST="${KRONOS_HOST:-0.0.0.0}"
+PORT="${KRONOS_PORT:-7070}"
 echo "🌐 Starting Web server..."
-echo "Access URL: http://localhost:7070"
+echo "Access URL: http://localhost:${PORT}"
 echo "Press Ctrl+C to stop server"
 echo ""
 
-python3 app.py
+"$PYTHON_BIN" run.py

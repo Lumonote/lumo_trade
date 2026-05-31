@@ -889,14 +889,14 @@ class MultiSourceDataFetcher:
             raise json.JSONDecodeError(f"配置文件格式错误: {e}", "", 0)
 
     def save_data(self, df: Any, symbol: str, freq: str = '5min') -> str:
-        """保存数据为Kronos兼容格式"""
-        # 优先使用环境变量中的数据目录，适配打包应用
-        data_dir_env = os.environ.get('KRONOS_DATA_DIR')
-        if data_dir_env:
-            output_dir = Path(data_dir_env)
-        else:
-            output_dir = Path(self.config.get('data_settings', {}).get('output_dir', './data/'))
-        output_dir.mkdir(parents=True, exist_ok=True)
+        """Persist OHLCV via data_store.ohlcv_repo (SQLite).
+
+        Returns the SQLite file path on success, empty string on failure. The
+        old CSV-on-disk behavior is gone — to export, use the importer's
+        reverse path or load_dataframe in scripts.
+        """
+        from data_store import ohlcv_repo
+        from data_store.connection import db_path
 
         # 提取股票代码
         if '.' in symbol:
@@ -907,18 +907,15 @@ class MultiSourceDataFetcher:
         # 统一频率标识
         if freq in ['5min', '5m']:
             freq_str = '5m'
+        elif freq in ['day', '1d', 'daily']:
+            freq_str = '1d'
         else:
             freq_str = freq
 
-        # 生成文件名 (格式: 5m_600977.csv)
-        filename = f"{freq_str}_{code}.csv"
-        filepath = output_dir / filename
-
-        # 保存数据
         try:
-            df.to_csv(filepath, index=False, encoding='utf-8')
-            print(f"✅ 数据已保存: {filepath}")
-            return str(filepath)
+            written = ohlcv_repo.upsert_df(code, freq_str, df)
+            print(f"✅ 数据已写入 SQLite: {db_path()} ({code}/{freq_str}, {written} rows)")
+            return str(db_path())
         except Exception as e:
             print(f"❌ 保存数据失败: {e}")
             return ""

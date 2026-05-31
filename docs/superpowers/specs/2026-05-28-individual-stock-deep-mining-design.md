@@ -21,7 +21,14 @@
 - 主力阶段 Tab #4 仅输出 4 级 label，缺「建仓 / 洗盘 / 拉升 / 出货」时间轴。
 - 筹码结构 Tab #6 只透传单个评分，`main_force_control` 控盘度（已在
   `analysis/advanced_analysis.py:181` 计算）未对外暴露；官方筹码分布 `cyq_perf` 未接入。
+  > ✅ 2026-05-29 已修复控盘度暴露：`overview.radar.control_degree` 与
+  > `chip_control.{control_degree,control_label,concentration_90}` 已从 ChipAnalyzer
+  > 透传（`data_status="fresh"`，无需 akshare）；官方 `cyq_perf` 仍待 M2。
 - 量价博弈 Tab #5 仅聚合 30 模型多空投票数，无信号矩阵 / 历史命中率 / 多周期共振。
+  > ✅ 2026-05-29 已落地本地数据部分：`quant_matrix` 输出 30 模型日线信号矩阵 +
+  > 多周期共振计数 + 当前态势卡片（`data_status="fresh"`，复用已有
+  > `QuantitativeModels`，无需外部数据）；多周期热力列(3/10/30 日)与 30 日历史
+  > 命中率需回测数据，仍属 M4。
 - 龙虎榜机构席位、北向资金、Top10 流通股东、股东户数、机构调研、重仓基金、
   融资融券、大宗交易、官方筹码 在全代码库无证据。
 
@@ -637,6 +644,9 @@ P_bull, P_bear, P_neutral = P_*_raw / S
    - `stale` → 渲染数据 + 顶部贴黄条 `最近一次入库：{last_updated}`
    - `unavailable` → 渲染骨架 + 红条 `数据源暂不可用` + 链接 `/api/diagnostics/data-sources`
 4. **AI 解读 prompt**：自动跳过 `unavailable` 字段，避免 LLM 编造。
+   > ✅ 2026-05-29 已落地：`build_llm_payload` 仅纳入 `data_status∈{fresh,stale}`
+   > 的控盘度 / 量化矩阵字段，`unavailable` 跳过（见 `tests/test_stock_analysis_suite.py`
+   > 的 `test_build_llm_payload_skips_unavailable_sections`）。
 5. **akshare 熔断中**：provider 直接返回 unavailable，不重试。
 
 ### 4.4 测试矩阵
@@ -660,7 +670,7 @@ P_bull, P_bear, P_neutral = P_*_raw / S
 
 | M | 内容 | 验收点 |
 |---|---|---|
-| **M1** | AkshareAdapter + Migration v6 + 6 provider 空实现（返回 unavailable） + payload schema 落地 + 前端用 mock fixture 渲染 4 个新 Tab | `pytest tests/data_store/test_akshare_adapter.py` 全绿；前端打开任一个股，4 个新 Tab 渲染骨架不报错 |
+| **M1** ✅ 代码完成 (2026-05-29，截图待补) | AkshareAdapter + Migration v6 + 6 provider 空实现（返回 unavailable） + payload schema 落地 + 前端用 mock fixture 渲染 4 个新 Tab | `pytest tests/test_akshare_adapter.py` 等 M1 相关 58 用例全绿（全量 156 通过）；前端 4 个新 Tab render 函数已落地。⚠️ 手动浏览器冒烟 + `docs/screenshots/2026-05-28-deep-mining/` 截图归档尚未执行 |
 | **M2** | 6 provider 真实落地 + 隔夜批 `sync_institutional_data.py` + sentiment_cache TTL 接入 | `python scripts/sync_institutional_data.py --codes 000001` 入库行数 > 0；`/api/stock-analysis-suite/000001` 返回 `data_status="fresh"` |
 | **M3** | `stage_classifier` + `quant_signature_detector` + AI 解读 prompt 调整 | 阶段时间轴 60 格 + 当日量化签名可见；AI 解读引用主力深度内容 |
 | **M4** | 30 模型 → 信号矩阵 + 历史命中率（量化矩阵 Tab 补全） | 信号矩阵热力图渲染 + 30 日命中率柱图 |
