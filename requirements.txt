@@ -1,7 +1,12 @@
 numpy>=2.1.0
 pandas>=2.2.3
 pytz>=2022.1
-torch>=2.5.0
+# PyTorch wheels: Linux / Windows / macOS Apple-Silicon(arm64) 均有 torch>=2.5 官方包；
+# Intel macOS(x86_64) 自 torch 2.3 起不再发布 wheel，且 Python 3.13 没有任何 torch 包。
+# 策略：可装新版的平台装 2.5+；Intel Mac 在 Python<3.13 时退回最高可用的 2.2.x；
+# Intel Mac + Python 3.13 自动跳过 torch（数据/挖掘/Web 仍可跑，预测/模型类功能不可用）。
+torch>=2.5.0; sys_platform != "darwin" or platform_machine != "x86_64"
+torch>=2.2.0; sys_platform == "darwin" and platform_machine == "x86_64" and python_version < "3.13"
 einops
 huggingface_hub>=0.33.1
 modelscope>=1.20.0
