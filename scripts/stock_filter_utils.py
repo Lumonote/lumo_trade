@@ -68,18 +68,62 @@ def _project_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _load_tushare_token(config_path: str = None) -> str:
+def candidate_tushare_config_paths(config_path: str = None) -> List[str]:
+    paths: List[str] = []
+
+    def add(path: str = None):
+        if not path:
+            return
+        normalized = os.path.abspath(os.path.expanduser(str(path)))
+        if normalized not in paths:
+            paths.append(normalized)
+
+    add(config_path)
+
+    config_dir = os.environ.get('KRONOS_CONFIG_DIR')
+    if config_dir:
+        add(os.path.join(config_dir, 'tushare_config.json'))
+
+    user_dir = os.environ.get('KRONOS_USER_DIR')
+    if user_dir:
+        add(os.path.join(user_dir, 'config', 'tushare_config.json'))
+
+    source_config_dir = os.environ.get('KRONOS_SOURCE_CONFIG_DIR') or os.environ.get('KRONOS_LEGACY_CONFIG_DIR')
+    if source_config_dir:
+        if os.path.basename(os.path.normpath(source_config_dir)) == 'config':
+            add(os.path.join(source_config_dir, 'tushare_config.json'))
+        else:
+            add(os.path.join(source_config_dir, 'config', 'tushare_config.json'))
+
+    add(os.path.join(os.getcwd(), 'config', 'tushare_config.json'))
+    add(os.path.join(_project_root(), 'config', 'tushare_config.json'))
+    return paths
+
+
+def load_tushare_config(config_path: str = None) -> Dict:
+    for cfg_path in candidate_tushare_config_paths(config_path):
+        if not os.path.exists(cfg_path):
+            continue
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+            return cfg if isinstance(cfg, dict) else {}
+        except Exception:
+            continue
+    return {}
+
+
+def load_tushare_token(config_path: str = None) -> str:
     token = os.environ.get('TUSHARE_TOKEN', '').strip()
     if token:
         return token
 
-    cfg_path = config_path or os.path.join(_project_root(), 'config', 'tushare_config.json')
-    try:
-        with open(cfg_path, 'r', encoding='utf-8') as f:
-            cfg = json.load(f)
-        return str((cfg.get('tushare') or {}).get('token') or cfg.get('token') or '').strip()
-    except Exception:
-        return ''
+    cfg = load_tushare_config(config_path)
+    return str((cfg.get('tushare') or {}).get('token') or cfg.get('token') or '').strip()
+
+
+def _load_tushare_token(config_path: str = None) -> str:
+    return load_tushare_token(config_path)
 
 
 def load_tushare_stock_name_map(config_path: str = None) -> Dict[str, str]:

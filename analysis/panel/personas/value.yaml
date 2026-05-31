@@ -1,0 +1,64 @@
+# A 价值派（9 人：3 旗舰 + 6 stub）
+- id: buffett
+  name: 巴菲特
+  school: A
+  tier: flagship
+  rule: buffett
+  voice: 护城河与长期复利
+  key_metrics: [roe, pe_industry_rank, net_profit_yoy]
+- id: munger
+  name: 芒格
+  school: A
+  tier: flagship
+  rule: munger
+  voice: 合理价格的好生意
+  key_metrics: [roe, pe_industry_rank]
+- id: graham
+  name: 格雷厄姆
+  school: A
+  tier: flagship
+  rule: graham
+  voice: 深度低估与安全边际
+  key_metrics: [pe_industry_rank, pb]
+- id: templeton
+  name: 约翰·邓普顿
+  school: A
+  tier: stub
+  rule: school_default
+  voice: 逆向价值
+  key_metrics: [pe_industry_rank, roe]
+- id: klarman
+  name: 塞思·卡拉曼
+  school: A
+  tier: stub
+  rule: school_default
+  voice: 安全边际优先
+  key_metrics: [pe_industry_rank, roe]
+- id: schloss
+  name: 沃尔特·施洛斯
+  school: A
+  tier: stub
+  rule: school_default
+  voice: 低估分散
+  key_metrics: [pe_industry_rank, pb]
+- id: neff
+  name: 约翰·涅夫
+  school: A
+  tier: stub
+  rule: school_default
+  voice: 低市盈率投资
+  key_metrics: [pe_industry_rank]
+- id: marks
+  name: 霍华德·马克斯
+  school: A
+  tier: stub
+  rule: school_default
+  voice: 周期与风险
+  key_metrics: [pe_industry_rank, roe]
+- id: ackman
+  name: 比尔·阿克曼
+  school: A
+  tier: stub
+  rule: school_default
+  voice: 集中价值
+  key_metrics: [roe, pe_industry_rank]

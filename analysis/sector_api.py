@@ -16,26 +16,14 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Tuple
 from bs4 import BeautifulSoup
 from analysis.sentiment_cache_manager import SentimentCacheManager
+from scripts.stock_filter_utils import load_tushare_token
 
 # 初始化缓存管理器
 cache_manager = SentimentCacheManager()
 
 
 def _load_tushare_token() -> str:
-    token = os.environ.get('TUSHARE_TOKEN', '')
-    if token:
-        return token
-
-    project_root = os.path.dirname(os.path.dirname(__file__))
-    config_path = os.path.join(project_root, 'config', 'tushare_config.json')
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            cfg = json.load(f) or {}
-        if isinstance(cfg.get('tushare'), dict):
-            return str(cfg.get('tushare', {}).get('token', '') or '')
-        return str(cfg.get('token', '') or '')
-    except Exception:
-        return ''
+    return load_tushare_token()
 
 
 def _get_tushare_pro():

@@ -90,55 +90,58 @@ run_batch_predict_and_rank_analysis() {
 # Check for python command - 智能选择 Python 3.11+
 find_python() {
     # 尝试找到 Python 3.11+
+    is_supported_python() {
+        local cmd="$1"
+        local ok
+        ok=$("$cmd" -c 'import sys; print(int((sys.version_info.major, sys.version_info.minor) >= (3, 11)))' 2>/dev/null)
+        [[ "$ok" == "1" ]]
+    }
 
     # 1. 优先使用环境变量
-    if [[ -n "$PYTHON_CMD" && -x "$PYTHON_CMD" ]]; then
-        ver=$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
-        if [[ "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]]; then
-            echo "$PYTHON_CMD"
-            return 0
-        fi
+    if [[ -n "$PYTHON_CMD" && -x "$PYTHON_CMD" ]] && is_supported_python "$PYTHON_CMD"; then
+        echo "$PYTHON_CMD"
+        return 0
     fi
 
-    if [[ -n "$PYTHON" && -x "$PYTHON" ]]; then
-        ver=$("$PYTHON" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
-        if [[ "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]]; then
-            echo "$PYTHON"
-            return 0
-        fi
+    if [[ -n "$PYTHON" && -x "$PYTHON" ]] && is_supported_python "$PYTHON"; then
+        echo "$PYTHON"
+        return 0
     fi
 
-    # 2. 检查 python 命令
-    if command -v python &>/dev/null; then
-        ver=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
-        if [[ "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]]; then
-            echo "python"
-            return 0
-        fi
+    # 2. 当前虚拟环境
+    if [[ -n "$VIRTUAL_ENV" && -x "$VIRTUAL_ENV/bin/python" ]] && is_supported_python "$VIRTUAL_ENV/bin/python"; then
+        echo "$VIRTUAL_ENV/bin/python"
+        return 0
     fi
 
-    # 3. 检查 python3 命令
-    if command -v python3 &>/dev/null; then
-        ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
-        if [[ "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]]; then
-            echo "python3"
+    # 2b. 项目本地 venv (.venv 或 venv)，优先于系统 Python，避免依赖错装到全局
+    for venv_python in \
+        "$SCRIPT_DIR/.venv/bin/python" \
+        "$SCRIPT_DIR/venv/bin/python"; do
+        if [[ -x "$venv_python" ]] && is_supported_python "$venv_python"; then
+            echo "$venv_python"
             return 0
         fi
-    fi
+    done
 
-    # 4. 检查完整路径
-    for path in /usr/local/bin/python3.11 /opt/homebrew/bin/python3.11; do
+    # 3. 检查完整路径
+    for path in \
+        /usr/local/bin/python3.13 /opt/homebrew/bin/python3.13 \
+        /usr/local/bin/python3.12 /opt/homebrew/bin/python3.12 \
+        /usr/local/bin/python3.11 /opt/homebrew/bin/python3.11; do
         if [[ -x "$path" ]]; then
             echo "$path"
             return 0
         fi
     done
 
-    # 5. 尝试通过 which 找 python3.11
-    if command -v python3.11 &>/dev/null; then
-        echo "python3.11"
-        return 0
-    fi
+    # 4. PATH 中的候选命令
+    for cmd in python3.13 python3.12 python3.11 python3 python; do
+        if command -v "$cmd" &>/dev/null && is_supported_python "$cmd"; then
+            echo "$cmd"
+            return 0
+        fi
+    done
 
     return 1
 }
@@ -258,7 +261,7 @@ if [[ "$BATCH_MODE" == "true" && -n "$MENU_CHOICE" ]]; then
             ;;
         13)
             echo "WEB: 启动Web界面"
-            cd webui && $PYTHON_CMD app.py
+            cd webui && $PYTHON_CMD run.py
             exit 0
             ;;
         14)
@@ -452,7 +455,7 @@ echo "16. 退出"
             ;;
         13)
             echo "WEB: 启动Web界面..."
-            cd webui && $PYTHON_CMD app.py
+            cd webui && $PYTHON_CMD run.py
             cd ..
             pause
             ;;
@@ -484,8 +487,9 @@ echo "16. 退出"
             echo "  - 投资机会挖掘: 分析TOP100热门股票的多维度指标"
             echo "  - 重大利好消息挖掘: 从资讯流中挖掘潜在投资机会"
             echo ""
-            echo "WEB: Web界面："
-            echo "  - 运行: cd webui && python app.py"
+echo "WEB: Web界面："
+            echo "  - 运行: cd webui && python run.py"
+            echo "  - Robyn迁移入口: KRONOS_WEB_SERVER=robyn python run.py"
             echo "  - 访问: http://localhost:7070"
             echo ""
             pause

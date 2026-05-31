@@ -281,40 +281,42 @@ class BatchProcessor:
         """阶段3：整合结果"""
         rows = []
 
-        for stock_code in passed_stocks:
-            score_data = passed_stocks[stock_code]
-            collection_data = collected_data.get(stock_code, {})
-
-            row = {
+        def make_row(stock_code: str, score_data: Dict, filter_status: str, reason: str = ""):
+            scores = score_data.get("scores", {}) if isinstance(score_data, dict) else {}
+            return {
                 "股票代码": stock_code,
                 "综合评分": score_data.get("total_score", 0),
                 "评级": score_data.get("rating", "?"),
                 "建议": score_data.get("recommendation", ""),
+                "过滤状态": filter_status,
+                "未通过原因": reason,
+                "量化": scores.get("quantitative", 0),
+                "技术": scores.get("technical", 0),
+                "位置": scores.get("position_timing", 0),
+                "量价": scores.get("volume_health", 0),
+                "情绪": scores.get("sentiment", 0),
+                "板块": scores.get("sector", 0),
             }
 
-            # 添加各维度评分
-            scores = score_data.get("scores", {})
-            row.update(
-                {
-                    "量化": scores.get("quantitative", 0),
-                    "技术": scores.get("technical", 0),
-                    "位置": scores.get("position_timing", 0),
-                    "量价": scores.get("volume_health", 0),
-                    "情绪": scores.get("sentiment", 0),
-                    "板块": scores.get("sector", 0),
+        for stock_code, score_data in passed_stocks.items():
+            rows.append(make_row(stock_code, score_data, "通过"))
+
+        for stock_code, fail_info in failed_stocks.items():
+            score_data = fail_info.get("full_result") if isinstance(fail_info, dict) else None
+            if not isinstance(score_data, dict):
+                score_data = {
+                    "total_score": fail_info.get("score", 0) if isinstance(fail_info, dict) else 0,
+                    "rating": fail_info.get("rating", "?") if isinstance(fail_info, dict) else "?",
                 }
-            )
+            reason = fail_info.get("reason", "") if isinstance(fail_info, dict) else ""
+            rows.append(make_row(stock_code, score_data, "未通过", reason))
 
-            rows.append(row)
-
-        # 排序
         if rows:
             df = pd.DataFrame(rows)
             df = df.sort_values("综合评分", ascending=False)
         else:
             df = pd.DataFrame()
 
-        # 构建详细结果
         detailed = {
             "passed": passed_stocks,
             "failed": failed_stocks,
@@ -350,7 +352,12 @@ class BatchProcessor:
 
         # 保存JSON详情
         json_file = output_path / f"batch_details_{timestamp}.json"
-        # 处理非序列化对象
+
+        def _serialize(value):
+            if isinstance(value, datetime):
+                return value.isoformat()
+            raise TypeError(f"Unserializable type {type(value).__name__}")
+
         json_safe_details = {
             "statistics": detailed_results.get("statistics", {}),
             "passed_count": len(detailed_results.get("passed", {})),
@@ -358,7 +365,7 @@ class BatchProcessor:
         }
 
         with open(json_file, "w", encoding="utf-8") as f:
-            json.dump(json_safe_details, f, ensure_ascii=False, indent=2)
+            json.dump(json_safe_details, f, ensure_ascii=False, indent=2, default=_serialize)
         self._log(f"✅ 详情已保存到: {json_file}")
 
         return csv_file, json_file

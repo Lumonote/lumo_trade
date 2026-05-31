@@ -14,7 +14,7 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 import logging
-from scripts.stock_filter_utils import filter_st_stocks, is_st_stock
+from scripts.stock_filter_utils import filter_st_stocks, is_st_stock, load_tushare_token
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -97,13 +97,7 @@ class HotStocksFetcher:
         HotStocksFetcher._stock_name_cache_loaded = True
         try:
             import tushare as ts
-            token = os.environ.get('TUSHARE_TOKEN', '').strip()
-            if not token:
-                cfg_path = os.path.join(os.getcwd(), 'config', 'tushare_config.json')
-                if os.path.exists(cfg_path):
-                    with open(cfg_path, 'r', encoding='utf-8') as f:
-                        cfg = json.load(f)
-                    token = str((cfg.get('tushare') or {}).get('token') or '').strip()
+            token = load_tushare_token()
             if not token:
                 return
             pro = ts.pro_api(token)
@@ -1868,65 +1862,43 @@ class HotStocksFetcher:
 
 
     def _load_cache(self) -> Optional[Dict]:
-        """
-        加载缓存数据
-
-        Returns:
-            缓存数据或None（如果缓存无效）
-        """
-        if not os.path.exists(self.cache_file):
-            return None
-
+        """从 kv_cache 表读取最近热门股快照。"""
         try:
-            with open(self.cache_file, 'r', encoding='utf-8') as f:
-                cache_data = json.load(f)
-
-            # 检查缓存是否过期
-            cache_time = datetime.fromisoformat(cache_data['timestamp'])
-            if datetime.now() - cache_time > timedelta(seconds=self.cache_ttl):
-                logger.info("缓存已过期")
-                return None
-
-            return cache_data
-
+            from data_store import kv_repo
         except Exception as e:
-            logger.warning(f"加载缓存失败: {e}")
+            logger.warning(f"data_store 不可用: {e}")
             return None
+        row = kv_repo.get("hot_stocks", "latest")
+        if not row:
+            return None
+        payload, epoch = row
+        try:
+            cache_time = datetime.fromtimestamp(epoch)
+        except Exception:
+            cache_time = datetime.fromisoformat(payload.get("timestamp"))
+        if datetime.now() - cache_time > timedelta(seconds=self.cache_ttl):
+            logger.info("缓存已过期")
+            return None
+        return payload
 
     def _save_cache(self, stocks: List[Dict]):
-        """
-        保存缓存数据（原子写入，避免文件损坏）
-
-        Args:
-            stocks: 股票列表
-        """
+        """将热门股快照写入 kv_cache 表。"""
         if self.disable_cache:
-            # 明确禁用缓存时直接返回
             return
-        tmp_file = self.cache_file + ".tmp"
         try:
-            cache_data = {
-                'timestamp': datetime.now().isoformat(),
-                'stocks': stocks
-            }
-
-            # 先写入临时文件并确保刷盘，再原子替换
-            with open(tmp_file, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-
-            os.replace(tmp_file, self.cache_file)
-            logger.info(f"缓存已保存: {self.cache_file}")
-
+            from data_store import kv_repo
+        except Exception as e:
+            logger.warning(f"data_store 不可用: {e}")
+            return
+        payload = {
+            "timestamp": datetime.now().isoformat(),
+            "stocks": stocks,
+        }
+        try:
+            kv_repo.set_("hot_stocks", "latest", payload, ttl_seconds=int(self.cache_ttl))
+            logger.info("缓存已保存到 kv_cache(hot_stocks/latest)")
         except Exception as e:
             logger.warning(f"保存缓存失败: {e}")
-            # 清理可能残留的临时文件
-            try:
-                if os.path.exists(tmp_file):
-                    os.remove(tmp_file)
-            except Exception:
-                pass
 
     def _check_data_source_health(self) -> Dict[str, Dict]:
         """

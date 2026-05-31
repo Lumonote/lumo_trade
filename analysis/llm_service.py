@@ -23,7 +23,11 @@ class LLMConfig:
     def __init__(self, config_path: Optional[Path] = None, provider_config_path: Optional[Path] = None):
         # 用户配置路径
         if config_path is None:
-            self.config_path = Path(__file__).parent.parent / 'config' / 'llm_config.json'
+            config_dir = os.environ.get('KRONOS_CONFIG_DIR')
+            if config_dir:
+                self.config_path = Path(config_dir) / 'llm_config.json'
+            else:
+                self.config_path = Path(__file__).parent.parent / 'config' / 'llm_config.json'
         else:
             self.config_path = Path(config_path)
 
@@ -41,10 +45,46 @@ class LLMConfig:
         if self.config_path.exists():
             try:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    text = f.read()
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return json.loads(self._strip_json_comments(text))
             except Exception as e:
                 print(f"加载用户配置失败: {e}")
         return {"enabled_models": [], "api_keys": {}}
+
+    @staticmethod
+    def _strip_json_comments(text: str) -> str:
+        result = []
+        in_string = False
+        escaped = False
+        index = 0
+        while index < len(text):
+            char = text[index]
+            next_char = text[index + 1] if index + 1 < len(text) else ''
+            if in_string:
+                result.append(char)
+                if escaped:
+                    escaped = False
+                elif char == '\\':
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                index += 1
+                continue
+            if char == '"':
+                in_string = True
+                result.append(char)
+                index += 1
+                continue
+            if char == '/' and next_char == '/':
+                while index < len(text) and text[index] not in '\r\n':
+                    index += 1
+                continue
+            result.append(char)
+            index += 1
+        return ''.join(result)
 
     def load_provider_config(self) -> Dict:
         """加载通用配置 (Provider、模型定义)"""
@@ -94,6 +134,11 @@ class LLMConfig:
     def get_enabled_model_names(self) -> List[str]:
         """获取所有启用的模型名称列表"""
         return self.config.get('enabled_models', [])
+
+    def get_enabled_llm(self) -> str:
+        """Backward-compatible display name for the first enabled model."""
+        enabled_models = self.get_enabled_model_names()
+        return enabled_models[0] if enabled_models else ''
 
     def is_configured(self) -> bool:
         """检查是否已配置至少一个启用的模型"""
@@ -543,6 +588,78 @@ class LLMAnalyzer:
 
 请严格按照JSON格式输出。"""
         return prompt
+
+    def interpret_stock_markdown(
+        self,
+        payload: Dict,
+        model_full_key: Optional[str] = None,
+    ) -> Tuple[bool, str, Optional[int]]:
+        """Call LLM provider and return (success, raw_markdown, total_tokens).
+
+        Unlike analyze_stock() which JSON-parses the response, this returns the
+        provider's raw text. Token usage may be None if the provider doesn't
+        report it (best-effort extraction).
+        """
+        prompt = (payload or {}).get("prompt") or ""
+        if not prompt:
+            return False, "prompt 为空", None
+        try:
+            ok, text, usage = self._call_provider_raw(prompt, model_full_key, max_tokens=3000)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"LLM 调用异常：{exc}", None
+        tokens: Optional[int] = None
+        if isinstance(usage, dict):
+            for key in ("total_tokens", "totalTokens", "total"):
+                if key in usage and isinstance(usage[key], (int, float)):
+                    tokens = int(usage[key])
+                    break
+        return ok, text, tokens
+
+    def _call_provider_raw(
+        self,
+        prompt: str,
+        model_full_key: Optional[str],
+        max_tokens: int = 3000,
+    ) -> Tuple[bool, str, Optional[Dict]]:
+        """Provider-agnostic raw call returning (success, text, usage_dict_or_None).
+
+        Best-effort token tracking: providers in this codebase return Tuple[bool, str]
+        without usage info, so usage is typically None. Tests stub this method
+        directly so they can inject usage dicts.
+        """
+        # Resolve enabled model
+        if model_full_key:
+            info = self.config.get_model_info(model_full_key)
+            if not info:
+                return False, f"模型 {model_full_key} 未找到", None
+            provider_name = info['provider_name']
+            model_key = info['model_key']
+        else:
+            enabled = self.config.get_enabled_models()
+            if not enabled:
+                return False, "未配置任何启用的模型", None
+            provider_name, model_key, _ = enabled[0]
+
+        try:
+            provider, model_cfg = self._get_provider_and_model(provider_name, model_key)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"模型解析失败：{exc}", None
+        if provider is None or model_cfg is None:
+            return False, f"模型 {provider_name}/{model_key} 未配置", None
+        if not model_cfg.get('api_key'):
+            return False, f"模型 {provider_name}/{model_key} 未配置 API Key", None
+
+        try:
+            result = provider.call_api(prompt, model_cfg, max_tokens=max_tokens)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"provider 调用失败：{exc}", None
+        # Provider may return (success, text) or (success, text, usage) — normalize
+        if isinstance(result, tuple) and len(result) >= 2:
+            success = bool(result[0])
+            text = str(result[1]) if result[1] is not None else ""
+            usage = result[2] if len(result) >= 3 and isinstance(result[2], dict) else None
+            return success, text, usage
+        return False, "provider 返回格式异常", None
 
 
 def main():

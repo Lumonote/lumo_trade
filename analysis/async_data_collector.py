@@ -305,17 +305,10 @@ class AsyncDataCollector:
     def _get_fundamental_data_sync(collector: FundamentalDataCollector) -> Dict:
         """同步获取基础数据"""
         try:
-            data = {
-                "financial_indicators": collector.get_financial_indicators() or {},
-                "profit_data": collector.get_profit_data() or {},
-                "debt_data": collector.get_debt_data() or {},
-                "cashflow_data": collector.get_cashflow_data() or {},
-                "growth_data": collector.get_growth_data() or {},
-                "valuation_data": collector.get_valuation_data() or {},
-            }
-
-            # 验证数据质量
-            required_fields = list(data.keys())
+            data = collector.get_comprehensive_data() or {}
+            if not data:
+                return None
+            required_fields = ["financial_indicators"]
             if validate_data_quality(
                 data, required_fields=required_fields, min_rows=0, data_type="基础数据"
             ):
@@ -329,17 +322,14 @@ class AsyncDataCollector:
     def _get_news_sentiment_sync(collector: NewsSentimentCollector) -> Dict:
         """同步获取新闻情感数据"""
         try:
-            data = {
-                "announcements": collector.get_latest_announcements(limit=5) or [],
-                "news": collector.get_latest_news(limit=5) or [],
-                "research_reports": collector.get_research_reports(limit=3) or [],
-                "comprehensive_news": collector.get_comprehensive_news(limit=20)
-                or {},
-            }
-
-            # 验证数据质量
+            data = collector.get_comprehensive_news(verbose=False) or {}
+            if not data:
+                return None
             if validate_data_quality(
-                data, required_fields=["comprehensive_news"], min_rows=0, data_type="新闻情感数据"
+                data,
+                required_fields=["announcements", "news"],
+                min_rows=0,
+                data_type="新闻情感数据",
             ):
                 return data
             return None

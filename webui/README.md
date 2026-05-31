@@ -49,7 +49,7 @@ After successful startup, visit http://localhost:7070
 ## 📍 Web Routes
 
 - `http://localhost:7070/`: comprehensive stock analysis home page
-- `http://localhost:7070/desktop/overview`: Tauri desktop multi-page shell
+- `http://localhost:7070/desktop/features`: Tauri desktop full feature overview
 - `http://localhost:7070/prediction`: original Kronos K-line prediction console
 - `http://localhost:7070/particles`: real-time market particle visualization
 
@@ -63,8 +63,8 @@ npm run desktop:dev
 npm run desktop:build
 ```
 
-The Tauri entry opens `/desktop/overview`, where the original stock-analysis home page is split into dedicated pages:
-overview, opportunities, workbench, pattern search, and reports/health.
+The Tauri entry opens `/desktop/features`, which keeps the stock-analysis workflow on one complete page.
+The sidebar pages remain as focused shortcuts for overview, opportunities, workbench, pattern search, settings, and reports.
 
 ## 📋 Usage Steps
 

@@ -16,6 +16,7 @@ import logging
 from urllib.parse import quote
 from scripts.stock_filter_utils import (
     filter_st_stocks,
+    load_tushare_token,
     load_tushare_stock_name_map,
 )
 
@@ -399,13 +400,7 @@ class OpportunityReportGenerator:
         self._tushare_name_cache = {}  # 默认空,失败也不重试
         try:
             import tushare as _ts
-            _cfg_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                'config', 'tushare_config.json'
-            )
-            with open(_cfg_path) as _f:
-                _cfg = json.load(_f)
-            _token = _cfg.get('tushare', {}).get('token', '') or _cfg.get('token', '')
+            _token = load_tushare_token()
             if not _token:
                 return self._tushare_name_cache
             _ts.set_token(_token)
@@ -486,10 +481,7 @@ class OpportunityReportGenerator:
                 import tushare as ts
                 import pandas as pd
 
-                config_path = os.path.join(project_root, 'config', 'tushare_config.json')
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                token = config.get('tushare', {}).get('token', '') or config.get('token', '')
+                token = load_tushare_token()
                 if token:
                     pro = ts.pro_api(token)
                     ts_code = f"{code}.SH" if code.startswith(('5', '6', '9')) else f"{code}.SZ"
@@ -683,10 +675,7 @@ class OpportunityReportGenerator:
         try:
             import tushare as ts
 
-            config_path = os.path.join(project_root, 'config', 'tushare_config.json')
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            token = config.get('tushare', {}).get('token', '') or config.get('token', '')
+            token = load_tushare_token()
             if token:
                 pro = ts.pro_api(token)
                 start_str = (report_dt - timedelta(days=lookback_days)).strftime('%Y%m%d')
@@ -894,14 +883,7 @@ class OpportunityReportGenerator:
             # 取 Tushare 日线，取上一报告日"次个交易日"开盘价 → 最新可用收盘价
             try:
                 import tushare as _ts
-                import json as _json
-                _cfg_path = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    'config', 'tushare_config.json'
-                )
-                with open(_cfg_path) as _f:
-                    _cfg = _json.load(_f)
-                _token = _cfg.get('tushare', {}).get('token', '') or _cfg.get('token', '')
+                _token = load_tushare_token()
                 if not _token:
                     return []
                 _ts.set_token(_token)
@@ -1218,47 +1200,43 @@ class OpportunityReportGenerator:
                     _missing_count = _missing_mask.sum()
                     if _missing_count > 0:
                         try:
-                            _cfg_path = os.path.join(project_root, 'config', 'tushare_config.json')
-                            if os.path.exists(_cfg_path):
-                                with open(_cfg_path, 'r') as _f:
-                                    _cfg = _json.load(_f)
-                                _token = _cfg.get('token', '') or _cfg.get('tushare', {}).get('token', '')
-                                if _token:
-                                    import tushare as _ts
-                                    _ts.set_token(_token)
-                                    _pro = _ts.pro_api()
-                                    _filled = 0
-                                    for _idx in bt_with_returns[_missing_mask].index:
-                                        try:
-                                            _code = str(int(bt_with_returns.at[_idx, 'code'])).zfill(6)
-                                            _rd = str(bt_with_returns.at[_idx, 'report_date']).replace('-', '')
-                                            _ts_code = f"{_code}.SH" if _code.startswith(('6', '9')) else f"{_code}.SZ"
-                                            _price_df = _pro.daily(
-                                                ts_code=_ts_code,
-                                                start_date=_rd,
-                                                end_date=current_report_dt.strftime('%Y%m%d')
-                                            )
-                                            if _price_df is not None and len(_price_df) > 0:
-                                                _price_df = _price_df.sort_values('trade_date').reset_index(drop=True)
-                                                _buy_idx = None
-                                                for _i, _d in enumerate(_price_df['trade_date'].tolist()):
-                                                    if _d > _rd:
-                                                        _buy_idx = _i
-                                                        break
-                                                if _buy_idx is not None and _buy_idx + 10 <= len(_price_df):
-                                                    _bp = _price_df.iloc[_buy_idx]['open']
-                                                    if _bp > 0:
-                                                        _p10 = _price_df.iloc[_buy_idx + 9]['close']
-                                                        bt_with_returns.at[_idx, 'return_10d'] = (_p10 - _bp) / _bp * 100
-                                                        _filled += 1
-                                                        # 同时补充5d如果也缺失
-                                                        if _pd.isna(bt_with_returns.at[_idx, 'return_5d']) and _buy_idx + 5 <= len(_price_df):
-                                                            _p5 = _price_df.iloc[_buy_idx + 4]['close']
-                                                            bt_with_returns.at[_idx, 'return_5d'] = (_p5 - _bp) / _bp * 100
-                                        except Exception:
-                                            pass
-                                    if _filled > 0:
-                                        logger.info(f"自动补充了 {_filled}/{_missing_count} 条缺失的10日收益数据")
+                            _token = load_tushare_token()
+                            if _token:
+                                import tushare as _ts
+                                _ts.set_token(_token)
+                                _pro = _ts.pro_api()
+                                _filled = 0
+                                for _idx in bt_with_returns[_missing_mask].index:
+                                    try:
+                                        _code = str(int(bt_with_returns.at[_idx, 'code'])).zfill(6)
+                                        _rd = str(bt_with_returns.at[_idx, 'report_date']).replace('-', '')
+                                        _ts_code = f"{_code}.SH" if _code.startswith(('6', '9')) else f"{_code}.SZ"
+                                        _price_df = _pro.daily(
+                                            ts_code=_ts_code,
+                                            start_date=_rd,
+                                            end_date=current_report_dt.strftime('%Y%m%d')
+                                        )
+                                        if _price_df is not None and len(_price_df) > 0:
+                                            _price_df = _price_df.sort_values('trade_date').reset_index(drop=True)
+                                            _buy_idx = None
+                                            for _i, _d in enumerate(_price_df['trade_date'].tolist()):
+                                                if _d > _rd:
+                                                    _buy_idx = _i
+                                                    break
+                                            if _buy_idx is not None and _buy_idx + 10 <= len(_price_df):
+                                                _bp = _price_df.iloc[_buy_idx]['open']
+                                                if _bp > 0:
+                                                    _p10 = _price_df.iloc[_buy_idx + 9]['close']
+                                                    bt_with_returns.at[_idx, 'return_10d'] = (_p10 - _bp) / _bp * 100
+                                                    _filled += 1
+                                                    # 同时补充5d如果也缺失
+                                                    if _pd.isna(bt_with_returns.at[_idx, 'return_5d']) and _buy_idx + 5 <= len(_price_df):
+                                                        _p5 = _price_df.iloc[_buy_idx + 4]['close']
+                                                        bt_with_returns.at[_idx, 'return_5d'] = (_p5 - _bp) / _bp * 100
+                                    except Exception:
+                                        pass
+                                if _filled > 0:
+                                    logger.info(f"自动补充了 {_filled}/{_missing_count} 条缺失的10日收益数据")
                         except Exception as _fill_err:
                             logger.debug(f"自动补充收益数据失败: {_fill_err}")
 
@@ -1883,15 +1861,7 @@ class OpportunityReportGenerator:
             logger.warning("Tushare未安装，无法获取资金流向数据")
             return None
 
-        # 加载Tushare配置
-        config_path = os.path.join(project_root, 'config', 'tushare_config.json')
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            token = config.get('tushare', {}).get('token', '')
-        except Exception as e:
-            logger.warning(f"加载Tushare配置失败: {e}")
-            return None
+        token = load_tushare_token()
 
         if not token:
             logger.debug("Tushare Token未配置，跳过资金流向数据获取")

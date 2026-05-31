@@ -50,6 +50,7 @@ SINA_KLINE_URL = (
     "http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
     "CN_MarketData.getKLineData"
 )
+EASTMONEY_CLIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -67,6 +68,16 @@ def parse_market_from_symbol(symbol: str) -> str:
     if prefix == "sz":
         return "SZ"
     if prefix == "bj":
+        return "BJ"
+    return "SZ"
+
+
+def parse_market_from_secid(secid: str) -> str:
+    """Eastmoney secid 形如 '1.600977' / '0.000001'。"""
+    market_code, _, stock_code = str(secid or "").strip().partition(".")
+    if market_code == "1":
+        return "SH"
+    if stock_code.startswith(("43", "83", "87", "92")):
         return "BJ"
     return "SZ"
 
@@ -178,7 +189,8 @@ def _load_tushare_token() -> str:
     if token:
         return token
 
-    cfg_path = ROOT_DIR / "config" / "tushare_config.json"
+    config_dir = os.environ.get("KRONOS_CONFIG_DIR")
+    cfg_path = Path(config_dir) / "tushare_config.json" if config_dir else ROOT_DIR / "config" / "tushare_config.json"
     try:
         with cfg_path.open("r", encoding="utf-8") as f:
             cfg = json.load(f)
@@ -311,6 +323,12 @@ def fetch_recent_klines(symbol: str, limit: int = 30) -> Tuple[str, List[dict]]:
         "datalen": str(limit + 5),  # 多取几个防止节假日
     }
     payload = _http_get_json(SINA_KLINE_URL, params)
+    if isinstance(payload, dict):
+        data = payload.get("data") or {}
+        if isinstance(data, dict):
+            name = str(data.get("name") or "")
+            klines = data.get("klines") or []
+            return name, list(klines) if isinstance(klines, list) else []
     if not isinstance(payload, list):
         return "", []
     klines = [item for item in payload if isinstance(item, dict)]
@@ -375,6 +393,50 @@ def list_all_stocks(limit: Optional[int] = None) -> List[dict]:
         if page > max_pages:
             break
     return out
+
+
+def list_all_secids(limit: Optional[int] = None) -> List[dict]:
+    """获取 Eastmoney secid 格式的 A 股列表，保留旧调用方兼容性。"""
+    params = {
+        "pn": "1",
+        "pz": str(limit or 10000),
+        "po": "1",
+        "np": "1",
+        "fltt": "2",
+        "invt": "2",
+        "fid": "f12",
+        "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81",
+        "fields": "f12,f13,f14,f100",
+    }
+    payload = _http_get_json(EASTMONEY_CLIST_URL, params)
+    rows = ((payload or {}).get("data") or {}).get("diff") if isinstance(payload, dict) else []
+
+    stocks: List[dict] = []
+    seen = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("f12") or "").strip().zfill(6)
+        if not code.isdigit() or len(code) != 6 or code in seen:
+            continue
+        seen.add(code)
+        market_id = str(row.get("f13") if row.get("f13") is not None else "")
+        if market_id not in {"0", "1"}:
+            market_id = "1" if code.startswith(("60", "68", "90")) else "0"
+        secid = f"{market_id}.{code}"
+        market = parse_market_from_secid(secid)
+        symbol = f"{market.lower()}{code}" if market in {"SH", "SZ", "BJ"} else sina_symbol_from_code(code)
+        stocks.append({
+            "stock_code": code,
+            "secid": secid,
+            "symbol": symbol,
+            "stock_name": str(row.get("f14") or "").strip(),
+            "industry": str(row.get("f100") or "").strip(),
+            "market": market,
+        })
+        if limit and len(stocks) >= limit:
+            break
+    return stocks
 
 
 def _process_one(stock: dict, snapshot_date: datetime.date) -> Optional[Fingerprint]:
