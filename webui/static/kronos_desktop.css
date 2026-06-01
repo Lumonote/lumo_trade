@@ -2302,12 +2302,38 @@ body.modal-open {
 .bbp-school-lean { font-size:12px; font-weight:700; min-width:64px; text-align:right; }
 .bbp-members { display:grid; grid-template-columns:repeat(2,1fr); gap:4px; padding:8px 4px; }
 .bbp-member { display:flex; align-items:center; gap:8px; padding:4px 8px; border-radius:6px; }
-.bbp-member[title] { cursor:help; }
+.bbp-member[data-style-detail] { cursor:help; }
 .bbp-member:hover { background:#f4f6fa; }
+.bbp-member:focus-visible { outline:2px solid #2f6fdd; outline-offset:1px; }
 .bbp-dot { width:8px; height:8px; border-radius:50%; flex:none; }
 .bbp-member-name { font-size:12px; min-width:120px; } .bbp-rule-tag { font-style:normal; font-size:10px; color:#a0a8b5; margin-left:4px; }
 .bbp-member-head { flex:1; font-size:11px; color:#6b778a; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .bbp-member-score { font-weight:700; font-size:12px; }
+
+/* 悬停投资风格卡片：浮层、终端深色主题，与 .bbp-head 一致 */
+.bbp-style-card {
+  position:fixed; z-index:9999; width:340px; max-width:calc(100vw - 24px);
+  max-height:calc(100vh - 24px); overflow-y:auto; display:none;
+  background:#0e1726; color:#e6edf6; border:1px solid #2a3852; border-radius:12px;
+  box-shadow:0 18px 48px rgba(8,15,30,.45); padding:14px 16px;
+  font-size:12px; line-height:1.65; opacity:0; transition:opacity .14s ease; pointer-events:none;
+}
+.bbp-style-card.show { opacity:1; }
+.bbp-style-card .bsc-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+.bbp-style-card .bsc-dot { width:9px; height:9px; border-radius:50%; flex:none; }
+.bbp-style-card .bsc-name { font-size:15px; font-weight:700; }
+.bbp-style-card .bsc-school { font-size:11px; padding:1px 8px; border-radius:10px; background:#1c2942; color:#9db4dd; }
+.bbp-style-card .bsc-score { margin-left:auto; font-weight:700; font-size:13px; }
+.bbp-style-card .bsc-voice { font-size:12px; color:#c6d2e6; background:#16223a; border-radius:8px; padding:6px 10px; margin-bottom:6px; }
+.bbp-style-card .bsc-rule { font-style:normal; font-size:10px; color:#8b98ac; margin-left:6px; }
+.bbp-style-card h6 { margin:10px 0 3px; font-size:11px; font-weight:700; color:#6f86ad; letter-spacing:.04em; }
+.bbp-style-card p { margin:0; font-size:12px; color:#d4dcea; }
+.bbp-style-card .bsc-metrics { display:flex; flex-wrap:wrap; gap:5px; margin-top:4px; }
+.bbp-style-card .bsc-metric { font-size:11px; padding:2px 8px; border-radius:6px; background:#1c2942; color:#9db4dd; }
+.bbp-style-card .bsc-verdict { margin-top:10px; padding-top:8px; border-top:1px solid #25334d; }
+.bbp-style-card .bsc-insight { font-size:12px; color:#e6edf6; margin-bottom:4px; }
+.bbp-style-card .bsc-reasons { margin:2px 0 0; padding-left:16px; }
+.bbp-style-card .bsc-reasons li { font-size:11px; color:#aebbd0; margin:1px 0; }
 /* 动画策略③：成员行进场逐行错峰点亮（仅展开时触发） */
 .bbp-school[open] .bbp-member { animation:bbpFadeIn .35s ease both; }
 @keyframes bbpFadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }

@@ -3499,6 +3499,134 @@
         return sig === "bull" ? "多" : sig === "bear" ? "空"
              : sig === "up" ? "↑" : sig === "down" ? "↓" : "—";
       }
+      function bbpSignalLabel(sig) {
+        return sig === "bull" ? "看多" : sig === "bear" ? "看空"
+             : sig === "up" ? "偏多" : sig === "down" ? "偏空" : "观望";
+      }
+
+      // 悬停投资风格卡片：7 流派各自的详细理念 + 选股逻辑（真实可考的投资方法论），
+      // 叠加该分析师的个人风格标签、关注指标与本股裁决，构成"非常详细的投资风格总结"。
+      const BBP_SCHOOL_STYLE = {
+        A: { tag: "长期主义 · 安全边际",
+             philosophy: "把股票视为企业所有权的一部分，坚信价格长期围绕内在价值波动。要求以显著低于内在价值的价格买入，用足够的安全边际抵御误判与坏运气，赚企业长期复利与估值回归的钱，而非市场情绪的钱。",
+             focus: "看重盈利质量(ROE)、护城河深度、行业估值分位与现金流稳定性；偏好低估值、高壁垒、能长期持有的好生意，回避高负债与概念炒作。" },
+        B: { tag: "高成长 · 合理价格(GARP)",
+             philosophy: "相信优秀公司的盈利成长会持续驱动股价，愿意为高确定性的成长支付合理溢价。核心是以合理价格买入高成长，赚业绩兑现与渗透率提升的钱，而不是单纯的估值博弈。",
+             focus: "看重营收与净利同比增速、行业空间与渗透率、研发投入与新品周期；偏好高速扩张、赛道景气、管理层进取的公司，容忍较高估值但要求成长可被验证。" },
+        C: { tag: "自上而下 · 周期择时",
+             philosophy: "自上而下，从经济周期、货币与流动性、政策与地缘出发判断大类资产与板块轮动。信奉反身性——价格与基本面相互强化，趋势一旦形成可自我加速；重在押注大级别拐点，判断错了就快速止损。",
+             focus: "看重趋势方向、动量、利率与流动性环境、板块轮动位置；以择时与仓位管理为核心，顺大势而为，在拐点与极端情绪处逆向布局。" },
+        D: { tag: "趋势顺势 · 量价纪律",
+             philosophy: "信奉价格反映一切，只看图表与量价、不问基本面。顺势交易、强者恒强：突破确认时进场、趋势走坏时离场，用严格止损把单笔亏损控制在小额，让利润奔跑。",
+             focus: "看重趋势结构、动量强度、量价配合(放量突破/缩量回踩)、关键支撑阻力与所处阶段(底部/拉升/顶部/下跌)；偏好强势突破形态，回避下降趋势与无量品种。" },
+        E: { tag: "本分 · 时间的玫瑰",
+             philosophy: "价值投资的中国本土实践，强调本分与商业模式，长期持有少数能看懂的优质龙头，赚企业成长与时间复利的钱、淡化择时；逆向流派则以低位、预期差与弱者体系取胜。",
+             focus: "看重ROE与盈利持续性、行业估值分位、品牌与定价权、消费垄断属性；偏好确定性高、可长期复利、管理层靠谱的公司，回避看不懂与商业模式差的生意。" },
+        F: { tag: "情绪短线 · 龙虎榜打板",
+             philosophy: "短线情绪交易，赚市场情绪与资金合力的钱。核心是龙虎榜与打板接力，捕捉板块龙头与情绪周期的高潮，讲求快准狠：亏损立即止损，盈利集中在主升浪的几天。",
+             focus: "看重龙虎榜席位与资金动向、控盘度、放量与连板高度、板块效应与情绪周期位置；偏好题材龙头与首板强势股，回避退潮期与跟风弱势股。" },
+        G: { tag: "数据驱动 · 多因子套利",
+             philosophy: "用统计与数学模型系统化决策、剥离主观情绪。通过多因子、统计套利与算法交易，在大量标的上捕捉可重复的微小优势，靠分散、纪律与高换手把概率优势转化为稳定收益。",
+             focus: "看重多因子信号、模型共振比例、波动率与相关性、量价微观结构；以信号强度与概率优势决定买卖，不依赖单一标的的基本面故事。" },
+      };
+      const BBP_METRIC_LABEL = {
+        roe: "ROE 净资产收益率", pe_industry_rank: "PE 行业分位",
+        net_profit_yoy: "净利润同比", revenue_yoy: "营收同比", pb: "市净率 PB",
+        momentum: "动量强度", trend: "趋势方向", volatility: "波动率", volume: "成交量能",
+      };
+      function bbpStyleDetail(a, schoolName) {
+        return {
+          name: a.name, schoolKey: a.school, schoolName,
+          signal: a.signal, score: a.score, voice: a.voice || "",
+          metrics: a.key_metrics || [],
+          insight: a.insight || a.headline || "",
+          reasons: (a.reasons || []).slice(0, 4),
+          source: a.source,
+        };
+      }
+      function bbpStyleCardHtml(d) {
+        const s = BBP_SCHOOL_STYLE[d.schoolKey] || {};
+        const col = bbpSignalColor(d.signal);
+        const metrics = (d.metrics || [])
+          .map((m) => `<span class="bsc-metric">${html(BBP_METRIC_LABEL[m] || m)}</span>`).join("");
+        const reasons = (d.reasons || []).filter((r) => r && r !== d.insight)
+          .map((r) => `<li>${html(r)}</li>`).join("");
+        return `
+          <div class="bsc-head">
+            <span class="bsc-dot" style="background:${col}"></span>
+            <span class="bsc-name">${html(d.name)}</span>
+            <span class="bsc-school">${html(d.schoolName)}${s.tag ? " · " + html(s.tag) : ""}</span>
+            <span class="bsc-score" style="color:${col}">${bbpSignalLabel(d.signal)} ${html(String(d.score))}</span>
+          </div>
+          ${d.voice ? `<div class="bsc-voice">个人风格：${html(d.voice)}${d.source === "rule" ? '<em class="bsc-rule">规则推断</em>' : ""}</div>` : ""}
+          ${s.philosophy ? `<h6>流派理念</h6><p>${html(s.philosophy)}</p>` : ""}
+          ${s.focus ? `<h6>选股逻辑</h6><p>${html(s.focus)}</p>` : ""}
+          ${metrics ? `<h6>关注指标</h6><div class="bsc-metrics">${metrics}</div>` : ""}
+          <div class="bsc-verdict">
+            <h6>本股裁决</h6>
+            ${d.insight ? `<div class="bsc-insight">${html(d.insight)}</div>` : ""}
+            ${reasons ? `<ul class="bsc-reasons">${reasons}</ul>` : ""}
+          </div>`;
+      }
+      function bbpEnsureStyleCard() {
+        let card = document.getElementById("bbpStyleCard");
+        if (!card) {
+          card = document.createElement("div");
+          card.id = "bbpStyleCard";
+          card.className = "bbp-style-card";
+          document.body.appendChild(card);
+        }
+        return card;
+      }
+      function bbpPositionStyleCard(card, rect) {
+        const margin = 10;
+        const cardW = card.offsetWidth, cardH = card.offsetHeight;
+        const vw = window.innerWidth, vh = window.innerHeight;
+        let left = rect.right + margin;
+        if (left + cardW > vw - margin) left = rect.left - cardW - margin;  // 右侧放不下→翻到左侧
+        if (left < margin) left = Math.max(margin, vw - cardW - margin);
+        let top = rect.top;
+        if (top + cardH > vh - margin) top = Math.max(margin, vh - cardH - margin);
+        card.style.left = left + "px";
+        card.style.top = top + "px";
+      }
+      function bbpShowStyleCard(memberEl) {
+        const raw = memberEl.getAttribute("data-style-detail");
+        if (!raw) return;
+        let d;
+        try { d = JSON.parse(raw); } catch (e) { return; }
+        const card = bbpEnsureStyleCard();
+        if (card.__forEl === memberEl && card.style.display === "block") return;
+        card.__forEl = memberEl;
+        card.innerHTML = bbpStyleCardHtml(d);
+        card.style.display = "block";
+        bbpPositionStyleCard(card, memberEl.getBoundingClientRect());
+        requestAnimationFrame(() => card.classList.add("show"));
+      }
+      function bbpHideStyleCard() {
+        const card = document.getElementById("bbpStyleCard");
+        if (!card) return;
+        card.classList.remove("show");
+        card.style.display = "none";
+        card.__forEl = null;
+      }
+      function bbpInstallStyleHover() {
+        if (window.__bbpStyleHoverInstalled) return;
+        window.__bbpStyleHoverInstalled = true;
+        const pick = (e) => (e.target.closest ? e.target.closest(".bbp-member[data-style-detail]") : null);
+        document.addEventListener("mouseover", (e) => { const m = pick(e); if (m) bbpShowStyleCard(m); });
+        document.addEventListener("mouseout", (e) => {
+          const m = pick(e);
+          if (!m) return;
+          const to = e.relatedTarget;
+          if (to && to.closest && to.closest(".bbp-member[data-style-detail]")) return;  // 成员间移动→交给 mouseover 切换内容，避免闪烁
+          if (!m.contains(to)) bbpHideStyleCard();
+        });
+        document.addEventListener("focusin", (e) => { const m = pick(e); if (m) bbpShowStyleCard(m); });
+        document.addEventListener("focusout", (e) => { const m = pick(e); if (m) bbpHideStyleCard(); });
+        window.addEventListener("scroll", bbpHideStyleCard, true);
+        window.addEventListener("resize", bbpHideStyleCard);
+      }
 
       function renderSuitePanel(payload) {
         const pane = document.getElementById("suitePanePanel");
@@ -3563,14 +3691,14 @@
           return `<div class="bbp-ind-group"><h5>${groupTitles[g]}</h5><div class="bbp-ind-grid">${cells}</div></div>`;
         }).join("");
 
-        // 7 流派 · 默认全部展开；悬停成员显示其投资风格（流派 · 风格一句话）
+        // 7 流派 · 全部展开；悬停成员弹出详细投资风格卡片（流派理念 + 个人风格 + 关注指标 + 本股裁决）
         const analysts = p.analysts || [];
         const schools = (p.schools || []).slice().sort(
           (a, b) => BBP_SCHOOL_ORDER.indexOf(a.key) - BBP_SCHOOL_ORDER.indexOf(b.key));
         const memberRow = (a, i, schoolName) => {
-          const style = a.voice || a.headline || "";
-          const tip = style ? `${schoolName} · ${style}` : schoolName;
-          return `<div class="bbp-member" style="animation-delay:${i * 30}ms" title="${html(tip)}">
+          const detail = bbpStyleDetail(a, schoolName);
+          return `<div class="bbp-member" style="animation-delay:${i * 30}ms"
+            tabindex="0" data-style-detail="${html(JSON.stringify(detail))}">
             <span class="bbp-dot" style="background:${bbpSignalColor(a.signal)}"></span>
             <span class="bbp-member-name">${html(a.name)}${a.source === "rule" ? '<em class="bbp-rule-tag">规则推断</em>' : ""}</span>
             <span class="bbp-member-head">${html(a.insight || a.headline)}</span>
@@ -3602,9 +3730,10 @@
             </div>
             <div class="bbp-section-title">量化指标（16）</div>
             ${groupHtml}
-            <div class="bbp-section-title">投资人评审团（${analysts.length} · 默认展开，悬停看风格）</div>
+            <div class="bbp-section-title">投资人评审团（${analysts.length} 位 · 悬停查看投资风格）</div>
             <div class="bbp-schools">${schoolHtml}</div>
           </div>`;
+        bbpInstallStyleHover();
       }
 
       // P0-A/P0-B：reviewed=true 显 AI 点评(+黄旗警告)；质量拦截显红条+回退规则文案；未生成显升档按钮
