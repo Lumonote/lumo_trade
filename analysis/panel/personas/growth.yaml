@@ -1,4 +1,4 @@
-# B 成长派（8 人：3 旗舰 + 5 stub）
+# B 成长派（9 人：3 旗舰 + 6 stub）
 - id: fisher
   name: 费雪
   school: B
@@ -55,3 +55,10 @@
   rule: school_default
   voice: 医药成长
   key_metrics: [net_profit_yoy, revenue_yoy]
+- id: laffont
+  name: 菲利普·拉丰
+  school: B
+  tier: stub
+  rule: school_default
+  voice: 科技成长
+  key_metrics: [revenue_yoy, net_profit_yoy]

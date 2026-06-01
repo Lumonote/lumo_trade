@@ -3,13 +3,13 @@ import pytest
 from analysis.panel.registry import load_personas, SCHOOLS
 
 
-def test_registry_loads_51_personas():
+def test_registry_loads_60_personas():
     personas = load_personas()
-    assert len(personas) == 51
+    assert len(personas) == 60
     flagship = [p for p in personas if p["tier"] == "flagship"]
     stub = [p for p in personas if p["tier"] == "stub"]
     assert len(flagship) == 12
-    assert len(stub) == 39
+    assert len(stub) == 48
 
 
 def test_registry_covers_seven_schools():
@@ -90,7 +90,7 @@ def test_evaluate_all_returns_one_verdict_per_persona():
                 "rsi": 28, "macd_hist": 0.3, "ma_alignment": "bull", "model_bull_ratio": 0.7,
                 "market_regime": "bull"}
     analysts = evaluate_all(load_personas(), features)
-    assert len(analysts) == 51
+    assert len(analysts) == 60
     sample = analysts[0]
     assert {"id", "name", "school", "signal", "score", "headline", "source", "reasons"} <= set(sample.keys())
     assert sample["signal"] in ("bull", "bear", "neutral")
@@ -133,7 +133,7 @@ def test_compute_schools_aggregates_seven():
     assert keys == {"A", "B", "C", "D", "E", "F", "G"}
     for s in schools:
         assert {"key", "name", "count", "lean", "lean_score"} <= set(s.keys())
-    assert sum(s["count"] for s in schools) == 51
+    assert sum(s["count"] for s in schools) == 60
 
 
 def test_consensus_and_lean_labels():
@@ -185,7 +185,7 @@ def _full_sections():
 def test_build_panel_full_shape():
     panel = build_panel(_full_inputs(), _full_sections())
     assert panel["data_status"] in ("fresh", "stale")
-    assert len(panel["analysts"]) == 51
+    assert len(panel["analysts"]) == 60
     assert len(panel["schools"]) == 7
     assert len(panel["indicators"]) == 16
     assert {"score", "label", "bull", "neutral", "bear"} <= set(panel["consensus"].keys())
@@ -195,6 +195,6 @@ def test_build_panel_full_shape():
 
 def test_build_panel_degrades_when_all_empty():
     panel = build_panel({}, {})
-    # 无任何数据源 → unavailable，但结构仍完整（51 人走中性默认）
+    # 无任何数据源 → unavailable，但结构仍完整（60 人走中性默认）
     assert panel["data_status"] == "unavailable"
-    assert len(panel["analysts"]) == 51
+    assert len(panel["analysts"]) == 60

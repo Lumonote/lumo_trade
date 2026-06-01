@@ -554,10 +554,10 @@ def test_compute_full_payload_includes_panel(monkeypatch):
     # 新 panel key
     assert "panel" in payload
     panel = payload["panel"]
-    assert len(panel["analysts"]) == 51
+    assert len(panel["analysts"]) == 60
     assert len(panel["indicators"]) == 16
     assert len(panel["schools"]) == 7
-    assert panel["consensus"]["bull"] + panel["consensus"]["neutral"] + panel["consensus"]["bear"] == 51
+    assert panel["consensus"]["bull"] + panel["consensus"]["neutral"] + panel["consensus"]["bear"] == 60
 
 
 def test_collect_panel_degrades_on_failure(monkeypatch):

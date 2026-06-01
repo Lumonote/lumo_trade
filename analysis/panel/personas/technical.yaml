@@ -1,4 +1,4 @@
-# D 技术派（7 人：全 stub）
+# D 技术派（9 人：全 stub）
 - id: livermore
   name: 利弗莫尔
   school: D
@@ -48,3 +48,17 @@
   rule: school_default
   voice: 短线动量
   key_metrics: [momentum, volatility]
+- id: dennis
+  name: 理查德·丹尼斯
+  school: D
+  tier: stub
+  rule: school_default
+  voice: 海龟趋势跟踪
+  key_metrics: [trend, momentum]
+- id: bollinger
+  name: 约翰·布林格
+  school: D
+  tier: stub
+  rule: school_default
+  voice: 布林带波动
+  key_metrics: [volatility, momentum]

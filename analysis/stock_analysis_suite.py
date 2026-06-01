@@ -23,6 +23,9 @@ from data_store import kv_repo
 
 _DEFAULT_TTL_SECONDS = 300  # 5 minutes per spec §3
 _OVERLAY_NS = "analysis_overlay"
+# 按需补偿日线时的回溯窗口（~2 年）。覆盖 MA60 / 120 日回撤 / 60 日年化波动率所需历史，
+# Eastmoney 一次请求即返回，命中后写库缓存，后续读取不再触网。
+_FETCH_LOOKBACK_DAYS = 730
 
 
 _REGIME_BASE = {"bull": 50, "sideways": 35, "bear": 15}
@@ -165,12 +168,19 @@ class StockAnalysisSuite:
         ttl_seconds: float = _DEFAULT_TTL_SECONDS,
         reports_root: Optional[Path] = None,
         institutional_providers: Optional[Dict[str, Any]] = None,
+        auto_fetch: bool = True,
     ) -> None:
         self._ttl = float(ttl_seconds)
         self._cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
         self._lock = RLock()
         self._reports_root = Path(reports_root) if reports_root else Path("reports/stock_suite")
         self._inst_providers = institutional_providers or {}
+        # 本地 OHLCV 不足时是否按需向数据源补偿（spec §6.7 + 用户「立马补偿数据」要求）。
+        # 生产默认开启；单测验证纯本地降级阶梯时关闭以保持离线/幂等。
+        self._auto_fetch = bool(auto_fetch)
+        # code → 上次补偿尝试的 monotonic 时刻，用于去重：同一 payload 内 _load_ohlcv 被
+        # _collect_inputs + compute_risk_control 调两次，且失败时避免逐请求反复打网络。
+        self._fetch_attempts: Dict[str, float] = {}
 
     def get_full_payload(self, code: str) -> Dict[str, Any]:
         now = time.monotonic()
@@ -306,7 +316,7 @@ class StockAnalysisSuite:
         }
 
     def _collect_panel(self, code: str, inputs: dict | None, sections: dict) -> dict:
-        """多空评审团：51 persona 规则裁决 + 16 指标 + 共识/大分歧（spec §0/§11 Phase 1）。
+        """多空评审团：60 persona 规则裁决 + 16 指标 + 共识/大分歧（spec §0/§11 Phase 1）。
         纯规则，无 LLM。任何异常降级 unavailable，不影响其它 Tab。"""
         try:
             from analysis.panel import build_panel
@@ -763,29 +773,73 @@ class StockAnalysisSuite:
             "source": "30 量化模型多空票数归一化",
         }
 
-    def _load_ohlcv(self, code: str, min_rows: int = 35) -> pd.DataFrame:
-        """Load OHLCV from data_store.ohlcv_repo (SQLite)，分级降级（E6/§6.7）。
+    def _ensure_ohlcv_daily(self, code: str) -> bool:
+        """本地 OHLCV 不足 → 立即从 Eastmoney（免 token）补偿日线并写库。
 
-        优先返回 ≥60 行的频率（指标充足，保留旧的 1d→5m 偏好）；否则返回最长且
-        ≥``min_rows`` 行的序列（35–59 日为「短历史降级」，可算指标交由下游 + 标注
-        低置信）；都 <``min_rows`` 才抛 FileNotFoundError，message 带「当前行数 +
-        需 ≥N 交易日」明确条件，避免级联多面板泛化「数据不足」。
+        每实例按冷却窗口去重：同一 payload 内 _load_ohlcv 的两次调用、以及连续失败的
+        逐请求重试都不会重复打网络（补偿成功后数据已入库，重扫即命中，不再走到此分支）。
+        返回 True 仅当本次确有发起补偿且数据源回了非空数据。
+        """
+        now = time.monotonic()
+        cooldown = max(self._ttl, 30.0)  # 即便 ttl 配得极小，也保证 payload 内双调用只补偿一次
+        with self._lock:
+            last = self._fetch_attempts.get(code)
+            if last is not None and (now - last) < cooldown:
+                return False
+            self._fetch_attempts[code] = now
+        try:
+            from data_store.ohlcv_fetch import ensure_daily
+
+            today = _dt.date.today()
+            start = (today - _dt.timedelta(days=_FETCH_LOOKBACK_DAYS)).strftime("%Y%m%d")
+            end = today.strftime("%Y%m%d")
+            df = ensure_daily(str(code).zfill(6), start, end)
+            return df is not None and not df.empty
+        except Exception:  # noqa: BLE001 — 补偿尽力而为，失败回退到分级降级路径
+            return False
+
+    def _load_ohlcv(self, code: str, min_rows: int = 35) -> pd.DataFrame:
+        """Load OHLCV from data_store.ohlcv_repo (SQLite)，按需补偿 + 分级降级（E6/§6.7）。
+
+        读取顺序：优先返回 ≥60 行的频率（指标充足，保留旧的 1d→5m 偏好）。本地不足 60
+        行时**立即按需补偿**（``_ensure_ohlcv_daily`` 走 Eastmoney 免 token 拉日线写库），
+        再重扫一次；补偿后仍 <60 才回到分级降级：返回最长且 ≥``min_rows`` 行的序列
+        （35–59 日为「短历史降级」，指标交由下游 + 标注低置信）；都 <``min_rows`` 才抛
+        FileNotFoundError，message 带「当前行数 + 需 ≥N 交易日」并给出补齐数据的操作指引
+        （仅在确实补偿无果时显示），避免级联多面板泛化「数据不足」。
         """
         from data_store import ohlcv_repo
 
-        best: "pd.DataFrame | None" = None
-        for frequency in ("1d", "5m"):
-            df = ohlcv_repo.load_dataframe(code, frequency)
-            if df is not None and len(df) >= 60:
-                return df
-            if df is not None and (best is None or len(df) > len(best)):
-                best = df
+        def _scan() -> "tuple[pd.DataFrame | None, pd.DataFrame | None]":
+            """返回 (ideal≥60, best<60)。命中 ideal 即可直接用；best 为最长的不足序列。"""
+            best: "pd.DataFrame | None" = None
+            for frequency in ("1d", "5m"):
+                df = ohlcv_repo.load_dataframe(code, frequency)
+                if df is not None and len(df) >= 60:
+                    return df, best
+                if df is not None and (best is None or len(df) > len(best)):
+                    best = df
+            return None, best
+
+        ideal, best = _scan()
+        if ideal is not None:
+            return ideal
+        # 本地 <60 行 → 立即补偿，再重扫一次（补偿成功则此处命中 ≥60）。
+        if self._auto_fetch and self._ensure_ohlcv_daily(code):
+            ideal, best = _scan()
+            if ideal is not None:
+                return ideal
+        # 补偿后（或未开启补偿）仍 <60：短历史降级（≥min_rows 可算指标，下游标注低置信）。
         if best is not None and len(best) >= min_rows:
             return best
         have = len(best) if best is not None else 0
-        raise FileNotFoundError(
-            f"OHLCV 历史不足：{code} 最长仅 {have} 行（需 ≥{min_rows} 交易日）"
-        )
+        msg = f"OHLCV 历史不足：{code} 最长仅 {have} 行（需 ≥{min_rows} 交易日）"
+        if self._auto_fetch:
+            msg += (
+                f"；已自动补偿但数据源仍未返回足量数据，请确认代码正确且未停牌/退市，"
+                f"或手动运行 `python scripts/fetch_data.py --symbol {code} --source auto` 补齐"
+            )
+        raise FileNotFoundError(msg)
 
     def _classify_market_regime(self) -> "tuple[str, float]":
         """Map sentiment-analyzer overall market reading → (regime, capital_flow_ratio).

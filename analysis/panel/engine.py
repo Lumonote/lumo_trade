@@ -45,6 +45,7 @@ def evaluate_all(personas: List[Dict[str, Any]], features: Dict[str, Any]) -> Li
             "signal": score_to_signal(score),
             "score": score,
             "headline": headline,
+            "voice": p.get("voice", ""),  # 投资风格一句话（前端悬停展示）
             "source": "handwritten" if p["tier"] == "flagship" else "rule",
             "reasons": reasons,
         })

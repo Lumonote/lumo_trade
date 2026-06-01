@@ -1,4 +1,4 @@
-# E 中国价投（7 人：2 旗舰 + 5 stub）
+# E 中国价投（8 人：2 旗舰 + 6 stub）
 - id: duan
   name: 段永平
   school: E
@@ -48,3 +48,10 @@
   rule: school_default
   voice: 便宜的好公司
   key_metrics: [pe_industry_rank, roe]
+- id: zhaodanyang
+  name: 赵丹阳
+  school: E
+  tier: stub
+  rule: school_default
+  voice: 安全边际价值
+  key_metrics: [roe, pe_industry_rank]

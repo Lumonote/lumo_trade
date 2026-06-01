@@ -255,9 +255,22 @@
           <div class="panel">
             <div class="panel-header">
               <h2 class="panel-title">匹配结果</h2>
-              <span id="patternResultMeta" class="panel-meta">--</span>
+              <div class="panel-header-actions">
+                <span id="patternResultMeta" class="panel-meta">--</span>
+                <button id="patternBacktestBtn" class="button secondary" type="button" disabled
+                        title="对匹配出的同类股票，联网回测该形态出现后的历史后市表现">📊 回测该形态</button>
+              </div>
             </div>
             <div id="patternResults" class="panel-body list"></div>
+          </div>
+          <div class="panel" id="patternBacktestPanel">
+            <div class="panel-header">
+              <h2 class="panel-title">形态回测（同类Top20 · 近1年）</h2>
+              <span id="patternBacktestMeta" class="panel-meta">--</span>
+            </div>
+            <div id="patternBacktestBody" class="panel-body">
+              <p class="muted">先检索出相似股票，再点击「📊 回测该形态」。系统将联网拉取同类 Top20 股票近一年日线，统计历史上出现相似形态后 5/10/20 日的胜率与平均涨幅。</p>
+            </div>
           </div>
           <div class="panel">
             <div class="panel-header">
@@ -428,7 +441,7 @@
               </div>
             </section>
 
-            <section class="grid three">
+            <section class="grid two">
               <div class="panel">
                 <div class="panel-header">
                   <h2 class="panel-title">🔥 东方财富热榜</h2>
@@ -442,13 +455,6 @@
                   <span id="ovHotXueqiuMeta" class="panel-meta">关注热度</span>
                 </div>
                 <div id="ovHotXueqiu" class="panel-body list"></div>
-              </div>
-              <div class="panel">
-                <div class="panel-header">
-                  <h2 class="panel-title">⚡ 金十数据热榜</h2>
-                  <span id="ovHotJinshiMeta" class="panel-meta">实时快讯</span>
-                </div>
-                <div id="ovHotJinshi" class="panel-body list"></div>
               </div>
             </section>
 
@@ -652,7 +658,77 @@
           </div>
         </section>
         {% endif %}
+
+        {% if active_page == 'about' %}
+        <section class="about-layout">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">⚠️ 免责声明</h2>
+            </div>
+            <div class="panel-body about-prose">
+              <p class="about-lead">本软件仅为数据工具，不构成投资建议，股市有风险，投资需谨慎。</p>
+              <p>本软件（Kronos Ultra，下称"本软件"）提供的所有行情数据、技术指标、量化评分、形态检索、AI 解读及预测结果，均基于公开历史数据与算法模型自动生成，<strong>仅供研究与学习参考，不构成任何证券买卖建议、投资咨询或投资依据</strong>。</p>
+              <p>市场有风险，投资需谨慎。任何依据本软件信息做出的投资决策及由此产生的盈亏与后果，均由使用者自行承担，本软件及其开发者不承担任何责任。</p>
+              <p>本软件并非持牌金融机构，不提供证券投资咨询服务，亦不代客理财或承诺任何收益。历史回测与模型表现不代表未来收益。</p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">📜 使用条款</h2>
+            </div>
+            <div class="panel-body about-prose">
+              <ul class="about-list">
+                <li><strong>本软件仅供个人学习、研究与技术交流使用</strong>，请勿用于商业牟利，或对外提供荐股、投资咨询等服务。</li>
+                <li>本软件部分数据来自第三方公开渠道，使用者应遵守相应数据源的服务条款；数据的准确性、完整性与时效性不作任何保证。</li>
+                <li>使用者应遵守所在国家/地区的法律法规，因违规使用造成的一切后果由使用者自行承担。</li>
+                <li>请理性投资，远离任何形式的荐股、代客理财与非法证券活动。</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">🗂️ 数据来源</h2>
+            </div>
+            <div class="panel-body about-prose">
+              <p>本软件行情与基本面数据来自以下公开渠道，版权归原数据提供方所有：</p>
+              <ul class="about-source-list">
+                <li><strong>Tushare</strong> — 沪深行情、交易日历、基本面数据（需用户自备 token）</li>
+                <li><strong>AKShare</strong> — 开源财经数据接口</li>
+                <li><strong>东方财富 Eastmoney</strong> — 行情、龙虎榜、资金流向、筹码分布</li>
+                <li><strong>同花顺 Tonghuashun</strong> — 行情与板块数据</li>
+                <li><strong>雪球 Xueqiu</strong> — 行情与投资者讨论</li>
+                <li><strong>新浪财经 Sina</strong> — 行情与资讯</li>
+                <li><strong>DeepSeek</strong> — AI 解读（大语言模型，需用户自备 API Key）</li>
+              </ul>
+              <p class="about-fine">以上数据仅用于本地分析与学习研究，不向第三方分发或转售。如数据提供方对使用方式有异议，请联系开发者以便调整或移除。</p>
+            </div>
+          </div>
+        </section>
+        {% endif %}
+        <footer class="compliance-footer">
+          本软件仅为数据工具，不构成投资建议，股市有风险，投资需谨慎。
+        </footer>
       </main>
+    </div>
+
+    <!-- 合规：首次启动风险提示与免责声明（须点击「我已知晓风险」，localStorage 记住） -->
+    <div id="riskDisclaimerModal" class="modal-backdrop" aria-hidden="true" hidden>
+      <div class="modal-shell risk-disclaimer-shell" role="dialog" aria-modal="true" aria-labelledby="riskDisclaimerTitle">
+        <div class="modal-header">
+          <div>
+            <h2 id="riskDisclaimerTitle">⚠️ 风险提示与免责声明</h2>
+          </div>
+        </div>
+        <div class="modal-body risk-disclaimer-body">
+          <p class="risk-disclaimer-text">本软件仅为数据工具，不构成投资建议，股市有风险，投资需谨慎。</p>
+          <p class="risk-disclaimer-sub">本软件提供的所有数据、指标、评分与预测结果均基于历史数据与算法模型，仅供研究与学习参考，不构成任何买卖建议或投资依据。据此操作，风险自担。</p>
+        </div>
+        <div class="risk-disclaimer-actions">
+          <button id="riskDisclaimerAckBtn" class="button" type="button">我已知晓风险</button>
+        </div>
+      </div>
     </div>
 
     <div id="klineModal" class="modal-backdrop" aria-hidden="true" hidden>
@@ -725,6 +801,7 @@
             <button data-suite-tab="institutional_holdings" class="suite-tab" type="button">机构持仓</button>
             <button data-suite-tab="panel"               class="suite-tab" type="button">多空评审团</button>
             <button data-suite-tab="ai_interpretation"   class="suite-tab" type="button">AI 解读</button>
+            <button data-suite-tab="pattern_backtest"    class="suite-tab" type="button">形态回测</button>
           </nav>
           <div class="stock-suite-panels" id="stockSuitePanels">
             <div class="suite-pane" data-suite-pane="quick">
@@ -745,6 +822,7 @@
             <div class="suite-pane hidden" data-suite-pane="institutional_holdings" id="suitePaneHoldings"></div>
             <div class="suite-pane hidden" data-suite-pane="panel" id="suitePanePanel"></div>
             <div class="suite-pane hidden" data-suite-pane="ai_interpretation" id="suitePaneAi"></div>
+            <div class="suite-pane hidden" data-suite-pane="pattern_backtest" id="suitePanePatternBacktest"></div>
           </div>
         </div>
       </div>
@@ -900,13 +978,31 @@
         return `最近 ${limit} 条`;
       }
 
-      async function fetchJson(url, options) {
-        const response = await fetch(url, options);
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.error || data.message || `HTTP ${response.status}`);
+      // 统一请求封装：带超时（默认 90s）。本地分析服务卡死/无响应时，AbortController 兜底，
+      // 避免前端无限转圈；调用方的 catch 会拿到可操作的错误文案。长耗时调用（AI 深度解读、
+      // 形态回测）走原生 fetch 或后台任务轮询，不经过此封装，故不受超时影响。
+      async function fetchJson(url, options = {}) {
+        const { timeout = 90000, ...fetchOptions } = options || {};
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeout);
+        try {
+          let response;
+          try {
+            response = await fetch(url, { ...fetchOptions, signal: controller.signal });
+          } catch (err) {
+            if (err && err.name === "AbortError") {
+              throw new Error(`请求超时（${Math.round(timeout / 1000)}秒未响应）：本地分析服务可能未启动或已卡死，请彻底退出（⌘Q）后重新打开 App`);
+            }
+            throw new Error(`无法连接本地分析服务，请彻底退出（⌘Q）后重新打开 App（${String((err && err.message) || err)}）`);
+          }
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || data.message || `HTTP ${response.status}`);
+          }
+          return data;
+        } finally {
+          clearTimeout(timer);
         }
-        return data;
       }
 
       async function loadDashboard() {
@@ -1064,20 +1160,6 @@
           `).join("");
           if (!rows.length) empty(xueqiu, "雪球热榜暂不可用。");
           bindHotStockClicks(xueqiu);
-        }
-        const jinshi = $("#ovHotJinshi");
-        if (jinshi) {
-          const items = intel.jinshi || [];
-          jinshi.innerHTML = items.map((n) => `
-            <div class="item">
-              <div class="item-top">
-                <p class="item-title">${html(n.title)}</p>
-                ${n.important ? `<span class="pill warn">重要</span>` : ""}
-              </div>
-              <p class="item-meta">${html(n.source || "金十")} · ${html(n.time || "")}</p>
-            </div>
-          `).join("");
-          if (!items.length) empty(jinshi, "金十数据热榜暂不可用。");
         }
       }
 
@@ -2590,6 +2672,7 @@
       async function openStockContext(target) {
         const code = normalizeStockCode(target?.stock_code || target?.stockCode || target?.code || target?.stock);
         if (!code) return;
+        state.currentStockCode = code;
         closeOtherStockModals("#stockContextModal");
         const modal = $("#stockContextModal");
         modal.hidden = false;
@@ -2641,6 +2724,7 @@
         else if (tab === "institutional_holdings") renderSuiteHoldings(payload);
         else if (tab === "panel") renderSuitePanel(payload);
         else if (tab === "ai_interpretation") renderSuiteAi(payload);
+        else if (tab === "pattern_backtest") renderSuitePatternBacktest(payload);
       }
 
       function renderSuiteLoading(paneId, label) {
@@ -2726,6 +2810,7 @@
               institutional_holdings: "suitePaneHoldings",
               panel: "suitePanePanel",
               ai_interpretation: "suitePaneAi",
+              pattern_backtest: "suitePanePatternBacktest",
             };
             renderSuiteLoading(paneIdMap[tab] || "suitePaneOverview", "数据加载中…");
             return;
@@ -2746,6 +2831,7 @@
           else if (tab === "institutional_holdings") renderSuiteHoldings(payload);
           else if (tab === "panel") renderSuitePanel(payload);
           else if (tab === "ai_interpretation") renderSuiteAi(payload);
+        else if (tab === "pattern_backtest") renderSuitePatternBacktest(payload);
         });
       }
 
@@ -3477,20 +3563,34 @@
           return `<div class="bbp-ind-group"><h5>${groupTitles[g]}</h5><div class="bbp-ind-grid">${cells}</div></div>`;
         }).join("");
 
-        // 7 流派折叠（懒渲染：展开时才填成员，避免一次渲 51 行）
+        // 7 流派 · 默认全部展开；悬停成员显示其投资风格（流派 · 风格一句话）
         const analysts = p.analysts || [];
         const schools = (p.schools || []).slice().sort(
           (a, b) => BBP_SCHOOL_ORDER.indexOf(a.key) - BBP_SCHOOL_ORDER.indexOf(b.key));
+        const memberRow = (a, i, schoolName) => {
+          const style = a.voice || a.headline || "";
+          const tip = style ? `${schoolName} · ${style}` : schoolName;
+          return `<div class="bbp-member" style="animation-delay:${i * 30}ms" title="${html(tip)}">
+            <span class="bbp-dot" style="background:${bbpSignalColor(a.signal)}"></span>
+            <span class="bbp-member-name">${html(a.name)}${a.source === "rule" ? '<em class="bbp-rule-tag">规则推断</em>' : ""}</span>
+            <span class="bbp-member-head">${html(a.insight || a.headline)}</span>
+            <span class="bbp-member-score" style="color:${bbpSignalColor(a.signal)}">${a.score}</span>
+          </div>`;
+        };
         const schoolHtml = schools.map((s) => {
           const lean = s.lean_score >= 55 ? "bull" : s.lean_score <= 45 ? "bear" : "neutral";
-          return `<details class="bbp-school" data-school="${html(s.key)}">
+          const members = analysts.filter((a) => a.school === s.key)
+            .sort((a, b) => b.score - a.score);
+          const membersHtml = members.map((a, i) => memberRow(a, i, s.name)).join("");
+          return `<details class="bbp-school" data-school="${html(s.key)}" open>
             <summary>
-              <span class="bbp-school-name">▶ ${html(s.name)}</span>
+              <span class="bbp-school-caret">▶</span>
+              <span class="bbp-school-name">${html(s.name)}</span>
               <span class="bbp-school-meta">${s.count} 人</span>
               <span class="bbp-minibar"><i style="width:${Math.max(0, Math.min(100, s.lean_score))}%;background:${bbpSignalColor(lean)}"></i></span>
               <span class="bbp-school-lean" style="color:${bbpSignalColor(lean)}">${html(s.lean)} ${s.lean_score}</span>
             </summary>
-            <div class="bbp-members" data-rendered="0"></div>
+            <div class="bbp-members">${membersHtml}</div>
           </details>`;
         }).join("");
 
@@ -3502,29 +3602,9 @@
             </div>
             <div class="bbp-section-title">量化指标（16）</div>
             ${groupHtml}
-            <div class="bbp-section-title">投资人评审团（51 · 按流派折叠）</div>
+            <div class="bbp-section-title">投资人评审团（${analysts.length} · 默认展开，悬停看风格）</div>
             <div class="bbp-schools">${schoolHtml}</div>
           </div>`;
-
-        // 懒渲染：首次展开某流派时才生成成员行
-        pane.querySelectorAll("details.bbp-school").forEach((det) => {
-          det.addEventListener("toggle", () => {
-            if (!det.open) return;
-            const box = det.querySelector(".bbp-members");
-            if (box.dataset.rendered === "1") return;
-            const key = det.dataset.school;
-            const members = analysts.filter((a) => a.school === key)
-              .sort((a, b) => b.score - a.score);
-            box.innerHTML = members.map((a, i) => `
-              <div class="bbp-member" style="animation-delay:${i * 30}ms">
-                <span class="bbp-dot" style="background:${bbpSignalColor(a.signal)}"></span>
-                <span class="bbp-member-name">${html(a.name)}${a.source === "rule" ? '<em class="bbp-rule-tag">规则推断</em>' : ""}</span>
-                <span class="bbp-member-head">${html(a.insight || a.headline)}</span>
-                <span class="bbp-member-score" style="color:${bbpSignalColor(a.signal)}">${a.score}</span>
-              </div>`).join("");
-            box.dataset.rendered = "1";
-          });
-        });
       }
 
       // P0-A/P0-B：reviewed=true 显 AI 点评(+黄旗警告)；质量拦截显红条+回退规则文案；未生成显升档按钮
@@ -4255,6 +4335,154 @@
         });
         $("#patternResultMeta").textContent = `${data.count || 0} 条 · ${data.compute_ms || 0} ms`;
         renderPatternResults(data.matches || [], data.query_curve || curve);
+        state.lastBacktest = {
+          curve,
+          window_days: payload.window_days,
+          query_offset_days: payload.query_offset_days,
+          codes: (data.matches || []).map((m) => m.stock_code).filter(Boolean),
+        };
+        const backtestBtn = $("#patternBacktestBtn");
+        if (backtestBtn) backtestBtn.disabled = state.lastBacktest.codes.length === 0;
+      }
+
+      async function runPatternBacktest() {
+        const ctx = state.lastBacktest;
+        if (!ctx || !ctx.codes?.length) { alert("请先检索出相似股票，再回测形态。"); return; }
+        const btn = $("#patternBacktestBtn");
+        const meta = $("#patternBacktestMeta");
+        const body = $("#patternBacktestBody");
+        if (btn) btn.disabled = true;
+        if (meta) meta.textContent = "回测中…";
+        if (body) body.innerHTML = `<p class="muted"><span class="spinner"></span> 正在联网拉取同类股票近一年日线并回测，请稍候（约 10–40 秒）…</p>`;
+        try {
+          const start = await fetchJson("/api/pattern-search/backtest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              curve: ctx.curve,
+              stock_codes: ctx.codes.slice(0, 20),
+              window_days: ctx.window_days,
+              query_offset_days: ctx.query_offset_days,
+              top_n: 20,
+            }),
+          });
+          const jobId = start.job_id || start.job?.id;
+          if (!jobId) throw new Error("回测任务创建失败");
+          const job = await pollJob(jobId, {
+            intervalMs: 2000,
+            maxAttempts: 90,
+            onUpdate: (j) => {
+              const log = latestJobLog(j);
+              if (meta && log) meta.textContent = log;
+            },
+          });
+          if (!job) {
+            if (body) body.innerHTML = `<p class="notice status error">回测超时，请稍后重试。</p>`;
+            if (meta) meta.textContent = "超时";
+            return;
+          }
+          if (job.status === "failed") {
+            if (body) body.innerHTML = `<p class="notice status error">回测失败：${html(job.error || "请查看任务日志")}</p>`;
+            if (meta) meta.textContent = "失败";
+            return;
+          }
+          renderPatternBacktest(job.result || {});
+        } catch (error) {
+          if (body) body.innerHTML = `<p class="notice status error">${html(error.message)}</p>`;
+          if (meta) meta.textContent = "失败";
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      }
+
+      function backtestResultHtml(result) {
+        if (!result || !result.ok) {
+          return `<p class="notice status error">${html(result?.error || "回测无结果")}</p>`;
+        }
+        const pct = (v) => `${(Number(v) * 100).toFixed(1)}%`;
+        const signed = (v) => `${Number(v) >= 0 ? "+" : ""}${(Number(v) * 100).toFixed(1)}%`;
+        const rows = (result.horizons || []).map((h) => `
+          <tr>
+            <td>后${h.horizon}日</td>
+            <td>${h.count}</td>
+            <td class="${changeClass(h.win_rate - 0.5)}">${pct(h.win_rate)}</td>
+            <td class="${changeClass(h.avg_return)}">${signed(h.avg_return)}</td>
+            <td class="${changeClass(h.median_return)}">${signed(h.median_return)}</td>
+            <td class="muted"><span class="${changeClass(h.best)}">${signed(h.best)}</span> / <span class="${changeClass(h.worst)}">${signed(h.worst)}</span></td>
+          </tr>`).join("");
+        const tops = (result.top_stocks || []).slice(0, 6)
+          .map((s) => `${html(s.stock_name || s.stock_code)}(${s.count}次)`).join(" · ") || "--";
+        const errNote = result.errors?.length
+          ? `<p class="muted backtest-note">注：${result.errors.length} 只股票数据拉取失败，已跳过。</p>`
+          : "";
+        return `
+          <p class="backtest-summary">命中相似形态样本 <strong>${result.sample_count}</strong> 次 · 成功扫描 ${result.candidates_scanned}/${result.candidates_total} 只 · 相似度≥${pct(result.similarity_threshold)} · 窗口${result.window_days}日</p>
+          <table class="backtest-table">
+            <thead><tr><th>周期</th><th>样本</th><th>胜率</th><th>平均涨幅</th><th>中位数</th><th>最佳/最差</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+          <p class="backtest-tops">样本最多：${tops}</p>
+          ${errNote}
+          <p class="muted backtest-disclaimer">历史回测基于公开日线数据与形态相似度统计，不构成投资建议，过往表现不代表未来收益。</p>`;
+      }
+
+      function renderPatternBacktest(result) {
+        const meta = $("#patternBacktestMeta");
+        const body = $("#patternBacktestBody");
+        if (!body) return;
+        body.innerHTML = backtestResultHtml(result);
+        if (meta) meta.textContent = (result && result.ok) ? `${result.sample_count} 样本` : "--";
+      }
+
+      function renderSuitePatternBacktest() {
+        const pane = document.getElementById("suitePanePatternBacktest");
+        if (!pane) return;
+        if (pane.dataset.rendered === "1") return;  // 已渲染（含结果），切回来不覆盖
+        pane.dataset.rendered = "1";
+        const code = state.currentStockCode || "";
+        pane.innerHTML = `
+          <p class="suite-empty-note">基于该股<strong>当前形态</strong>，联网检索同类 Top20 股票并回测：统计历史上出现相似形态后 5/10/20 日的胜率与平均涨幅。约需 10–40 秒。</p>
+          <div class="actions" style="margin-top:12px;">
+            <button id="suiteBacktestRunBtn" class="button" type="button">开始形态回测</button>
+          </div>
+          <div id="suiteBacktestResult" style="margin-top:14px;"></div>`;
+        const runBtn = pane.querySelector("#suiteBacktestRunBtn");
+        if (runBtn) runBtn.addEventListener("click", () => runSuitePatternBacktest(code).catch((e) => alert(e.message)));
+      }
+
+      async function runSuitePatternBacktest(code) {
+        const resultEl = document.getElementById("suiteBacktestResult");
+        const runBtn = document.getElementById("suiteBacktestRunBtn");
+        if (!resultEl) return;
+        if (!code) { resultEl.innerHTML = `<p class="notice status error">缺少股票代码。</p>`; return; }
+        if (runBtn) runBtn.disabled = true;
+        resultEl.innerHTML = `<p class="muted"><span class="spinner"></span> 正在读取该股形态并联网回测同类股票，请稍候…</p>`;
+        try {
+          const curveResp = await fetchJson(`/api/pattern-search/stock-curve/${encodeURIComponent(code)}`);
+          const curve = curveResp?.normalized_curve;
+          if (!curve || curve.length < 5) {
+            resultEl.innerHTML = `<p class="notice status warn">该股暂不在形态指纹库中。请先到「形态搜股」页点击「刷新指纹库」，再回到此处回测。</p>`;
+            return;
+          }
+          const start = await fetchJson("/api/pattern-search/backtest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ curve, top_n: 20, window_days: 30 }),
+          });
+          const jobId = start.job_id || start.job?.id;
+          if (!jobId) throw new Error("回测任务创建失败");
+          const job = await pollJob(jobId, { intervalMs: 2000, maxAttempts: 90 });
+          if (!job) { resultEl.innerHTML = `<p class="notice status error">回测超时，请稍后重试。</p>`; return; }
+          if (job.status === "failed") {
+            resultEl.innerHTML = `<p class="notice status error">回测失败：${html(job.error || "请查看任务日志")}</p>`;
+            return;
+          }
+          resultEl.innerHTML = backtestResultHtml(job.result || {});
+        } catch (error) {
+          resultEl.innerHTML = `<p class="notice status error">${html(error.message)}</p>`;
+        } finally {
+          if (runBtn) runBtn.disabled = false;
+        }
       }
 
       function renderPatternResults(matches, queryCurve) {
@@ -4486,6 +4714,10 @@
           });
         });
         $("#matchStockBtn").addEventListener("click", () => runPatternMatch(state.selectedCurve).catch((error) => alert(error.message)));
+        const patternBacktestBtn = $("#patternBacktestBtn");
+        if (patternBacktestBtn) {
+          patternBacktestBtn.addEventListener("click", () => runPatternBacktest().catch((error) => alert(error.message)));
+        }
         $("#refreshPatternDbBtn").addEventListener("click", () => {
           refreshPatternDatabase({ button: $("#refreshPatternDbBtn"), statusEl: $("#patternStatus") });
         });
@@ -4809,6 +5041,28 @@
         modal.setAttribute("aria-hidden", "true");
         $("#filePreviewBody").innerHTML = "";
       }
+
+      // 合规：首次启动展示风险提示，须点「我已知晓风险」方可进入（localStorage 记住，之后不再弹）
+      (function initRiskDisclaimer() {
+        const KEY = "kronos_risk_ack_v1";
+        const modal = $("#riskDisclaimerModal");
+        if (!modal) return;
+        let acked = false;
+        try { acked = localStorage.getItem(KEY) === "1"; } catch (e) { acked = false; }
+        if (!acked) {
+          modal.hidden = false;
+          modal.setAttribute("aria-hidden", "false");
+        }
+        const ackBtn = $("#riskDisclaimerAckBtn");
+        if (ackBtn) {
+          ackBtn.addEventListener("click", () => {
+            try { localStorage.setItem(KEY, "1"); } catch (e) {}
+            modal.hidden = true;
+            modal.setAttribute("aria-hidden", "true");
+          });
+        }
+        // 故意不支持点背景/Esc 关闭：必须显式确认
+      })();
     </script>
   </body>
 </html>

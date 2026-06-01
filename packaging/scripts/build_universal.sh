@@ -29,6 +29,7 @@ show_help() {
     echo ""
     echo "支持的平台:"
     echo "  macos          - 使用Tauri构建macOS版本 (本地构建)"
+    echo "  macos-dmg      - 仅基于已构建的 .app 重新生成macOS DMG"
     echo "  windows        - 使用Tauri构建Windows版本 (需要Windows环境)"
     echo "  windows-docker - 旧PyInstaller Docker构建Windows版本"
     echo "  windows-wine   - 旧PyInstaller Wine构建Windows版本"
@@ -42,6 +43,7 @@ show_help() {
     echo ""
     echo "示例:"
     echo "  $0 macos                    # 构建macOS版本"
+    echo "  $0 macos-dmg                # 仅重新生成DMG"
     echo "  $0 windows-docker           # 使用Docker构建Windows版本"
     echo "  $0 all --clean              # 清理后构建所有版本"
     echo ""
@@ -287,6 +289,213 @@ copy_tauri_artifacts() {
     echo -e "${CYAN}📁 统一产物目录: $output_dir${NC}"
 }
 
+# 使用 hdiutil 生成 macOS DMG（不走 Tauri 自带 bundle_dmg.sh 的 Finder AppleScript，
+# 规避 detach 卡死 / 自动化(TCC)权限导致的 DMG 打包失败）
+detach_macos_volume() {
+    local volume_name="$1"
+    local mount_path="/Volumes/$volume_name"
+
+    if [ ! -e "$mount_path" ]; then
+        return 0
+    fi
+
+    echo -e "${YELLOW}⚠️  发现残留卷 $mount_path，先卸载...${NC}"
+    hdiutil detach "$mount_path" -force >/dev/null 2>&1 \
+        || diskutil unmount force "$mount_path" >/dev/null 2>&1 \
+        || true
+    sleep 2
+}
+
+# 对 .app 签名：有 Developer ID 身份则做可公证的正式签名（inside-out + hardened runtime），
+# 否则回退 ad-hoc。⚠️ ad-hoc 仅能消除「已损坏」，无法通过 Gatekeeper——分发到别的 Mac
+# （带 com.apple.quarantine）仍会被拦截，根因即在此。彻底免提示必须 Developer ID + 公证。
+codesign_macos_app() {
+    local app_path="$1"
+    command -v codesign &>/dev/null || return 0
+
+    if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+        echo -e "${BLUE}🔏 使用 Developer ID 签名（hardened runtime，可公证）: $APPLE_SIGNING_IDENTITY${NC}"
+        local entitlements="$PROJECT_ROOT/packaging/macos/entitlements.plist"
+        local ent_arg=()
+        [ -f "$entitlements" ] && ent_arg=(--entitlements "$entitlements")
+        # inside-out：先签内嵌 Mach-O（dylib/so/后端 exe），最后签外层 .app
+        find "$app_path/Contents/Resources" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 2>/dev/null \
+            | xargs -0 -I {} codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" {} >/dev/null 2>&1 || true
+        local backend="$app_path/Contents/Resources/packaging/backend/kronos_webui_backend/kronos_webui_backend"
+        [ -f "$backend" ] && codesign --force --timestamp --options runtime "${ent_arg[@]}" --sign "$APPLE_SIGNING_IDENTITY" "$backend" >/dev/null 2>&1 || true
+        if codesign --force --timestamp --options runtime "${ent_arg[@]}" --sign "$APPLE_SIGNING_IDENTITY" "$app_path" >/dev/null 2>&1; then
+            echo -e "${GREEN}✅ Developer ID 签名完成${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Developer ID 签名失败，回退 ad-hoc${NC}"
+            codesign --force --deep --sign - --timestamp=none "$app_path" >/dev/null 2>&1 || true
+        fi
+    else
+        echo -e "${BLUE}🔏 对 .app 进行 ad-hoc 签名（未配置 APPLE_SIGNING_IDENTITY）...${NC}"
+        if codesign --force --deep --sign - --timestamp=none "$app_path" >/dev/null 2>&1; then
+            echo -e "${GREEN}✅ ad-hoc 签名完成${NC}"
+            echo -e "${YELLOW}ℹ️  ad-hoc 无法通过 Gatekeeper：拷到别的 Mac 仍会被拦截（这就是「拖进去却看不到」的根因）。${NC}"
+            echo -e "${YELLOW}   收件人请按 DMG 内「首次打开必读.txt」放行；彻底解决请设 APPLE_SIGNING_IDENTITY 走 Developer ID + 公证。${NC}"
+        else
+            echo -e "${YELLOW}⚠️  ad-hoc 签名失败（不阻塞）${NC}"
+        fi
+    fi
+}
+
+# 配置了公证凭证则对 DMG 公证 + 装订（staple），让收件人双击即可打开、无任何拦截。
+notarize_macos_dmg() {
+    local dmg="$1"
+    command -v xcrun &>/dev/null || return 0
+    if [ -n "${APPLE_NOTARY_PROFILE:-}" ]; then
+        echo -e "${BLUE}🍎 提交公证（keychain-profile: $APPLE_NOTARY_PROFILE）...${NC}"
+        if xcrun notarytool submit "$dmg" --keychain-profile "$APPLE_NOTARY_PROFILE" --wait; then
+            xcrun stapler staple "$dmg" && echo -e "${GREEN}✅ 公证并装订完成${NC}"
+        else
+            echo -e "${YELLOW}⚠️  公证失败，请检查凭证/日志${NC}"
+        fi
+    elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+        echo -e "${BLUE}🍎 提交公证（Apple ID: $APPLE_ID）...${NC}"
+        if xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait; then
+            xcrun stapler staple "$dmg" && echo -e "${GREEN}✅ 公证并装订完成${NC}"
+        else
+            echo -e "${YELLOW}⚠️  公证失败，请检查凭证/日志${NC}"
+        fi
+    else
+        echo -e "${YELLOW}ℹ️  未配置公证凭证（APPLE_NOTARY_PROFILE 或 APPLE_ID+APPLE_PASSWORD+APPLE_TEAM_ID），跳过公证。${NC}"
+    fi
+}
+
+# 把「首次打开必读」说明与「修复并打开」助手写入 DMG，帮收件人绕过 Gatekeeper 拦截。
+write_dmg_install_helpers() {
+    local staging="$1"
+    local app_name="$2"
+
+    cat > "$staging/首次打开必读.txt" <<EOF
+【Kronos Ultra · 首次打开说明（macOS）】
+
+若在别的 Mac 上提示「已损坏 / 无法验证开发者 / 来自身份不明的开发者」，
+这不是软件损坏，而是 macOS Gatekeeper 的安全拦截（本应用未做 Apple 公证）。
+请任选一种方式打开：
+
+① 最省事：把「${app_name}.app」拖到右侧「Applications（应用程序）」完成安装，然后
+   · macOS 13/14：在「应用程序」里按住 Control 键点按它 → 选「打开」→ 再点「打开」。
+   · macOS 15(Sequoia)+：先双击一次，再打开「系统设置 → 隐私与安全性」，
+     在底部找到被拦截的提示，点「仍要打开」。
+
+② 一劳永逸（用「终端」）：打开「终端」，粘贴并回车——
+       xattr -dr com.apple.quarantine "/Applications/${app_name}.app"
+   之后即可正常双击。
+
+③ 双击本目录下的「修复并打开.command」，按提示自动安装并放行。
+
+如仍打不开，请把系统弹窗的提示文字截图反馈。
+EOF
+
+    cat > "$staging/修复并打开.command" <<EOF
+#!/bin/bash
+# 自动安装到「应用程序」并去除隔离属性，绕过「已损坏 / 无法验证开发者」拦截
+APP_NAME="${app_name}"
+HERE="\$(cd "\$(dirname "\$0")" && pwd)"
+DST="/Applications/\${APP_NAME}.app"
+if [ ! -d "\$DST" ] && [ -d "\$HERE/\${APP_NAME}.app" ]; then
+  echo "正在安装到 应用程序 ..."
+  cp -R "\$HERE/\${APP_NAME}.app" /Applications/ 2>/dev/null || echo "复制失败：请先手动把 App 拖进「应用程序」。"
+fi
+if [ -d "\$DST" ]; then
+  echo "正在去除隔离属性 ..."
+  xattr -dr com.apple.quarantine "\$DST" 2>/dev/null || true
+  echo "完成，正在打开 ..."
+  open "\$DST"
+else
+  echo "未找到 \${APP_NAME}.app，请先把它拖进「应用程序」。"
+fi
+echo
+read -n1 -s -r -p "按任意键关闭本窗口..."
+EOF
+    chmod +x "$staging/修复并打开.command"
+}
+
+create_macos_dmg() {
+    local bundle_dir="$PROJECT_ROOT/src-tauri/target/release/bundle"
+    local macos_dir="$bundle_dir/macos"
+    local dmg_dir="$bundle_dir/dmg"
+
+    local app_path
+    app_path="$(find "$macos_dir" -maxdepth 1 -name '*.app' 2>/dev/null | head -1)"
+    if [ -z "$app_path" ]; then
+        echo -e "${RED}❌ 未找到 .app，无法生成 DMG: $macos_dir${NC}"
+        return 1
+    fi
+    local app_name
+    app_name="$(basename "$app_path" .app)"
+
+    # 签名：有 Developer ID 走可公证的正式签名，否则 ad-hoc 回退（详见 codesign_macos_app）
+    codesign_macos_app "$app_path"
+
+    # 版本号与 tauri.conf.json 保持一致
+    local conf="$PROJECT_ROOT/src-tauri/tauri.conf.json"
+    local version="1.0.0"
+    if [ -n "$PYTHON_CMD" ] && [ -f "$conf" ]; then
+        version="$("$PYTHON_CMD" -c "import json; print(json.load(open(r'$conf')).get('version','1.0.0'))" 2>/dev/null || echo '1.0.0')"
+    fi
+
+    # 架构后缀，与 Tauri 命名一致（x86_64->x64, arm64->aarch64）
+    local arch_suffix
+    case "$(uname -m)" in
+        arm64|aarch64) arch_suffix="aarch64" ;;
+        *)             arch_suffix="x64" ;;
+    esac
+
+    mkdir -p "$dmg_dir"
+    local dmg_out="$dmg_dir/${app_name}_${version}_${arch_suffix}.dmg"
+
+    echo -e "${BLUE}📦 使用 hdiutil 生成 DMG（跳过 Finder AppleScript）...${NC}"
+
+    local staging
+    staging="$(mktemp -d "${TMPDIR:-/tmp}/kronos_dmg.XXXXXX")"
+    if [ -z "$staging" ] || [ ! -d "$staging" ]; then
+        echo -e "${RED}❌ 创建临时目录失败${NC}"
+        return 1
+    fi
+    # 任何路径退出都清理临时目录
+    trap 'rm -rf "$staging"; trap - RETURN' RETURN
+
+    cp -R "$app_path" "$staging/"
+    ln -s /Applications "$staging/Applications"   # 拖拽安装到 Applications
+    write_dmg_install_helpers "$staging" "$app_name"   # 「首次打开必读.txt」+「修复并打开.command」
+    # 双保险阻止 Spotlight 索引 DMG 卷，避免 detach 阶段被 mdworker 抢占。
+    : > "$staging/.metadata_never_index"
+
+    detach_macos_volume "$app_name"
+
+    rm -f "$dmg_out"
+    # "资源忙" 多为瞬时（Spotlight/索引/杀软扫描占用临时设备），重试即可恢复
+    local attempt
+    for attempt in 1 2 3; do
+        if hdiutil create \
+            -volname "$app_name" \
+            -srcfolder "$staging" \
+            -ov \
+            -format UDZO \
+            -fs HFS+ \
+            -nospotlight \
+            -anyowners \
+            -srcowners off \
+            "$dmg_out"; then
+            echo -e "${GREEN}✅ DMG 生成完成: $dmg_out${NC}"
+            notarize_macos_dmg "$dmg_out"   # 配置了公证凭证才执行，否则打印提示
+            return 0
+        fi
+        echo -e "${YELLOW}⚠️  hdiutil 失败（资源忙?），第 ${attempt}/3 次，5s 后重试...${NC}"
+        detach_macos_volume "$app_name"
+        rm -f "$dmg_out"
+        sync
+        sleep 5
+    done
+    echo -e "${RED}❌ DMG 生成失败（已重试 3 次）${NC}"
+    echo -e "${YELLOW}💡 如果在沙箱/CI中运行，请在普通 macOS 终端重试：hdiutil 需要挂载磁盘映像权限。${NC}"
+    return 1
+}
+
 build_tauri_desktop() {
     local platform_name="$1"
 
@@ -297,16 +506,24 @@ build_tauri_desktop() {
     build_bundled_backend || return 1
     cd "$PROJECT_ROOT"
 
-    npm run desktop:build
-
-    if [ $? -eq 0 ]; then
-        copy_tauri_artifacts
-        echo -e "${GREEN}✅ Tauri桌面构建成功！${NC}"
-        return 0
+    if [ "$platform_name" = "macOS" ]; then
+        # macOS: 仅用 Tauri 生成 .app；DMG 改用 hdiutil 生成，
+        # 规避 Tauri 自带 bundle_dmg.sh 的 Finder AppleScript（detach 卡死 / 自动化权限问题）
+        if ! npm run desktop:build -- --bundles app; then
+            echo -e "${RED}❌ Tauri .app 构建失败${NC}"
+            return 1
+        fi
+        create_macos_dmg || return 1
     else
-        echo -e "${RED}❌ Tauri桌面构建失败${NC}"
-        return 1
+        if ! npm run desktop:build; then
+            echo -e "${RED}❌ Tauri桌面构建失败${NC}"
+            return 1
+        fi
     fi
+
+    copy_tauri_artifacts
+    echo -e "${GREEN}✅ Tauri桌面构建成功！${NC}"
+    return 0
 }
 
 # macOS构建
@@ -317,6 +534,22 @@ build_macos() {
     fi
 
     build_tauri_desktop "macOS"
+}
+
+build_macos_dmg_only() {
+    if [ "$CURRENT_OS" != "macos" ]; then
+        echo -e "${RED}❌ DMG生成需要在macOS系统上运行${NC}"
+        return 1
+    fi
+
+    if ! command -v hdiutil &> /dev/null; then
+        echo -e "${RED}❌ 未找到 hdiutil，无法生成 DMG${NC}"
+        return 1
+    fi
+
+    create_macos_dmg || return 1
+    copy_tauri_artifacts
+    return 0
 }
 
 # Windows Docker构建
@@ -517,7 +750,7 @@ main() {
     fi
     
     # 检查Python环境（除非纯Docker构建）
-    if [ "$USE_DOCKER" = "false" ] || [ "$PLATFORM" = "macos" ] || ([ "$PLATFORM" = "windows" ] && [ "$CURRENT_OS" = "windows" ]); then
+    if [ "$USE_DOCKER" = "false" ] || [ "$PLATFORM" = "macos" ] || [ "$PLATFORM" = "macos-dmg" ] || ([ "$PLATFORM" = "windows" ] && [ "$CURRENT_OS" = "windows" ]); then
         check_python
         echo ""
     fi
@@ -530,6 +763,9 @@ main() {
     case $PLATFORM in
         "macos")
             build_macos
+            ;;
+        "macos-dmg")
+            build_macos_dmg_only
             ;;
         "windows")
             if [ "$USE_DOCKER" = true ]; then

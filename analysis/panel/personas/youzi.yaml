@@ -1,4 +1,4 @@
-# F 游资派（7 人：2 旗舰 + 5 stub）
+# F 游资派（8 人：2 旗舰 + 6 stub）
 - id: zhao
   name: 赵老哥
   school: F
@@ -47,4 +47,11 @@
   tier: stub
   rule: school_default
   voice: 中军卡位
+  key_metrics: [momentum, volume]
+- id: zuoshouxinyi
+  name: 作手新一
+  school: F
+  tier: stub
+  rule: school_default
+  voice: 接力打板
   key_metrics: [momentum, volume]

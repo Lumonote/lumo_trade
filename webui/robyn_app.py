@@ -158,7 +158,20 @@ def _html_response(html: str, status_code: int = 200) -> Response:
 
 
 def _render_template(template_name: str, **context: Any) -> Response:
-    return _html_response(TEMPLATE_ENV.get_template(template_name).render(**context))
+    html = TEMPLATE_ENV.get_template(template_name).render(**context)
+    # 应用外壳页面禁用缓存：Tauri 用 WKWebView，桌面页 URL 固定为 http://127.0.0.1:7070/desktop，
+    # 不加 no-store 时升级新构建后 WKWebView 会回放旧构建的缓存页
+    # （曾导致已改为 ${analysts.length} 的源码仍持续显示「投资人评审团（51）」）。
+    return Response(
+        status_code=200,
+        headers=Headers({
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }),
+        description=html,
+    )
 
 
 def _safe_child_path(root: Path, relative_path: str) -> Path | None:
@@ -598,6 +611,15 @@ def pattern_search_stock_curve(request: Request, stock_code=None) -> Response:
 def pattern_search_refresh(request: Request) -> Response:
     params = webui_core.PATTERN_SEARCH_SERVICE.refresh_params(_request_json(request))
     job = webui_core.JOB_SERVICE.start("pattern_refresh", params, webui_core._run_pattern_refresh_job)
+    return _json_response({"job_id": job["id"], "status": "queued", "job": webui_core._get_job_snapshot(job["id"])})
+
+
+@_native_post("/api/pattern-search/backtest")
+def pattern_search_backtest(request: Request) -> Response:
+    params, error = webui_core.PATTERN_SEARCH_SERVICE.backtest_params(_request_json(request))
+    if error:
+        return _json_response({"error": error}, status_code=400)
+    job = webui_core.JOB_SERVICE.start("pattern_backtest", params, webui_core._run_pattern_backtest_job)
     return _json_response({"job_id": job["id"], "status": "queued", "job": webui_core._get_job_snapshot(job["id"])})
 
 

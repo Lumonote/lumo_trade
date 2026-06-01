@@ -27,6 +27,23 @@ class _BreakerState:
     opened_at: float = 0.0
 
 
+# 瞬时网络/代理错误标记：这类失败下一秒可能就恢复（如系统代理 Clash 抖动），
+# 不应像真正的接口/数据错误那样一次失败就黑掉数据源 5 分钟。
+_TRANSIENT_MARKERS = (
+    "proxy", "connection", "timeout", "timed out", "remotedisconnected",
+    "max retries", "connection reset", "broken pipe", "temporarily",
+    "ssl", "newconnectionerror", "connectionreset",
+)
+
+
+def _is_transient(exc: BaseException | None) -> bool:
+    """是否为可立即重试的瞬时网络/代理错误（区别于真正的数据/接口错误）。"""
+    if exc is None:
+        return False
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
 def _now() -> float:
     return time.time()
 
@@ -62,6 +79,7 @@ class AkshareAdapter:
         rate_limit_per_min: int = 30,
         breaker_cooldown_sec: int = 300,
         retry_per_source: int = 2,
+        transient_breaker_threshold: int = 3,
     ):
         self._client_factory = client_factory or _default_client_factory
         self._client = None
@@ -70,6 +88,9 @@ class AkshareAdapter:
         self._cooldown = breaker_cooldown_sec
         self._breakers: dict[str, _BreakerState] = {}
         self._retries = retry_per_source
+        # 瞬时失败需连续累计到该阈值才熔断（单次代理抖动不黑数据源）
+        self._transient_threshold = max(1, transient_breaker_threshold)
+        self._transient_fails: dict[str, int] = {}
 
     def fetch(self, key: str, *args, **kwargs) -> pd.DataFrame:
         """按 key 查找 fallback chain 并依次尝试取数。"""
@@ -99,6 +120,7 @@ class AkshareAdapter:
                     if df is None or (isinstance(df, pd.DataFrame) and df.empty):
                         last_err = RuntimeError(f"{fn_name} returned empty")
                         continue
+                    self._transient_fails[key] = 0  # 成功 -> 清零瞬时失败计数
                     return df
                 except Exception as exc:  # noqa: BLE001
                     last_err = exc
@@ -109,7 +131,13 @@ class AkshareAdapter:
                     if attempt < self._retries - 1:
                         _sleep(2 ** attempt)
 
-        self._open_breaker(key)
+        # 瞬时网络/代理错误：连续累计到阈值才熔断；真正的接口/数据错误立即熔断。
+        if _is_transient(last_err):
+            self._transient_fails[key] = self._transient_fails.get(key, 0) + 1
+            if self._transient_fails[key] >= self._transient_threshold:
+                self._open_breaker(key)
+        else:
+            self._open_breaker(key)
         raise AkshareUnavailable(
             f"all sources failed for {key}: {last_err}"
         ) from last_err
@@ -139,4 +167,5 @@ class AkshareAdapter:
     def _open_breaker(self, key: str) -> None:
         """打开 key 的熔断器。"""
         self._breakers[key] = _BreakerState(opened_at=_now())
+        self._transient_fails[key] = 0  # 熔断后清零，冷却结束重新计数
         logger.warning("AkshareAdapter breaker opened for %s", key)

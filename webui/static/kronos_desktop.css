@@ -259,6 +259,24 @@ textarea {
   flex-wrap: wrap;
 }
 
+/* Status pills (任务/刷新状态) are pulled ahead of the buttons and truncate,
+   so the button group stays contiguous and never gets split or squeezed. */
+.toolbar > .task-meta,
+.toolbar > .panel-meta {
+  order: -1;
+  min-width: 0;
+  flex: 0 1 auto;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbar > .button,
+.toolbar > a.button {
+  flex: 0 0 auto;
+}
+
 .grid {
   display: grid;
   gap: 14px;
@@ -366,15 +384,8 @@ textarea {
 }
 
 .task-meta {
-  /* Floating status badge pinned to the top-right corner (out of .toolbar flow,
-     so the buttons reclaim full width and never get squeezed/truncated). */
-  position: fixed;
-  top: 14px;
-  right: 16px;
-  z-index: 150;
-  pointer-events: none;            /* never intercept clicks meant for the toolbar */
-  box-shadow: var(--shadow-sm);
-  max-width: min(46vw, 560px);
+  /* In-flow status pill inside .toolbar; truncates rather than overlapping or
+     squeezing the buttons (replaces the old position:fixed badge that overlapped). */
   min-height: 28px;
   display: inline-flex;
   align-items: center;
@@ -1174,6 +1185,46 @@ body.modal-open {
   min-width: 0;
 }
 
+/* 形态回测结果 */
+.backtest-summary {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--ink);
+}
+.backtest-summary strong { color: var(--blue); font-size: 15px; }
+.backtest-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.backtest-table th,
+.backtest-table td {
+  padding: 8px 10px;
+  text-align: center;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.backtest-table th {
+  color: var(--muted);
+  font-weight: 600;
+  background: var(--surface);
+}
+.backtest-table td:first-child,
+.backtest-table th:first-child { text-align: left; }
+.backtest-table tbody tr:hover { background: rgba(0, 0, 0, 0.02); }
+.backtest-tops {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+.backtest-note { margin: 6px 0 0; font-size: 12px; }
+.backtest-disclaimer {
+  margin: 10px 0 0;
+  font-size: 11px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
 .trading-kline-preview {
   position: relative;
   cursor: zoom-in;
@@ -1240,6 +1291,100 @@ body.modal-open {
 .modal-body {
   min-height: 0;
   overflow: auto;
+}
+
+/* 合规：每页常驻的风险提示页脚 */
+.compliance-footer {
+  margin-top: 28px;
+  padding: 14px 6px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+}
+
+/* 合规：首次启动免责弹窗（窄卡片，须显式确认） */
+.risk-disclaimer-shell {
+  width: min(440px, calc(100vw - 44px));
+  max-height: none;
+  grid-template-rows: auto auto auto;
+  text-align: left;
+}
+.risk-disclaimer-shell .modal-header {
+  min-height: 0;
+}
+.risk-disclaimer-body {
+  display: block;
+  padding: 18px 22px 6px;
+}
+.risk-disclaimer-text {
+  margin: 0 0 12px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 760;
+  line-height: 1.8;
+}
+.risk-disclaimer-sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+.risk-disclaimer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 22px 20px;
+}
+.risk-disclaimer-actions .button {
+  min-width: 120px;
+}
+
+/* 合规：关于 / 免责声明页面 */
+.about-layout {
+  display: grid;
+  gap: 14px;
+  max-width: 920px;
+}
+.about-prose {
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.85;
+}
+.about-prose p {
+  margin: 0 0 10px;
+}
+.about-prose p:last-child {
+  margin-bottom: 0;
+}
+.about-lead {
+  margin: 0 0 14px !important;
+  padding: 10px 12px;
+  background: #fff7df;
+  border: 1px solid #f0d78c;
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 760;
+}
+.about-list,
+.about-source-list {
+  margin: 0;
+  padding-left: 20px;
+}
+.about-list li,
+.about-source-list li {
+  margin: 0 0 8px;
+}
+.about-list li:last-child,
+.about-source-list li:last-child {
+  margin-bottom: 0;
+}
+.about-fine {
+  margin: 12px 0 0 !important;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .modal-kline-body {
@@ -1534,8 +1679,9 @@ body.modal-open {
     grid-template-columns: 1fr;
   }
 
-  .task-meta {
-    max-width: calc(100vw - 32px);
+  .toolbar > .task-meta,
+  .toolbar > .panel-meta {
+    max-width: 100%;
   }
 }
 
@@ -2148,12 +2294,15 @@ body.modal-open {
 .bbp-school > summary { display:flex; align-items:center; gap:12px; cursor:pointer; padding:8px 12px; background:#f4f6fa; border-radius:8px; list-style:none; }
 .bbp-school > summary::-webkit-details-marker { display:none; }
 .bbp-school[open] > summary .bbp-school-name { color:#2f6fdd; }
+.bbp-school-caret { display:inline-block; flex:none; color:#6b778a; font-size:11px; transition:transform .15s ease; }
+.bbp-school[open] > summary .bbp-school-caret { transform:rotate(90deg); }
 .bbp-school-name { font-weight:700; min-width:96px; } .bbp-school-meta { font-size:12px; color:#6b778a; }
 .bbp-minibar { flex:1; height:6px; background:#e6e9f0; border-radius:4px; overflow:hidden; }
 .bbp-minibar i { display:block; height:100%; }
 .bbp-school-lean { font-size:12px; font-weight:700; min-width:64px; text-align:right; }
 .bbp-members { display:grid; grid-template-columns:repeat(2,1fr); gap:4px; padding:8px 4px; }
 .bbp-member { display:flex; align-items:center; gap:8px; padding:4px 8px; border-radius:6px; }
+.bbp-member[title] { cursor:help; }
 .bbp-member:hover { background:#f4f6fa; }
 .bbp-dot { width:8px; height:8px; border-radius:50%; flex:none; }
 .bbp-member-name { font-size:12px; min-width:120px; } .bbp-rule-tag { font-style:normal; font-size:10px; color:#a0a8b5; margin-left:4px; }

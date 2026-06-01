@@ -2,7 +2,7 @@
   "enabled_models": ["DeepSeek官方/DeepSeek-V4"],
   "api_keys": {
     // "魔搭社区": "sk-3e0134b86d9e4042a58bfbec050513f2",
-    // "DeepSeek官方": "sk-125bd18748cf477493044561d422c1df",
+    "DeepSeek官方": "sk-125bd18748cf477493044561d422c1df",
     "Kimi官方": "",
     "MiniMax官方": ""
   }

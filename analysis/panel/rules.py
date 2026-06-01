@@ -236,7 +236,7 @@ def rule_zhang_mz(f: Features) -> Verdict:
     return {"score": _clamp(score), "reasons": reasons}
 
 
-# ---------- 7 流派默认规则（39 stub 用）----------
+# ---------- 7 流派默认规则（48 stub 用）----------
 def rule_value_default(f: Features) -> Verdict:
     score, reasons = 50.0, []
     roe = f.get("roe")

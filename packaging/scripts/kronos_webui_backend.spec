@@ -40,6 +40,7 @@ datas += collect_data_files("robyn")
 hiddenimports = [
     "flask",
     "flask_cors",
+    "jinja2",
     "httpx",
     "robyn",
     "numpy",

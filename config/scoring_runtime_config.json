@@ -1,35 +1,48 @@
 {
-  "generated_at": "2026-05-26T18:09:06.948087",
+  "generated_at": "2026-05-31T20:02:14.951725",
   "window_days": 120,
-  "sample_count": 191,
+  "sample_count": 482,
+  "recent_samples": 140,
+  "newest_return_age_days": 7,
   "signals": [
-    "score_negative_corr",
-    "chase_risk_effective",
-    "high_score_crowded"
+    "chase_risk_neg_corr",
+    "tech_score_neg_corr",
+    "quant_saturation"
   ],
-  "score_corr_5d": -0.166875,
+  "score_corr_5d": 0.002251,
+  "factor_corr_5d": {
+    "score": 0.0023,
+    "quant_score": 0.0058,
+    "chase_risk": -0.0399,
+    "rsi": 0.0019,
+    "sell_signals": 0.0063,
+    "buy_signals": 0.0214,
+    "sector_score": 0.0172,
+    "tech_score": -0.0179,
+    "change_5d": -0.0245
+  },
   "rating_thresholds": {
-    "S": 87,
-    "A+": 83,
+    "S": 85,
+    "A+": 82,
     "A": 78,
     "B": 70,
     "C": 0
   },
   "dimension_weights": {
-    "position_timing": 0.16666666666666666,
-    "volume_health": 0.23529411764705882,
-    "technical": 0.10784313725490197,
-    "quantitative": 0.2745098039215686,
-    "liquidity": 0.049019607843137254,
-    "sector": 0.0784313725490196,
-    "dragon_tiger": 0.058823529411764705,
-    "fundamental": 0.029411764705882353,
+    "position_timing": 0.15626033716218282,
+    "volume_health": 0.24,
+    "technical": 0.11373966283781717,
+    "quantitative": 0.27,
+    "liquidity": 0.05,
+    "sector": 0.08,
+    "dragon_tiger": 0.06,
+    "fundamental": 0.03,
     "events": 0.0,
     "sentiment": 0.0
   },
   "exclusion_rules": {
     "max_change_60d": 60,
-    "max_change_20d": 38,
+    "max_change_20d": 40,
     "max_distance_from_high": 5,
     "max_consecutive_up": 6,
     "min_profit_yoy": -70

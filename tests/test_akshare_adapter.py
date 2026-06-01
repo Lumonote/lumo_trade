@@ -111,6 +111,81 @@ def test_circuit_breaker_opens_after_failure_window(monkeypatch):
     assert len(stub.call_log) > n1
 
 
+def _transient_exc():
+    """模拟 requests 的代理/网络抖动（不 import requests，靠消息分类）。"""
+    return ConnectionError(
+        "HTTPSConnectionPool(host='push2his.eastmoney.com', port=443): "
+        "Max retries exceeded (Caused by ProxyError('Unable to connect to proxy'))"
+    )
+
+
+def test_transient_proxy_error_does_not_open_breaker_on_first_failure(monkeypatch):
+    """单次代理/网络抖动不应立即触发 5 分钟熔断，否则数据源被误黑 5 分钟。"""
+    stub = _StubClient({"stock_cyq_em": _transient_exc()})
+    fake_now = {"t": 0.0}
+    monkeypatch.setattr("data_store.akshare_adapter._now", lambda: fake_now["t"])
+    monkeypatch.setattr("data_store.akshare_adapter._sleep", lambda s: None)
+    adapter = AkshareAdapter(
+        client_factory=lambda: stub, rate_limit_per_min=999, retry_per_source=1,
+    )
+    with pytest.raises(AkshareUnavailable):
+        adapter.fetch("cyq", symbol="600519")
+    n1 = len(stub.call_log)
+    # 熔断未打开 -> 第二次仍真正调用 client（而非被熔断直接 raise）
+    fake_now["t"] = 5.0
+    with pytest.raises(AkshareUnavailable):
+        adapter.fetch("cyq", symbol="600519")
+    assert len(stub.call_log) > n1
+
+
+def test_transient_error_opens_breaker_after_threshold(monkeypatch):
+    """连续多次瞬时失败后仍应熔断，避免无意义地反复打爆已确实不可用的源。"""
+    stub = _StubClient({"stock_cyq_em": _transient_exc()})
+    fake_now = {"t": 0.0}
+    monkeypatch.setattr("data_store.akshare_adapter._now", lambda: fake_now["t"])
+    monkeypatch.setattr("data_store.akshare_adapter._sleep", lambda s: None)
+    adapter = AkshareAdapter(
+        client_factory=lambda: stub, rate_limit_per_min=999, retry_per_source=1,
+        transient_breaker_threshold=3,
+    )
+    for i in range(3):
+        fake_now["t"] = float(i)
+        with pytest.raises(AkshareUnavailable):
+            adapter.fetch("cyq", symbol="600519")
+    calls_before = len(stub.call_log)
+    fake_now["t"] = 3.0
+    with pytest.raises(AkshareUnavailable):
+        adapter.fetch("cyq", symbol="600519")
+    assert len(stub.call_log) == calls_before  # 熔断已开 -> 不再调用 client
+
+
+def test_success_resets_transient_failure_counter(monkeypatch):
+    """瞬时失败后成功一次应清零计数，避免历史抖动累积触发误熔断。"""
+    behaviors = {"stock_cyq_em": _transient_exc()}
+    stub = _StubClient(behaviors)
+    fake_now = {"t": 0.0}
+    monkeypatch.setattr("data_store.akshare_adapter._now", lambda: fake_now["t"])
+    monkeypatch.setattr("data_store.akshare_adapter._sleep", lambda s: None)
+    adapter = AkshareAdapter(
+        client_factory=lambda: stub, rate_limit_per_min=999, retry_per_source=1,
+        transient_breaker_threshold=3,
+    )
+    for i in range(2):
+        fake_now["t"] = float(i)
+        with pytest.raises(AkshareUnavailable):
+            adapter.fetch("cyq", symbol="600519")
+    behaviors["stock_cyq_em"] = pd.DataFrame({"x": [1]})  # 一次成功
+    fake_now["t"] = 3.0
+    adapter.fetch("cyq", symbol="600519")
+    behaviors["stock_cyq_em"] = _transient_exc()
+    n = len(stub.call_log)
+    for i in range(2):  # 计数已清零，2 次仍不应熔断
+        fake_now["t"] = 4.0 + i
+        with pytest.raises(AkshareUnavailable):
+            adapter.fetch("cyq", symbol="600519")
+    assert len(stub.call_log) > n
+
+
 def test_rate_limit_blocks_excess_requests(monkeypatch):
     """rate_limit_per_min=2 时，第三次请求应触发 sleep。"""
     sleep_calls: list[float] = []

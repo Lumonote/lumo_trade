@@ -1,4 +1,4 @@
-# C 宏观派（7 人：2 旗舰 + 5 stub）
+# C 宏观派（9 人：2 旗舰 + 7 stub）
 - id: soros
   name: 索罗斯
   school: C
@@ -48,3 +48,17 @@
   rule: school_default
   voice: 商品周期
   key_metrics: [trend, momentum]
+- id: bacon
+  name: 路易斯·贝肯
+  school: C
+  tier: stub
+  rule: school_default
+  voice: 全球宏观
+  key_metrics: [trend, momentum]
+- id: kovner
+  name: 布鲁斯·科夫纳
+  school: C
+  tier: stub
+  rule: school_default
+  voice: 宏观对冲
+  key_metrics: [trend, volatility]

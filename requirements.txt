@@ -23,5 +23,12 @@ tushare>=1.4.0
 akshare>=1.16.0
 baostock
 robyn>=0.84.0,<1.0
+# Web 层运行时依赖：Robyn 入口用 jinja2 渲染模板、core 用 plotly 出图；
+# flask/flask-cors 供 webui/app.py 兼容入口与打包 import-check。缺任一个，
+# 打包后的后端会在启动时 ModuleNotFoundError 而无法监听端口。
+jinja2>=3.1.0
+plotly>=5.20.0
+flask>=3.0.0
+flask-cors>=4.0.0
 pytest>=8.3.0
 pyyaml>=6.0

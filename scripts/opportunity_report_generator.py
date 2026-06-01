@@ -1827,7 +1827,7 @@ class OpportunityReportGenerator:
                         lines.append("")
 
             lines.append("\n---\n")
-            lines.append("*说明: 以上分析仅供参考，不构成投资建议。投资有风险，入市需谨慎。*")
+            lines.append("*免责声明：本软件仅为数据工具，不构成投资建议，股市有风险，投资需谨慎。*")
 
             with open(md_path, 'w', encoding='utf-8') as mf:
                 mf.write('\n'.join(lines))
@@ -3197,7 +3197,7 @@ class OpportunityReportGenerator:
         <!-- 页脚 -->
         <div class="footer">
             <p>📈 基于深度学习的金融预测系统</p>
-            <p>本报告仅供参考，不构成投资建议。投资有风险，入市需谨慎。</p>
+            <p>本软件仅为数据工具，不构成投资建议，股市有风险，投资需谨慎。</p>
         </div>
     </div>
 

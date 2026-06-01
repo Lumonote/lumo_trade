@@ -1835,6 +1835,37 @@ def _run_pattern_refresh_job(job_id, params):
         )
 
 
+def _run_pattern_backtest_job(job_id, params):
+    _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
+    _append_job_log(job_id, '开始同类图形回测')
+    try:
+        def log_cb(message):
+            _append_job_log(job_id, message)
+
+        result = PATTERN_SEARCH_SERVICE.backtest(params, progress_callback=log_cb)
+        if not result.get('ok'):
+            raise RuntimeError(result.get('error') or '回测失败')
+        _append_job_log(
+            job_id,
+            f"回测完成: 命中 {result.get('sample_count', 0)} 个相似样本，"
+            f"成功扫描 {result.get('candidates_scanned', 0)}/{result.get('candidates_total', 0)} 只股票"
+        )
+        _update_job(
+            job_id,
+            status='finished',
+            finished_at=datetime.datetime.now().isoformat(),
+            result=result,
+        )
+    except Exception as exc:
+        _append_job_log(job_id, f'形态回测失败: {exc}')
+        _update_job(
+            job_id,
+            status='failed',
+            finished_at=datetime.datetime.now().isoformat(),
+            error=str(exc),
+        )
+
+
 DESKTOP_PAGES = {
     'features': {
         'title': '总览',
@@ -1855,6 +1886,10 @@ DESKTOP_PAGES = {
     'settings': {
         'title': '后台配置',
         'subtitle': '配置 AI 分析模型、TuShare 数据源和模型运行状态',
+    },
+    'about': {
+        'title': '关于',
+        'subtitle': '免责声明 · 使用条款 · 数据来源',
     },
 }
 

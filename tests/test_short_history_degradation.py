@@ -45,14 +45,14 @@ def _patch_repo(monkeypatch, frames: dict) -> None:
 def test_load_ohlcv_returns_short_history_35_to_59(monkeypatch):
     """40 日历史（35–59）→ 返回该 df，不再抛 FileNotFoundError。"""
     _patch_repo(monkeypatch, {"1d": _ohlcv(40), "5m": pd.DataFrame()})
-    df = StockAnalysisSuite()._load_ohlcv("000001")
+    df = StockAnalysisSuite(auto_fetch=False)._load_ohlcv("000001")
     assert len(df) == 40
 
 
 def test_load_ohlcv_prefers_sufficient_frequency(monkeypatch):
     """回归守护：1d 仅 40 行但 5m ≥60 → 仍优先返回 ≥60 的 5m。"""
     _patch_repo(monkeypatch, {"1d": _ohlcv(40), "5m": _ohlcv(100)})
-    df = StockAnalysisSuite()._load_ohlcv("000001")
+    df = StockAnalysisSuite(auto_fetch=False)._load_ohlcv("000001")
     assert len(df) == 100
 
 
@@ -60,7 +60,7 @@ def test_load_ohlcv_raises_below_35_with_specific_reason(monkeypatch):
     """<35 行 → 抛错且 message 含当前行数与 ≥35 条件（非泛化「数据不足」）。"""
     _patch_repo(monkeypatch, {"1d": _ohlcv(20), "5m": pd.DataFrame()})
     with pytest.raises(FileNotFoundError) as ei:
-        StockAnalysisSuite()._load_ohlcv("000001")
+        StockAnalysisSuite(auto_fetch=False)._load_ohlcv("000001")
     msg = str(ei.value)
     assert "20" in msg and "35" in msg
 
@@ -90,7 +90,7 @@ def test_collect_inputs_short_history_loads_ohlcv_no_cascade(monkeypatch):
     monkeypatch.setattr(mod, "ChipAnalyzer", _StubAnalyzer)
     monkeypatch.setattr(mod, "CapitalFlowAnalyzer", _StubAnalyzer)
     monkeypatch.setattr(mod, "FundamentalDataCollector", _StubFundam)
-    suite = StockAnalysisSuite()
+    suite = StockAnalysisSuite(auto_fetch=False)
     suite._classify_market_regime = lambda: ("sideways", 0.4)  # type: ignore[attr-defined]
     suite._run_quant_models = lambda code, df: {"total": 0, "buy_signal_count": 0,
                                                 "sell_signal_count": 0, "hold_signal_count": 0}  # type: ignore[attr-defined]
@@ -152,3 +152,79 @@ def test_build_panel_no_note_for_full_history():
     from analysis.panel import build_panel
     panel = build_panel({"ohlcv": _ohlcv(80)}, {})
     assert panel.get("note") is None
+
+
+# ---- 按需补偿：本地不足时立即拉数据，实在没有才显示指引 ----
+
+def test_load_ohlcv_auto_fetches_when_local_insufficient(monkeypatch):
+    """本地 <60 行 → 调 ensure_daily 补偿 → 重扫命中 ≥60 并返回补偿后的序列。"""
+    from data_store import ohlcv_fetch, ohlcv_repo
+
+    state = {"fetched": False}
+
+    def _load(code, frequency):
+        # 补偿前空表；ensure_daily 跑过后 1d 重扫到足量历史（模拟 upsert 入库）。
+        if frequency == "1d" and state["fetched"]:
+            return _ohlcv(120)
+        return pd.DataFrame()
+
+    def _fake_ensure(code, start, end, throttle=0.0):
+        state["fetched"] = True
+        return _ohlcv(120)
+
+    monkeypatch.setattr(ohlcv_repo, "load_dataframe", _load)
+    monkeypatch.setattr(ohlcv_fetch, "ensure_daily", _fake_ensure)
+
+    df = StockAnalysisSuite()._load_ohlcv("688111")  # auto_fetch 默认 True
+    assert state["fetched"] is True
+    assert len(df) == 120
+
+
+def test_load_ohlcv_auto_fetch_cooldown_dedups(monkeypatch):
+    """冷却去重：补偿失败后，冷却窗口内的再次调用不重复打网络（payload 内双调用同此）。"""
+    from data_store import ohlcv_fetch, ohlcv_repo
+
+    calls: list = []
+    monkeypatch.setattr(ohlcv_repo, "load_dataframe", lambda code, freq: pd.DataFrame())
+
+    def _fake_ensure(code, start, end, throttle=0.0):
+        calls.append(code)
+        return pd.DataFrame()  # 数据源无数据 → 补偿失败
+
+    monkeypatch.setattr(ohlcv_fetch, "ensure_daily", _fake_ensure)
+
+    suite = StockAnalysisSuite()
+    for _ in range(2):
+        with pytest.raises(FileNotFoundError):
+            suite._load_ohlcv("688111")
+    assert calls == ["688111"]  # 只补偿一次
+
+
+def test_load_ohlcv_message_has_remediation_when_fetch_fails(monkeypatch):
+    """实在补偿无果 → 抛错 message 含操作指引（代码/停牌核对 + fetch_data.py）。"""
+    from data_store import ohlcv_fetch, ohlcv_repo
+
+    monkeypatch.setattr(ohlcv_repo, "load_dataframe", lambda code, freq: pd.DataFrame())
+    monkeypatch.setattr(ohlcv_fetch, "ensure_daily",
+                        lambda code, start, end, throttle=0.0: pd.DataFrame())
+
+    with pytest.raises(FileNotFoundError) as ei:
+        StockAnalysisSuite()._load_ohlcv("688111")
+    msg = str(ei.value)
+    assert "688111" in msg
+    assert "fetch_data.py" in msg
+
+
+def test_load_ohlcv_no_fetch_when_auto_fetch_disabled(monkeypatch):
+    """auto_fetch=False → 纯本地降级，绝不触网（单测离线/幂等保证）。"""
+    from data_store import ohlcv_fetch, ohlcv_repo
+
+    monkeypatch.setattr(ohlcv_repo, "load_dataframe", lambda code, freq: pd.DataFrame())
+
+    def _boom(*a, **kw):
+        raise AssertionError("ensure_daily must not be called when auto_fetch=False")
+
+    monkeypatch.setattr(ohlcv_fetch, "ensure_daily", _boom)
+
+    with pytest.raises(FileNotFoundError):
+        StockAnalysisSuite(auto_fetch=False)._load_ohlcv("688111")

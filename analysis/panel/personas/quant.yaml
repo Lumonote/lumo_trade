@@ -1,4 +1,4 @@
-# G 量化派（6 人：全 stub）
+# G 量化派（8 人：全 stub）
 - id: simons
   name: 西蒙斯
   school: G
@@ -40,4 +40,18 @@
   tier: stub
   rule: school_default
   voice: 高频做市
+  key_metrics: [momentum, volume]
+- id: harding
+  name: 大卫·哈丁
+  school: G
+  tier: stub
+  rule: school_default
+  voice: CTA趋势量化
+  key_metrics: [momentum, volatility]
+- id: peterffy
+  name: 托马斯·彼得菲
+  school: G
+  tier: stub
+  rule: school_default
+  voice: 算法做市
   key_metrics: [momentum, volume]
