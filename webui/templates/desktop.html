@@ -463,10 +463,10 @@
               </div>
               <div class="panel">
                 <div class="panel-header">
-                  <h2 class="panel-title">❄️ 雪球热榜</h2>
-                  <span id="ovHotXueqiuMeta" class="panel-meta">关注热度</span>
+                  <h2 class="panel-title">📰 富途资讯</h2>
+                  <span id="ovFutuNewsMeta" class="panel-meta">富途 7×24</span>
                 </div>
-                <div id="ovHotXueqiu" class="panel-body list"></div>
+                <div id="ovFutuNews" class="panel-body list"></div>
               </div>
             </section>
 
@@ -1170,38 +1170,26 @@
           if (!rows.length) empty(eastmoney, "东方财富热榜暂不可用（检查网络 / 稍后刷新）。");
           bindHotStockClicks(eastmoney);
         }
-        const xueqiu = $("#ovHotXueqiu");
-        if (xueqiu) {
-          const rows = intel.xueqiu_hot || [];
-          xueqiu.innerHTML = rows.map((s, i) => `
-            <div class="item hot-rank-row item-clickable" data-stock-code="${html(s.code || '')}" data-stock-name="${html(s.name || '')}" role="button" tabindex="0" title="点击查看个股">
-              <span class="hot-rank-no">${i + 1}</span>
-              <div style="flex:1;min-width:0;">
-                <p class="item-title">${html(s.name)} <span class="muted">${html(s.code || '')}</span></p>
-                <p class="item-meta">关注 ${html(s.follow_text || s.follow || '--')}</p>
-              </div>
-              ${s.price != null ? `<strong>¥${html(s.price)}</strong>` : ""}
-            </div>
-          `).join("");
-          if (!rows.length) empty(xueqiu, "雪球热榜暂不可用。");
-          bindHotStockClicks(xueqiu);
-        }
       }
 
-      function renderOverviewEastmoneyNews(data) {
-        const el = $("#ovEastmoneyNews");
+      function renderNewsPanel(el, items, fallbackSource, emptyText) {
         if (!el) return;
-        const intel = (data && data.market && data.market.intelligence) || {};
-        const items = intel.eastmoney_news || [];
-        el.innerHTML = items.map((n) => `
+        const rows = items || [];
+        el.innerHTML = rows.map((n) => `
           <div class="item" title="${html(n.summary || n.title || "")}">
             <div class="item-top">
               <p class="item-title">${html(n.title)}</p>
             </div>
-            <p class="item-meta">${html(n.source || "东方财富")} · ${html(n.time || "")}</p>
+            <p class="item-meta">${html(n.source || fallbackSource)} · ${html(n.time || "")}</p>
           </div>
         `).join("");
-        if (!items.length) empty(el, "东财资讯暂不可用（检查网络 / 稍后刷新）。");
+        if (!rows.length) empty(el, emptyText);
+      }
+
+      function renderOverviewNews(data) {
+        const intel = (data && data.market && data.market.intelligence) || {};
+        renderNewsPanel($("#ovEastmoneyNews"), intel.eastmoney_news, "东方财富", "东财资讯暂不可用（检查网络 / 稍后刷新）。");
+        renderNewsPanel($("#ovFutuNews"), intel.futu_news, "富途", "富途资讯暂不可用（检查网络 / 稍后刷新）。");
       }
 
       function setupOverviewSearch() {
@@ -2467,9 +2455,9 @@
         if (!rows.length) {
           return `
             <div class="item empty-state">
-              <p class="item-meta">暂无该股票本地批量分析结果。</p>
+              <p class="item-meta">暂无该股票本地批量分析结果，可查看综合研判总结。</p>
               <div class="actions">
-                <button class="button secondary compact" type="button" data-stock-action="analysis">立即分析</button>
+                <button class="button secondary compact" type="button" data-stock-action="analysis">查看综合研判</button>
               </div>
             </div>
           `;
@@ -2555,7 +2543,9 @@
         const reports = context.reports || [];
         const analysisRows = context.analysis_results || [];
         $("#stockContextTitle").textContent = stockDisplayName(stock);
-        $("#stockContextMeta").textContent = `${stock.code || "--"} · ${stock.sector || "--"}`;
+        const boards = Array.isArray(stock.boards) ? stock.boards.filter(Boolean) : [];
+        const boardText = boards.length ? boards.join(" / ") : (stock.sector && stock.sector !== "—" ? stock.sector : "--");
+        $("#stockContextMeta").textContent = `${stock.code || "--"} · ${boardText}`;
         body.innerHTML = `
           <div class="stock-context-grid">
             <section class="stock-context-main">
@@ -2653,37 +2643,26 @@
         });
       }
 
+      // 「个股分析」改为只展示综合研判总结（综合总览 tab 顶部），不再触发批量分析 CSV 任务。
       async function startStockAnalysis(context, button = null) {
         const code = context.stock?.code;
         if (!code) return;
-        const panel = $("#stockAnalysisPanel");
-        const job = await startTrackedJob("/api/batch-analysis/start", {
-          stock_codes: code,
-          filter_strategy: "balanced",
-          max_concurrent: 1,
-          data_types: ["comprehensive"],
-        }, button);
-        if (!job) return;
-        if (panel) {
-          panel.innerHTML = `<div class="item empty-state" id="stockAnalysisProgress">
-            <p class="item-meta"><span class="spinner"></span> 个股分析进行中… (${html(job.id)})</p>
-          </div>`;
+        // 个股弹窗未打开（如从 K线弹窗触发）则先打开它——会加载 suite 并渲染，避免渲染进隐藏弹窗。
+        const modal = document.getElementById("stockContextModal");
+        const alreadyOpen = modal && !modal.hidden && state.currentStockCode === code;
+        if (!alreadyOpen) {
+          await openStockContext({ stock_code: code, stock_name: context.stock?.name || "" });
         }
-        await pollJob(job.id, {
-          onUpdate: (j) => {
-            const note = document.getElementById("stockAnalysisProgress");
-            if (note) {
-              const log = latestJobLog(j) || jobStatusLabel(j.status);
-              note.querySelector("p").innerHTML = `<span class="spinner"></span> ${html(log)}`;
-            }
-          },
-          onDone: async (j) => {
-            await refreshStockContextInPlace(code, context.stock?.name || "");
-            await refreshStockSuiteInPlace(code, context.stock?.name || "");
-            if (j.status === "failed") {
-              prependStockContextNotice(`个股分析失败: ${latestJobLog(j) || j.id}`, "error", button);
-            }
-          },
+        const navBtn = document.querySelector('#stockSuiteTabs button.suite-tab[data-suite-tab="overview"]');
+        if (navBtn) navBtn.click();  // 复用 tab 切换逻辑：激活态 / 面板可见性 / 加载态 / 渲染
+        // 已加载则立即（重）渲染；仍在加载时切换逻辑会显示「数据加载中…」，
+        // 加载完成后 openStockContext 的 renderActiveSuiteTab 会补渲染。
+        if (!state.suiteFetching && state.currentSuitePayload) {
+          renderSuiteOverview(state.currentSuitePayload);
+        }
+        requestAnimationFrame(() => {
+          const card = document.querySelector("#suitePaneOverview .suite-summary-card");
+          if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
         });
       }
 
@@ -2986,6 +2965,173 @@
         }, 2200);
       }
 
+      // 综合研判总结：从已加载的 suite payload 确定性地汇总成一段「非常完整的总结说明」，
+      // 渲染在「综合总览」tab 顶部。无 LLM、无后端改动——全部字段取自 payload 各维度。
+      function suiteSummaryNum(v, fallback = 0) {
+        const n = Number(v);
+        return (v == null || isNaN(n)) ? fallback : n;
+      }
+      function suiteSummaryFmt(v, suffix = "") {
+        if (v == null || v === "" || (typeof v === "number" && isNaN(v))) return "—";
+        return `${v}${suffix}`;
+      }
+
+      function buildSummaryVerdict(ov, payload, consensus) {
+        const radar = ov.radar || {};
+        const prob = ov.scenario_probability || {};
+        const scores = ["main_force_phase", "market_cycle", "volume_price_game", "chip_structure", "performance", "control_degree", "quant_activity"]
+          .map((k) => radar[k]?.score).filter((v) => v != null && !isNaN(Number(v))).map(Number);
+        const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+        const cScore = (consensus && consensus.score != null && !isNaN(Number(consensus.score))) ? Number(consensus.score) : null;
+        const bull = prob.bullish, bear = prob.bearish;
+        const probLean = (bull != null && bear != null) ? Number(bull) - Number(bear) : null;
+
+        // 复合打分 → 多空倾向（A股惯例：偏多=红色）
+        let pts = 0;
+        if (cScore != null) { if (cScore >= 55) pts++; else if (cScore <= 45) pts--; }
+        if (probLean != null) { if (probLean >= 10) pts++; else if (probLean <= -10) pts--; }
+        if (avg != null) { if (avg >= 60) pts++; else if (avg < 45) pts--; }
+
+        let tag, lean, advice;
+        if (pts >= 2) { tag = "偏多 · 积极关注"; lean = "bull"; advice = "多维信号一致偏多，可逢低分批介入，并以量能持续放大作为加仓确认"; }
+        else if (pts === 1) { tag = "谨慎偏多"; lean = "bull"; advice = "信号偏正面但仍存分歧，建议轻仓试探、严格执行止损"; }
+        else if (pts <= -2) { tag = "偏空 · 规避"; lean = "bear"; advice = "多维信号偏空，建议规避或仅观望，不宜追高介入"; }
+        else if (pts === -1) { tag = "谨慎偏空"; lean = "bear"; advice = "信号整体偏弱，建议以观望为主，等待企稳放量信号"; }
+        else { tag = "多空分歧 · 观望"; lean = "neutral"; advice = "多空力量大体均衡、方向尚不明朗，观望为宜"; }
+
+        const rc = payload.risk_control || {};
+        const tail = [];
+        if (rc.available !== false) {
+          const ep = rc.execution_plan || {};
+          const rr = ep.risk_reward || {}, sl = ep.stop_loss || {};
+          if (rr.ratio != null) tail.push(`盈亏比 ${rr.ratio}`);
+          if (sl.price != null) tail.push(`止损 ${sl.price}`);
+          const firstLeg = (rc.scaled_entry || [])[0];
+          if (firstLeg && firstLeg.position_pct != null) tail.push(`首仓 ${firstLeg.position_pct}%`);
+        }
+        const text = advice + (tail.length ? `（${tail.join(" · ")}）` : "") + "。本结论由本页各量化维度自动汇总，仅供研究参考，不构成投资建议。";
+        return { tag, lean, text };
+      }
+
+      function buildComprehensiveSummary(payload) {
+        if (!payload || payload.success === false || !payload.overview) return "";
+        const ov = payload.overview;
+        const radar = ov.radar || {};
+        const rad = (k) => radar[k] || {};
+        const fmt = suiteSummaryFmt, numOr = suiteSummaryNum;
+        const sections = [];
+
+        // 1. 趋势周期
+        {
+          const mc = rad("market_cycle"), mf = rad("main_force_phase"), vp = rad("volume_price_game");
+          const parts = [];
+          if (mc.label || mc.score != null) parts.push(`市场周期处于「${mc.label || "—"}」(${fmt(mc.score)}分)`);
+          if (mf.label || mf.score != null) parts.push(`主力运作处于「${mf.label || "—"}」阶段(${fmt(mf.score)}分)`);
+          if (vp.label || vp.score != null) parts.push(`量价关系呈「${vp.label || "—"}」(${fmt(vp.score)}分)`);
+          if (mc.reason) parts.push(mc.reason);
+          if (parts.length) sections.push({ key: "趋势周期", text: parts.join("；") + "。" });
+        }
+
+        // 2. 资金筹码
+        {
+          const chip = rad("chip_structure"), ctrl = rad("control_degree");
+          const cc = payload.chip_control || {};
+          const mfd = payload.main_force_deep || {};
+          const parts = [];
+          if (chip.label || chip.score != null) parts.push(`筹码结构「${chip.label || "—"}」(${fmt(chip.score)}分)`);
+          if (ctrl.score != null) parts.push(`主力控盘度 ${fmt(ctrl.score)}`);
+          if (cc.control_label && cc.data_status !== "unavailable") parts.push(`控盘评级「${cc.control_label}」`);
+          if (cc.concentration_90 != null) parts.push(`90%筹码集中度 ${fmt(cc.concentration_90)}`);
+          const hr = mfd.hsgt?.latest?.hold_ratio;
+          if (hr != null && !isNaN(Number(hr))) parts.push(`北向持股占流通 ${Number(hr).toFixed(2)}%`);
+          const qa = mfd.dragon_tiger?.quant_seat_appearances;
+          if (qa != null) parts.push(`近90日量化席位现身 ${qa} 次`);
+          if (parts.length) sections.push({ key: "资金筹码", text: parts.join("；") + "。" });
+        }
+
+        // 3. 量化共振
+        {
+          const qm = payload.quant_matrix || {};
+          const reso = qm.multi_period_resonance || {};
+          const prob = ov.scenario_probability || {};
+          const qact = rad("quant_activity");
+          const parts = [];
+          if (qm.current_posture && qm.data_status !== "unavailable") parts.push(`30 模型当前态势「${qm.current_posture}」`);
+          if (reso.bull != null || reso.bear != null) parts.push(`看多 ${numOr(reso.bull)} / 看空 ${numOr(reso.bear)} / 观望 ${numOr(reso.neutral)} 个模型`);
+          if (prob.bullish != null || prob.bearish != null) parts.push(`概率推演 看涨 ${fmt(prob.bullish, "%")} · 看跌 ${fmt(prob.bearish, "%")} · 震荡 ${fmt(prob.sideways, "%")}`);
+          if (qact.score != null) parts.push(`量化活跃度 ${fmt(qact.score)}`);
+          if (parts.length) sections.push({ key: "量化共振", text: parts.join("；") + "。" });
+        }
+
+        // 4. 业绩价值
+        {
+          const perf = rad("performance");
+          if (perf.label || perf.score != null || perf.reason) {
+            const parts = [`业绩预期「${perf.label || "—"}」(${fmt(perf.score)}分)`];
+            if (perf.reason) parts.push(perf.reason);
+            sections.push({ key: "业绩价值", text: parts.join("；") + "。" });
+          }
+        }
+
+        // 5. 风险提示
+        {
+          const rc = payload.risk_control || {};
+          const parts = [];
+          if (rc.available !== false) {
+            const ep = rc.execution_plan || {};
+            const sl = ep.stop_loss || {}, rr = ep.risk_reward || {};
+            if (sl.price != null) parts.push(`建议止损 ${sl.price}(-${fmt(sl.drop_pct)}%)`);
+            if (rr.ratio != null) parts.push(`盈亏比 ${rr.ratio}`);
+          }
+          const hidden = (rc.hidden_risks || [])
+            .map((h) => (h && h.text) ? h.text : (typeof h === "string" ? h : ""))
+            .filter(Boolean);
+          if (hidden.length) parts.push(`隐性风险：${hidden.slice(0, 3).join("、")}`);
+          const warnSignals = (ov.key_signals || [])
+            .filter((s) => s.tone === "warn" || s.tone === "danger")
+            .map((s) => `${s.label}${s.value ? "(" + s.value + ")" : ""}`);
+          if (warnSignals.length) parts.push(`需警惕：${warnSignals.slice(0, 3).join("、")}`);
+          if (parts.length) sections.push({ key: "风险提示", text: parts.join("；") + "。" });
+        }
+
+        // 6. 多空评审团
+        let consensus = null;
+        {
+          const p = payload.panel || {};
+          const c = p.consensus;
+          if (c && p.data_status !== "unavailable") {
+            consensus = c;
+            const gd = p.great_divide || {};
+            const total = numOr(c.bull) + numOr(c.neutral) + numOr(c.bear);
+            const parts = [`${total ? total + " 位" : ""}评审团多空温度 ${fmt(c.score)}(${c.label || "—"})，多 ${numOr(c.bull)} / 观望 ${numOr(c.neutral)} / 空 ${numOr(c.bear)}`];
+            if (gd.bull?.name || gd.bear?.name) parts.push(`最强多头 ${gd.bull?.name || "—"} vs 最强空头 ${gd.bear?.name || "—"}`);
+            if (gd.punchline) parts.push(gd.punchline);
+            sections.push({ key: "多空评审团", text: parts.join("；") + "。" });
+          }
+        }
+
+        // 7. 操作建议（结论）
+        const concl = buildSummaryVerdict(ov, payload, consensus);
+        sections.push({ key: "操作建议", text: concl.text, concl: true });
+
+        if (sections.length <= 1) return "";  // 仅结论无依据时不展示空壳
+
+        const stockName = stockDisplayName(payload.stock || {});
+        const code = payload.stock?.code || "";
+        const rows = sections.map((s) => `
+          <div class="suite-summary-row${s.concl ? " concl" : ""}">
+            <span class="suite-summary-key">【${html(s.key)}】</span>${html(s.text)}
+          </div>`).join("");
+        return `
+          <div class="suite-summary-card">
+            <div class="suite-summary-head">
+              <span class="suite-summary-title">📋 综合研判总结 · ${html(stockName)}${code && code !== stockName ? " " + html(code) : ""}</span>
+              <span class="suite-summary-verdict lean-${concl.lean}">${html(concl.tag)}</span>
+            </div>
+            <div class="suite-summary-body">${rows}</div>
+          </div>`;
+      }
+
       function renderSuiteOverview(payload) {
         const pane = document.getElementById("suitePaneOverview");
         if (!pane) return;
@@ -3006,6 +3152,7 @@
             <span>${html(s.text)}</span>
           </div>`).join("") || `<div class="suite-deep-signal suite-empty-note">暂无深度信号</div>`;
         pane.innerHTML = `
+          ${buildComprehensiveSummary(payload)}
           <div class="suite-radar-section">
             <div id="suiteRadarChart" class="suite-radar-chart"></div>
             <div class="suite-key-signals">
@@ -5101,7 +5248,7 @@
         renderReports(data);
         setupWorkbench(data);
         renderOverviewHotLists(data);
-        renderOverviewEastmoneyNews(data);
+        renderOverviewNews(data);
         setupOverviewSearch();
 
         const settings = data.settings || {};

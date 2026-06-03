@@ -1830,6 +1830,57 @@ body.modal-open {
   font-size: 11px;
 }
 
+/* Comprehensive verdict summary (综合研判总结) — top of overview tab */
+.suite-summary-card {
+  margin: 16px 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-tint);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.suite-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.suite-summary-title { font-size: 15px; font-weight: 700; color: var(--ink); }
+.suite-summary-verdict {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-soft);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.suite-summary-verdict.lean-bull { color: #d23f3f; border-color: #d23f3f; background: #fbecea; }
+.suite-summary-verdict.lean-bear { color: #2f9e5a; border-color: #2f9e5a; background: #eaf6ee; }
+.suite-summary-body { padding: 4px 16px 12px; }
+.suite-summary-row {
+  padding: 9px 0;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--ink-2);
+  border-bottom: 1px dashed var(--line);
+}
+.suite-summary-row:last-child { border-bottom: none; }
+.suite-summary-row.concl {
+  color: var(--ink);
+  font-weight: 500;
+  background: var(--nav-active);
+  margin: 4px -16px 0;
+  padding: 10px 16px;
+  border-bottom: none;
+}
+.suite-summary-key { font-weight: 700; color: var(--ink); margin-right: 4px; }
+.suite-summary-row.concl .suite-summary-key { color: var(--blue-dark); }
+
 /* Risk control */
 .suite-risk-grid {
   display: grid;

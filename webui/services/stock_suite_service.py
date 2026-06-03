@@ -69,6 +69,21 @@ def _resolve_sector(code: str) -> tuple[str, str]:
         return "—", ""
 
 
+@lru_cache(maxsize=4096)
+def _resolve_boards(code: str) -> tuple[str, ...]:
+    """Resolve the stock's associated boards (industry + concepts). Cached per process.
+
+    Returns () on failure; the header then degrades to the single sector / placeholder.
+    """
+    try:
+        from analysis.sector_api import get_stock_boards
+
+        return tuple(get_stock_boards(code))
+    except Exception:  # noqa: BLE001
+        return ()
+
+
+
 class StockSuiteService:
     def __init__(self, orchestrator: Optional[StockAnalysisSuite] = None) -> None:
         if orchestrator:
@@ -84,13 +99,15 @@ class StockSuiteService:
             raise ValueError(f"invalid stock code: {code!r}")
         return cleaned
 
-    def _stock_meta(self, code: str, name: str) -> Dict[str, str]:
+    def _stock_meta(self, code: str, name: str) -> Dict[str, Any]:
         market = "XSHE" if code.startswith(("0", "3")) else "XSHG"
         sector, resolved_name = _resolve_sector(code)
+        boards = list(_resolve_boards(code))
         return {
             "code": code,
             "name": name or resolved_name or "",
             "sector": sector,
+            "boards": boards,
             "market": market,
         }
 

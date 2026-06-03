@@ -67,7 +67,7 @@
       }
       .sec-head h2 { margin: 0; font-size: 12px; font-weight: 700; flex: 1; }
       .sec-head .meta { color: var(--muted); font-size: 11px; }
-      .tabs { display: flex; gap: 6px; }
+      .tabs { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 0 6px; }
       .tabs button {
         border: 1px solid var(--line);
         background: var(--card);
@@ -100,6 +100,16 @@
       .row .nm { flex: 1; display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
       .row .nm b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .row .nm i { color: var(--muted); font-style: normal; font-size: 11px; }
+      .bk {
+        font-weight: 500;
+        font-size: 10px;
+        color: var(--muted);
+        background: rgba(139, 149, 166, 0.16);
+        border-radius: 4px;
+        padding: 0 5px;
+        margin-left: 5px;
+        white-space: nowrap;
+      }
       .row .px { min-width: 56px; text-align: right; font-variant-numeric: tabular-nums; }
       .row .pc { min-width: 72px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
       .row.placeholder { color: var(--accent); justify-content: center; border: 1px dashed var(--line); }
@@ -159,14 +169,20 @@
       <section>
         <div class="sec-head">
           <h2>实时热点</h2>
-          <div class="tabs">
-            <button id="tab-hot" class="on">热点</button>
-            <button id="tab-changes">异动</button>
-            <button id="tab-flash">快讯</button>
-          </div>
+        </div>
+        <div class="tabs" id="hotTabs">
+          <button id="tab-hot" class="on">热点股票</button>
+          <button id="tab-boards">热点板块</button>
+          <button id="tab-changes">异动</button>
+          <button id="tab-futu">富途资讯</button>
+          <button id="tab-news">东财资讯</button>
+          <button id="tab-flash">快讯</button>
         </div>
         <div class="list" id="hot"><p class="muted">加载中…</p></div>
+        <div class="list" id="boards" hidden><p class="muted">加载中…</p></div>
         <div class="list" id="changes" hidden><p class="muted">加载中…</p></div>
+        <div class="list" id="futu" hidden><p class="muted">加载中…</p></div>
+        <div class="list" id="news" hidden><p class="muted">加载中…</p></div>
         <div class="list" id="flash" hidden><p class="muted">加载中…</p></div>
       </section>
       <section>
@@ -255,8 +271,9 @@
         const data = state.hotspots || {};
         const em = data.eastmoney || {};
         const errs = data.errors || {};
+        const bk = (s) => (s ? `<span class="bk">${esc(s)}</span>` : "");
 
-        // 热点：人气热股
+        // 热点股票：人气热股（行内显示板块）
         const hbox = $("#hot");
         const hot = em.hot_stocks || [];
         if (errs.eastmoney_hot_stocks) hbox.innerHTML = `<p class="muted">该来源暂不可用。</p>`;
@@ -266,14 +283,32 @@
             .slice(0, 12)
             .map(
               (g, i) => `<button class="row" data-route="/desktop/workbench?stock=${encodeURIComponent(g.code)}">
-                <span class="nm"><b>${i + 1}. ${esc(g.name)}</b><i>${esc(g.code)}</i></span>
+                <span class="nm"><b>${i + 1}. ${esc(g.name)}${bk(g.industry)}</b><i>${esc(g.code)}</i></span>
                 <span class="pc ${changeClass(g.change_pct)}">${fmtPct(g.change_pct)}</span>
               </button>`
             )
             .join("");
         bindRows(hbox);
 
-        // 异动：盘口实时异动（火箭发射/快速反弹/大笔买入/封涨停板等，仅交易时段更新）
+        // 热点板块：行业 + 概念板块（push2 被掐时走腾讯板块榜）
+        const bbox = $("#boards");
+        const boards = [...(em.industry_boards || []), ...(em.concept_boards || [])];
+        if (!boards.length) bbox.innerHTML = `<p class="muted">板块数据暂不可用。</p>`;
+        else
+          bbox.innerHTML = boards
+            .slice(0, 16)
+            .map((b) => {
+              const sub = b.leader_name
+                ? "领涨 " + esc(b.leader_name)
+                : (b.main_net_inflow_text && b.main_net_inflow_text !== "0" ? "主力 " + esc(b.main_net_inflow_text) : "板块");
+              return `<div class="row" style="cursor:default">
+                <span class="nm"><b>${esc(b.name)}</b><i>${sub}</i></span>
+                <span class="pc ${changeClass(b.change_pct)}">${fmtPct(b.change_pct)}</span>
+              </div>`;
+            })
+            .join("");
+
+        // 异动：盘口实时异动（火箭发射/快速反弹/大笔买入/封涨停板等，行内显示板块，仅交易时段更新）
         const cbox = $("#changes");
         const changes = em.changes || [];
         if (errs.eastmoney_changes) cbox.innerHTML = `<p class="muted">该来源暂不可用。</p>`;
@@ -283,12 +318,40 @@
             .slice(0, 15)
             .map(
               (c) => `<button class="row" data-route="/desktop/workbench?stock=${encodeURIComponent(c.code)}">
-                <span class="nm"><b>${esc(c.name)}</b><i>${esc(c.type)}${c.time ? " · " + esc(c.time) : ""}</i></span>
+                <span class="nm"><b>${esc(c.name)}${bk(c.industry)}</b><i>${esc(c.type)}${c.time ? " · " + esc(c.time) : ""}</i></span>
                 <span class="pc ${changeClass(c.change_pct)}">${c.change_pct != null ? fmtPct(c.change_pct) : "—"}</span>
               </button>`
             )
             .join("");
         bindRows(cbox);
+
+        // 富途资讯：富途 7×24 全球财经快讯
+        const xbox = $("#futu");
+        const futu = data.futu_news || [];
+        if (errs.futu_news) xbox.innerHTML = `<p class="muted">该来源暂不可用。</p>`;
+        else if (!futu.length) xbox.innerHTML = `<p class="muted">暂无资讯。</p>`;
+        else
+          xbox.innerHTML = futu
+            .slice(0, 12)
+            .map(
+              (n) =>
+                `<div class="flash"><span class="t">${esc(timeText(n.time))}</span><span class="x">${esc(n.title)}</span></div>`
+            )
+            .join("");
+
+        // 东财资讯：东方财富 7×24 全球财经快讯
+        const nbox = $("#news");
+        const news = data.eastmoney_news || [];
+        if (errs.eastmoney_news) nbox.innerHTML = `<p class="muted">该来源暂不可用。</p>`;
+        else if (!news.length) nbox.innerHTML = `<p class="muted">暂无资讯。</p>`;
+        else
+          nbox.innerHTML = news
+            .slice(0, 12)
+            .map(
+              (n) =>
+                `<div class="flash"><span class="t">${esc(timeText(n.time))}</span><span class="x">${esc(n.title)}</span></div>`
+            )
+            .join("");
 
         // 快讯：金十
         const fbox = $("#flash");
@@ -305,9 +368,11 @@
             .join("");
       }
 
+      const HOT_TABS = ["hot", "boards", "changes", "futu", "news", "flash"];
+
       function switchTab(tab) {
         state.tab = tab;
-        ["hot", "changes", "flash"].forEach((t) => {
+        HOT_TABS.forEach((t) => {
           $("#tab-" + t).classList.toggle("on", t === tab);
           $("#" + t).hidden = t !== tab;
         });
@@ -359,7 +424,7 @@
 
       $("#refresh").addEventListener("click", () => loadAll());
       $("#console").addEventListener("click", () => openMain("/desktop/features"));
-      ["hot", "changes", "flash"].forEach((t) =>
+      HOT_TABS.forEach((t) =>
         $("#tab-" + t).addEventListener("click", () => switchTab(t))
       );
       document

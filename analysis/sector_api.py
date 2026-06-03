@@ -708,6 +708,83 @@ def _get_industry_from_tushare(stock_code: str) -> Optional[Dict]:
     return None
 
 
+# ============ 个股关联的多个板块（东方财富 F10 核心题材） ============
+# 噪音标签：指数成分 / 市值风格 / 交易状态 / 地域，这些不是「行业/题材」板块，
+# 个股副标题只展示有意义的行业+概念板块，故过滤掉。
+_BOARD_DENY_SUBSTR = (
+    '融资融券', '证金', '重仓', '富时', 'MSCI', '标普', '标准普尔', '茅指数', '宁组合',
+    '漂亮', '股通', '大盘', '中盘', '小盘', '微盘', '权重', '百元股', '低价股',
+    '送转', '预增', '预减', '预盈', '预亏', '中证', '成份', '板综', 'QFII', '社保',
+)
+_BOARD_DENY_SUFFIX = ('板块', '特区', '_', '指数')
+_BOARD_DENY_EXACT = {'深成500', '上证50', '上证180', '沪深300', '行业龙头', '机构重仓'}
+
+
+def _board_is_noise(name: str) -> bool:
+    n = str(name or '').strip()
+    if not n or n in _BOARD_DENY_EXACT:
+        return True
+    if n.endswith(_BOARD_DENY_SUFFIX):
+        return True
+    return any(k in n for k in _BOARD_DENY_SUBSTR)
+
+
+def get_stock_boards(stock_code: str, limit: int = 8) -> list:
+    """获取个股关联的多个板块名称（行业 + 概念题材，已过滤指数/市值/交易类噪音）。
+
+    数据源：东方财富 F10「核心题材」PageAjax 的 ssbk(所属板块)，按 BOARD_RANK 顺序返回。
+    该接口走 emweb.securities.eastmoney.com（非 push2，本机系统代理可达）。结果用情绪
+    缓存持久化（namespace=stock_boards），失败返回 []，调用方据此降级到单一行业/占位符。
+    """
+    code = str(stock_code or '').strip()
+    if not code:
+        return []
+
+    cached = cache_manager.get('stock_boards', code)
+    if isinstance(cached, list) and cached:
+        return cached[:limit]
+
+    if code.startswith(('6', '9')):
+        prefix = 'SH'
+    elif code.startswith(('8', '4')):
+        prefix = 'BJ'
+    else:
+        prefix = 'SZ'
+
+    try:
+        resp = requests.get(
+            "https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax",
+            params={'code': f"{prefix}{code}"},
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://emweb.securities.eastmoney.com/',
+            },
+            timeout=8,
+        )
+        data = resp.json()
+    except Exception as e:  # noqa: BLE001
+        print(f"   ⚠️ 获取个股板块失败: {str(e)[:80]}")
+        return []
+
+    boards: list = []
+    seen = set()
+    for item in (data.get('ssbk') or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('BOARD_NAME') or '').strip()
+        if not name or name in seen or _board_is_noise(name):
+            continue
+        seen.add(name)
+        boards.append(name)
+
+    if boards:
+        try:
+            cache_manager.set('stock_boards', boards, code)
+        except Exception:  # noqa: BLE001
+            pass
+    return boards[:limit]
+
+
 # 全局缓存板块列表，避免重复请求
 _SECTOR_LIST_CACHE = None
 _SECTOR_LIST_CACHE_TIME = 0

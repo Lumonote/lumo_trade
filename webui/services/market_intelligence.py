@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import datetime
+import json
 import re
+import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from typing import Any
 
@@ -122,6 +125,13 @@ class MarketIntelligenceService:
     def __init__(self, ttl_seconds: int = DEFAULT_TTL_SECONDS):
         self.ttl_seconds = ttl_seconds
         self._cache: dict[str, Any] = {'ts': 0, 'payload': None}
+        # 行业映射（{6位代码: 行业名}）按天构建，供热点/异动行内「板块信息」。
+        # 来源新浪行业分类（本机可达，独立于被掐的 push2.eastmoney）；后台线程构建不阻塞 load()。
+        self._industry_map: dict[str, str] = {}
+        self._industry_map_date: str = ''
+        self._industry_building: bool = False
+        self._industry_lock = threading.Lock()
+        self._maybe_refresh_industry_map()  # 进程启动即后台预热，首个 load 多半已就绪
 
     def _request_json(self, url: str, headers: dict[str, str] | None = None, timeout: int = 5) -> Any:
         return request_json(url, headers=headers, timeout=timeout, retries=3)
@@ -166,31 +176,35 @@ class MarketIntelligenceService:
                 break
         return items
 
-    def fetch_xueqiu_hot(self, limit: int = 12) -> list[dict[str, Any]]:
-        """雪球关注热度榜（akshare stock_hot_follow_xq，仅展示用）。
+    def fetch_futu_news(self, limit: int = 15) -> list[dict[str, Any]]:
+        """富途 7×24 全球财经快讯（akshare stock_info_global_futu），首页「富途资讯」面板。
 
-        akshare 内部已处理雪球 cookie/反爬；失败/被限时由 load() 捕获并降级为空面板。
+        与东财资讯并列的第二条宏观资讯流（雪球无资讯接口，akshare 的雪球接口全是
+        股票榜，故改用富途）。返回字段与 fetch_eastmoney_news 一致（title/summary/
+        time/url/source），前端复用同一资讯渲染。akshare 内部处理富途接口/系统代理；
+        失败/被限时由 load() 捕获并降级为空面板。
         """
         import akshare as ak  # 延迟导入，避免拖慢模块加载
-        df = ak.stock_hot_follow_xq(symbol="最热门")
+        df = ak.stock_info_global_futu()
         if df is None or getattr(df, 'empty', True):
             return []
         items: list[dict[str, Any]] = []
-        for _, row in df.head(limit).iterrows():
-            raw_code = str(row.get('股票代码') or '').strip()
-            code = re.sub(r'\D', '', raw_code)  # 去掉 SH/SZ 前缀，留 6 位数字
-            name = str(row.get('股票简称') or '').strip()
-            if not code or not name:
+        for _, row in df.iterrows():
+            # 富途快讯常见「标题为空、正文承载标题」的情况，缺标题时用正文兜底，
+            # 否则会把大量有效快讯（earlier 实测 50 行里多数无标题）整条丢掉。
+            content = _strip_markup(row.get('内容'))
+            title = _strip_markup(row.get('标题')) or content
+            if not title:
                 continue
-            follow = _safe_float(row.get('关注'), 0.0) or 0.0
             items.append({
-                'code': code,
-                'name': name,
-                'follow': int(follow),
-                'follow_text': _money_text(follow),
-                'price': _safe_float(row.get('最新价'), None),
-                'source': 'xueqiu',
+                'title': _truncate_text(title, 80),
+                'summary': _truncate_text(content, 160),
+                'time': _format_news_time(row.get('发布时间')),
+                'url': str(row.get('链接') or '').strip(),
+                'source': '富途',
             })
+            if len(items) >= limit:
+                break
         return items
 
     def fetch_eastmoney_news(self, limit: int = 15) -> list[dict[str, Any]]:
@@ -228,7 +242,7 @@ class MarketIntelligenceService:
             'invt': '2',
             'fid': fid,
             'fs': fs,
-            'fields': 'f12,f14,f2,f3,f62',
+            'fields': 'f12,f14,f2,f3,f62,f100',
         }
         url = 'https://push2.eastmoney.com/api/qt/clist/get?' + urllib.parse.urlencode(params)
         payload = self._request_json(
@@ -258,6 +272,7 @@ class MarketIntelligenceService:
                 'change_pct': round(_safe_float(row.get('f3'), 0.0) or 0.0, 2),
                 'main_net_inflow': money_flow,
                 'main_net_inflow_text': _money_text(money_flow),
+                'industry': str(row.get('f100') or '').strip(),  # 所属行业（push2 可达时直接带回）
                 'source': 'eastmoney',
             })
         return items
@@ -395,16 +410,128 @@ class MarketIntelligenceService:
             })
         return items
 
+    def fetch_tencent_boards(self, board_type: str, limit: int = 8) -> list[dict[str, Any]]:
+        """腾讯行业/概念板块排行（proxy.finance.qq.com，本机可达）。
+
+        push2.eastmoney 的 clist 板块榜在本机/部分网络被掐时的回退源。
+        board_type：'hy'=行业板块，'gn'=概念板块。返回 name｜涨跌幅｜主力净流入｜领涨股。
+        """
+        url = (
+            'https://proxy.finance.qq.com/cgi/cgi-bin/rank/pt/getRank'
+            f'?board_type={board_type}&sort_type=price&direct=down&offset=0&count={max(limit, 1)}'
+        )
+        payload = self._request_json(
+            url,
+            headers={'User-Agent': _UA, 'Accept': 'application/json,text/plain,*/*',
+                     'Referer': 'https://gu.qq.com/'},
+            timeout=5,
+        )
+        rows = ((payload or {}).get('data') or {}).get('rank_list') or []
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get('name') or '').strip()
+            if not name:
+                continue
+            inflow_yuan = (_safe_float(row.get('zljlr'), 0.0) or 0.0) * 10000  # zljlr 单位为万元
+            leader = row.get('lzg') if isinstance(row.get('lzg'), dict) else {}
+            items.append({
+                'code': str(row.get('code') or '').strip(),
+                'name': name,
+                'change_pct': round(_safe_float(row.get('zdf'), 0.0) or 0.0, 2),
+                'main_net_inflow': inflow_yuan,
+                'main_net_inflow_text': _money_text(inflow_yuan),
+                'leader_name': str((leader or {}).get('name') or '').strip(),
+                'leader_change_pct': round(_safe_float((leader or {}).get('zdf'), 0.0) or 0.0, 2),
+                'source': 'tencent',
+            })
+            if len(items) >= limit:
+                break
+        return items
+
+    @staticmethod
+    def _today() -> str:
+        return datetime.datetime.now().strftime('%Y-%m-%d')
+
+    def _maybe_refresh_industry_map(self) -> None:
+        """行业映射按天构建：首次/隔日在后台守护线程重建，绝不阻塞 load()。"""
+        today = self._today()
+        with self._industry_lock:
+            if self._industry_map_date == today or self._industry_building:
+                return
+            self._industry_building = True
+        threading.Thread(
+            target=self._build_industry_map_worker, args=(today,), daemon=True
+        ).start()
+
+    def _build_industry_map_worker(self, today: str) -> None:
+        try:
+            new_map = self._build_industry_map()
+            if new_map:
+                with self._industry_lock:
+                    self._industry_map = new_map
+                    self._industry_map_date = today
+        except Exception:
+            pass  # 构建失败保留旧映射，下次 load 再触发重试
+        finally:
+            with self._industry_lock:
+                self._industry_building = False
+
+    def _build_industry_map(self) -> dict[str, str]:
+        """从新浪行业分类构建 {6位代码: 行业名}，并行抓取约 49 个行业节点（~2s）。"""
+        headers = {'User-Agent': _UA, 'Referer': 'https://finance.sina.com.cn/'}
+        index = request_text(
+            'https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php',
+            headers=headers, timeout=5, encoding='gbk', errors='ignore', retries=2,
+        )
+        nodes = re.findall(r'"(new_\w+)"\s*:\s*"new_\w+,([^,]+),', index)
+        if not nodes:
+            return {}
+
+        def fetch_node(item: tuple[str, str]) -> list[tuple[str, str]]:
+            node_id, name = item
+            url = (
+                'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+                f'Market_Center.getHQNodeData?page=1&num=1000&sort=changepercent&asc=0'
+                f'&node={node_id}&_s_r_a=page'
+            )
+            try:
+                raw = request_text(url, headers=headers, timeout=5,
+                                   encoding='gbk', errors='ignore', retries=1)
+                arr = json.loads(raw) if raw.strip().startswith('[') else []
+                return [(str(r.get('code') or '').strip(), name) for r in arr if r.get('code')]
+            except Exception:
+                return []
+
+        industry_map: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            for pairs in executor.map(fetch_node, nodes):
+                for code, name in pairs:
+                    if code:
+                        industry_map.setdefault(code, name)
+        return industry_map
+
+    def _attach_industry(self, rows: list[dict[str, Any]] | None) -> None:
+        """就地给个股行补 industry：优先行业映射（标签统一），回退已带回的 f100。"""
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            code = str(row.get('code') or '').strip()
+            row['industry'] = self._industry_map.get(code) or str(row.get('industry') or '').strip()
+
     def load(self) -> dict[str, Any]:
         now = time.time()
         cached = self._cache.get('payload')
         if cached and now - self._cache.get('ts', 0) < self.ttl_seconds:
             return cached
 
+        self._maybe_refresh_industry_map()  # 隔日则后台重建行业映射（非阻塞）
+
         payload = {
             'updated_at': _format_datetime(now),
             'jinshi': [],
-            'xueqiu_hot': [],
+            'futu_news': [],
             'eastmoney_news': [],
             'eastmoney': {
                 'industry_boards': [],
@@ -424,28 +551,38 @@ class MarketIntelligenceService:
             payload['errors']['jinshi'] = str(exc)
 
         try:
-            payload['xueqiu_hot'] = self.fetch_xueqiu_hot(limit=12)
+            payload['futu_news'] = self.fetch_futu_news(limit=15)
         except Exception as exc:
-            payload['errors']['xueqiu_hot'] = str(exc)
+            payload['errors']['futu_news'] = str(exc)
 
         try:
             payload['eastmoney_news'] = self.fetch_eastmoney_news(limit=15)
         except Exception as exc:
             payload['errors']['eastmoney_news'] = str(exc)
 
+        # 行业板块：clist 优先（含主力净流入），本机/被掐时回退腾讯板块榜，保证「热点板块」不空。
         try:
-            payload['eastmoney']['industry_boards'] = self.fetch_eastmoney_clist(
-                'm:90+t:2', fid='f3', limit=8
-            )
-        except Exception as exc:
-            payload['errors']['eastmoney_industry'] = str(exc)
+            industry_boards = self.fetch_eastmoney_clist('m:90+t:2', fid='f3', limit=8)
+        except Exception:
+            industry_boards = []
+        if not industry_boards:
+            try:
+                industry_boards = self.fetch_tencent_boards('hy', limit=8)
+            except Exception as exc:
+                payload['errors']['eastmoney_industry'] = str(exc)
+        payload['eastmoney']['industry_boards'] = industry_boards
 
+        # 概念板块：同上，clist → 腾讯回退。
         try:
-            payload['eastmoney']['concept_boards'] = self.fetch_eastmoney_clist(
-                'm:90+t:3', fid='f3', limit=8
-            )
-        except Exception as exc:
-            payload['errors']['eastmoney_concept'] = str(exc)
+            concept_boards = self.fetch_eastmoney_clist('m:90+t:3', fid='f3', limit=8)
+        except Exception:
+            concept_boards = []
+        if not concept_boards:
+            try:
+                concept_boards = self.fetch_tencent_boards('gn', limit=8)
+            except Exception as exc:
+                payload['errors']['eastmoney_concept'] = str(exc)
+        payload['eastmoney']['concept_boards'] = concept_boards
 
         try:
             payload['eastmoney']['money_boards'] = self.fetch_eastmoney_clist(
@@ -482,6 +619,11 @@ class MarketIntelligenceService:
             payload['eastmoney']['changes'] = self.fetch_eastmoney_changes(limit=15)
         except Exception as exc:
             payload['errors']['eastmoney_changes'] = str(exc)
+
+        # 给热点/异动/涨幅个股就地补「板块信息」（行业映射就绪后生效，未就绪则留空）。
+        self._attach_industry(payload['eastmoney']['hot_stocks'])
+        self._attach_industry(payload['eastmoney']['changes'])
+        self._attach_industry(payload['eastmoney']['top_gainers'])
 
         self._cache['payload'] = payload
         self._cache['ts'] = now
