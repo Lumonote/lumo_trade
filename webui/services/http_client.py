@@ -71,6 +71,33 @@ def request_json(
     )
 
 
+def request_json_post(
+    url: str,
+    json_body: Any,
+    headers: dict[str, str] | None = None,
+    timeout: int | float = 5,
+    retries: int = 2,
+) -> Any:
+    """POST a JSON body and parse the JSON response (small retry support)."""
+    last_exc: Exception | None = None
+    request_headers = _request_headers(headers)
+
+    for attempt in range(max(1, retries)):
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                response = client.post(url, headers=request_headers, json=json_body)
+                response.raise_for_status()
+                return response.json()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                time.sleep(0.2 * (attempt + 1))
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("HTTP request failed without an exception")
+
+
 async def async_request_text(
     url: str,
     headers: dict[str, str] | None = None,

@@ -14,7 +14,7 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def user_root(app_name: str = "Kronos") -> Path:
+def user_root(app_name: str = "com.kronos.app") -> Path:
     configured = os.environ.get("KRONOS_USER_DIR")
     if configured:
         root = Path(configured).expanduser()
@@ -26,6 +26,20 @@ def user_root(app_name: str = "Kronos") -> Path:
         root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / app_name
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def results_dir() -> Path:
+    """Single source of truth for the opportunity/report output directory.
+
+    Honors KRONOS_RESULTS_DIR when set (packaging / power users), otherwise
+    falls back to ``user_root()/results``. Both the WebUI reader
+    (``webui/core.py``) and the CLI writer (``scripts/run_opportunity_discovery.py``)
+    resolve through here so desktop / dev / command-line read & write the same place.
+    """
+    configured = os.environ.get("KRONOS_RESULTS_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return user_root() / "results"
 
 
 def ensure_user_subdirs(root: Path) -> None:

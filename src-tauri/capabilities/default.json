@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the Kronos desktop window.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "Default capability for the Kronos desktop windows (main + tray popup).",
+  "windows": ["main", "tray-popup"],
+  "permissions": ["core:default", "core:event:default"]
 }

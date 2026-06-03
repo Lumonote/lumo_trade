@@ -20,6 +20,15 @@ _FIELDS = (
 _PK = ("ts_code", "trade_date", "inst_name", "side")
 
 
+def _code_match(ts_code: str) -> tuple[str, tuple[str, str]]:
+    """同一只股票可能以 6 位裸码('000007')或带交易所后缀('000007.SZ')入库：
+    akshare 路径(_fetch_and_save)存裸码，Tushare top_inst 回填存带后缀。二者指向同一股票。
+    用「裸码精确 OR 后缀 LIKE」同时命中两种格式，修复 6 位查询(suite 统一传 6 位)
+    查不到后缀数据导致龙虎榜席位恒「数据不足」的 bug。返回 (where 子句, 参数元组)。"""
+    core = (ts_code or "").split(".")[0]
+    return "(ts_code=? OR ts_code LIKE ?)", (core, f"{core}.%")
+
+
 def upsert_rows(rows: List[Dict]) -> int:
     """Insert or update rows. Returns number of rows affected."""
     if not rows:
@@ -42,25 +51,30 @@ def upsert_rows(rows: List[Dict]) -> int:
 
 
 def get_by_code(ts_code: str, trade_date: Optional[str] = None) -> pd.DataFrame:
-    """Get all dragon-tiger rows for a stock, optionally filtered by date."""
+    """Get all dragon-tiger rows for a stock, optionally filtered by date.
+
+    Matches both 6-digit ('000007') and suffixed ('000007.SZ') storage formats.
+    """
+    clause, code_params = _code_match(ts_code)
     if trade_date:
         return pd.read_sql_query(
             f"SELECT {','.join(_FIELDS)} FROM dragon_tiger_inst "
-            "WHERE ts_code=? AND trade_date=? ORDER BY trade_date DESC",
-            get_conn(), params=(ts_code, trade_date),
+            f"WHERE {clause} AND trade_date=? ORDER BY trade_date DESC",
+            get_conn(), params=(*code_params, trade_date),
         )
     return pd.read_sql_query(
         f"SELECT {','.join(_FIELDS)} FROM dragon_tiger_inst "
-        "WHERE ts_code=? ORDER BY trade_date DESC",
-        get_conn(), params=(ts_code,),
+        f"WHERE {clause} ORDER BY trade_date DESC",
+        get_conn(), params=code_params,
     )
 
 
 def latest(ts_code: str) -> Optional[Dict]:
     """Return the most recent trade_date row(s) as a dict, or None."""
+    clause, code_params = _code_match(ts_code)
     row = get_conn().execute(
-        "SELECT MAX(trade_date) FROM dragon_tiger_inst WHERE ts_code=?",
-        (ts_code,),
+        f"SELECT MAX(trade_date) FROM dragon_tiger_inst WHERE {clause}",
+        code_params,
     ).fetchone()
     if not row or not row[0]:
         return None

@@ -132,14 +132,26 @@ def build_indicators(f: Dict[str, Any]) -> List[Dict[str, Any]]:
         text = {"down": "户数减少（筹码集中）", "up": "户数增加（筹码分散）", "flat": "持平"}[hn]
         inds.append(_ind("chip", "holder_number", "股东户数", value_text=text,
                          signal=sig, strength=0.6 if hn != "flat" else 0.1))
-    fh = f.get("fund_hold_trend")
-    if fh is None:
-        inds.append(_unavailable("chip", "fund_hold", "重仓基金"))
-    else:
-        sig = {"up": "up", "down": "down", "flat": "neutral"}[fh]
-        text = {"up": "基金增持", "down": "基金减持", "flat": "持平"}[fh]
+    # 重仓基金：单期数据无增减持趋势 → 改用「重仓家数 + 持仓市值」反映机构关注度。
+    # 趋势(fund_hold_trend)派生待后续补上一期，命中则优先展示增减持。
+    fh_trend = f.get("fund_hold_trend")
+    fh_count = f.get("fund_hold_count")
+    if fh_trend in ("up", "down", "flat"):
+        sig = {"up": "up", "down": "down", "flat": "neutral"}[fh_trend]
+        text = {"up": "基金增持", "down": "基金减持", "flat": "持平"}[fh_trend]
         inds.append(_ind("chip", "fund_hold", "重仓基金", value_text=text,
-                         signal=sig, strength=0.6 if fh != "flat" else 0.1))
+                         signal=sig, strength=0.6 if fh_trend != "flat" else 0.1))
+    elif fh_count:
+        n = int(fh_count)
+        mv = f.get("fund_hold_mv")
+        mv_txt = f" · 持仓 {mv / 1e8:.1f} 亿" if mv else ""
+        # 重仓家数越多=机构认可度越高(偏多)；零星持有=信息中性。
+        sig = "up" if n >= 10 else "neutral"
+        inds.append(_ind("chip", "fund_hold", "重仓基金",
+                         value_text=f"{n} 只基金重仓{mv_txt}",
+                         signal=sig, strength=min(1.0, n / 20)))
+    else:
+        inds.append(_unavailable("chip", "fund_hold", "重仓基金"))
 
     # ---- 模型·预测 (3) ----
     ratio = f.get("model_bull_ratio")

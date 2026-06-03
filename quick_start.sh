@@ -224,7 +224,7 @@ if [[ "$BATCH_MODE" == "true" && -n "$MENU_CHOICE" ]]; then
             ;;
         7)
             limit="${KRONOS_OPPORTUNITY_LIMIT:-100}"
-            source="${KRONOS_OPPORTUNITY_SOURCE:-heat}"
+            source="${KRONOS_OPPORTUNITY_SOURCE:-multi}"
             echo "🔥 投资机会挖掘 - 分析TOP${limit}候选股票 (source=${source})"
             echo "正在启动投资机会挖掘系统..."
             $PYTHON_CMD scripts/run_opportunity_discovery.py --limit "$limit" --source "$source" --workers 10
@@ -237,7 +237,7 @@ if [[ "$BATCH_MODE" == "true" && -n "$MENU_CHOICE" ]]; then
             ;;
         9)
             limit="${KRONOS_OPPORTUNITY_LIMIT:-100}"
-            source="${KRONOS_OPPORTUNITY_SOURCE:-heat}"
+            source="${KRONOS_OPPORTUNITY_SOURCE:-multi}"
             echo "🔥 投资机会挖掘 - 分析TOP${limit}候选股票 (source=${source})"
             echo "正在启动投资机会挖掘系统..."
             $PYTHON_CMD scripts/run_opportunity_discovery.py --limit "$limit" --source "$source" --workers 10

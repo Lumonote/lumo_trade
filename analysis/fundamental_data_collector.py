@@ -766,6 +766,94 @@ class FundamentalDataCollector:
 
         return self._get_default_industry_comparison()
 
+    def _augment_with_tushare(self, data: dict) -> dict:
+        """本机 eastmoney/腾讯 取数失败时，用 Tushare 填补缺失的 PE/PB/市值/ROE/净利同比。
+
+        只填补缺失项：不覆盖已取到的真值，也不动「亏损(x)」这类有效非数值。目的是让
+        多空评审团·价值派 能在 ROE / 净利润同比上正常裁决（这两项原本仅来自被本机屏蔽的
+        eastmoney datacenter）。Tushare 不可用时原样返回，绝不抛错。
+        """
+        try:
+            from data_store import tushare_client
+        except Exception:  # noqa: BLE001
+            return data
+        pro = tushare_client.get_pro()
+        if pro is None:
+            return data
+
+        def _f(v):
+            try:
+                if v is None:
+                    return None
+                f = float(v)
+                return f if f == f else None  # NaN → None
+            except (TypeError, ValueError):
+                return None
+
+        def _missing(v):
+            return v in (None, 'N/A', '-', '', 'nan', 'None')
+
+        fi = data.setdefault('financial_indicators', {})
+        fr = data.setdefault('financial_reports', {})
+        code = tushare_client.to_ts_code(self.stock_code)
+
+        # PE/PB/PS/市值 ← daily_basic（市值万元→元，与 _get_indicators_from_daily_basic 同口径）
+        if _missing(fi.get('pe')) or _missing(fi.get('pb')) or _missing(fi.get('total_market_cap')):
+            try:
+                db = pro.daily_basic(ts_code=code, limit=1,
+                                     fields="pe,pe_ttm,pb,ps_ttm,total_mv,circ_mv")
+            except Exception as exc:  # noqa: BLE001
+                db = None
+                logger.info("tushare daily_basic augment failed %s: %s", code, exc)
+            if db is not None and not db.empty:
+                r = db.iloc[0]
+                pe = _f(r.get('pe_ttm')) or _f(r.get('pe'))
+                pb = _f(r.get('pb'))
+                ps = _f(r.get('ps_ttm'))
+                if pe is not None and _missing(fi.get('pe')):
+                    fi['pe'] = fi['pe_ratio'] = round(pe, 2)
+                if pb is not None and _missing(fi.get('pb')):
+                    fi['pb'] = fi['pb_ratio'] = round(pb, 2)
+                if ps is not None and _missing(fi.get('ps_ratio')):
+                    fi['ps_ratio'] = round(ps, 2)
+                tmv = _f(r.get('total_mv'))
+                cmv = _f(r.get('circ_mv'))
+                if tmv is not None and _missing(fi.get('total_market_cap')):
+                    fi['total_market_cap'] = round(tmv * 1e4, 2)
+                if cmv is not None and _missing(fi.get('circulation_market_cap')):
+                    fi['circulation_market_cap'] = round(cmv * 1e4, 2)
+                fi.setdefault('data_source', 'tushare')
+
+        # ROE / 净利同比 / 毛利率 / 负债率 ← fina_indicator（roe、各 margin、yoy 均为百分数）
+        if _missing(fi.get('roe')) or _missing(fr.get('roe')) or _missing(fr.get('net_profit_yoy')):
+            try:
+                fin = pro.fina_indicator(ts_code=code, limit=1,
+                                         fields="roe,netprofit_yoy,grossprofit_margin,netprofit_margin,debt_to_assets")
+            except Exception as exc:  # noqa: BLE001
+                fin = None
+                logger.info("tushare fina_indicator augment failed %s: %s", code, exc)
+            if fin is not None and not fin.empty:
+                r = fin.iloc[0]
+                roe = _f(r.get('roe'))
+                if roe is not None:
+                    if _missing(fi.get('roe')):
+                        fi['roe'] = round(roe, 2)
+                    if _missing(fr.get('roe')):
+                        fr['roe'] = round(roe, 2)
+                ny = _f(r.get('netprofit_yoy'))
+                if ny is not None and _missing(fr.get('net_profit_yoy')):
+                    fr['net_profit_yoy'] = round(ny, 2)
+                gm = _f(r.get('grossprofit_margin'))
+                if gm is not None:
+                    if _missing(fi.get('gross_margin')):
+                        fi['gross_margin'] = round(gm, 2)
+                    if _missing(fr.get('gross_margin')):
+                        fr['gross_margin'] = round(gm, 2)
+                da = _f(r.get('debt_to_assets'))
+                if da is not None and _missing(fr.get('debt_ratio')):
+                    fr['debt_ratio'] = round(da, 2)
+        return data
+
     def get_comprehensive_data(self):
         """
         获取综合基本面数据 - 新增重试机制和数据验证
@@ -830,6 +918,12 @@ class FundamentalDataCollector:
                 except Exception as e:
                     logger.warning(f"行业对比采集失败: {e}")
                     data['industry_comparison'] = {}
+
+            # Tushare 兜底填补：本机 eastmoney/腾讯 常失败，确保 价值派 拿到 ROE/净利同比。
+            try:
+                data = self._augment_with_tushare(data)
+            except Exception as e:  # noqa: BLE001
+                logger.info(f"Tushare 基本面兜底跳过: {e}")
 
             logger.info(f"✅ 基本面数据采集完成")
             _COMPREHENSIVE_DATA_CACHE[cache_key] = {

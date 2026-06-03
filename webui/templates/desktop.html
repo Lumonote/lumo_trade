@@ -59,10 +59,10 @@
                 <form id="opportunityForm" class="panel-body">
                   <div class="form-grid">
                     <label>候选数量
-                      <input name="limit" type="number" value="80" min="5" max="500" />
+                      <input name="limit" type="number" value="100" min="5" max="500" />
                     </label>
                     <label>并发数
-                      <input name="workers" type="number" value="8" min="1" max="32" />
+                      <input name="workers" type="number" value="10" min="1" max="32" />
                     </label>
                     <label>来源
                       <select name="source">
@@ -184,6 +184,29 @@
         </section>
         {% endif %}
 
+        {% if active_page == 'watchlist' %}
+        <section class="grid">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">我的自选</h2>
+              <div class="panel-header-actions">
+                <span id="watchlistMeta" class="panel-meta">--</span>
+                <button id="watchlistRefreshBtn" class="button secondary" type="button">刷新行情</button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="actions watchlist-add-row">
+                <input id="watchlistAddInput" placeholder="输入代码 / 名称 / 行业，回车添加（如 600519 或 贵州茅台）" autocomplete="off" />
+                <button id="watchlistAddBtn" class="button" type="button">添加自选</button>
+              </div>
+              <div id="watchlistAddSuggest" class="list watchlist-suggest"></div>
+              <div id="watchlistTable" class="list"></div>
+              <p class="watchlist-tip muted">提示：底部「实时热点条」与个股分析弹窗中的 ★ 也可一键加自选；行情每 60 秒自动刷新。</p>
+            </div>
+          </div>
+        </section>
+        {% endif %}
+
         {% if active_page == 'patterns' %}
         <section class="pattern-layout">
           <div class="grid">
@@ -202,11 +225,21 @@
                   <div class="canvas-wrap">
                     <canvas id="patternCanvas" width="900" height="300"></canvas>
                   </div>
+                  <div class="form-grid pattern-save-grid">
+                    <label>形态名称
+                      <input id="patternSaveName" placeholder="如 圆弧底突破（留空自动按时间命名）" autocomplete="off" />
+                    </label>
+                    <label>标签（逗号分隔，可选）
+                      <input id="patternSaveTags" placeholder="如 反转,放量,低位启动" autocomplete="off" />
+                    </label>
+                  </div>
                   <div class="actions">
                     <button id="clearPatternBtn" class="button secondary" type="button">清空</button>
                     <button id="savePatternBtn" class="button secondary" type="button" disabled>保存图形</button>
+                    <button id="exportPatternBtn" class="button secondary" type="button" disabled title="导出本地 PNG / JSON 文件（按需，不再每次自动下载）">导出 PNG/JSON</button>
                     <button id="matchDrawBtn" class="button" type="button" disabled>检索相似股票</button>
                   </div>
+                  <p class="pattern-save-hint muted">先「检索相似股票」再保存，可一并存下查询条件与命中快照，之后在「历史图形」里一键重跑。</p>
                 </div>
                 <div id="stockPane" class="hidden">
                   <div class="form-grid">
@@ -384,10 +417,10 @@
               </div>
               <div class="panel">
                 <div class="panel-header">
-                  <h2 class="panel-title">板块动量</h2>
-                  <span class="panel-meta">东财行业·按热度</span>
+                  <h2 class="panel-title">📰 东财资讯</h2>
+                  <span class="panel-meta">东方财富 7×24</span>
                 </div>
-                <div id="sectorList" class="panel-body list"></div>
+                <div id="ovEastmoneyNews" class="panel-body list"></div>
               </div>
             </section>
 
@@ -423,27 +456,6 @@
             <section class="grid two">
               <div class="panel">
                 <div class="panel-header">
-                  <h2 class="panel-title">任务队列</h2>
-                  <span class="panel-meta">最近20条</span>
-                </div>
-                <div id="jobList" class="panel-body list"></div>
-              </div>
-              <div class="panel" id="jobDetailPanel">
-                <div class="panel-header">
-                  <h2 id="jobDetailTitle" class="panel-title">任务日志</h2>
-                  <span id="jobDetailMeta" class="panel-meta">选择或启动任务</span>
-                </div>
-                <div class="panel-body">
-                  <div id="jobDetailSummary" class="notice">启动任务后这里会实时展示进度、日志和结果。</div>
-                  <div id="jobDetailActions" class="actions"></div>
-                  <div id="jobLogStream" class="job-log-stream" style="margin-top: 12px;"></div>
-                </div>
-              </div>
-            </section>
-
-            <section class="grid two">
-              <div class="panel">
-                <div class="panel-header">
                   <h2 class="panel-title">🔥 东方财富热榜</h2>
                   <span id="ovHotEastmoneyMeta" class="panel-meta">主力净流入</span>
                 </div>
@@ -466,6 +478,13 @@
                 </div>
                 <div id="moduleList" class="panel-body list"></div>
               </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">板块动量</h2>
+                  <span class="panel-meta">东财行业·按热度</span>
+                </div>
+                <div id="sectorList" class="panel-body list"></div>
+              </div>
             </section>
           </div>
 
@@ -478,10 +497,10 @@
               <form id="opportunityForm" class="panel-body">
                 <div class="form-grid">
                   <label>候选数量
-                    <input name="limit" type="number" value="80" min="5" max="500" />
+                    <input name="limit" type="number" value="100" min="5" max="500" />
                   </label>
                   <label>并发数
-                    <input name="workers" type="number" value="8" min="1" max="32" />
+                    <input name="workers" type="number" value="10" min="1" max="32" />
                   </label>
                   <label>来源
                     <select name="source">
@@ -496,33 +515,6 @@
                 </div>
                 <div class="actions">
                   <button class="button" type="submit">启动机会挖掘</button>
-                </div>
-              </form>
-            </div>
-
-            <div class="panel">
-              <div class="panel-header">
-                <h2 class="panel-title">批量分析</h2>
-                <span class="panel-meta">股票池评分</span>
-              </div>
-              <form id="batchForm" class="panel-body">
-                <label>股票代码
-                  <textarea name="stock_codes">600519, 300750, 000001, 002230, 601138</textarea>
-                </label>
-                <div class="form-grid" style="margin-top: 12px;">
-                  <label>策略
-                    <select name="filter_strategy">
-                      <option value="balanced">balanced</option>
-                      <option value="strict">strict</option>
-                      <option value="loose">loose</option>
-                    </select>
-                  </label>
-                  <label>并发数
-                    <input name="max_concurrent" type="number" value="5" min="1" max="20" />
-                  </label>
-                </div>
-                <div class="actions">
-                  <button class="button" type="submit">启动批量分析</button>
                 </div>
               </form>
             </div>
@@ -713,6 +705,27 @@
       </main>
     </div>
 
+    <!-- 实时热点条：底部常驻滚动条。实时热点 / 实时异动 / 自选行情 / 热门板块 / 金十快讯，
+         悬停暂停并看详情、点击看个股、★一键自选。所有交互均在本条上完成。 -->
+    <div class="notify-bar" id="notifyBar" aria-label="实时热点条">
+      <div class="notify-bar-head">
+        <button class="notify-cat" data-notify-cat="hot" type="button" title="实时热点·人气热股">热点</button>
+        <button class="notify-cat" data-notify-cat="changes" type="button" title="实时异动·盘口异动">异动</button>
+        <button class="notify-cat" data-notify-cat="watchlist" type="button" title="自选股实时行情">自选</button>
+        <button class="notify-cat" data-notify-cat="boards" type="button" title="热门概念/板块">板块</button>
+        <button class="notify-cat" data-notify-cat="flash" type="button" title="金十快讯">快讯</button>
+      </div>
+      <div class="notify-bar-viewport" id="notifyViewport">
+        <div class="notify-track" id="notifyTrack"></div>
+      </div>
+      <div class="notify-bar-tools">
+        <span class="notify-updated" id="notifyUpdated"></span>
+        <button class="notify-tool" id="notifyPauseBtn" type="button" title="暂停/继续滚动">⏸</button>
+        <button class="notify-tool" id="notifyHideBtn" type="button" title="隐藏热点条">✕</button>
+      </div>
+    </div>
+    <button class="notify-reopen" id="notifyReopenBtn" type="button" title="显示实时热点条" hidden>📈 热点</button>
+
     <!-- 合规：首次启动风险提示与免责声明（须点击「我已知晓风险」，localStorage 记住） -->
     <div id="riskDisclaimerModal" class="modal-backdrop" aria-hidden="true" hidden>
       <div class="modal-shell risk-disclaimer-shell" role="dialog" aria-modal="true" aria-labelledby="riskDisclaimerTitle">
@@ -778,7 +791,9 @@
       <div class="modal-shell stock-context-shell" role="dialog" aria-modal="true" aria-labelledby="stockContextTitle">
         <div class="modal-header">
           <div>
-            <h2 id="stockContextTitle">股票工作台</h2>
+            <div class="stock-context-title-row">
+              <h2 id="stockContextTitle">股票工作台</h2>
+            </div>
             <p id="stockContextMeta">--</p>
           </div>
           <button id="closeStockContextBtn" class="button secondary compact" type="button">关闭</button>
@@ -886,8 +901,18 @@
         currentSuitePayload: null,
         suiteFetching: false,
         klineModalContext: null,
+        klineModalLimit: 240,
+        klineLiveTimer: null,
         patternClickTimer: null,
         savedPatterns: [],
+        watchlist: [],
+        watchlistSet: null,
+        notifyData: null,
+        notifyCats: null,
+        notifyTimer: null,
+        _notifyItems: [],
+        lastQueryParams: null,
+        lastMatchSnapshot: null,
       };
 
       function html(value) {
@@ -1163,6 +1188,22 @@
         }
       }
 
+      function renderOverviewEastmoneyNews(data) {
+        const el = $("#ovEastmoneyNews");
+        if (!el) return;
+        const intel = (data && data.market && data.market.intelligence) || {};
+        const items = intel.eastmoney_news || [];
+        el.innerHTML = items.map((n) => `
+          <div class="item" title="${html(n.summary || n.title || "")}">
+            <div class="item-top">
+              <p class="item-title">${html(n.title)}</p>
+            </div>
+            <p class="item-meta">${html(n.source || "东方财富")} · ${html(n.time || "")}</p>
+          </div>
+        `).join("");
+        if (!items.length) empty(el, "东财资讯暂不可用（检查网络 / 稍后刷新）。");
+      }
+
       function setupOverviewSearch() {
         const input = $("#overviewStockInput");
         const btn = $("#overviewStockSearchBtn");
@@ -1273,6 +1314,11 @@
           }
           if (page === "settings") {
             await Promise.all([loadSettings(), loadKronosStatus()]);
+            $("#refreshMeta").textContent = `更新 ${new Date().toLocaleTimeString()}`;
+            return;
+          }
+          if (page === "watchlist") {
+            await Promise.all([refreshWatchlist(), refreshNotifyData()]);
             $("#refreshMeta").textContent = `更新 ${new Date().toLocaleTimeString()}`;
             return;
           }
@@ -1505,6 +1551,52 @@
         }
       }
 
+      function klineQuoteText(data) {
+        const q = data?.quote;
+        if (!q || !(Number(q.price) > 0)) return "";
+        const pct = Number(q.change_pct || 0);
+        const sign = pct > 0 ? "+" : "";
+        return ` · 实时 ¥${num(q.price)} (${sign}${num(pct)}%)`;
+      }
+
+      function klineMetaText(data) {
+        const records = data?.records || [];
+        return `${data?.source || "--"} · ${records.length} 条 · MA/成交量${klineQuoteText(data)}`;
+      }
+
+      // A股交易时段（粗判，含集合竞价缓冲；忽略法定节假日）：用于盘中自动刷新K线。
+      function isAStockTradingHours() {
+        const now = new Date();
+        const day = now.getDay();
+        if (day === 0 || day === 6) return false;
+        const mins = now.getHours() * 60 + now.getMinutes();
+        return (mins >= 565 && mins <= 690) || (mins >= 775 && mins <= 905); // 09:25–11:30 / 12:55–15:05
+      }
+
+      // 盘中每隔 KLINE_LIVE_REFRESH_MS 重拉当前股票K线（叠加后端实时价），让当日bar跟随最新成交。
+      async function refreshKlineLive() {
+        const code = state.currentKline?.code;
+        if (!code || !isAStockTradingHours()) return;
+        let data;
+        try {
+          data = await fetchKlineData(code, 500);
+        } catch (_e) {
+          return; // 盘中拉取失败静默跳过，下个周期再试
+        }
+        if (!data.records?.length) return;
+        state.currentKline = data;
+        const meta = $("#klineMeta");
+        if (meta) meta.textContent = klineMetaText(data);
+        renderKlineChart("klineChart", data, { mode: "preview", limit: 160 });
+        const modal = $("#klineModal");
+        if (modal && !modal.hidden) {
+          const limit = state.klineModalLimit || 240;
+          renderKlineChart("klineModalChart", data, { mode: "modal", limit });
+          const mMeta = $("#klineModalMeta");
+          if (mMeta) mMeta.textContent = `${data.source || "--"} · ${data.records.length} 条 · ${klineAxisTitle(limit)}${klineQuoteText(data)}`;
+        }
+      }
+
       async function fetchKlineData(code, limit = 500) {
         const payload = await fetchJson(`/api/stock-kline/${encodeURIComponent(code)}?limit=${limit}`);
         return payload.data || {};
@@ -1522,7 +1614,7 @@
         try {
           const data = await fetchKlineData(code, 500);
           const records = data.records || [];
-          if (meta) meta.textContent = `${data.source || "--"} · ${records.length} 条 · MA/成交量`;
+          if (meta) meta.textContent = klineMetaText(data);
           state.currentKline = data;
           if (!records.length || !window.Plotly || !chart) {
             if (chart) {
@@ -1927,13 +2019,14 @@
 
       function openKlineModal(limit = 240) {
         if (!state.currentKline) return;
+        state.klineModalLimit = limit;
         closeOtherStockModals("#klineModal");
         const modal = $("#klineModal");
         modal.hidden = false;
         modal.setAttribute("aria-hidden", "false");
         syncModalOpenState();
         $("#klineModalTitle").textContent = `${state.currentKline.name || ""} ${state.currentKline.code || ""} 股票K线与分析`;
-        $("#klineModalMeta").textContent = `${state.currentKline.source || "--"} · ${state.currentKline.records?.length || 0} 条 · ${klineAxisTitle(limit)}`;
+        $("#klineModalMeta").textContent = `${state.currentKline.source || "--"} · ${state.currentKline.records?.length || 0} 条 · ${klineAxisTitle(limit)}${klineQuoteText(state.currentKline)}`;
         $("#klineModalSource").textContent = state.currentKline.source || "--";
         const records = limit >= 500 ? (state.currentKline.records || []) : (state.currentKline.records || []).slice(-limit);
         const stats = klineStats(records);
@@ -2076,6 +2169,40 @@
         target.className = `pill ${jobPillClass(latest.status)}`;
       }
 
+      // 是否有后台任务进行中（排队/运行）。用于在任务期间锁定所有"会启动任务"的按钮，避免重复提交导致任务叠加。
+      function jobLocked() {
+        return (state.jobs || []).some(isActiveJob);
+      }
+
+      // 单一真相源：每次任务状态变化都经 renderJobs 调用本函数重算所有启动按钮的禁用态。
+      // 公式统一为 disabled = 有任务进行中(locked) || 按钮自身前置条件未满足(own)，按钮各自的交互处理器也用同一公式，二者天然一致，无需保存/还原历史态。
+      function applyJobLockUI(jobs) {
+        const locked = (jobs || []).some(isActiveJob);
+        // 纯启动按钮：唯一禁用理由就是"有任务在跑"。锁定时置灰并改文案，解锁还原原文案。
+        document
+          .querySelectorAll('#opportunityForm button[type="submit"], #batchForm button[type="submit"], #refreshPatternDbBtn, #featureRefreshPatternDbBtn')
+          .forEach((btn) => {
+            btn.disabled = locked;
+            btn.classList.toggle("job-locked", locked);
+            if (locked) {
+              if (!("jobLockLabel" in btn.dataset)) {
+                btn.dataset.jobLockLabel = btn.textContent;
+                btn.textContent = "任务进行中…";
+              }
+            } else if ("jobLockLabel" in btn.dataset) {
+              btn.textContent = btn.dataset.jobLockLabel;
+              delete btn.dataset.jobLockLabel;
+            }
+          });
+        // 自带前置条件的按钮：禁用 = 有任务 || 自身条件未满足（文案不动，避免与"无曲线/未出匹配"等本身的禁用语义冲突）。
+        const matchDraw = $("#matchDrawBtn");
+        if (matchDraw) matchDraw.disabled = locked || (state.drawPoints?.length || 0) < 5;
+        const matchStock = $("#matchStockBtn");
+        if (matchStock) matchStock.disabled = locked || !state.selectedCurve;
+        const patternBacktest = $("#patternBacktestBtn");
+        if (patternBacktest) patternBacktest.disabled = locked || !(state.lastBacktest?.codes?.length);
+      }
+
       function renderJobDetail(job) {
         const summary = $("#jobDetailSummary");
         const logs = $("#jobLogStream");
@@ -2104,6 +2231,7 @@
 
       function renderJobs(jobs) {
         renderJobsDrawer(jobs);
+        applyJobLockUI(jobs);
         const target = $("#jobList");
         if (!target) return;
         target.innerHTML = (jobs || []).map((job) => {
@@ -2252,7 +2380,13 @@
           alert(error.message);
           return null;
         } finally {
+          // 先清掉对“触发按钮”的即时禁用：覆盖动态渲染的按钮（如个股操作区“机会挖掘”），它们不在统一锁定清单里，
+          // 否则会永久卡在禁用态。随后 applyJobLockUI 按真实任务状态对标准启动按钮做权威锁定：
+          // 任务在跑→重新禁用并显示“任务进行中…”，直到轮询结束(loadJobs→renderJobs)才解锁。
+          // 两步同步相邻执行、中间无渲染，不存在可点窗口。修复原 bug：pollJob 未 await，
+          // finally 在任务刚创建时即触发，导致任务进行中的标准启动按钮被错误恢复为可点。
           if (submitButton) submitButton.disabled = false;
+          applyJobLockUI(state.jobs);
         }
       }
 
@@ -2679,6 +2813,8 @@
         modal.setAttribute("aria-hidden", "false");
         syncModalOpenState();
         $("#stockContextTitle").textContent = stockDisplayName({ code, name: target.stock_name || target.stockName || "" });
+        ensureStockContextStar();
+        syncStockContextStar();
         $("#stockContextMeta").textContent = "读取中...";
         $("#stockContextBody").innerHTML = `<div class="stock-context-loading">正在读取股票上下文...</div>`;
         resetStockSuiteTabs();
@@ -3542,21 +3678,25 @@
           insight: a.insight || a.headline || "",
           reasons: (a.reasons || []).slice(0, 4),
           source: a.source,
+          insufficient: !!a.data_insufficient,
         };
       }
       function bbpStyleCardHtml(d) {
         const s = BBP_SCHOOL_STYLE[d.schoolKey] || {};
-        const col = bbpSignalColor(d.signal);
+        const col = d.insufficient ? "#9aa3b2" : bbpSignalColor(d.signal);
         const metrics = (d.metrics || [])
           .map((m) => `<span class="bsc-metric">${html(BBP_METRIC_LABEL[m] || m)}</span>`).join("");
         const reasons = (d.reasons || []).filter((r) => r && r !== d.insight)
           .map((r) => `<li>${html(r)}</li>`).join("");
+        const scoreHtml = d.insufficient
+          ? `<span class="bsc-score insuf">数据不足</span>`
+          : `<span class="bsc-score" style="color:${col}">${bbpSignalLabel(d.signal)} ${html(String(d.score))}</span>`;
         return `
           <div class="bsc-head">
             <span class="bsc-dot" style="background:${col}"></span>
             <span class="bsc-name">${html(d.name)}</span>
             <span class="bsc-school">${html(d.schoolName)}${s.tag ? " · " + html(s.tag) : ""}</span>
-            <span class="bsc-score" style="color:${col}">${bbpSignalLabel(d.signal)} ${html(String(d.score))}</span>
+            ${scoreHtml}
           </div>
           ${d.voice ? `<div class="bsc-voice">个人风格：${html(d.voice)}${d.source === "rule" ? '<em class="bsc-rule">规则推断</em>' : ""}</div>` : ""}
           ${s.philosophy ? `<h6>流派理念</h6><p>${html(s.philosophy)}</p>` : ""}
@@ -3697,26 +3837,34 @@
           (a, b) => BBP_SCHOOL_ORDER.indexOf(a.key) - BBP_SCHOOL_ORDER.indexOf(b.key));
         const memberRow = (a, i, schoolName) => {
           const detail = bbpStyleDetail(a, schoolName);
-          return `<div class="bbp-member" style="animation-delay:${i * 30}ms"
+          const insuf = !!a.data_insufficient;
+          // 数据不足时盖过“规则推断”标签：分数置灰为“—”，不伪装成自信中性
+          const tag = insuf ? '<em class="bbp-insuf-tag">数据不足</em>'
+            : (a.source === "rule" ? '<em class="bbp-rule-tag">规则推断</em>' : "");
+          return `<div class="bbp-member${insuf ? " bbp-insuf" : ""}" style="animation-delay:${i * 30}ms"
             tabindex="0" data-style-detail="${html(JSON.stringify(detail))}">
-            <span class="bbp-dot" style="background:${bbpSignalColor(a.signal)}"></span>
-            <span class="bbp-member-name">${html(a.name)}${a.source === "rule" ? '<em class="bbp-rule-tag">规则推断</em>' : ""}</span>
+            <span class="bbp-dot" style="background:${insuf ? "#c2c8d2" : bbpSignalColor(a.signal)}"></span>
+            <span class="bbp-member-name">${html(a.name)}${tag}</span>
             <span class="bbp-member-head">${html(a.insight || a.headline)}</span>
-            <span class="bbp-member-score" style="color:${bbpSignalColor(a.signal)}">${a.score}</span>
+            <span class="bbp-member-score"${insuf ? "" : ` style="color:${bbpSignalColor(a.signal)}"`}>${insuf ? "—" : a.score}</span>
           </div>`;
         };
         const schoolHtml = schools.map((s) => {
           const lean = s.lean_score >= 55 ? "bull" : s.lean_score <= 45 ? "bear" : "neutral";
           const members = analysts.filter((a) => a.school === s.key)
             .sort((a, b) => b.score - a.score);
+          const allInsuf = members.length > 0 && members.every((a) => a.data_insufficient);
           const membersHtml = members.map((a, i) => memberRow(a, i, s.name)).join("");
-          return `<details class="bbp-school" data-school="${html(s.key)}" open>
+          const leanHtml = allInsuf
+            ? `<span class="bbp-school-lean insuf">数据不足</span>`
+            : `<span class="bbp-school-lean" style="color:${bbpSignalColor(lean)}">${html(s.lean)} ${s.lean_score}</span>`;
+          return `<details class="bbp-school${allInsuf ? " bbp-insuf" : ""}" data-school="${html(s.key)}" open>
             <summary>
               <span class="bbp-school-caret">▶</span>
               <span class="bbp-school-name">${html(s.name)}</span>
               <span class="bbp-school-meta">${s.count} 人</span>
-              <span class="bbp-minibar"><i style="width:${Math.max(0, Math.min(100, s.lean_score))}%;background:${bbpSignalColor(lean)}"></i></span>
-              <span class="bbp-school-lean" style="color:${bbpSignalColor(lean)}">${html(s.lean)} ${s.lean_score}</span>
+              <span class="bbp-minibar"><i style="width:${allInsuf ? 0 : Math.max(0, Math.min(100, s.lean_score))}%;background:${allInsuf ? "#c2c8d2" : bbpSignalColor(lean)}"></i></span>
+              ${leanHtml}
             </summary>
             <div class="bbp-members">${membersHtml}</div>
           </details>`;
@@ -3767,7 +3915,15 @@
           const items = (zones[k] || []).map((z) => `<span class="bbp-zone-pill">${html(z)}</span>`).join("");
           return items ? `<div class="bbp-zone"><span class="bbp-zone-label">${label}</span>${items}</div>` : "";
         };
-        const nar = ov.narrative_override ? `<div class="bbp-overlay-nar">${html(ov.narrative_override)}</div>` : "";
+        const nar = (() => {
+          if (ov.narrative_override) return `<div class="bbp-overlay-nar">${html(ov.narrative_override)}</div>`;
+          // 兜底：narrative 省略时（旧缓存/模型偷懒）用前几条逐人点评充当正文，避免「AI 点评」只剩标签像没显示完
+          const ins = ov.panel_insights || {};
+          const picks = Object.values(ins).filter((t) => typeof t === "string" && t.trim()).slice(0, 3);
+          return picks.length
+            ? `<div class="bbp-overlay-nar">${picks.map((t) => "· " + html(t)).join("<br>")}</div>`
+            : "";
+        })();
         const warnings = (q.warnings || []).map((w) => `<div class="bbp-overlay-flag">⚠ ${html(w)}</div>`).join("");
         const flags = warnings ? `<div class="bbp-overlay-flags">${warnings}</div>` : "";
         return `
@@ -4210,8 +4366,10 @@
             });
             ctx.stroke();
           }
-          $("#matchDrawBtn").disabled = state.drawPoints.length < 5;
+          $("#matchDrawBtn").disabled = jobLocked() || state.drawPoints.length < 5;
           $("#savePatternBtn").disabled = state.drawPoints.length < 2;
+          const exportBtn = $("#exportPatternBtn");
+          if (exportBtn) exportBtn.disabled = state.drawPoints.length < 2;
         }
 
         function point(event) {
@@ -4246,6 +4404,7 @@
         $("#savePatternBtn").addEventListener("click", () => {
           saveDrawnPattern(canvas);
         });
+        $("#exportPatternBtn").addEventListener("click", () => exportPatternFiles(canvas));
         draw();
       }
 
@@ -4253,30 +4412,48 @@
         if (!canvas || state.drawPoints.length < 2) return;
         const curve = state.selectedCurve || resample(state.drawPoints);
         const status = $("#patternStatus");
-        // 1) 持久化到后端历史图形库（供"历史图形选股"复用）
+        const nameInput = $("#patternSaveName");
+        const tagsInput = $("#patternSaveTags");
+        const name = (nameInput?.value || "").trim() || `手绘 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+        const tags = (tagsInput?.value || "").trim();
+        const body = {
+          name,
+          normalized_curve: curve,
+          points: state.drawPoints,
+          source: "draw",
+        };
+        const wd = Number($("#patternWindowDays")?.value);
+        if (Number.isFinite(wd) && wd > 0) body.window_days = wd;
+        if (tags) body.tags = tags;
+        // 检索过则一并存下查询条件与命中快照，供「历史图形」一键重跑/查看
+        if (state.lastQueryParams) body.query_params = state.lastQueryParams;
+        if (state.lastMatchSnapshot && state.lastMatchSnapshot.length) body.result_snapshot = state.lastMatchSnapshot;
         try {
           await fetchJson("/api/pattern-search/save", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              name: `手绘 ${new Date().toLocaleString("zh-CN", { hour12: false })}`,
-              normalized_curve: curve,
-              points: state.drawPoints,
-              source: "draw",
-            }),
+            body: JSON.stringify(body),
           });
           if (status) {
             status.className = "notice status success";
-            status.textContent = "图形已存入「历史图形」，可在右侧直接复用选股。";
+            const extra = body.result_snapshot ? `（含 ${body.result_snapshot.length} 条匹配快照，可一键重跑）` : "";
+            status.textContent = `「${name}」已存入「历史图形」${extra}，可在下方直接复用选股。`;
           }
+          if (nameInput) nameInput.value = "";
+          if (tagsInput) tagsInput.value = "";
           await loadSavedPatterns();
         } catch (error) {
           if (status) {
             status.className = "notice status warning";
-            status.textContent = `保存到历史库失败：${error.message}（已尝试本地导出）`;
+            status.textContent = `保存到历史库失败：${error.message}`;
           }
         }
-        // 2) 同时导出 PNG / JSON 到本地（保留原有便利功能）
+      }
+
+      // 按需导出 PNG / JSON（不再每次保存都强制下载，避免污染下载目录）
+      function exportPatternFiles(canvas) {
+        if (!canvas || state.drawPoints.length < 2) return;
+        const curve = state.selectedCurve || resample(state.drawPoints);
         const stamp = new Date().toISOString().replace(/[:.]/g, "-");
         const payload = {
           type: "kronos-pattern-drawing",
@@ -4314,36 +4491,74 @@
           return;
         }
         list.innerHTML = patterns
-          .map((p) => `
+          .map((p) => {
+            const tags = (p.tags || []).map((t) => `<span class="tag-chip">${html(t)}</span>`).join("");
+            const rerun = p.query_params
+              ? `<button class="button secondary compact" type="button" data-saved-rerun="${p.id}" title="按保存时的窗口/回推/数量条件重新检索">重跑检索</button>`
+              : "";
+            const snap = p.result_count > 0
+              ? `<button class="button secondary compact" type="button" data-saved-snap="${p.id}">查看快照(${p.result_count})</button>`
+              : "";
+            const metaBits = [
+              html(p.created_at || ""),
+              `${p.normalized_curve?.length || 0} 点`,
+              p.window_days ? `窗口${p.window_days}日` : "",
+              p.result_count ? `命中${p.result_count}` : "",
+            ].filter(Boolean).join(" · ");
+            return `
             <div class="item" data-saved-id="${p.id}">
               <div class="item-top">
                 <p class="item-title">${html(p.name || "未命名形态")}</p>
                 <span class="pill">${String(p.source || "draw").startsWith("stock") ? "个股" : "手绘"}</span>
               </div>
-              <p class="item-meta">${html(p.created_at || "")} · ${p.normalized_curve?.length || 0} 点</p>
+              <p class="item-meta">${metaBits}</p>
+              ${tags ? `<div class="tag-row">${tags}</div>` : ""}
               <div class="actions" style="margin-top: 8px;">
                 <button class="button compact" type="button" data-saved-use="${p.id}">用此形态选股</button>
+                ${rerun}
+                ${snap}
                 <button class="button secondary compact" type="button" data-saved-preview="${p.id}">预览</button>
                 <button class="button secondary compact" type="button" data-saved-del="${p.id}">删除</button>
               </div>
             </div>
-          `)
+          `;
+          })
           .join("");
+        const find = (id) => patterns.find((x) => String(x.id) === id);
         list.querySelectorAll("[data-saved-use]").forEach((el) => {
-          el.addEventListener("click", () => {
-            const p = patterns.find((x) => String(x.id) === el.dataset.savedUse);
-            if (p) useSavedPattern(p, { run: true });
-          });
+          el.addEventListener("click", () => { const p = find(el.dataset.savedUse); if (p) useSavedPattern(p, { run: true }); });
+        });
+        list.querySelectorAll("[data-saved-rerun]").forEach((el) => {
+          el.addEventListener("click", () => { const p = find(el.dataset.savedRerun); if (p) rerunSavedPattern(p); });
+        });
+        list.querySelectorAll("[data-saved-snap]").forEach((el) => {
+          el.addEventListener("click", () => { const p = find(el.dataset.savedSnap); if (p) showSavedSnapshot(p); });
         });
         list.querySelectorAll("[data-saved-preview]").forEach((el) => {
-          el.addEventListener("click", () => {
-            const p = patterns.find((x) => String(x.id) === el.dataset.savedPreview);
-            if (p) useSavedPattern(p, { run: false });
-          });
+          el.addEventListener("click", () => { const p = find(el.dataset.savedPreview); if (p) useSavedPattern(p, { run: false }); });
         });
         list.querySelectorAll("[data-saved-del]").forEach((el) => {
           el.addEventListener("click", () => deleteSavedPattern(el.dataset.savedDel));
         });
+      }
+
+      // 按保存时的查询条件回填筛选器并重新检索
+      function rerunSavedPattern(p) {
+        const qp = p.query_params || {};
+        if (qp.window_days && $("#patternWindowDays")) $("#patternWindowDays").value = String(qp.window_days);
+        if (qp.query_offset_days != null && $("#patternOffsetDays")) $("#patternOffsetDays").value = String(qp.query_offset_days);
+        if (qp.top_n && $("#patternTopN")) $("#patternTopN").value = String(qp.top_n);
+        useSavedPattern(p, { run: true });
+      }
+
+      // 查看保存时落库的命中快照（不重新检索，直接展示历史结果）
+      function showSavedSnapshot(p) {
+        const snap = p.result_snapshot || [];
+        if (!snap.length) { showToast("该形态未保存匹配快照"); return; }
+        const meta = $("#patternResultMeta");
+        if (meta) meta.textContent = `历史快照 ${snap.length} 条 · 保存于 ${p.created_at || "--"}`;
+        state.selectedCurve = p.normalized_curve;
+        renderPatternResults(snap, p.normalized_curve);
       }
 
       function useSavedPattern(pattern, { run = false } = {}) {
@@ -4462,8 +4677,27 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        $("#patternResultMeta").textContent = `${data.count || 0} 条 · ${data.compute_ms || 0} ms`;
+        const rtNote = data.quoted ? ` · 实时报价 ${(data.quote_updated_at || "").slice(11, 19)}` : "";
+        $("#patternResultMeta").textContent = `${data.count || 0} 条 · ${data.compute_ms || 0} ms${rtNote}`;
         renderPatternResults(data.matches || [], data.query_curve || curve);
+        // 记下本次查询条件与命中快照，保存形态时可一并落库（一键重跑 / 查看历史快照）
+        state.lastQueryParams = {
+          top_n: payload.top_n,
+          window_days: payload.window_days,
+          query_offset_days: payload.query_offset_days,
+        };
+        state.lastMatchSnapshot = (data.matches || []).slice(0, 60).map((m) => ({
+          stock_code: m.stock_code,
+          stock_name: m.stock_name,
+          score: m.score,
+          market: m.market,
+          industry: m.industry,
+          latest_close: m.latest_close,
+          latest_change_pct: m.latest_change_pct,
+          realtime_price: m.realtime_price,
+          realtime_change_pct: m.realtime_change_pct,
+          snapshot_date: m.snapshot_date,
+        }));
         state.lastBacktest = {
           curve,
           window_days: payload.window_days,
@@ -4471,12 +4705,13 @@
           codes: (data.matches || []).map((m) => m.stock_code).filter(Boolean),
         };
         const backtestBtn = $("#patternBacktestBtn");
-        if (backtestBtn) backtestBtn.disabled = state.lastBacktest.codes.length === 0;
+        if (backtestBtn) backtestBtn.disabled = jobLocked() || state.lastBacktest.codes.length === 0;
       }
 
       async function runPatternBacktest() {
         const ctx = state.lastBacktest;
         if (!ctx || !ctx.codes?.length) { alert("请先检索出相似股票，再回测形态。"); return; }
+        if (jobLocked()) { alert("已有任务进行中，请等待当前任务完成后再回测。"); return; }
         const btn = $("#patternBacktestBtn");
         const meta = $("#patternBacktestMeta");
         const body = $("#patternBacktestBody");
@@ -4584,6 +4819,7 @@
         const runBtn = document.getElementById("suiteBacktestRunBtn");
         if (!resultEl) return;
         if (!code) { resultEl.innerHTML = `<p class="notice status error">缺少股票代码。</p>`; return; }
+        if (jobLocked()) { resultEl.innerHTML = `<p class="notice status warn">已有任务进行中，请等待完成后再回测。</p>`; return; }
         if (runBtn) runBtn.disabled = true;
         resultEl.innerHTML = `<p class="muted"><span class="spinner"></span> 正在读取该股形态并联网回测同类股票，请稍候…</p>`;
         try {
@@ -4616,15 +4852,22 @@
 
       function renderPatternResults(matches, queryCurve) {
         const target = $("#patternResults");
-        target.innerHTML = matches.map((item, index) => `
+        target.innerHTML = matches.map((item, index) => {
+          const hasRt = item.realtime && Number.isFinite(Number(item.realtime_price));
+          const rtPct = Number(item.realtime_change_pct);
+          const rtLine = hasRt
+            ? `<p class="item-meta pattern-rt"><span class="pattern-rt-badge">实时</span>${num(item.realtime_price)} <span class="${changeClass(rtPct)}">${Number.isFinite(rtPct) ? (rtPct >= 0 ? "+" : "") + num(rtPct) + "%" : "--"}</span></p>`
+            : "";
+          return `
           <button class="item pattern-result-item" type="button" data-pattern-index="${index}" data-stock-code="${html(item.stock_code || "")}" data-stock-name="${html(item.stock_name || "")}" data-sector="${html(item.industry || "")}" title="双击打开K线大图">
             <div class="item-top">
               <p class="item-title">${index + 1}. ${html(item.stock_name || item.stock_code)}</p>
               <strong>${num(Number(item.score || 0) * 100, 1)}%</strong>
             </div>
-            <p class="item-meta">${html(item.stock_code)} · ${html(item.market || "--")} · ${html(item.industry || "--")} · ${html(item.snapshot_date || "")}</p>
-          </button>
-        `).join("");
+            ${rtLine}
+            <p class="item-meta">${html(item.stock_code)} · ${html(item.market || "--")} · ${html(item.industry || "--")} · 快照 ${html(item.snapshot_date || "")}</p>
+          </button>`;
+        }).join("");
         if (!matches.length) empty(target, "暂无匹配结果。");
         target.querySelectorAll("[data-pattern-index]").forEach((el) => {
           el.addEventListener("click", () => {
@@ -4818,7 +5061,7 @@
               const payload = await fetchJson(`/api/pattern-search/stock-curve/${encodeURIComponent(el.dataset.stockCode)}`);
               state.selectedStock = payload;
               state.selectedCurve = payload.normalized_curve;
-              $("#matchStockBtn").disabled = false;
+              $("#matchStockBtn").disabled = jobLocked();
               $("#patternCompareTitle").textContent = `${payload.stock_name} 形态预览`;
               $("#patternCompareMeta").textContent = payload.snapshot_date || "--";
               plotPatternCompare(payload.normalized_curve, {
@@ -4858,6 +5101,7 @@
         renderReports(data);
         setupWorkbench(data);
         renderOverviewHotLists(data);
+        renderOverviewEastmoneyNews(data);
         setupOverviewSearch();
 
         const settings = data.settings || {};
@@ -5050,6 +5294,406 @@
 
       }
 
+      // ─────────────────────────────────────────────────────────────
+      //  自选 + 实时热点条（底部常驻滚动条，所有交互在条上完成）
+      // ─────────────────────────────────────────────────────────────
+      function lsGet(key, fallback = null) {
+        try { const v = localStorage.getItem(key); return v == null ? fallback : v; } catch (e) { return fallback; }
+      }
+      function lsSet(key, value) {
+        try { localStorage.setItem(key, value); } catch (e) {}
+      }
+
+      function moneyText(value) {
+        const v = Number(value);
+        if (!Number.isFinite(v) || v === 0) return "";
+        const sign = v > 0 ? "+" : "-";
+        const abs = Math.abs(v);
+        if (abs >= 1e8) return `${sign}${(abs / 1e8).toFixed(2)}亿`;
+        if (abs >= 1e4) return `${sign}${(abs / 1e4).toFixed(0)}万`;
+        return `${sign}${abs.toFixed(0)}`;
+      }
+
+      // ── 数据层（热点 + 自选，供热点条与自选页共用）─────────────────
+      async function loadHotspots() {
+        const data = await fetchJson("/api/market/hotspots");
+        state.notifyData = data;
+        return data;
+      }
+      async function loadWatchlist() {
+        const data = await fetchJson("/api/watchlist");
+        state.watchlist = data.items || [];
+        state.watchlistSet = new Set(state.watchlist.map((w) => normalizeStockCode(w.code)));
+        return data;
+      }
+      function applyWatchlistItems(items) {
+        if (Array.isArray(items)) {
+          state.watchlistSet = new Set(items.map((w) => normalizeStockCode(w.code)));
+        }
+        syncWatchlistStars();
+        syncStockContextStar();
+        if (page === "watchlist") refreshWatchlist().catch(() => {});
+      }
+      async function addToWatchlist(code, name = "") {
+        const c = normalizeStockCode(code);
+        if (!c) { showToast("无效股票代码"); return; }
+        const data = await fetchJson("/api/watchlist/add", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: c, name }),
+        });
+        applyWatchlistItems(data.items);
+        showToast(data.added === false ? "已在自选中" : `已加入自选 ${c}`);
+        return data;
+      }
+      async function removeFromWatchlist(code) {
+        const c = normalizeStockCode(code);
+        const data = await fetchJson("/api/watchlist/remove", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: c }),
+        });
+        applyWatchlistItems(data.items);
+        showToast(`已移除自选 ${c}`);
+        return data;
+      }
+      function syncWatchlistStars() {
+        document.querySelectorAll(".notify-star[data-notify-add]").forEach((btn) => {
+          const on = !!(state.watchlistSet && state.watchlistSet.has(btn.dataset.notifyAdd));
+          btn.classList.toggle("on", on);
+          btn.textContent = on ? "★" : "＋";
+          btn.title = on ? "已在自选（点击移除）" : "加入自选";
+        });
+      }
+
+      // ── 热点条渲染 ────────────────────────────────────────────────
+      const NOTIFY_CAT_LABEL = { hot: "热点", changes: "异动", watchlist: "自选", boards: "板块", flash: "快讯" };
+      function notifyItems() {
+        const cats = state.notifyCats || new Set();
+        const intel = state.notifyData || {};
+        const em = intel.eastmoney || {};
+        const out = [];
+        if (cats.has("hot")) {
+          (em.hot_stocks || []).slice(0, 12).forEach((s) => out.push({
+            kind: "stock", cat: "hot", code: s.code, name: s.name,
+            pct: s.change_pct, price: s.price, inflowText: s.main_net_inflow_text,
+          }));
+        }
+        if (cats.has("changes")) {
+          (em.changes || []).slice(0, 15).forEach((s) => out.push({
+            kind: "stock", cat: "changes", code: s.code, name: s.name,
+            pct: s.change_pct, price: s.price, changeType: s.type, time: s.time,
+          }));
+        }
+        if (cats.has("watchlist")) {
+          (state.watchlist || []).slice(0, 30).forEach((w) => out.push({
+            kind: "stock", cat: "watchlist", code: w.code, name: w.name,
+            pct: w.change_pct, price: w.price, inflow: w.main_net_inflow,
+          }));
+        }
+        if (cats.has("boards")) {
+          [...(em.concept_boards || []), ...(em.industry_boards || [])].slice(0, 12).forEach((b) => out.push({
+            kind: "board", cat: "boards", name: b.name, pct: b.change_pct, inflowText: b.main_net_inflow_text,
+          }));
+        }
+        if (cats.has("flash")) {
+          (intel.jinshi || []).slice(0, 10).forEach((n) => out.push({
+            kind: "flash", cat: "flash", title: n.title, important: n.important, source: n.source, time: n.time,
+          }));
+        }
+        return out;
+      }
+      function notifyItemHtml(it, idx) {
+        const chip = `<span class="notify-cat-chip cat-${it.cat}">${NOTIFY_CAT_LABEL[it.cat] || ""}</span>`;
+        if (it.kind === "flash") {
+          return `<div class="notify-item notify-flash${it.important ? " is-important" : ""}" data-notify-idx="${idx}" tabindex="0">
+            ${chip}<span class="notify-flash-title">${html((it.title || "").slice(0, 46))}</span>
+          </div>`;
+        }
+        const pct = Number(it.pct || 0);
+        const cls = changeClass(pct);
+        const pctText = `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
+        if (it.kind === "board") {
+          return `<div class="notify-item notify-board" data-notify-idx="${idx}" tabindex="0">
+            ${chip}<span class="notify-name">${html(it.name)}</span><span class="notify-pct ${cls}">${pctText}</span>
+          </div>`;
+        }
+        const code = normalizeStockCode(it.code);
+        const on = !!(state.watchlistSet && state.watchlistSet.has(code));
+        const tag = it.changeType ? `<span class="notify-change-tag">${html(it.changeType)}${it.time ? " " + html(it.time) : ""}</span>` : "";
+        return `<div class="notify-item notify-stock item-clickable" data-notify-idx="${idx}" data-stock-code="${html(it.code || "")}" data-stock-name="${html(it.name || "")}" role="button" tabindex="0" title="点击查看个股分析">
+          ${chip}<span class="notify-name">${html(it.name || it.code)}</span>${tag}<span class="notify-pct ${cls}">${pctText}</span>
+          <button class="notify-star ${on ? "on" : ""}" type="button" data-notify-add="${html(code)}" data-notify-name="${html(it.name || "")}" title="${on ? "已在自选（点击移除）" : "加入自选"}" tabindex="-1">${on ? "★" : "＋"}</button>
+        </div>`;
+      }
+      function renderNotifyBar() {
+        const bar = $("#notifyBar");
+        const track = $("#notifyTrack");
+        if (!bar || !track) return;
+        updateNotifyCatChips();
+        const updated = $("#notifyUpdated");
+        if (updated) updated.textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+        const items = notifyItems();
+        state._notifyItems = items;
+        if (!items.length) {
+          track.style.animationName = "none";
+          track.innerHTML = `<div class="notify-item notify-empty">实时热点加载中…（无数据时请检查网络或稍后刷新）</div>`;
+          return;
+        }
+        const single = items.map((it, i) => notifyItemHtml(it, i)).join("");
+        track.innerHTML = single + single; // 复制一份实现无缝循环
+        const dur = Math.min(240, Math.max(30, items.length * 3.5));
+        track.style.setProperty("--notify-dur", `${dur.toFixed(0)}s`);
+        // 重启动画（避免内容变化后位置错位）：先关掉再回退到样式表里的 .notify-track 动画
+        track.style.animationName = "none";
+        void track.offsetWidth;
+        track.style.animationName = "";
+        bindNotifyItems(track);
+      }
+      function bindNotifyItems(track) {
+        track.querySelectorAll(".notify-item[data-stock-code]").forEach((el) => {
+          el.addEventListener("click", (e) => {
+            if (e.target.closest(".notify-star")) return;
+            const code = el.dataset.stockCode;
+            if (!code) return;
+            openStockContext({ type: "stock", stock_code: code, stock_name: el.dataset.stockName || "", board_name: "" })
+              .catch((err) => console.warn("打开个股失败", err));
+          });
+        });
+        track.querySelectorAll(".notify-star").forEach((btn) => {
+          btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const code = btn.dataset.notifyAdd;
+            const name = btn.dataset.notifyName || "";
+            const fn = (state.watchlistSet && state.watchlistSet.has(code)) ? removeFromWatchlist(code) : addToWatchlist(code, name);
+            Promise.resolve(fn).catch((err) => showToast(err.message));
+          });
+        });
+        track.querySelectorAll(".notify-item").forEach((el) => {
+          el.addEventListener("mouseenter", () => notifyShowDetail(el));
+          el.addEventListener("mouseleave", notifyHideDetail);
+          el.addEventListener("focus", () => notifyShowDetail(el));
+          el.addEventListener("blur", notifyHideDetail);
+        });
+      }
+      function notifyEnsureCard() {
+        let card = $("#notifyDetailCard");
+        if (!card) {
+          card = document.createElement("div");
+          card.id = "notifyDetailCard";
+          card.className = "notify-detail-card";
+          card.hidden = true;
+          document.body.appendChild(card);
+        }
+        return card;
+      }
+      function notifyDetailHtml(it) {
+        if (it.kind === "flash") {
+          return `<div class="ndc-head">金十快讯${it.important ? " · <span class=\"ndc-warn\">重要</span>" : ""}</div>
+            <div class="ndc-title">${html(it.title || "")}</div>
+            <div class="ndc-meta">${html(it.source || "金十")} · ${html(it.time || "")}</div>`;
+        }
+        const pct = Number(it.pct || 0);
+        const cls = changeClass(pct);
+        const pctText = `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
+        const inflow = it.inflowText || moneyText(it.inflow);
+        if (it.kind === "board") {
+          return `<div class="ndc-head">热门板块</div>
+            <div class="ndc-title">${html(it.name)} <span class="${cls}">${pctText}</span></div>
+            ${inflow ? `<div class="ndc-meta">主力净流入 ${html(inflow)}</div>` : ""}`;
+        }
+        const code = normalizeStockCode(it.code);
+        const member = !!(state.watchlistSet && state.watchlistSet.has(code));
+        let head = "个股";
+        if (it.cat === "watchlist") head = "自选股";
+        else if (it.cat === "hot") head = "实时热点";
+        else if (it.cat === "changes") head = "实时异动" + (it.changeType ? " · " + it.changeType : "");
+        return `<div class="ndc-head">${html(head)}</div>
+          <div class="ndc-title">${html(it.name || it.code)} <span class="muted">${html(it.code || "")}</span></div>
+          <div class="ndc-row"><span class="${cls}">${pctText}</span>${it.price != null ? ` · 现价 ¥${num(it.price)}` : ""}${it.cat === "changes" && it.time ? ` · ${html(it.time)}` : ""}</div>
+          ${inflow ? `<div class="ndc-meta">主力净流入 ${html(inflow)}</div>` : ""}
+          <div class="ndc-foot">点击查看完整分析 · ${member ? "★ 已自选" : "＋ 可加自选"}</div>`;
+      }
+      function notifyShowDetail(el) {
+        const it = (state._notifyItems || [])[Number(el.dataset.notifyIdx)];
+        if (!it) return;
+        const card = notifyEnsureCard();
+        card.innerHTML = notifyDetailHtml(it);
+        card.hidden = false;
+        const r = el.getBoundingClientRect();
+        const left = Math.max(8, Math.min(window.innerWidth - card.offsetWidth - 8, r.left));
+        card.style.left = `${left}px`;
+        card.style.top = `${Math.max(8, r.top - card.offsetHeight - 10)}px`;
+      }
+      function notifyHideDetail() {
+        const card = $("#notifyDetailCard");
+        if (card) card.hidden = true;
+      }
+      function updateNotifyCatChips() {
+        document.querySelectorAll(".notify-cat[data-notify-cat]").forEach((btn) => {
+          btn.classList.toggle("active", !!(state.notifyCats && state.notifyCats.has(btn.dataset.notifyCat)));
+        });
+      }
+      function setNotifyHidden(hidden) {
+        const bar = $("#notifyBar");
+        const reopen = $("#notifyReopenBtn");
+        if (bar) bar.hidden = hidden;
+        if (reopen) reopen.hidden = !hidden;
+        document.body.classList.toggle("notify-hidden", hidden);
+        lsSet("kronos_notify_hidden", hidden ? "1" : "0");
+      }
+      function bindNotifyControls() {
+        document.querySelectorAll(".notify-cat[data-notify-cat]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const cat = btn.dataset.notifyCat;
+            if (!state.notifyCats) return;
+            if (state.notifyCats.has(cat)) {
+              if (state.notifyCats.size > 1) state.notifyCats.delete(cat); // 至少保留一个分类
+            } else {
+              state.notifyCats.add(cat);
+            }
+            lsSet("kronos_notify_cats2", [...state.notifyCats].join(","));
+            renderNotifyBar();
+          });
+        });
+        const pauseBtn = $("#notifyPauseBtn");
+        if (pauseBtn) pauseBtn.addEventListener("click", () => {
+          const bar = $("#notifyBar");
+          const paused = bar.classList.toggle("paused");
+          pauseBtn.textContent = paused ? "▶" : "⏸";
+          pauseBtn.title = paused ? "继续滚动" : "暂停滚动";
+        });
+        const hideBtn = $("#notifyHideBtn");
+        if (hideBtn) hideBtn.addEventListener("click", () => setNotifyHidden(true));
+        const reopen = $("#notifyReopenBtn");
+        if (reopen) reopen.addEventListener("click", () => setNotifyHidden(false));
+      }
+      async function refreshNotifyData() {
+        await Promise.all([
+          loadHotspots().catch((e) => console.warn("热点读取失败", e)),
+          loadWatchlist().catch((e) => console.warn("自选读取失败", e)),
+        ]);
+        renderNotifyBar();
+      }
+      async function startNotifyBar() {
+        const bar = $("#notifyBar");
+        if (!bar) return;
+        const savedCats = (lsGet("kronos_notify_cats2") || "").split(",").map((s) => s.trim()).filter(Boolean);
+        const valid = savedCats.filter((c) => NOTIFY_CAT_LABEL[c]);
+        state.notifyCats = new Set(valid.length ? valid : ["hot", "changes", "watchlist"]);
+        bindNotifyControls();
+        if (lsGet("kronos_notify_hidden") === "1") setNotifyHidden(true);
+        await refreshNotifyData();
+        if (state.notifyTimer) clearInterval(state.notifyTimer);
+        state.notifyTimer = setInterval(() => { refreshNotifyData().catch(() => {}); }, 60000);
+      }
+
+      // ── 自选页 ────────────────────────────────────────────────────
+      function watchlistRowHtml(w) {
+        const pct = Number(w.change_pct);
+        const hasPct = Number.isFinite(pct);
+        const cls = hasPct ? changeClass(pct) : "";
+        const inflow = moneyText(w.main_net_inflow);
+        return `<div class="item watchlist-row" data-wl-code="${html(w.code)}">
+          <div class="watchlist-row-main">
+            <p class="item-title">${html(w.name || w.code)} <span class="muted">${html(w.code)}</span></p>
+            <p class="item-meta">${w.price != null ? `现价 ¥${num(w.price)}` : "行情暂不可用"}${inflow ? ` · 主力 ${html(inflow)}` : ""}</p>
+          </div>
+          <strong class="watchlist-pct ${cls}">${hasPct ? `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%` : "--"}</strong>
+          <div class="watchlist-row-actions">
+            <button class="button compact" type="button" data-wl-open="${html(w.code)}" data-wl-name="${html(w.name || "")}">分析</button>
+            <button class="button secondary compact" type="button" data-wl-del="${html(w.code)}">移除</button>
+          </div>
+        </div>`;
+      }
+      function renderWatchlistPage() {
+        const list = $("#watchlistTable");
+        if (!list) return;
+        const items = state.watchlist || [];
+        const meta = $("#watchlistMeta");
+        if (meta) meta.textContent = `${items.length} 只 · 更新 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
+        if (!items.length) {
+          empty(list, "暂无自选股。在上方输入代码/名称添加，或在底部热点条、个股分析弹窗中点 ★ 加入。");
+          return;
+        }
+        list.innerHTML = items.map(watchlistRowHtml).join("");
+        list.querySelectorAll("[data-wl-open]").forEach((el) => el.addEventListener("click", () =>
+          openStockContext({ type: "stock", stock_code: el.dataset.wlOpen, stock_name: el.dataset.wlName || "", board_name: "" }).catch(() => {})));
+        list.querySelectorAll("[data-wl-del]").forEach((el) => el.addEventListener("click", () =>
+          removeFromWatchlist(el.dataset.wlDel).catch((err) => alert(err.message))));
+      }
+      async function refreshWatchlist() {
+        await loadWatchlist();
+        renderWatchlistPage();
+      }
+      function setupWatchlistPage() {
+        const input = $("#watchlistAddInput");
+        const addBtn = $("#watchlistAddBtn");
+        const refreshBtn = $("#watchlistRefreshBtn");
+        const suggest = $("#watchlistAddSuggest");
+        if (refreshBtn) refreshBtn.addEventListener("click", () => refreshWatchlist().catch((e) => alert(e.message)));
+        const doSearch = async () => {
+          const q = (input?.value || "").trim();
+          if (!q) { if (suggest) suggest.innerHTML = ""; return; }
+          try {
+            const data = await fetchJson(`/api/pattern-search/stocks?q=${encodeURIComponent(q)}&limit=8`);
+            const stocks = data.stocks || [];
+            if (!suggest) return;
+            suggest.innerHTML = stocks.map((it) => `
+              <button class="item" type="button" data-add-code="${html(it.stock_code)}" data-add-name="${html(it.stock_name || "")}">
+                <div class="item-top"><p class="item-title">${html(it.stock_name || it.stock_code)}</p><span class="pill">${html(it.stock_code)}</span></div>
+                <p class="item-meta">${html(it.market || "--")} · ${html(it.industry || "--")}</p>
+              </button>`).join("");
+            if (!stocks.length) empty(suggest, "没有匹配股票，可直接输入 6 位代码添加。");
+            suggest.querySelectorAll("[data-add-code]").forEach((el) => el.addEventListener("click", async () => {
+              try { await addToWatchlist(el.dataset.addCode, el.dataset.addName); input.value = ""; suggest.innerHTML = ""; }
+              catch (err) { alert(err.message); }
+            }));
+          } catch (e) { if (suggest) empty(suggest, e.message); }
+        };
+        if (addBtn) addBtn.addEventListener("click", async () => {
+          const q = (input?.value || "").trim();
+          const code = normalizeStockCode(q);
+          if (code) {
+            try { await addToWatchlist(code, ""); input.value = ""; if (suggest) suggest.innerHTML = ""; }
+            catch (err) { alert(err.message); }
+          } else { doSearch(); }
+        });
+        if (input) input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addBtn?.click(); } });
+        refreshWatchlist().catch(() => {});
+      }
+
+      // ── 个股弹窗内的 ★ 自选开关 ──────────────────────────────────
+      function ensureStockContextStar() {
+        let btn = $("#stockContextStar");
+        if (btn) return btn;
+        const titleEl = $("#stockContextTitle");
+        if (!titleEl) return null;
+        btn = document.createElement("button");
+        btn.id = "stockContextStar";
+        btn.type = "button";
+        btn.className = "stock-context-star";
+        // 标题与星标同处一行（flex row），避免星标掉到标题下方单独占一行。
+        const row = titleEl.closest(".stock-context-title-row") || titleEl.parentElement;
+        row.appendChild(btn);
+        btn.addEventListener("click", () => {
+          const code = state.currentStockCode;
+          if (!code) return;
+          const name = ($("#stockContextTitle")?.textContent || "").trim();
+          const fn = (state.watchlistSet && state.watchlistSet.has(normalizeStockCode(code)))
+            ? removeFromWatchlist(code) : addToWatchlist(code, name);
+          Promise.resolve(fn).catch((e) => showToast(e.message));
+        });
+        if (!state.watchlistSet) loadWatchlist().then(syncStockContextStar).catch(() => {});
+        return btn;
+      }
+      function syncStockContextStar() {
+        const btn = $("#stockContextStar");
+        if (!btn) return;
+        const code = normalizeStockCode(state.currentStockCode || "");
+        const on = !!(code && state.watchlistSet && state.watchlistSet.has(code));
+        btn.classList.toggle("on", on);
+        btn.textContent = on ? "★ 已自选" : "☆ 加自选";
+      }
+
       async function boot() {
         updateTaskHeader([]);
         bindStockContextModal();
@@ -5073,11 +5717,19 @@
           $("#refreshMeta").textContent = "后台配置";
           setupSettings();
         }
+        if (page === "watchlist") {
+          $("#refreshMeta").textContent = "自选股";
+          setupWatchlistPage();
+        }
         if (!dashboardPages.includes(page)) {
           loadJobs().catch((error) => {
             $("#activeTaskMeta").textContent = `任务读取失败: ${error.message}`;
           });
         }
+        startNotifyBar().catch((error) => console.warn("热点条启动失败", error));
+        // 盘中每 30s 自动刷新当前K线（叠加实时价）；非交易时段 refreshKlineLive 自身会跳过。
+        if (state.klineLiveTimer) clearInterval(state.klineLiveTimer);
+        state.klineLiveTimer = setInterval(() => { refreshKlineLive().catch(() => {}); }, 30000);
       }
 
       boot().catch((error) => {

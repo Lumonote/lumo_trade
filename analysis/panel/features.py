@@ -130,8 +130,18 @@ def extract_features(inputs: Dict[str, Any], sections: Dict[str, Any]) -> Dict[s
         f["holder_number_trend"] = "up"
     else:
         f["holder_number_trend"] = "flat"
-    # Phase 1: 基金持仓 provider 仅返回单期（latest period），无上一期数据，
-    # 无法计算趋势——延后到后续阶段补齐上一期再派生 trend。
+    # 基金持仓 provider 仅返回单期（latest period），无上一期数据无法算增减持趋势，
+    # 故 fund_hold_trend 暂留 None；改用「重仓家数 + 持仓市值」作为机构关注度信号
+    # （见 indicators.build_indicators 的「重仓基金」卡）。趋势派生待后续补上一期再启用。
+    fund_holds = ih.get("fund_holds") or {}
+    fund_rows = fund_holds.get("rows") or []
+    f["fund_hold_count"] = len(fund_rows) or None
+    mv_total = 0.0
+    for fr in fund_rows:
+        mv = _num(fr.get("market_value"))
+        if mv:
+            mv_total += mv
+    f["fund_hold_mv"] = mv_total or None
     f["fund_hold_trend"] = None
 
     qm = sections.get("quant_matrix") or {}

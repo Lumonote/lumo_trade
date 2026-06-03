@@ -58,6 +58,14 @@ def test_get_suite_for_shanghai_market():
     assert out["stock"]["market"] == "XSHG"
 
 
+def test_get_suite_accepts_beijing_920_code():
+    """北交所新代码段 920xxx 应通过校验（修复 'invalid stock code' → 数据源暂不可用）。"""
+    svc = StockSuiteService(orchestrator=_FakeSuite())
+    out = svc.get_suite("920161", name="某北交所股")
+    assert out["success"] is True
+    assert out["stock"]["code"] == "920161"
+
+
 def test_trigger_ai_proxies_to_orchestrator():
     fake = _FakeSuite()
     svc = StockSuiteService(orchestrator=fake)

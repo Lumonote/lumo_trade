@@ -59,8 +59,8 @@ class AnalysisJobRequestParser:
             return None, 'Unsupported source, use multi / heat / moneyflow_dc'
 
         return {
-            'limit': safe_int(payload.get('limit'), 80, minimum=5, maximum=500),
-            'workers': safe_int(payload.get('workers'), 8, minimum=1, maximum=32),
+            'limit': safe_int(payload.get('limit'), 100, minimum=5, maximum=500),
+            'workers': safe_int(payload.get('workers'), 10, minimum=1, maximum=32),
             'source': source,
             'stock_codes': normalize_stock_codes(payload.get('stock_codes')),
         }, None

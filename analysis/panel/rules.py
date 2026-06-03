@@ -351,3 +351,121 @@ def resolve_rule(rule_key: str, school: str) -> Callable[[Features], Verdict]:
     if rule_key == "school_default":
         return SCHOOL_DEFAULTS[school]
     return RULES[rule_key]
+
+
+# ---------- stub 差异化：persona 的 key_metrics → 特征微调 ----------
+# 48 个 stub 原本共用 7 个默认规则，导致同流派打分完全一致。这里让每个 stub
+# 在流派默认裁决之上，按自己声明的 key_metrics 叠加“偏好微调”，使同流派成员
+# 因关注指标不同而分化；同时只有当 key_metrics 对应的特征确有数据时才打分，
+# 否则该 persona 标记为“数据不足”（reasons 为空 → 上游 data_insufficient）。
+
+# key_metrics 语义 token → 实际特征键（None = 暂无对应特征，跳过不计分）
+METRIC_FEATURE: Dict[str, Any] = {
+    "roe": "roe",
+    "pe_industry_rank": "pe_industry_rank",
+    "pb": "pb",
+    "net_profit_yoy": "net_profit_yoy",
+    "revenue_yoy": None,          # 营收同比暂无特征，不参与计分
+    "trend": "ma_alignment",
+    "momentum": "macd_hist",
+    "volatility": "boll_position",
+    "volume": "volume_ratio",
+}
+
+# 各流派默认规则已读取的特征：避免 key_metrics 微调与默认规则重复计分
+BASE_FEATURES: Dict[str, set] = {
+    "A": {"roe", "pe_industry_rank"},
+    "B": {"net_profit_yoy"},
+    "C": {"market_regime"},
+    "D": {"rsi", "macd_hist", "ma_alignment"},
+    "E": {"roe", "pe_industry_rank"},
+    "F": {"quant_seat_appearances", "main_net_inflow", "volume_ratio"},
+    "G": {"model_bull_ratio"},
+}
+
+
+def _nudge_metric(token: str, f: Features):
+    """返回 (delta, reason)。reason=None 表示该指标无数据（不计分、不计入“有据”）。
+    有数据时即便方向中性也返回一句 reason，确保 data_insufficient 仅代表真无数据。"""
+    feat = METRIC_FEATURE.get(token)
+    if feat is None:
+        return 0.0, None
+    v = f.get(feat)
+    if v is None:
+        return 0.0, None
+    if token == "roe":
+        if v >= 15:
+            return 10.0, f"ROE {v:.0f}% 良好"
+        if v < 8:
+            return -10.0, f"ROE {v:.0f}% 偏弱"
+        return 3.0, f"ROE {v:.0f}% 中等"
+    if token == "pe_industry_rank":
+        if v <= 35:
+            return 9.0, "行业估值分位偏低"
+        if v >= 80:
+            return -9.0, "行业估值分位偏高"
+        return 2.0, "行业估值分位中性"
+    if token == "pb":
+        if v < 1.5:
+            return 8.0, f"PB {v:.2f} 安全垫厚"
+        if v > 8:
+            return -8.0, f"PB {v:.1f} 偏高"
+        return 2.0, f"PB {v:.1f} 适中"
+    if token == "net_profit_yoy":
+        if v >= 25:
+            return 12.0, f"净利同比 +{v:.0f}%"
+        if v >= 10:
+            return 6.0, f"净利同比 +{v:.0f}%"
+        if v < 0:
+            return -12.0, f"净利同比 {v:.0f}%"
+        return 2.0, f"净利同比 +{v:.0f}%"
+    if token == "trend":
+        if v == "bull":
+            return 9.0, "均线多头排列"
+        if v == "bear":
+            return -9.0, "均线空头排列"
+        return 0.0, "均线缠绕，方向不明"
+    if token == "momentum":
+        if v > 0:
+            return 7.0, "MACD 动能向上"
+        if v < 0:
+            return -7.0, "MACD 动能向下"
+        return 0.0, "动能持平"
+    if token == "volatility":
+        if v >= 0.85:
+            return -6.0, "布林上轨，波动加剧"
+        if v <= 0.15:
+            return 6.0, "布林下轨，超跌企稳"
+        return 0.0, "布林中轨，波动可控"
+    if token == "volume":
+        if v >= 1.8:
+            return 8.0, f"放量 量比 {v:.1f}"
+        if v >= 1.2:
+            return 4.0, f"温和放量 量比 {v:.1f}"
+        if v < 0.7:
+            return -5.0, f"缩量 量比 {v:.1f}"
+        return 1.0, f"量能正常 量比 {v:.1f}"
+    return 0.0, None
+
+
+def eval_school_default(features: Features, persona: Dict[str, Any]) -> Verdict:
+    """stub 专用：流派默认裁决 + 该 persona key_metrics 的偏好微调。
+    首位 key_metric 视为主视角(权重 1.0)，其余为辅(0.7)，使同对指标但顺序不同的
+    persona 也能轻微分化。reasons 为空 ⟺ 该 persona 关注的指标全无数据。"""
+    school = persona["school"]
+    base = SCHOOL_DEFAULTS[school](features)
+    score = float(base["score"])
+    reasons: List[str] = list(base.get("reasons") or [])
+    used = set(BASE_FEATURES.get(school, ()))
+    for idx, token in enumerate(persona.get("key_metrics") or []):
+        feat = METRIC_FEATURE.get(token)
+        if feat is None or feat in used:
+            continue
+        delta, reason = _nudge_metric(token, features)
+        if reason is None:          # 该指标无数据
+            continue
+        used.add(feat)
+        score += delta * (1.0 if idx == 0 else 0.7)
+        if reason not in reasons:
+            reasons.append(reason)
+    return {"score": _clamp(score), "reasons": reasons}

@@ -58,3 +58,30 @@ def test_missing_feature_degrades_to_unavailable_neutral():
     inds = {it["key"]: it for it in build_indicators(_features(main_net_inflow=None))}
     assert inds["main_capital"]["data_status"] == "unavailable"
     assert inds["main_capital"]["signal"] == "neutral"
+
+
+def test_fund_hold_falls_back_to_count_when_no_trend():
+    """provider 仅返回单期基金持仓(无上一期→无增减持趋势)时，重仓基金卡应改用
+    「重仓家数 + 持仓市值」反映机构关注度，而非恒显「数据不足」。"""
+    inds = {it["key"]: it for it in build_indicators(
+        _features(fund_hold_trend=None, fund_hold_count=12, fund_hold_mv=3.6e9))}
+    fh = inds["fund_hold"]
+    assert fh["data_status"] == "fresh"
+    assert fh["signal"] == "up"          # ≥10 家重仓 = 机构认可度高（偏多）
+    assert "12 只基金重仓" in fh["value_text"]
+    assert "36.0 亿" in fh["value_text"]  # 市值 3.6e9 元 → 36.0 亿
+
+
+def test_fund_hold_count_low_is_neutral():
+    inds = {it["key"]: it for it in build_indicators(
+        _features(fund_hold_trend=None, fund_hold_count=3, fund_hold_mv=None))}
+    fh = inds["fund_hold"]
+    assert fh["data_status"] == "fresh"
+    assert fh["signal"] == "neutral"     # <10 家 = 信息中性
+    assert "3 只基金重仓" in fh["value_text"]
+
+
+def test_fund_hold_unavailable_when_no_trend_no_count():
+    inds = {it["key"]: it for it in build_indicators(
+        _features(fund_hold_trend=None, fund_hold_count=None))}
+    assert inds["fund_hold"]["data_status"] == "unavailable"

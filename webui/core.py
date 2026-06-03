@@ -62,17 +62,18 @@ from webui.services.model_runtime import (
     loaded_model_info,
     run_prediction_payload,
 )
-from webui.services.paths import ensure_user_subdirs, project_root, user_root
+from webui.services.paths import ensure_user_subdirs, project_root, results_dir, user_root
 from webui.services.pattern_search_service import PatternSearchService
 from webui.services.stock_suite_service import STOCK_SUITE_SERVICE
 from webui.services.trading_client_service import TradingClientService
+from webui.services.watchlist_service import WatchlistService
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = project_root()
 USER_ROOT = user_root()
 ensure_user_subdirs(USER_ROOT)
-RESULTS_DIR = USER_ROOT / "results"
+RESULTS_DIR = results_dir()
 REPORT_DIRS = {
     "results": RESULTS_DIR,
     "reports": USER_ROOT / "reports",
@@ -87,6 +88,11 @@ STOCK_KLINE_SERVICE = StockKlineService(USER_ROOT / "data")
 MARKET_INTELLIGENCE_SERVICE = MarketIntelligenceService()
 PATTERN_SEARCH_SERVICE = PatternSearchService(USER_ROOT / "data" / "pattern_fingerprints.db")
 TRADING_CLIENT_SERVICE = TradingClientService(PROJECT_ROOT / "config" / "trading_client_adapters.json")
+WATCHLIST_SERVICE = WatchlistService(USER_ROOT / "config" / "watchlist.json")
+# 形态指纹是隔日快照；给命中结果叠加自选同款实时报价（东财 ulist.np→腾讯回退），形态页可见当日最新价。
+PATTERN_SEARCH_SERVICE.set_quote_provider(WATCHLIST_SERVICE.quotes)
+# K线默认是新浪日K（隔日/盘中按天一根）；叠加自选同款实时报价，让当日那根bar与「实时价」徽章跟随盘中最新价。
+STOCK_KLINE_SERVICE.set_quote_provider(WATCHLIST_SERVICE.quotes)
 
 tokenizer = None
 model = None
@@ -1835,6 +1841,108 @@ def _run_pattern_refresh_job(job_id, params):
         )
 
 
+# ----------------------------------------------------------------------------
+# 形态指纹库：收盘后自动重建（A 股「隔日快照」问题的服务端兜底）
+#   指纹库是隔日冻结的 SQLite 快照，过去只能手动点「刷新」。这里加一个守护线程：
+#   工作日收盘整理后若发现快照仍是旧交易日，且无刷新任务在跑，则自动触发重建。
+# ----------------------------------------------------------------------------
+pattern_autorefresh_thread = None
+pattern_autorefresh_lock = threading.Lock()
+
+
+def _parse_after_close(raw):
+    """'15:30' → datetime.time(15,30)；非法值回退 15:30（给收盘后数据整理留足时间）。"""
+    try:
+        hh, mm = str(raw or '').strip().split(':', 1)
+        return datetime.time(hour=int(hh), minute=int(mm))
+    except (ValueError, AttributeError, TypeError):
+        return datetime.time(hour=15, minute=30)
+
+
+def _expected_pattern_snapshot_date(now, after_close):
+    """最近一个『应已生成指纹』的交易日（粗口径：仅按工作日，不查节假日历）。
+
+    - 工作日且已过收盘整理时刻 → 今天
+    - 否则回退到最近的上一个工作日（跨过周末）
+    偶发法定节假日会多触发一次重建（无害：拿到的就是最近交易日数据，快照日期随之对齐）。
+    """
+    today = now.date()
+    if today.weekday() < 5 and now.time() >= after_close:
+        return today
+    probe = today - datetime.timedelta(days=1)
+    while probe.weekday() >= 5:  # 5=周六 6=周日
+        probe -= datetime.timedelta(days=1)
+    return probe
+
+
+def _pattern_refresh_in_flight():
+    """是否已有形态指纹刷新任务在队列/运行中（避免自动调度与手动刷新重复触发）。"""
+    try:
+        for job in JOB_STORE.list_by_status(('queued', 'running'), limit=50):
+            if job.get('type') == 'pattern_refresh':
+                return True
+    except Exception:  # noqa: BLE001 — 查询失败时按『无在跑任务』处理，最坏多跑一次
+        return False
+    return False
+
+
+def _pattern_autorefresh_loop(after_close, interval):
+    time.sleep(20)  # 冷启动让位：后端刚拉起时别和首屏请求抢指纹库读
+    while True:
+        try:
+            now = datetime.datetime.now()
+            expected = _expected_pattern_snapshot_date(now, after_close)
+            current = None
+            snapshot_raw = PATTERN_SEARCH_SERVICE.status().get('snapshot_date')
+            if snapshot_raw:
+                try:
+                    current = datetime.date.fromisoformat(snapshot_raw)
+                except (ValueError, TypeError):
+                    current = None
+            if (current is None or current < expected) and not _pattern_refresh_in_flight():
+                print(f"[pattern-autorefresh] 指纹库快照={current} < 期望={expected}，自动触发重建")
+                JOB_SERVICE.start(
+                    "pattern_refresh",
+                    PATTERN_SEARCH_SERVICE.refresh_params({}),
+                    _run_pattern_refresh_job,
+                )
+        except Exception as exc:  # noqa: BLE001 — 守护线程绝不能因偶发错误退出
+            print(f"[pattern-autorefresh] 调度循环异常: {exc}")
+        time.sleep(interval)
+
+
+def start_pattern_autorefresh():
+    """启动『收盘后自动重建形态指纹库』守护线程（进程内只启一次）。
+
+    环境变量：
+    - KRONOS_DISABLE_PATTERN_AUTOREFRESH=1   关闭自动重建
+    - KRONOS_PATTERN_REFRESH_AFTER=15:30     收盘整理时刻（默认 15:30）
+    - KRONOS_PATTERN_REFRESH_INTERVAL=1800   轮询间隔秒（默认 1800，最低 60）
+    """
+    global pattern_autorefresh_thread
+    flag = os.environ.get("KRONOS_DISABLE_PATTERN_AUTOREFRESH", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        print("[pattern-autorefresh] 已被 KRONOS_DISABLE_PATTERN_AUTOREFRESH 关闭")
+        return None
+    with pattern_autorefresh_lock:
+        if pattern_autorefresh_thread and pattern_autorefresh_thread.is_alive():
+            return pattern_autorefresh_thread
+        after_close = _parse_after_close(os.environ.get("KRONOS_PATTERN_REFRESH_AFTER", "15:30"))
+        try:
+            interval = float(os.environ.get("KRONOS_PATTERN_REFRESH_INTERVAL", "1800"))
+        except (TypeError, ValueError):
+            interval = 1800.0
+        interval = max(60.0, interval)
+        pattern_autorefresh_thread = threading.Thread(
+            target=_pattern_autorefresh_loop,
+            args=(after_close, interval),
+            daemon=True,
+        )
+        pattern_autorefresh_thread.start()
+        print(f"[pattern-autorefresh] 已启动：收盘 {after_close.strftime('%H:%M')} 后自动重建，轮询 {int(interval)}s")
+        return pattern_autorefresh_thread
+
+
 def _run_pattern_backtest_job(job_id, params):
     _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
     _append_job_log(job_id, '开始同类图形回测')
@@ -1870,6 +1978,10 @@ DESKTOP_PAGES = {
     'features': {
         'title': '总览',
         'subtitle': '市场状态、核心指标、热榜与个股快搜',
+    },
+    'watchlist': {
+        'title': '自选',
+        'subtitle': '自选股实时行情、快捷分析与一键管理',
     },
     'workbench': {
         'title': '分析工作台',

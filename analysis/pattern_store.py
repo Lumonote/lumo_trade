@@ -7,7 +7,7 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 
 
 SCHEMA_SQL = """
@@ -47,10 +47,20 @@ CREATE TABLE IF NOT EXISTS saved_patterns (
     points           TEXT,                   -- JSON: 原始手绘点（可选，用于重绘画布）
     window_days      INTEGER,
     source           TEXT,                   -- 'draw' / 'stock:<code>'
+    tags             TEXT,                   -- JSON: 标签数组（可选）
+    query_params     TEXT,                   -- JSON: 保存时的检索条件（top_n/窗口/筛选/阈值…），可一键重跑
+    result_snapshot  TEXT,                   -- JSON: 保存时命中的股票快照（可选）
     created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_saved_created ON saved_patterns(created_at);
 """
+
+# 旧库（无 tags/query_params/result_snapshot 列）升级用：列名 → 类型
+_SAVED_PATTERN_COLUMNS = (
+    ("tags", "TEXT"),
+    ("query_params", "TEXT"),
+    ("result_snapshot", "TEXT"),
+)
 
 
 @dataclass
@@ -80,6 +90,15 @@ class PatternStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA_SQL)
+            self._migrate_saved_patterns(conn)
+
+    @staticmethod
+    def _migrate_saved_patterns(conn: sqlite3.Connection) -> None:
+        """给旧版 saved_patterns 补齐新增列（SQLite 无 ADD COLUMN IF NOT EXISTS）。"""
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(saved_patterns)")}
+        for column, decl in _SAVED_PATTERN_COLUMNS:
+            if column not in existing:
+                conn.execute(f"ALTER TABLE saved_patterns ADD COLUMN {column} {decl}")
 
     def upsert_fingerprints(self, fingerprints: Iterable[Fingerprint]) -> int:
         """批量写入指纹，按主键 stock_code 替换。返回写入条数。"""
@@ -286,7 +305,20 @@ class PatternStore:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _json_or(value: Any, default: Any) -> Any:
+        if not value:
+            return default
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
     def _row_to_saved(row: sqlite3.Row) -> dict:
+        keys = row.keys()
+        tags = PatternStore._json_or(row["tags"] if "tags" in keys else None, [])
+        query_params = PatternStore._json_or(row["query_params"] if "query_params" in keys else None, None)
+        result_snapshot = PatternStore._json_or(row["result_snapshot"] if "result_snapshot" in keys else None, None)
         return {
             "id": int(row["id"]),
             "name": row["name"] or "",
@@ -294,6 +326,10 @@ class PatternStore:
             "points": json.loads(row["points"]) if row["points"] else None,
             "window_days": int(row["window_days"]) if row["window_days"] is not None else None,
             "source": row["source"] or "draw",
+            "tags": tags if isinstance(tags, list) else [],
+            "query_params": query_params if isinstance(query_params, dict) else None,
+            "result_snapshot": result_snapshot if isinstance(result_snapshot, list) else None,
+            "result_count": len(result_snapshot) if isinstance(result_snapshot, list) else 0,
             "created_at": row["created_at"],
         }
 
@@ -304,6 +340,9 @@ class PatternStore:
         points: Optional[list] = None,
         window_days: Optional[int] = None,
         source: str = "draw",
+        tags: Optional[list] = None,
+        query_params: Optional[dict] = None,
+        result_snapshot: Optional[list] = None,
     ) -> dict:
         """保存一条用户形态，返回落库后的完整记录（含自增 id）。"""
         curve = [float(x) for x in normalized_curve]
@@ -311,13 +350,17 @@ class PatternStore:
             raise ValueError("normalized_curve 至少需要 2 个点")
         curve_json = json.dumps(curve, separators=(",", ":"))
         points_json = json.dumps(points, separators=(",", ":")) if points else None
+        tags_json = json.dumps(tags, separators=(",", ":"), ensure_ascii=False) if tags else None
+        qp_json = json.dumps(query_params, separators=(",", ":"), ensure_ascii=False) if query_params else None
+        snap_json = json.dumps(result_snapshot, separators=(",", ":"), ensure_ascii=False) if result_snapshot else None
         created = datetime.datetime.now().isoformat(timespec="seconds")
         with self._connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO saved_patterns (
-                    name, normalized_curve, points, window_days, source, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    name, normalized_curve, points, window_days, source,
+                    tags, query_params, result_snapshot, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     (name or "").strip() or None,
@@ -325,6 +368,9 @@ class PatternStore:
                     points_json,
                     int(window_days) if window_days else None,
                     (source or "draw").strip() or "draw",
+                    tags_json,
+                    qp_json,
+                    snap_json,
                     created,
                 ),
             )

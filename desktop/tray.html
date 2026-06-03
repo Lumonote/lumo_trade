@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kronos 行情台</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f5f7fb;
+        --card: #ffffff;
+        --ink: #18202f;
+        --muted: #6a7688;
+        --line: #e4e9f2;
+        --up: #e0584f;
+        --down: #15a35b;
+        --flat: #8b95a6;
+        --accent: #2f6fdd;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font-size: 13px;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        overflow: hidden;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        background: var(--card);
+      }
+      header .title { font-weight: 700; font-size: 14px; flex: 1; }
+      header .icn {
+        border: none;
+        background: transparent;
+        color: var(--accent);
+        font-size: 13px;
+        cursor: pointer;
+        padding: 4px 6px;
+        border-radius: 6px;
+      }
+      header .icn:hover { background: rgba(47, 111, 221, 0.1); }
+      header .clock { color: var(--muted); font-size: 11px; min-width: 56px; text-align: right; }
+      #warnbar {
+        background: #fff4d8;
+        color: #8a6300;
+        font-size: 11px;
+        padding: 4px 12px;
+        text-align: center;
+      }
+      main { flex: 1; overflow-y: auto; padding: 4px 0 10px; }
+      section { padding: 8px 12px 4px; }
+      .sec-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+      .sec-head h2 { margin: 0; font-size: 12px; font-weight: 700; flex: 1; }
+      .sec-head .meta { color: var(--muted); font-size: 11px; }
+      .tabs { display: flex; gap: 6px; }
+      .tabs button {
+        border: 1px solid var(--line);
+        background: var(--card);
+        color: var(--muted);
+        font-size: 11px;
+        border-radius: 999px;
+        padding: 2px 10px;
+        cursor: pointer;
+      }
+      .tabs button.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+      .list { display: flex; flex-direction: column; gap: 2px; }
+      /* 作者样式 .list{display:flex} 会压过 UA 的 [hidden]{display:none}，
+         必须显式声明，否则 switchTab 设的 hidden 属性失效、页签内容无法切换。 */
+      .list[hidden] { display: none; }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        text-align: left;
+        border: none;
+        background: var(--card);
+        color: var(--ink);
+        padding: 7px 9px;
+        border-radius: 8px;
+        cursor: pointer;
+        font: inherit;
+      }
+      .row:hover { background: #eef3fc; }
+      .row .nm { flex: 1; display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
+      .row .nm b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .row .nm i { color: var(--muted); font-style: normal; font-size: 11px; }
+      .row .px { min-width: 56px; text-align: right; font-variant-numeric: tabular-nums; }
+      .row .pc { min-width: 72px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+      .row.placeholder { color: var(--accent); justify-content: center; border: 1px dashed var(--line); }
+      .up { color: var(--up); }
+      .down { color: var(--down); }
+      .flat { color: var(--flat); }
+      .flash {
+        display: flex;
+        gap: 8px;
+        padding: 6px 9px;
+        border-radius: 8px;
+        background: var(--card);
+        line-height: 1.4;
+      }
+      .flash .t { color: var(--muted); font-size: 11px; min-width: 36px; }
+      .flash .x { flex: 1; }
+      .flash.imp .x { color: var(--up); font-weight: 600; }
+      .muted { color: var(--muted); padding: 8px 9px; margin: 0; }
+      .tools { display: flex; gap: 6px; padding: 6px 12px 0; }
+      .tools button {
+        flex: 1;
+        border: 1px solid var(--line);
+        background: var(--card);
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 8px 4px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+      }
+      .tools button:hover { border-color: var(--accent); color: var(--accent); }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #11151d;
+          --card: #192131;
+          --ink: #f5f7fb;
+          --muted: #9aa6b6;
+          --line: #2b3547;
+        }
+        .row:hover { background: #20293a; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="title">◈ Kronos 行情台</span>
+      <button class="icn" id="refresh" title="刷新行情">⟳ 刷新</button>
+      <button class="icn" id="console" title="打开控制台">⤢ 控制台</button>
+      <span class="clock" id="updated"></span>
+    </header>
+    <div id="warnbar" hidden></div>
+    <main>
+      <section>
+        <div class="sec-head"><h2>自选行情</h2><span class="meta" id="wl-count"></span></div>
+        <div class="list" id="watchlist"><p class="muted">正在连接本地服务…</p></div>
+      </section>
+      <section>
+        <div class="sec-head">
+          <h2>实时热点</h2>
+          <div class="tabs">
+            <button id="tab-hot" class="on">热点</button>
+            <button id="tab-changes">异动</button>
+            <button id="tab-flash">快讯</button>
+          </div>
+        </div>
+        <div class="list" id="hot"><p class="muted">加载中…</p></div>
+        <div class="list" id="changes" hidden><p class="muted">加载中…</p></div>
+        <div class="list" id="flash" hidden><p class="muted">加载中…</p></div>
+      </section>
+      <section>
+        <div class="sec-head"><h2>快捷工具</h2></div>
+        <div class="tools">
+          <button data-tool="/desktop/features">控制台</button>
+          <button data-tool="/desktop/reports">机会挖掘</button>
+          <button data-tool="/desktop/workbench">个股分析</button>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const API = "http://127.0.0.1:7070";
+      const T = window.__TAURI__ || null;
+      const $ = (s) => document.querySelector(s);
+      const state = { watchlist: null, hotspots: null, tab: "hot", timer: null };
+
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const esc = (s) =>
+        String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+      function fmtPct(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return "--";
+        return (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+      }
+      function fmtPrice(v) {
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? n.toFixed(2) : "—";
+      }
+      // A 股口径：红涨绿跌，0 为灰。
+      function changeClass(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n === 0) return "flat";
+        return n > 0 ? "up" : "down";
+      }
+      function timeText(t) {
+        const m = String(t ?? "").match(/(\d{2}):(\d{2})/);
+        return m ? `${m[1]}:${m[2]}` : "";
+      }
+
+      function openMain(route) {
+        if (T?.core?.invoke) T.core.invoke("open_main", { route });
+      }
+      async function fetchJson(path) {
+        const r = await fetch(API + path, { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      }
+      function bindRows(box) {
+        box.querySelectorAll("[data-route]").forEach((el) =>
+          el.addEventListener("click", () => openMain(el.dataset.route))
+        );
+      }
+      function setUpdated(clock, warn) {
+        $("#updated").textContent = clock || "";
+        const bar = $("#warnbar");
+        if (warn) { bar.textContent = warn; bar.hidden = false; } else { bar.hidden = true; }
+      }
+
+      function renderWatchlist() {
+        const box = $("#watchlist");
+        const data = state.watchlist;
+        if (!data) return;
+        const items = data.items || [];
+        $("#wl-count").textContent = `共 ${items.length} 只`;
+        if (!items.length) {
+          box.innerHTML = `<button class="row placeholder" data-route="/desktop/watchlist">+ 在主窗添加自选</button>`;
+        } else {
+          const quotedAll = data.quoted !== false;
+          box.innerHTML = items
+            .map((it) => {
+              const ok = quotedAll && it.price != null;
+              return `<button class="row" data-route="/desktop/workbench?stock=${encodeURIComponent(it.code)}">
+                  <span class="nm"><b>${esc(it.name || it.code)}</b><i>${esc(it.code)}</i></span>
+                  <span class="px">${ok ? fmtPrice(it.price) : "—"}</span>
+                  <span class="pc ${ok ? changeClass(it.change_pct) : "flat"}">${ok ? fmtPct(it.change_pct) : "行情源暂不可用"}</span>
+                </button>`;
+            })
+            .join("");
+        }
+        bindRows(box);
+      }
+
+      function renderHotspots() {
+        const data = state.hotspots || {};
+        const em = data.eastmoney || {};
+        const errs = data.errors || {};
+
+        // 热点：人气热股
+        const hbox = $("#hot");
+        const hot = em.hot_stocks || [];
+        if (errs.eastmoney_hot_stocks) hbox.innerHTML = `<p class="muted">该来源暂不可用。</p>`;
+        else if (!hot.length) hbox.innerHTML = `<p class="muted">暂无数据。</p>`;
+        else
+          hbox.innerHTML = hot
+            .slice(0, 12)
+            .map(
+              (g, i) => `<button class="row" data-route="/desktop/workbench?stock=${encodeURIComponent(g.code)}">
+                <span class="nm"><b>${i + 1}. ${esc(g.name)}</b><i>${esc(g.code)}</i></span>
+                <span class="pc ${changeClass(g.change_pct)}">${fmtPct(g.change_pct)}</span>
+              </button>`
+            )
+            .join("");
+        bindRows(hbox);
+
+        // 异动：盘口实时异动（火箭发射/快速反弹/大笔买入/封涨停板等，仅交易时段更新）
+        const cbox = $("#changes");
+        const changes = em.changes || [];
+        if (errs.eastmoney_changes) cbox.innerHTML = `<p class="muted">该来源暂不可用。</p>`;
+        else if (!changes.length) cbox.innerHTML = `<p class="muted">当前无异动（仅交易时段更新）。</p>`;
+        else
+          cbox.innerHTML = changes
+            .slice(0, 15)
+            .map(
+              (c) => `<button class="row" data-route="/desktop/workbench?stock=${encodeURIComponent(c.code)}">
+                <span class="nm"><b>${esc(c.name)}</b><i>${esc(c.type)}${c.time ? " · " + esc(c.time) : ""}</i></span>
+                <span class="pc ${changeClass(c.change_pct)}">${c.change_pct != null ? fmtPct(c.change_pct) : "—"}</span>
+              </button>`
+            )
+            .join("");
+        bindRows(cbox);
+
+        // 快讯：金十
+        const fbox = $("#flash");
+        const flash = data.jinshi || [];
+        if (errs.jinshi) fbox.innerHTML = `<p class="muted">该来源暂不可用。</p>`;
+        else if (!flash.length) fbox.innerHTML = `<p class="muted">暂无快讯。</p>`;
+        else
+          fbox.innerHTML = flash
+            .slice(0, 12)
+            .map(
+              (f) =>
+                `<div class="flash ${f.important ? "imp" : ""}"><span class="t">${esc(timeText(f.time))}</span><span class="x">${esc(f.title)}</span></div>`
+            )
+            .join("");
+      }
+
+      function switchTab(tab) {
+        state.tab = tab;
+        ["hot", "changes", "flash"].forEach((t) => {
+          $("#tab-" + t).classList.toggle("on", t === tab);
+          $("#" + t).hidden = t !== tab;
+        });
+      }
+
+      async function loadAll() {
+        const [wl, hs] = await Promise.allSettled([
+          fetchJson("/api/watchlist"),
+          fetchJson("/api/market/hotspots"),
+        ]);
+        let warn = "";
+        if (wl.status === "fulfilled") state.watchlist = wl.value;
+        else warn = "更新失败，显示缓存";
+        if (hs.status === "fulfilled") state.hotspots = hs.value;
+        else warn = warn || "更新失败，显示缓存";
+        renderWatchlist();
+        renderHotspots();
+        const ts =
+          (state.watchlist?.updated_at || "").slice(11, 19) ||
+          new Date().toTimeString().slice(0, 8);
+        setUpdated(ts, warn);
+      }
+
+      async function boot() {
+        for (let i = 0; i < 12; i += 1) {
+          try {
+            await fetchJson("/api/watchlist");
+            break;
+          } catch (e) {
+            $("#watchlist").innerHTML = `<p class="muted">正在连接本地服务…（第 ${i + 1} 次）</p>`;
+            await sleep(1000);
+          }
+        }
+        await loadAll();
+      }
+
+      function startPolling() {
+        stopPolling();
+        state.timer = window.setInterval(() => {
+          if (document.visibilityState === "visible") loadAll();
+        }, 20000);
+      }
+      function stopPolling() {
+        if (state.timer) {
+          window.clearInterval(state.timer);
+          state.timer = null;
+        }
+      }
+
+      $("#refresh").addEventListener("click", () => loadAll());
+      $("#console").addEventListener("click", () => openMain("/desktop/features"));
+      ["hot", "changes", "flash"].forEach((t) =>
+        $("#tab-" + t).addEventListener("click", () => switchTab(t))
+      );
+      document
+        .querySelectorAll("[data-tool]")
+        .forEach((b) => b.addEventListener("click", () => openMain(b.dataset.tool)));
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+          loadAll();
+          startPolling();
+        } else {
+          stopPolling();
+        }
+      });
+      window.addEventListener("focus", () => loadAll());
+      if (T?.event?.listen) T.event.listen("tray://refresh", () => loadAll());
+
+      boot();
+      startPolling();
+    </script>
+  </body>
+</html>

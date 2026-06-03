@@ -658,9 +658,35 @@ def get_snapshot(request: Request) -> Response:
     return _json_response(webui_core.market_state)
 
 
+@_native_get("/api/market/hotspots")
+def market_hotspots(request: Request) -> Response:
+    """实时热点 / 异动 / 快讯（东方财富 + 金十 + 雪球），通知栏数据源。"""
+    return _json_response(webui_core.MARKET_INTELLIGENCE_SERVICE.load())
+
+
+@_native_get("/api/watchlist")
+def watchlist_list(request: Request) -> Response:
+    return _json_response(webui_core.WATCHLIST_SERVICE.list_with_quotes())
+
+
+@_native_post("/api/watchlist/add")
+def watchlist_add(request: Request) -> Response:
+    body = _request_json(request)
+    result, status_code = webui_core.WATCHLIST_SERVICE.add(body.get("code"), body.get("name"))
+    return _json_response(result, status_code=status_code)
+
+
+@_native_post("/api/watchlist/remove")
+def watchlist_remove(request: Request) -> Response:
+    body = _request_json(request)
+    result, status_code = webui_core.WATCHLIST_SERVICE.remove(body.get("code"))
+    return _json_response(result, status_code=status_code)
+
+
 @app.startup_handler
 def startup() -> None:
     webui_core.start_market_monitor()
+    webui_core.start_pattern_autorefresh()
 
 
 def configure_server_from_env() -> None:

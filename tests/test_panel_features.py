@@ -63,6 +63,8 @@ def test_extract_features_sections_and_model_ratio():
     assert f["lhb_net_inst_buy"] == 5e7
     assert f["holder_number_trend"] == "down"   # 户数减少 = 筹码集中
     assert f["fund_hold_trend"] is None          # Phase 1: fund provider exposes no prior period
+    assert f["fund_hold_count"] == 1             # 单期重仓家数（来自 fund_holds.rows）
+    assert f["fund_hold_mv"] is None             # 该 fixture 行无 market_value → None
 
 
 def test_extract_features_technical_computed():
@@ -88,6 +90,29 @@ def test_extract_features_tolerates_empty():
     f = extract_features({}, {})
     assert f["roe"] is None and f["rsi"] is None and f["model_bull_ratio"] is None
     assert f["market_regime"] is None
+
+
+def test_extract_features_fund_hold_count_and_mv_sum():
+    """重仓基金家数 = fund_holds.rows 长度；持仓市值 = 各行 market_value(元) 求和。
+    锁定『单期持仓→重仓家数+市值』派生，支撑 indicators 重仓基金卡。"""
+    sections = {
+        "institutional_holdings": {"data_status": "fresh",
+            "fund_holds": {"period": "2026-03-31", "rows": [
+                {"fund_name": "易方达蓝筹", "market_value": 1.5e9, "nv_ratio": 3.4},
+                {"fund_name": "兴全合润", "market_value": 2.1e9, "nv_ratio": 2.8},
+                {"fund_name": "中欧时代先锋", "market_value": None},  # 缺市值不应计入求和
+            ], "total_nv_pct": 6.2}},
+    }
+    f = extract_features({}, sections)
+    assert f["fund_hold_count"] == 3
+    assert abs(f["fund_hold_mv"] - 3.6e9) < 1.0   # 1.5e9 + 2.1e9，第三行 None 跳过
+
+
+def test_extract_features_no_fund_rows_gives_none():
+    sections = {"institutional_holdings": {"fund_holds": {"rows": []}}}
+    f = extract_features({}, sections)
+    assert f["fund_hold_count"] is None
+    assert f["fund_hold_mv"] is None
 
 
 def test_extract_features_reads_real_provider_keys():

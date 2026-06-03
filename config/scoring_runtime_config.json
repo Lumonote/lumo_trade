@@ -1,25 +1,24 @@
 {
-  "generated_at": "2026-05-31T20:02:14.951725",
+  "generated_at": "2026-06-02T22:08:22.725591",
   "window_days": 120,
-  "sample_count": 482,
-  "recent_samples": 140,
+  "sample_count": 502,
+  "recent_samples": 160,
   "newest_return_age_days": 7,
   "signals": [
     "chase_risk_neg_corr",
-    "tech_score_neg_corr",
     "quant_saturation"
   ],
-  "score_corr_5d": 0.002251,
+  "score_corr_5d": -0.000117,
   "factor_corr_5d": {
-    "score": 0.0023,
-    "quant_score": 0.0058,
-    "chase_risk": -0.0399,
-    "rsi": 0.0019,
-    "sell_signals": 0.0063,
-    "buy_signals": 0.0214,
-    "sector_score": 0.0172,
-    "tech_score": -0.0179,
-    "change_5d": -0.0245
+    "score": -0.0001,
+    "quant_score": 0.003,
+    "chase_risk": -0.0342,
+    "rsi": -0.0022,
+    "sell_signals": 0.0076,
+    "buy_signals": 0.0176,
+    "sector_score": 0.0325,
+    "tech_score": -0.0122,
+    "change_5d": -0.0229
   },
   "rating_thresholds": {
     "S": 85,
@@ -29,9 +28,9 @@
     "C": 0
   },
   "dimension_weights": {
-    "position_timing": 0.15626033716218282,
+    "position_timing": 0.15,
     "volume_health": 0.24,
-    "technical": 0.11373966283781717,
+    "technical": 0.12,
     "quantitative": 0.27,
     "liquidity": 0.05,
     "sector": 0.08,

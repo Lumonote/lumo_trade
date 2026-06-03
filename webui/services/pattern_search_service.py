@@ -14,9 +14,12 @@ from analysis.pattern_store import PatternStore
 
 DEFAULT_TARGET_LENGTH = 30
 
-# 合法 A 股 6 位代码：沪 6 / 深 0 / 创业 3 / 科创 688 / 北交所 8·4。用于「指纹库 + 全市场索引
-# 都未命中，但用户输入的就是合法代码」时直接放行——导航到分析页后 OHLCV 会按需补偿。
-_VALID_CODE_RE = re.compile(r"^(?:6[0-9]{5}|[03][0-9]{5}|[84][0-9]{5})$")
+# 实时报价叠加到命中结果的最大只数（单次批量报价即可覆盖，避免对行情源过量请求）。
+_REALTIME_OVERLAY_CAP = 50
+
+# 合法 A 股 6 位代码：沪 6 / 深 0 / 创业 3 / 科创 688 / 北交所 8·4·92(920xxx 新代码段)。用于
+# 「指纹库 + 全市场索引都未命中，但用户输入的就是合法代码」时直接放行——导航到分析页后 OHLCV 会按需补偿。
+_VALID_CODE_RE = re.compile(r"^(?:6[0-9]{5}|[03][0-9]{5}|[84][0-9]{5}|92[0-9]{4})$")
 _UNIVERSE_TTL_SECONDS = 86400  # 全 A 代码/名称索引按天刷新即可
 
 
@@ -26,7 +29,7 @@ def _market_label(code: str) -> str:
         return "沪市"
     if code.startswith(("0", "3")):
         return "深市"
-    if code.startswith(("8", "4")):
+    if code.startswith(("8", "4", "92")):
         return "北交所"
     return ""
 
@@ -63,7 +66,12 @@ def _safe_float(value: Any, default: float | None, minimum: float | None = None,
 
 
 class PatternSearchService:
-    def __init__(self, db_path: Path, universe_provider: Optional[Callable[[], list]] = None):
+    def __init__(
+        self,
+        db_path: Path,
+        universe_provider: Optional[Callable[[], list]] = None,
+        quote_provider: Optional[Callable[[list], dict]] = None,
+    ):
         self.db_path = Path(db_path)
         self._store: PatternStore | None = None
         self._lock = threading.RLock()
@@ -73,6 +81,9 @@ class PatternSearchService:
         self._universe_cache: list | None = None
         self._universe_fetched_at = 0.0
         self._universe_lock = threading.RLock()
+        # 实时报价源（如 WatchlistService.quotes）。形态指纹是隔日快照，命中结果叠加当日
+        # 实时价/涨跌幅，帮助判断该股今日是否已偏离形态。失败静默降级，绝不阻断检索。
+        self._quote_provider = quote_provider
 
     def get_store(self) -> PatternStore:
         with self._lock:
@@ -162,6 +173,7 @@ class PatternSearchService:
         elapsed_ms = int((time.time() - started) * 1000)
 
         status = store.current_status()
+        quoted, quote_updated_at = self._overlay_realtime(results)
         return {
             'matches': results,
             'query_curve': query_curve,
@@ -169,9 +181,55 @@ class PatternSearchService:
             'requested_window_days': window_days,
             'query_offset_days': query_offset_days,
             'snapshot_date': status.get('last_snapshot_date'),
+            'quoted': quoted,
+            'quote_updated_at': quote_updated_at,
             'compute_ms': elapsed_ms,
             'count': len(results),
         }, 200
+
+    def set_quote_provider(self, provider: Optional[Callable[[list], dict]]) -> None:
+        """注入/更换实时报价源（如 WatchlistService.quotes）。与自选行情共用同一行情口径。"""
+        self._quote_provider = provider
+
+    def _overlay_realtime(self, results: list) -> tuple[bool, Optional[str]]:
+        """给命中结果就地叠加当日实时价/涨跌幅（指纹是隔日快照，实时价帮助判断是否已变样）。
+
+        返回 (quoted, quote_updated_at)。报价源缺失/异常/全部无效时静默降级（quoted=False），
+        绝不影响形态结果本身；最多对前 ``_REALTIME_OVERLAY_CAP`` 只取价（单次批量请求即可覆盖）。
+        """
+        provider = self._quote_provider
+        if not provider or not results:
+            return False, None
+        codes: list[str] = []
+        seen: set[str] = set()
+        for row in results[:_REALTIME_OVERLAY_CAP]:
+            code = str(row.get('stock_code') or '').strip()
+            if code and code not in seen:
+                seen.add(code)
+                codes.append(code)
+        if not codes:
+            return False, None
+        try:
+            quote_map = provider(codes) or {}
+        except Exception:  # noqa: BLE001 — 行情源不可用时降级，不应阻断形态检索
+            return False, None
+        if not quote_map:
+            return False, None
+        matched = 0
+        for row in results:
+            quote = quote_map.get(str(row.get('stock_code') or '').strip())
+            if not quote:
+                continue
+            price = quote.get('price')
+            if price in (None, 0, 0.0):  # 0 价 = 停牌/无效，按未取到处理
+                continue
+            row['realtime_price'] = price
+            row['realtime_change_pct'] = quote.get('change_pct')
+            row['realtime'] = True
+            matched += 1
+        if not matched:
+            return False, None
+        return True, datetime.datetime.now().isoformat(timespec='seconds')
 
     def search_stocks(self, query: str, limit: Any = 10) -> dict[str, Any]:
         query = str(query or '').strip()
@@ -361,7 +419,7 @@ class PatternSearchService:
                 return f'sh{code}'
             if code.startswith(('0', '3')):
                 return f'sz{code}'
-            if code.startswith(('8', '4')):
+            if code.startswith(('8', '4', '92')):
                 return f'bj{code}'
             return f'sh{code}'
 
@@ -450,6 +508,78 @@ class PatternSearchService:
     # 已保存形态（历史图形）
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_tags(raw: Any) -> Optional[list]:
+        if isinstance(raw, str):
+            raw = re.split(r'[,，\s]+', raw)
+        if not isinstance(raw, list):
+            return None
+        tags: list[str] = []
+        for item in raw:
+            text = str(item or '').strip()
+            if text and text not in tags:
+                tags.append(text[:20])
+            if len(tags) >= 12:
+                break
+        return tags or None
+
+    @staticmethod
+    def _normalize_query_params(raw: Any) -> Optional[dict]:
+        """白名单化检索条件，使「保存的查询」可被一键重跑。"""
+        if not isinstance(raw, dict):
+            return None
+        out: dict[str, Any] = {}
+        top_n = _safe_int(raw.get('top_n'), default=None, minimum=1, maximum=200)
+        if top_n is not None:
+            out['top_n'] = top_n
+        window_days = _safe_int(raw.get('window_days'), default=None, minimum=5, maximum=DEFAULT_TARGET_LENGTH)
+        if window_days is not None:
+            out['window_days'] = window_days
+        offset = _safe_int(raw.get('query_offset_days'), default=None, minimum=0, maximum=5)
+        if offset is not None:
+            out['query_offset_days'] = offset
+        history_days = _safe_int(raw.get('history_days'), default=None, minimum=60, maximum=500)
+        if history_days is not None:
+            out['history_days'] = history_days
+        threshold = _safe_float(raw.get('similarity_threshold'), default=None, minimum=0.5, maximum=0.99)
+        if threshold is not None:
+            out['similarity_threshold'] = threshold
+        filters = raw.get('filters')
+        if isinstance(filters, dict):
+            clean: dict[str, Any] = {}
+            market = filters.get('market')
+            if isinstance(market, list):
+                market = [str(m).strip() for m in market if str(m).strip()]
+                if market:
+                    clean['market'] = market
+            elif isinstance(market, str) and market.strip():
+                clean['market'] = market.strip()
+            industry = filters.get('industry')
+            if isinstance(industry, str) and industry.strip():
+                clean['industry'] = industry.strip()
+            if 'exclude_st' in filters:
+                clean['exclude_st'] = bool(filters.get('exclude_st'))
+            if clean:
+                out['filters'] = clean
+        return out or None
+
+    @staticmethod
+    def _normalize_snapshot(raw: Any, cap: int = 60) -> Optional[list]:
+        """裁剪命中结果快照：限量 + 仅留标量字段，避免落库膨胀。"""
+        if not isinstance(raw, list):
+            return None
+        out: list[dict] = []
+        for item in raw[:cap]:
+            if not isinstance(item, dict):
+                continue
+            slim = {
+                key: value for key, value in item.items()
+                if value is None or isinstance(value, (str, int, float, bool))
+            }
+            if slim:
+                out.append(slim)
+        return out or None
+
     def save_pattern(self, payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
         curve = payload.get('normalized_curve') or payload.get('curve')
         if not isinstance(curve, list) or len(curve) < 2:
@@ -468,6 +598,9 @@ class PatternSearchService:
             name = f"形态 {datetime.datetime.now().strftime('%m-%d %H:%M')}"
         window_days = _safe_int(payload.get('window_days'), default=None, minimum=2, maximum=DEFAULT_TARGET_LENGTH)
         source = str(payload.get('source') or 'draw').strip() or 'draw'
+        tags = self._normalize_tags(payload.get('tags'))
+        query_params = self._normalize_query_params(payload.get('query_params'))
+        result_snapshot = self._normalize_snapshot(payload.get('result_snapshot'))
 
         try:
             saved = self.get_store().save_pattern(
@@ -476,6 +609,9 @@ class PatternSearchService:
                 points=points,
                 window_days=window_days,
                 source=source,
+                tags=tags,
+                query_params=query_params,
+                result_snapshot=result_snapshot,
             )
         except ValueError as exc:
             return {'error': str(exc)}, 400

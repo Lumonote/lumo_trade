@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from analysis.panel.registry import SCHOOLS
-from analysis.panel.rules import resolve_rule, score_to_signal
+from analysis.panel.rules import eval_school_default, resolve_rule, score_to_signal
 from analysis.panel.style import (
     classify_style, load_style_weights, school_style_weight,
 )
@@ -33,11 +33,16 @@ def lean_label(score: float) -> str:
 def evaluate_all(personas: List[Dict[str, Any]], features: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for p in personas:
-        rule_fn = resolve_rule(p["rule"], p["school"])
-        verdict = rule_fn(features)
+        # stub 走流派默认 + 自身 key_metrics 微调（同流派成员因此分化）；旗舰走手写规则。
+        if p["rule"] == "school_default":
+            verdict = eval_school_default(features, p)
+        else:
+            verdict = resolve_rule(p["rule"], p["school"])(features)
         score = int(verdict["score"])
         reasons = verdict.get("reasons") or []
-        headline = reasons[0] if reasons else p.get("voice", "—")
+        # 无任何指标可评（分数停在 50 初值）→ 标记数据不足，避免伪装成“自信中性”。
+        insufficient = not reasons
+        headline = reasons[0] if reasons else "数据不足 · 暂不表态"
         out.append({
             "id": p["id"],
             "name": p["name"],
@@ -48,6 +53,7 @@ def evaluate_all(personas: List[Dict[str, Any]], features: Dict[str, Any]) -> Li
             "voice": p.get("voice", ""),  # 投资风格一句话（前端悬停展示）
             "key_metrics": p.get("key_metrics", []),  # 该 persona 关注的核心指标（前端悬停展示）
             "source": "handwritten" if p["tier"] == "flagship" else "rule",
+            "data_insufficient": insufficient,  # 关注指标全无数据 → 前端显“数据不足”而非中性
             "reasons": reasons,
         })
     return out

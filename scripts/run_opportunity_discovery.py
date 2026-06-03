@@ -38,6 +38,7 @@ from scripts.stock_filter_utils import load_tushare_token
 from analysis.opportunity_scorer import OpportunityScorer
 from analysis.opportunity_filter import OpportunityFilter
 from scripts.opportunity_report_generator import OpportunityReportGenerator
+from webui.services.paths import results_dir
 from analysis.news_sentiment_collector import NewsSentimentCollector
 from analysis.global_hot_news_collector import GlobalHotNewsCollector
 from analysis.sector_hot_news_collector import SectorNewsCollector
@@ -76,8 +77,9 @@ class OpportunityDiscovery:
         self.scorer = OpportunityScorer()
         logger.info(f"✓ 评分器初始化完成（耗时 {time.time() - t0:.2f}s）")
         self.filter = OpportunityFilter()
-        # 尊重打包环境的结果目录设置
-        output_dir = os.environ.get('KRONOS_RESULTS_DIR', 'results')
+        # 报告输出目录：与桌面/WebUI 统一走 results_dir()（优先 KRONOS_RESULTS_DIR，
+        # 否则 user_root()/results），确保命令行跑的报告桌面也读得到。
+        output_dir = str(results_dir())
         self.report_generator = OpportunityReportGenerator(output_dir=output_dir)
         self.hot_news_collector = GlobalHotNewsCollector()
         self.sector_news_collector = SectorNewsCollector()

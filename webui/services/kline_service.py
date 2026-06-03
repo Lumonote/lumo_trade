@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
 import urllib.parse
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 from webui.services.analysis_jobs import normalize_stock_codes, safe_int
 from webui.services.http_client import request_json
@@ -22,6 +23,13 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 class StockKlineService:
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir)
+        # 实时报价源（如 WatchlistService.quotes）。日K是隔日/盘中按天一根的快照，
+        # 叠加当日最新价后，盘中那根bar与「实时价」徽章可跟随最新成交价。
+        self._quote_provider: Optional[Callable[[list], dict]] = None
+
+    def set_quote_provider(self, provider: Optional[Callable[[list], dict]]) -> None:
+        """注入/更换实时报价源（如 WatchlistService.quotes）。与自选行情共用同一行情口径。"""
+        self._quote_provider = provider
 
     @staticmethod
     def sina_symbol_for_code(stock_code: str) -> str:
@@ -180,6 +188,59 @@ class StockKlineService:
         records = self.parse_sina_klines(payload if isinstance(payload, list) else [])
         return records, ''
 
+    @staticmethod
+    def _apply_quote_to_records(records: list[dict[str, Any]], quote: Any, today: str) -> bool:
+        """把实时报价就地叠加到「当日」那根日K上(close/high/low/pct_chg)。
+
+        仅当最后一根的日期 == today 才改写——盘前/隔日(当日bar尚未生成)时不伪造，
+        避免凭空造出一根没有真实 OHLC 的当日K。返回是否发生了改写。
+        """
+        if not records or not isinstance(quote, dict):
+            return False
+        price = _safe_float(quote.get('price'))
+        if price <= 0:  # 0 价 = 停牌/无效，按未取到处理
+            return False
+        last = records[-1]
+        if str(last.get('date') or '') != str(today):
+            return False
+        last['close'] = price
+        last['high'] = max(_safe_float(last.get('high'), price), price)
+        low_val = _safe_float(last.get('low'), price)
+        last['low'] = min(low_val if low_val > 0 else price, price)
+        change_pct = quote.get('change_pct')
+        if change_pct is not None:  # 报价的涨跌幅是对昨收，正是日K当日涨跌口径
+            last['pct_chg'] = round(_safe_float(change_pct), 2)
+        return True
+
+    def _overlay_realtime(self, records: list[dict[str, Any]], code: str) -> Optional[dict[str, Any]]:
+        """取实时报价并叠加到当日bar；返回报价块(供前端徽章)或 None。
+
+        报价源缺失/异常/无效价时静默降级，绝不阻断K线本身。
+        """
+        provider = self._quote_provider
+        if not provider or not records:
+            return None
+        try:
+            quote_map = provider([code]) or {}
+        except Exception:  # noqa: BLE001 — 行情源不可用时降级，不应阻断K线
+            return None
+        quote = quote_map.get(str(code).strip()) if isinstance(quote_map, dict) else None
+        if not isinstance(quote, dict):
+            return None
+        price = _safe_float(quote.get('price'))
+        if price <= 0:
+            return None
+        today = datetime.date.today().strftime('%Y-%m-%d')
+        applied = self._apply_quote_to_records(records, quote, today)
+        return {
+            'name': str(quote.get('name') or '').strip(),
+            'price': price,
+            'change_pct': round(_safe_float(quote.get('change_pct')), 2),
+            'change_amount': _safe_float(quote.get('change_amount')),
+            'updated_at': datetime.datetime.now().isoformat(timespec='seconds'),
+            'applied': applied,
+        }
+
     def get_payload(
         self,
         stock_code: str,
@@ -201,24 +262,32 @@ class StockKlineService:
             sina_error = str(exc)
 
         if sina_records:
+            quote_block = self._overlay_realtime(sina_records, code)
             return {
                 'code': code,
-                'name': '',
+                'name': (quote_block or {}).get('name') or '',
                 'period': normalized_period,
                 'source': 'sina',
                 'available': True,
                 'records': sina_records,
+                'quote': quote_block,
+                'quoted': bool(quote_block),
+                'quote_updated_at': quote_block['updated_at'] if quote_block else None,
             }, None
 
         local_records, local_source = self.load_local_kline(code, normalized_period, normalized_limit)
         if local_records:
+            quote_block = self._overlay_realtime(local_records, code)
             return {
                 'code': code,
-                'name': '',
+                'name': (quote_block or {}).get('name') or '',
                 'period': normalized_period,
                 'source': f'local:{local_source}',
                 'available': True,
                 'records': local_records,
+                'quote': quote_block,
+                'quoted': bool(quote_block),
+                'quote_updated_at': quote_block['updated_at'] if quote_block else None,
                 'message': 'Sina 行情接口暂不可用，已使用本地缓存数据（可能不是最新）。' if sina_error else None,
             }, None
 

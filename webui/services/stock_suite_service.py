@@ -19,7 +19,8 @@ from analysis.analysis_overlay import merge_overlay
 from analysis.stock_analysis_suite import StockAnalysisSuite
 
 
-_CODE_RE = re.compile(r"^[036][0-9]{5}$|^[68][0-9]{5}$")
+# 合法 A 股 6 位代码：深 0 / 创业 3 / 沪 6(含科创 688) / 北交所 8·4·92(920xxx 新代码段)。
+_CODE_RE = re.compile(r"^(?:6[0-9]{5}|[03][0-9]{5}|[84][0-9]{5}|92[0-9]{4})$")
 
 
 def _build_institutional_providers() -> Dict[str, Any]:

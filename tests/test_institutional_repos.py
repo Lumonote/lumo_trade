@@ -59,6 +59,22 @@ def test_dragon_tiger_repo_upsert_and_get(conn):
     assert len(df2) == 2
 
 
+def test_dragon_tiger_get_by_code_matches_bare_and_suffixed(conn):
+    """6 位裸码查询必须命中带后缀入库的行：Tushare top_inst 回填存 '000007.SZ'，
+    但 suite 统一传 6 位 '000007' —— 修复龙虎榜席位恒「数据不足」的格式错配 bug。"""
+    from data_store import dragon_tiger_repo as dt
+
+    dt.upsert_rows([
+        {"ts_code": "000007.SZ", "trade_date": "2026-05-27", "inst_name": "量化 A",
+         "side": "buy", "net_amount": 9e7, "buy_amount": 1e8, "sell_amount": 1e7,
+         "is_quant": 1, "quant_confidence": 0.9, "reason": "上榜"},
+    ])
+    assert len(dt.get_by_code("000007")) == 1        # 核心修复：裸码命中后缀行
+    assert len(dt.get_by_code("000007.SZ")) == 1     # 向后兼容：后缀查询仍命中
+    assert dt.latest("000007")["trade_date"] == "2026-05-27"
+    assert len(dt.get_by_code("000007", "2026-05-27")) == 1  # 带日期过滤同样归一
+
+
 def test_hsgt_repo_latest(conn):
     from data_store import hsgt_repo
 

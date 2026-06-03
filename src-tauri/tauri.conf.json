@@ -7,6 +7,7 @@
     "frontendDist": "../desktop"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
@@ -17,6 +18,18 @@
         "minHeight": 720,
         "resizable": true,
         "fullscreen": false
+      },
+      {
+        "label": "tray-popup",
+        "url": "tray.html",
+        "width": 360,
+        "height": 520,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focusable": true
       }
     ],
     "security": {

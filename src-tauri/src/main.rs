@@ -8,10 +8,10 @@ use std::{
     process::{Child, Command, Stdio},
     sync::Mutex,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -466,23 +466,166 @@ fn start_backend(app: &tauri::App) -> Option<Child> {
     }
 }
 
+/// 弹窗去抖状态：记录上次因失焦隐藏的时刻，用于区分「点击托盘想关闭」与「失焦自动收起」。
+struct PopupState {
+    last_hidden: Mutex<Option<Instant>>,
+}
+
+/// 显示并聚焦主窗（菜单「打开控制台」/ 关窗后再唤起都走这里）。
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+}
+
+/// 锚定到托盘位置并显示弹窗。
+fn show_popup(popup: &tauri::WebviewWindow) {
+    use tauri_plugin_positioner::{Position, WindowExt};
+    let _ = popup.move_window(Position::TrayCenter);
+    let _ = popup.show();
+    let _ = popup.set_focus();
+}
+
+/// 左键托盘：可见→隐藏；隐藏→显示。带 250ms 去抖，避免与失焦隐藏竞争导致闪烁/双触。
+fn toggle_popup(app: &tauri::AppHandle) {
+    let Some(popup) = app.get_webview_window("tray-popup") else {
+        return;
+    };
+    if popup.is_visible().unwrap_or(false) {
+        let _ = popup.hide();
+        return;
+    }
+    if let Some(state) = app.try_state::<PopupState>() {
+        if let Ok(guard) = state.last_hidden.lock() {
+            if let Some(hidden_at) = *guard {
+                if hidden_at.elapsed() < Duration::from_millis(250) {
+                    // 本次点击正是刚触发失焦隐藏的那次 —— 视为「关闭」，不再弹出。
+                    return;
+                }
+            }
+        }
+    }
+    show_popup(&popup);
+}
+
+/// 弹窗 JS 调用：显示+聚焦主窗并导航到后端路由（个股分析/形态/报告等），随后收起弹窗。
+#[tauri::command]
+fn open_main(app: tauri::AppHandle, route: String) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+        let route = if route.starts_with('/') {
+            route
+        } else {
+            format!("/{route}")
+        };
+        let url = format!("http://{BACKEND_HOST}:{BACKEND_PORT}{route}");
+        // route 仅来自内置 tray.html（页面名 + 6 位代码），对单引号做转义以防注入。
+        let safe = url.replace('\'', "%27");
+        let _ = main.eval(&format!("window.location.assign('{safe}')"));
+    }
+    if let Some(popup) = app.get_webview_window("tray-popup") {
+        let _ = popup.hide();
+    }
+}
+
+/// 弹窗 JS 调用：收起面板（点击跳转后顺手隐藏）。
+#[tauri::command]
+fn hide_popup(app: tauri::AppHandle) {
+    if let Some(popup) = app.get_webview_window("tray-popup") {
+        let _ = popup.hide();
+    }
+}
+
+/// 构建托盘图标 + 右键菜单（打开控制台 / 刷新行情 / 退出）。
+#[cfg(desktop)]
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let open_console = MenuItemBuilder::with_id("open_console", "打开控制台").build(app)?;
+    let refresh = MenuItemBuilder::with_id("refresh", "刷新行情").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "退出 Kronos").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .item(&open_console)
+        .item(&refresh)
+        .separator()
+        .item(&quit)
+        .build()?;
+
+    let mut builder = TrayIconBuilder::with_id("kronos-tray")
+        .tooltip("Kronos 行情台")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open_console" => show_main(app),
+            "refresh" => {
+                let _ = app.emit_to("tray-popup", "tray://refresh", ());
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // 缓存托盘坐标，供 positioner 锚定弹窗。
+            tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle_popup(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 fn main() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_positioner::init())
+        .invoke_handler(tauri::generate_handler![open_main, hide_popup])
         .setup(|app| {
             let user_dir = user_data_dir(app);
             let backend = BackendProcess::new(start_backend(app), backend_pid_path(&user_dir));
             app.manage(backend);
+            app.manage(PopupState {
+                last_hidden: Mutex::new(None),
+            });
+
+            #[cfg(desktop)]
+            build_tray(app)?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::CloseRequested { .. }) {
-                window.state::<BackendProcess>().stop();
+        .on_window_event(|window, event| match event {
+            // D1：关主窗 ×→ 隐藏常驻（后端继续跑），不再杀后端。
+            WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
+                api.prevent_close();
+                let _ = window.hide();
             }
+            // 弹窗失焦自动收起（菜单栏应用标准行为），并记录时刻供左键去抖。
+            WindowEvent::Focused(false) if window.label() == "tray-popup" => {
+                let _ = window.hide();
+                if let Some(state) = window.app_handle().try_state::<PopupState>() {
+                    if let Ok(mut guard) = state.last_hidden.lock() {
+                        *guard = Some(Instant::now());
+                    }
+                }
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("error while building Kronos Tauri application");
 
     app.run(|app_handle, event| {
+        // 仅「真正退出」（菜单退出 / Cmd+Q）才杀后端；关窗已改为隐藏常驻（见 D1）。
         if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
             app_handle.state::<BackendProcess>().stop();
         }

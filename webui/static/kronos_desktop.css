@@ -383,6 +383,25 @@ textarea {
   color: var(--red);
 }
 
+/* 形态命中结果上的「实时」报价标签 + 价格行（指纹为隔日快照，实时价叠加用）。*/
+.pattern-rt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+}
+.pattern-rt-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  background: #e9f1ff;
+  color: var(--blue);
+}
+
 .task-meta {
   /* In-flow status pill inside .toolbar; truncates rather than overlapping or
      squeezing the buttons (replaces the old position:fixed badge that overlapped). */
@@ -481,6 +500,11 @@ textarea {
   opacity: 0.5;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+/* 任务进行中被锁定的启动按钮：用 progress 光标区别于普通禁用态 */
+.button.job-locked {
+  cursor: progress;
 }
 
 .shell-button {
@@ -2309,6 +2333,12 @@ body.modal-open {
 .bbp-member-name { font-size:12px; min-width:120px; } .bbp-rule-tag { font-style:normal; font-size:10px; color:#a0a8b5; margin-left:4px; }
 .bbp-member-head { flex:1; font-size:11px; color:#6b778a; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .bbp-member-score { font-weight:700; font-size:12px; }
+/* 数据不足：关注指标全无数据时的弱化样式，避免伪装成自信中性 */
+.bbp-insuf-tag { font-style:normal; font-size:10px; color:#b6862a; background:#fbf3e0; border-radius:3px; padding:0 4px; margin-left:4px; }
+.bbp-member.bbp-insuf { opacity:.68; }
+.bbp-member.bbp-insuf .bbp-member-score { color:#9aa3b2; font-weight:600; }
+.bbp-school-lean.insuf { color:#9aa3b2; font-weight:600; }
+.bbp-style-card .bsc-score.insuf { color:#9aa3b2; font-weight:600; }
 
 /* 悬停投资风格卡片：浮层、终端深色主题，与 .bbp-head 一致 */
 .bbp-style-card {
@@ -2367,3 +2397,88 @@ body.modal-open {
 .bbp-zone { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .bbp-zone-label { font-size: 11px; color: #6b778a; min-width: 32px; }
 .bbp-zone-pill { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: #e7effd; color: #2f6fdd; }
+
+/* ───────────────────────────────────────────────────────────────
+   实时热点条（底部常驻滚动条）+ 自选 + 形态保存增强
+   ─────────────────────────────────────────────────────────────── */
+.content { padding-bottom: 64px; }
+body.notify-hidden .content { padding-bottom: 28px; }
+
+.notify-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+  height: 44px; display: flex; align-items: stretch;
+  background: rgba(14, 23, 38, 0.97); color: #e8eef9;
+  border-top: 1px solid #233047; box-shadow: 0 -6px 18px rgba(10, 18, 30, 0.18);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+.notify-bar[hidden] { display: none; }
+.notify-bar-head { display: flex; align-items: center; gap: 4px; padding: 0 8px; border-right: 1px solid #233047; flex: 0 0 auto; }
+.notify-cat { border: 1px solid #2c3a52; background: transparent; color: #9fb0c8; border-radius: 999px; font-size: 12px; padding: 3px 9px; cursor: pointer; line-height: 1; }
+.notify-cat:hover { color: #fff; }
+.notify-cat.active { background: #1d2c44; color: #fff; border-color: #3a5277; }
+
+.notify-bar-viewport { flex: 1 1 auto; overflow: hidden; position: relative; }
+.notify-track { display: inline-flex; align-items: center; white-space: nowrap; height: 100%; animation: notify-scroll var(--notify-dur, 60s) linear infinite; will-change: transform; }
+.notify-bar:hover .notify-track,
+.notify-bar.paused .notify-track { animation-play-state: paused; }
+@keyframes notify-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+.notify-item { display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; height: 100%; border-right: 1px solid rgba(255, 255, 255, 0.06); font-size: 13px; }
+.notify-item.item-clickable { cursor: pointer; }
+.notify-item.item-clickable:hover { background: rgba(255, 255, 255, 0.07); }
+.notify-cat-chip { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: #25344c; color: #9fb0c8; }
+.notify-cat-chip.cat-gainers { background: #3a1f24; color: #ff9a8f; }
+.notify-cat-chip.cat-watchlist { background: #3a2f12; color: #ffd479; }
+.notify-cat-chip.cat-boards { background: #16323a; color: #7fdcd2; }
+.notify-cat-chip.cat-flash { background: #1f2c44; color: #8fb6ff; }
+.notify-cat-chip.cat-hot { background: #3a2412; color: #ffba73; }
+.notify-cat-chip.cat-changes { background: #102a3f; color: #6fc4ff; }
+.notify-change-tag { font-size: 10px; color: #8fb6ff; background: #16243a; border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+.notify-name { color: #eef3fb; font-weight: 600; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.notify-pct { font-weight: 700; }
+.notify-flash-title { color: #cdd8ea; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.notify-flash.is-important .notify-flash-title { color: #ffd479; }
+.notify-empty { color: #8392a8; padding: 0 14px; }
+.notify-star { border: none; background: rgba(255, 255, 255, 0.08); color: #ffd479; width: 18px; height: 18px; border-radius: 50%; cursor: pointer; font-size: 12px; line-height: 18px; padding: 0; text-align: center; }
+.notify-star.on { background: #ffce5a; color: #1b1300; }
+.notify-item .change-up { color: #ff8a7d; }
+.notify-item .change-down { color: #57d08a; }
+
+.notify-bar-tools { display: flex; align-items: center; gap: 6px; padding: 0 8px; border-left: 1px solid #233047; flex: 0 0 auto; }
+.notify-updated { font-size: 11px; color: #6f7f97; }
+.notify-tool { border: none; background: transparent; color: #9fb0c8; cursor: pointer; font-size: 13px; padding: 2px 4px; }
+.notify-tool:hover { color: #fff; }
+.notify-reopen { position: fixed; right: 14px; bottom: 14px; z-index: 60; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 999px; padding: 6px 12px; cursor: pointer; box-shadow: var(--shadow-md); font-size: 13px; }
+.notify-reopen[hidden] { display: none; }
+
+.notify-detail-card { position: fixed; z-index: 70; max-width: 320px; background: #0e1726; color: #e8eef9; border: 1px solid #243349; border-radius: 10px; padding: 10px 12px; box-shadow: 0 12px 30px rgba(8, 14, 24, 0.4); font-size: 13px; pointer-events: none; }
+.notify-detail-card[hidden] { display: none; }
+.ndc-head { font-size: 11px; color: #8fb6ff; font-weight: 700; margin-bottom: 4px; }
+.ndc-title { font-weight: 600; margin-bottom: 4px; }
+.ndc-row { margin-bottom: 4px; }
+.ndc-meta { font-size: 12px; color: #9fb0c8; }
+.ndc-foot { margin-top: 6px; font-size: 11px; color: #7f8ea6; }
+.ndc-warn { color: #ffd479; }
+.notify-detail-card .change-up { color: #ff8a7d; }
+.notify-detail-card .change-down { color: #57d08a; }
+.notify-detail-card .muted { color: #7f8ea6; }
+
+/* 自选页 */
+.watchlist-add-row { gap: 8px; }
+.watchlist-add-row input { flex: 1 1 auto; }
+.watchlist-suggest { margin: 10px 0; }
+.watchlist-suggest:empty { display: none; }
+.watchlist-row { display: flex; align-items: center; gap: 12px; }
+.watchlist-row-main { flex: 1 1 auto; min-width: 0; }
+.watchlist-pct { min-width: 64px; text-align: right; }
+.watchlist-row-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.watchlist-tip { margin-top: 12px; font-size: 12px; }
+
+/* 标签 / 个股弹窗自选星 / 形态保存 */
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.tag-chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--surface-tint); color: var(--blue); border: 1px solid var(--line); }
+.stock-context-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0; }
+.stock-context-star { margin-left: 10px; border: 1px solid var(--line-strong); background: var(--surface-soft); color: var(--amber); border-radius: 999px; padding: 3px 10px; cursor: pointer; font-size: 13px; line-height: 1.4; white-space: nowrap; vertical-align: middle; }
+.stock-context-star.on { background: #fff7e0; border-color: #f0c64c; color: #8a6d00; }
+.pattern-save-grid { margin-top: 10px; }
+.pattern-save-hint { margin-top: 8px; font-size: 12px; }

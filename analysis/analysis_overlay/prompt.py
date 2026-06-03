@@ -16,7 +16,7 @@ _TIER_FIELDS = {
         '  "risks": ["<风险点1>", "<风险点2>", "<风险点3>"],\n'
         '  "panel_insights": {"<persona_id>": "<该投资人视角的一句点评>"},\n'
         '  "buy_zones": {"value": ["<价值派买点>"], "growth": [], "technical": [], "youzi": []},\n'
-        '  "narrative_override": "<一句话总览，可省略>"'
+        '  "narrative_override": "<2-3 句操盘总览：先给多空倾向，再给关键理由与买卖区间/仓位建议——必填，不可省略>"'
     ),
 }
 
@@ -59,6 +59,7 @@ def build_overlay_prompt(panel: Dict[str, Any], payload: Dict[str, Any], tier: s
     ]
     if tier == "deep":
         reqs.append("panel_insights 的键必须用上面出现过的 persona_id（如 zhao / graham / buffett）。")
+        reqs.append("narrative_override 必填、2-3 句，作为「AI 点评」正文先行展示：先表态多空，再给理由与买卖/仓位建议，不得省略或留空。")
     reqs.append("**只返回 JSON，不要任何额外文字、不要 markdown 说明**。JSON 结构如下：")
     req_block = "\n".join(f"{i}. {r}" for i, r in enumerate(reqs, 1))
     return (
