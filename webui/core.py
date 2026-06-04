@@ -995,6 +995,36 @@ def _build_quant_model_summary(items):
     return sorted(summary.values(), key=lambda item: item['count'], reverse=True)
 
 
+def _report_date_label(filename):
+    """从 opportunity_top10_YYYYMMDD_HHMMSS.md 提取「MM-DD」用于标注数据来源日期。"""
+    match = re.search(r'_(\d{4})(\d{2})(\d{2})_', filename or '')
+    if match:
+        return f"{match.group(2)}-{match.group(3)}"
+    return ''
+
+
+def _fallback_quant_models(exclude_name=None, scan_limit=12):
+    """扫描最近的机会报告，返回首个「确有量化模型信号」的 (quant_models, note)。
+
+    最新报告若处于降级态(取数限流导致全部「模型[无]」)，量化模型摘要会为空。
+    此时回退到最近一份有效报告填充该卡片，并以 note 标注数据来源日期，避免误导为今日数据。
+    """
+    for path in _latest_primary_opportunity_reports(limit=scan_limit):
+        if exclude_name and path.name == exclude_name:
+            continue
+        try:
+            parsed = _parse_opportunity_report(path)
+        except Exception:
+            continue
+        models = _build_quant_model_summary(parsed['items'])
+        if models:
+            label = _report_date_label(path.name)
+            note = f"今日挖掘暂无量化信号，下方为最近一次有效挖掘（{label}）的模型摘要" if label \
+                else "今日挖掘暂无量化信号，下方为最近一次有效挖掘的模型摘要"
+            return models, note
+    return None
+
+
 def _market_symbol_for_code(stock_code):
     code = str(stock_code or '').strip().zfill(6)
     if code.startswith(('43', '83', '87', '92')):
@@ -1324,6 +1354,23 @@ def _stock_context_payload(stock_code, stock_name=''):
         or (opportunity_match or {}).get('industry')
         or ''
     )
+    # 标题副行需要「股票名称 · 关联板块」。机会报告未命中该股时 name/sector 全空、且从无 boards 字段，
+    # 副行便退化成「代码 · --」。这里回退到 sector_api 补齐：get_stock_sector_info 先命中本地 Tushare
+    # 行业缓存(5519 只，即时返回名称+行业)，get_stock_boards 走东财 F10 取行业+概念题材(带本地缓存)。
+    # 两者各自 try/except 降级(返回空/[])，不阻断上下文装配；仅在缺名称或行业时才触发 sector_info 查询。
+    boards: list = []
+    try:
+        from analysis.sector_api import get_stock_boards, get_stock_sector_info
+
+        if not resolved_name or not sector:
+            info = get_stock_sector_info(code) or {}
+            if not resolved_name:
+                resolved_name = (info.get('stock_name') or '').strip()
+            if not sector:
+                sector = (info.get('sector_name') or info.get('industry') or '').strip()
+        boards = [str(b).strip() for b in (get_stock_boards(code, limit=6) or []) if str(b).strip()]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"个股板块/行业兜底失败 {code}: {exc}")
     kline_payload, kline_error = _get_stock_kline_payload(code, limit=240)
     if kline_error:
         kline_payload = {
@@ -1343,6 +1390,7 @@ def _stock_context_payload(stock_code, stock_name=''):
             'code': code,
             'name': resolved_name,
             'sector': sector,
+            'boards': boards,
             'symbol': _xueqiu_symbol(code),
             'market': _market_symbol_for_code(code),
         },
@@ -1402,6 +1450,12 @@ def _load_latest_opportunities():
     items = parsed['items']
     scores = [item['score'] for item in items]
     strong_count = len([item for item in items if item['score'] >= 80])
+    quant_models = _build_quant_model_summary(items)
+    quant_models_note = ''
+    if not quant_models:
+        fallback = _fallback_quant_models(exclude_name=parsed['file'])
+        if fallback:
+            quant_models, quant_models_note = fallback
     return {
         'latest_report': {
             'file': parsed['file'],
@@ -1410,7 +1464,8 @@ def _load_latest_opportunities():
         },
         'market_env': parsed['market_env'],
         'items': items,
-        'quant_models': _build_quant_model_summary(items),
+        'quant_models': quant_models,
+        'quant_models_note': quant_models_note,
         'stats': {
             'total': len(items),
             'strong_count': strong_count,

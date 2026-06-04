@@ -62,6 +62,7 @@
           "endpoint": "/chat/completions",
           "request_format": "openai",
           "max_tokens": 8192,
+          "timeout": 240,
           "description": "DeepSeek V4"
         }
       }

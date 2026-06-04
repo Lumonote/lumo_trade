@@ -955,6 +955,14 @@ class OpportunityScorer:
                     if cached is not None:
                         logger.info(f"{stock_code}: Tushare获取并缓存K线 ({len(cached)}行)")
                         return cached
+                # 刷新失败(Tushare 限流/网络抖动/批量取数被拒)时，回退到「任意时效的历史缓存」。
+                # 日线技术面与量化模型只需足够长度的历史序列，几天前的收盘 K 线足以支撑评分，
+                # 远胜于返回 None 导致 quant=0 → 触发「量化评分过低总分封顶」(整份报告分数断层、
+                # 量化模型摘要为空)。仅在新鲜数据确实拿不到时启用，不影响正常路径。
+                stale = get_ohlcv(stock_code, min_rows=60, max_age_seconds=None)
+                if stale is not None:
+                    logger.warning(f"{stock_code}: 刷新失败，回退到陈旧缓存K线 ({len(stale)}行)")
+                    return stale
             except ImportError:
                 pass  # 缓存模块不可用, 降级到原始方式
 

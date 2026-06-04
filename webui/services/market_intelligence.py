@@ -16,6 +16,8 @@ from webui.services.http_client import request_json, request_json_post, request_
 
 
 DEFAULT_TTL_SECONDS = 180
+# 主力净流入回退榜(Tushare moneyflow_dc)缓存时效：资金流向按日更新，半小时足够新鲜。
+_MAIN_INFLOW_TTL = 1800
 
 _UA = (
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
@@ -125,6 +127,10 @@ class MarketIntelligenceService:
     def __init__(self, ttl_seconds: int = DEFAULT_TTL_SECONDS):
         self.ttl_seconds = ttl_seconds
         self._cache: dict[str, Any] = {'ts': 0, 'payload': None}
+        # 主力净流入(元) by 6位代码：push2.eastmoney 的 f62 在本机被掐、热点榜回退人气榜时，
+        # 用 Tushare moneyflow_dc(本机可达)补齐主力净流入，避免「主力 —」。整张当日榜一次取回、
+        # 按 _MAIN_INFLOW_TTL 缓存（资金流向按日更新，无需频繁刷新）。
+        self._inflow_cache: dict[str, Any] = {'ts': 0, 'map': None}
         # 行业映射（{6位代码: 行业名}）按天构建，供热点/异动行内「板块信息」。
         # 来源新浪行业分类（本机可达，独立于被掐的 push2.eastmoney）；后台线程构建不阻塞 load()。
         self._industry_map: dict[str, str] = {}
@@ -205,6 +211,58 @@ class MarketIntelligenceService:
             })
             if len(items) >= limit:
                 break
+        return items
+
+    def fetch_ths_flash(self, limit: int = 15) -> list[dict[str, Any]]:
+        """同花顺 7×24 电报（akshare stock_info_global_ths），首页「同花顺电报」面板。
+
+        替代原富途源：富途 akshare 接口(stock_info_global_futu)实为金十同一条电报，
+        与「金十快讯」内容完全重复(实测 5/5 条标题、时间一致)；用户期望的财联社
+        akshare 接口(stock_info_global_cls)本机实测 404 不可用，同花顺是最接近财联社
+        电报的可用 A 股快讯源(带标题+链接)。字段与 fetch_eastmoney_news 一致
+        (title/summary/time/url/source)。失败/被限时由 load() 捕获并降级为空面板。
+        """
+        import akshare as ak  # 延迟导入，避免拖慢模块加载
+        df = ak.stock_info_global_ths()
+        if df is None or getattr(df, 'empty', True):
+            return []
+        items: list[dict[str, Any]] = []
+        for _, row in df.head(limit).iterrows():
+            content = _strip_markup(row.get('内容'))
+            title = _strip_markup(row.get('标题')) or content
+            if not title:
+                continue
+            items.append({
+                'title': _truncate_text(title, 80),
+                'summary': _truncate_text(content, 160),
+                'time': _format_news_time(row.get('发布时间')),
+                'url': str(row.get('链接') or '').strip(),
+                'source': '同花顺',
+            })
+        return items
+
+    def fetch_sina_flash(self, limit: int = 12) -> list[dict[str, Any]]:
+        """新浪 7×24 全球财经快讯（akshare stock_info_global_sina），首页「新浪快讯」面板。
+
+        替代原「市场快讯」绑定的金十(与「金十快讯」重复)。新浪接口只含「时间/内容」，
+        无独立标题与链接，故标题取正文。失败/被限时由 load() 捕获并降级为空面板。
+        """
+        import akshare as ak  # 延迟导入，避免拖慢模块加载
+        df = ak.stock_info_global_sina()
+        if df is None or getattr(df, 'empty', True):
+            return []
+        items: list[dict[str, Any]] = []
+        for _, row in df.head(limit).iterrows():
+            content = _strip_markup(row.get('内容'))
+            if not content:
+                continue
+            items.append({
+                'title': _truncate_text(content, 80),
+                'summary': _truncate_text(content, 160),
+                'time': _format_news_time(row.get('时间')),
+                'url': '',
+                'source': '新浪',
+            })
         return items
 
     def fetch_eastmoney_news(self, limit: int = 15) -> list[dict[str, Any]]:
@@ -363,6 +421,55 @@ class MarketIntelligenceService:
             }
         return out
 
+    def _main_inflow_map(self) -> dict[str, float]:
+        """主力净流入(元) by 6位代码，来自 Tushare moneyflow_dc(本机可达)。
+
+        push2.eastmoney 的 f62 在本机被掐、热点/异动榜回退到人气榜(腾讯基础行情无主力净流入)时，
+        用它补齐主力净流入。整张当日榜一次拉回(单次 API,约 5000 行)，按 _MAIN_INFLOW_TTL 缓存。
+        失败(无 tushare / 无 token / 网络)时返回空 map，调用方据此显示「—」，best-effort 不抛错。
+        """
+        now = time.time()
+        cache = self._inflow_cache
+        if cache.get('map') is not None and now - cache.get('ts', 0) < _MAIN_INFLOW_TTL:
+            return cache['map']
+
+        mapping: dict[str, float] = {}
+        try:
+            import tushare as ts  # 延迟导入，避免拖慢模块加载
+            from scripts.stock_filter_utils import load_tushare_token
+
+            token = load_tushare_token()
+            if token:
+                pro = ts.pro_api(token)
+                fetch = getattr(pro, 'moneyflow_dc', None) or getattr(pro, 'moneyflow_ths', None)
+                df = None
+                if fetch is not None:
+                    base = datetime.datetime.now()
+                    for i in range(7):  # 回溯最近交易日(跳过周末/节假日空表)
+                        day = (base - datetime.timedelta(days=i)).strftime('%Y%m%d')
+                        try:
+                            df = fetch(trade_date=day)
+                        except Exception:
+                            df = None
+                        if df is not None and not df.empty:
+                            break
+                if df is not None and not df.empty and 'ts_code' in df.columns:
+                    # net_amount=主力净流入(万元)；不同接口字段名略有差异，按优先级取第一个可用列。
+                    col = next((c for c in ('net_amount', 'net_mf_amount', 'net_amount_main')
+                                if c in df.columns), None)
+                    if col:
+                        for _, row in df.iterrows():
+                            ts_code = str(row.get('ts_code') or '')
+                            code = ts_code.split('.')[0] if ts_code else ''
+                            val = _safe_float(row.get(col), None)
+                            if code and val is not None:
+                                mapping[code] = val * 10000.0  # 万元 → 元，与 f62 口径一致
+        except Exception:
+            mapping = {}  # best-effort：补不到就维持「—」，热点面板照常显示价格
+
+        self._inflow_cache = {'ts': now, 'map': mapping}
+        return mapping
+
     def fetch_hot_rank(self, limit: int = 12) -> list[dict[str, Any]]:
         """东方财富实时人气榜（emappdata host，本机可达）+ 腾讯行情补涨跌幅。
 
@@ -393,19 +500,21 @@ class MarketIntelligenceService:
         if not secids:
             return []
         quotes = self._tencent_quotes(secids)
+        inflow_map = self._main_inflow_map()  # 补主力净流入(本机 push2 被掐时的回退口径)
         items: list[dict[str, Any]] = []
         for secid in secids:
             code = secid[2:].strip()
             quote = quotes.get(code)
             if not quote:
                 continue
+            inflow = inflow_map.get(code)
             items.append({
                 'code': code,
                 'name': quote['name'] or code,
                 'price': quote['price'],
                 'change_pct': quote['change_pct'],
-                'main_net_inflow': None,  # 腾讯基础行情不含主力净流入
-                'main_net_inflow_text': '—',
+                'main_net_inflow': inflow,  # 来自 Tushare moneyflow_dc；补不到则 None
+                'main_net_inflow_text': _money_text(inflow) if inflow is not None else '—',
                 'source': 'eastmoney_rank',
             })
         return items
@@ -531,7 +640,8 @@ class MarketIntelligenceService:
         payload = {
             'updated_at': _format_datetime(now),
             'jinshi': [],
-            'futu_news': [],
+            'ths_news': [],
+            'sina_news': [],
             'eastmoney_news': [],
             'eastmoney': {
                 'industry_boards': [],
@@ -551,9 +661,14 @@ class MarketIntelligenceService:
             payload['errors']['jinshi'] = str(exc)
 
         try:
-            payload['futu_news'] = self.fetch_futu_news(limit=15)
+            payload['ths_news'] = self.fetch_ths_flash(limit=15)
         except Exception as exc:
-            payload['errors']['futu_news'] = str(exc)
+            payload['errors']['ths_news'] = str(exc)
+
+        try:
+            payload['sina_news'] = self.fetch_sina_flash(limit=12)
+        except Exception as exc:
+            payload['errors']['sina_news'] = str(exc)
 
         try:
             payload['eastmoney_news'] = self.fetch_eastmoney_news(limit=15)

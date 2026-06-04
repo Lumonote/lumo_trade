@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import re
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -92,6 +93,11 @@ class StockSuiteService:
             self._suite = StockAnalysisSuite(
                 institutional_providers=_build_institutional_providers()
             )
+        # AI 解读异步任务表（按代码）。DeepSeek 推理模型单次耗时可达 ~100s，远超 WKWebView
+        # 对单个 fetch 的 ~60s 强制超时，因此改为「后台线程跑 + 前端轮询」。不复用 JOB_SERVICE：
+        # 那会触发全局 jobLocked() 把机会挖掘/批量分析按钮锁死整整 100s。状态仅存内存、按代码覆盖。
+        self._ai_jobs: Dict[str, Dict[str, Any]] = {}
+        self._ai_lock = threading.Lock()
 
     def _validate_code(self, code: str) -> str:
         cleaned = (code or "").strip()
@@ -156,6 +162,60 @@ class StockSuiteService:
             model_full_key=model_full_key,
             force_refresh=force_refresh,
         )
+
+    def start_ai_interpretation(
+        self,
+        code: str,
+        name: str = "",
+        model_full_key: Optional[str] = None,
+        force_refresh: bool = False,
+    ) -> Dict[str, Any]:
+        """启动后台 AI 解读，立即返回 {status:'running'}；结果由 get_ai_interpretation 轮询。
+
+        同一代码已有任务在跑且非强制刷新时，直接回报 running（去重，避免重复点击叠加线程）。
+        """
+        code = self._validate_code(code)
+        with self._ai_lock:
+            existing = self._ai_jobs.get(code)
+            if existing and existing.get("status") == "running" and not force_refresh:
+                return {"success": True, "status": "running",
+                        "started_at": existing.get("started_at")}
+            started_at = _dt.datetime.now().isoformat(timespec="seconds")
+            self._ai_jobs[code] = {"status": "running", "started_at": started_at}
+
+        def _worker() -> None:
+            try:
+                result = self._suite.trigger_ai_interpretation(
+                    code,
+                    name=name,
+                    model_full_key=model_full_key,
+                    force_refresh=force_refresh,
+                )
+            except Exception as exc:  # noqa: BLE001
+                result = {
+                    "success": False,
+                    "status": "failed",
+                    "error": str(exc),
+                    "generated_at": _dt.datetime.now().isoformat(timespec="seconds"),
+                }
+            with self._ai_lock:
+                prev = self._ai_jobs.get(code) or {}
+                stored = dict(result)
+                stored.setdefault("started_at", prev.get("started_at"))
+                self._ai_jobs[code] = stored
+
+        threading.Thread(target=_worker, name=f"ai-interp-{code}", daemon=True).start()
+        return {"success": True, "status": "running", "started_at": started_at}
+
+    def get_ai_interpretation(self, code: str) -> Dict[str, Any]:
+        """轮询接口：返回当前 AI 解读任务状态（idle/running/ready/failed）及结果。"""
+        code = self._validate_code(code)
+        with self._ai_lock:
+            job = self._ai_jobs.get(code)
+            if not job:
+                return {"success": True, "status": "idle"}
+            return dict(job)
+
 
     def trigger_panel_overlay(
         self,

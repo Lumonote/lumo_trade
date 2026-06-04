@@ -276,9 +276,16 @@ class OpenAIProvider(LLMProvider):
 
     def _parse_response(self, result: Dict) -> Tuple[bool, str]:
         if result.get('choices') and len(result['choices']) > 0:
-            content = result['choices'][0].get('message', {}).get('content', '')
+            message = result['choices'][0].get('message', {}) or {}
+            content = (message.get('content') or '').strip()
             if content:
                 return True, content
+            # 推理模型(如 deepseek-v4-pro)在 token 预算被思维链耗尽时可能只返回 reasoning_content、
+            # content 为空。正常情况 content 已含最终答案不会走到这里；此处兜底取思维链，
+            # 避免把一次成功的调用误判成「API返回格式异常」。
+            reasoning = (message.get('reasoning_content') or '').strip()
+            if reasoning:
+                return True, reasoning
         return False, f"[{self.provider_name}] API返回格式异常"
 
 

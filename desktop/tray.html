@@ -174,9 +174,9 @@
           <button id="tab-hot" class="on">热点股票</button>
           <button id="tab-boards">热点板块</button>
           <button id="tab-changes">异动</button>
-          <button id="tab-futu">富途资讯</button>
-          <button id="tab-news">东财资讯</button>
-          <button id="tab-flash">快讯</button>
+          <button id="tab-futu">新浪快讯</button>
+          <button id="tab-news">东财快讯</button>
+          <button id="tab-flash">金十快讯</button>
         </div>
         <div class="list" id="hot"><p class="muted">加载中…</p></div>
         <div class="list" id="boards" hidden><p class="muted">加载中…</p></div>
@@ -325,10 +325,10 @@
             .join("");
         bindRows(cbox);
 
-        // 富途资讯：富途 7×24 全球财经快讯
+        // 新浪快讯：新浪 7×24（替代原富途源——富途 akshare 接口实为金十同一条电报、与「快讯」重复）
         const xbox = $("#futu");
-        const futu = data.futu_news || [];
-        if (errs.futu_news) xbox.innerHTML = `<p class="muted">该来源暂不可用。</p>`;
+        const futu = data.sina_news || [];
+        if (errs.sina_news) xbox.innerHTML = `<p class="muted">该来源暂不可用。</p>`;
         else if (!futu.length) xbox.innerHTML = `<p class="muted">暂无资讯。</p>`;
         else
           xbox.innerHTML = futu

@@ -38,6 +38,21 @@ TEMPLATE_ENV = Environment(
     loader=FileSystemLoader(str(Path(__file__).resolve().parent / "templates")),
     autoescape=select_autoescape(("html", "xml")),
 )
+
+# 静态资源版本号(文件 mtime)：桌面页 HTML 走 no-store 始终最新，但其 ~250KB 的内联 JS 拆成
+# /static/kronos_desktop_app.js 后用 ?v=<mtime> 做强缓存——内容不变则 WKWebView 复用已解析的脚本，
+# 切换左侧菜单不再每次重新下载+解析整份 JS；文件一改 mtime 变化，URL 即自动失效。
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _asset_version(filename: str) -> str:
+    try:
+        return str(int((_STATIC_DIR / filename).stat().st_mtime))
+    except OSError:
+        return "0"
+
+
+TEMPLATE_ENV.globals["asset_v"] = _asset_version
 NATIVE_ROUTE_KEYS: set[tuple[str, str]] = set()
 
 
@@ -184,13 +199,19 @@ def _safe_child_path(root: Path, relative_path: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def _file_response(path: Path | None) -> Response:
+def _file_response(path: Path | None, cache_immutable: bool = False) -> Response:
     if path is None:
         return _text_response("Not Found", status_code=404)
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    headers: dict[str, str] = {"Content-Type": content_type}
+    if cache_immutable:
+        # 带 ?v=<版本> 的静态资源按内容版本强缓存：版本不变即永久命中(不再下载/重解析)，
+        # 版本变化(文件 mtime 改变)即换 URL 自动失效。仅作用于显式带版本号的请求，
+        # 无版本号的旧资源维持原有(无显式缓存头)行为，避免误缓存正在迭代的 CSS。
+        headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return Response(
         status_code=200,
-        headers=Headers({"Content-Type": content_type}),
+        headers=Headers(headers),
         description=path.read_bytes(),
     )
 
@@ -312,7 +333,10 @@ def desktop_page(request: Request, page=None) -> Response:
 @_native_get("/static/*filename")
 def static_asset(request: Request, filename=None) -> Response:
     relative = _path_param(request, "filename", filename)
-    return _file_response(_safe_child_path(webui_core.PROJECT_ROOT / "webui" / "static", relative))
+    path = _safe_child_path(webui_core.PROJECT_ROOT / "webui" / "static", relative)
+    # 仅当 URL 带 ?v=<版本> 时启用强缓存(版本即缓存键)；裸 URL 维持原行为。
+    versioned = bool(_query_value(request, "v", ""))
+    return _file_response(path, cache_immutable=versioned)
 
 
 @_native_get("/figures/*filename")
@@ -501,12 +525,26 @@ def post_stock_analysis_suite_ai(request: Request, stock_code=None) -> Response:
     force_refresh = bool(body.get("force_refresh", False))
     model_full_key = body.get("model_full_key")
     try:
-        payload = webui_core.STOCK_SUITE_SERVICE.trigger_ai_interpretation(
+        # 异步启动：立即返回 status:running，由前端轮询 GET 同一路由获取结果。
+        # DeepSeek 推理模型耗时 ~100s，WKWebView 会在 ~60s 掐断同步 fetch（用户看到 Load failed）。
+        payload = webui_core.STOCK_SUITE_SERVICE.start_ai_interpretation(
             code,
             name=name,
             model_full_key=model_full_key,
             force_refresh=force_refresh,
         )
+    except ValueError as exc:
+        return _json_response({"success": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"success": False, "error": str(exc)}, status_code=500)
+    return _json_response(payload)
+
+
+@_native_get("/api/stock-analysis-suite/:stock_code/ai")
+def get_stock_analysis_suite_ai(request: Request, stock_code=None) -> Response:
+    code = _path_param(request, "stock_code", stock_code)
+    try:
+        payload = webui_core.STOCK_SUITE_SERVICE.get_ai_interpretation(code)
     except ValueError as exc:
         return _json_response({"success": False, "error": str(exc)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
