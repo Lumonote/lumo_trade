@@ -67,6 +67,9 @@ from webui.services.pattern_search_service import PatternSearchService
 from webui.services.stock_suite_service import STOCK_SUITE_SERVICE
 from webui.services.trading_client_service import TradingClientService
 from webui.services.watchlist_service import WatchlistService
+from webui.services.capital_rankings_service import CapitalRankingsService
+from webui.services.paper_trading_service import PaperTradingService
+from webui.services.db_backup_service import DbBackupService
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,12 @@ MARKET_INTELLIGENCE_SERVICE = MarketIntelligenceService()
 PATTERN_SEARCH_SERVICE = PatternSearchService(USER_ROOT / "data" / "pattern_fingerprints.db")
 TRADING_CLIENT_SERVICE = TradingClientService(PROJECT_ROOT / "config" / "trading_client_adapters.json")
 WATCHLIST_SERVICE = WatchlistService(USER_ROOT / "config" / "watchlist.json")
+# 资金榜单(主力买入榜+龙虎榜):注入自选服务的实时报价以叠加最新价/涨跌幅
+CAPITAL_RANKINGS_SERVICE = CapitalRankingsService(quote_provider=WATCHLIST_SERVICE.quotes)
+# 模拟盘台账(起始100W,含简化费用):盯市价复用自选实时报价
+PAPER_TRADING_SERVICE = PaperTradingService(quote_provider=WATCHLIST_SERVICE.quotes)
+# 整库备份(导出一致性快照 / 导入校验→自动备份→灌库→migrate)
+DB_BACKUP_SERVICE = DbBackupService()
 # 形态指纹是隔日快照；给命中结果叠加自选同款实时报价（东财 ulist.np→腾讯回退），形态页可见当日最新价。
 PATTERN_SEARCH_SERVICE.set_quote_provider(WATCHLIST_SERVICE.quotes)
 # K线默认是新浪日K（隔日/盘中按天一根）；叠加自选同款实时报价，让当日那根bar与「实时价」徽章跟随盘中最新价。
@@ -813,6 +822,17 @@ def _latest_primary_opportunity_reports(limit=1):
     return reports[:limit]
 
 
+def _latest_primary_opportunity_report_since(since_ts, tolerance=2.0):
+    """Return the newest dashboard-ready Top榜 report produced after a job started."""
+    for path in _latest_primary_opportunity_reports(limit=20):
+        try:
+            if path.stat().st_mtime + tolerance >= since_ts:
+                return path
+        except OSError:
+            continue
+    return None
+
+
 def _report_url(path):
     if not path:
         return None
@@ -852,6 +872,22 @@ def _extract_detail_section(detail, title):
     pattern = rf'【{re.escape(title)}】([^【]+)'
     match = re.search(pattern, detail or '')
     return _strip_markup(match.group(1)).strip('；; ') if match else ''
+
+
+def _extract_all_detail_sections(detail):
+    """Extract every 【label】value section from a packed 详细分析 cell, in order.
+
+    Standard reports pack all rich fields (涨幅/板块/量化/技术/基本面/情绪资金/消息/
+    关键加减分/入选原因/最新动态/高级…) into one table cell separated by 【】 markers.
+    Returns an ordered list of {'label', 'value'} so the UI can render same-style cards.
+    """
+    sections = []
+    for label, value in re.findall(r'【([^】]+)】([^【]+)', detail or ''):
+        clean_value = _strip_markup(value).strip('；; ')
+        clean_label = _strip_markup(label)
+        if clean_label and clean_value:
+            sections.append({'label': clean_label, 'value': clean_value})
+    return sections
 
 
 def _parse_rating(detail):
@@ -921,6 +957,11 @@ def _parse_opportunity_report(path):
     items = []
     for cells in rows:
         rank_raw, code, name, score_raw, detail = cells
+        # Only ranking rows carry a packed 【…】 detail cell. This excludes the
+        # 昨日复盘 / 置信度 tables that share the same 5-column shape but whose 5th
+        # cell is a price / description rather than the opportunity detail.
+        if '【' not in (detail or ''):
+            continue
         code_match = re.search(r'\d{6}', code)
         if not code_match:
             continue
@@ -946,6 +987,7 @@ def _parse_opportunity_report(path):
             'reason': reason,
             'summary': reason,
             'quant_models': _parse_quant_models(detail),
+            'fields': _extract_all_detail_sections(detail),
             'has_local_kline': False,
         }
         items.append(item)
@@ -954,6 +996,10 @@ def _parse_opportunity_report(path):
     risk_match = re.search(r'<p[^>]*>\s*⚠️\s*<strong>(.*?)</strong>', content, flags=re.S)
     if risk_match:
         market_env = _strip_markup(risk_match.group(1))
+    if not market_env:
+        env_match = re.search(r'市场环境[^\n]*', content)
+        if env_match:
+            market_env = _strip_markup(env_match.group(0))
     if not market_env:
         heading_match = re.search(r'##\s*([^\n]+)', content)
         market_env = _strip_markup(heading_match.group(1)) if heading_match else '已解析最新机会挖掘报告'
@@ -964,6 +1010,36 @@ def _parse_opportunity_report(path):
         'updated_at': _format_datetime(report_path.stat().st_mtime) if report_path.exists() else '--',
         'market_env': market_env,
         'items': items,
+    }
+
+
+def load_opportunity_report_cards(file):
+    """Parse a SPECIFIC opportunity report (by filename) into same-style rich cards.
+
+    Security: only a bare filename inside RESULTS_DIR is accepted (Path(...).name
+    strips any traversal), and only ``opportunity_top10_*.md`` reports are served.
+    Returns None when the file is invalid or missing so the route can answer 404.
+    """
+    name = Path(str(file or '')).name
+    if not name.startswith('opportunity_top10_') or not name.endswith('.md'):
+        return None
+    target = RESULTS_DIR / name
+    if not target.is_file():
+        return None
+    parsed = _parse_opportunity_report(target)
+    return {
+        'file': parsed['file'],
+        'url': parsed['url'],
+        'updated_at': parsed['updated_at'],
+        'market_env': parsed['market_env'],
+        'count': len(parsed['items']),
+        'latest_report': {
+            'file': parsed['file'],
+            'url': parsed['url'],
+            'updated_at': parsed['updated_at'],
+        },
+        'items': parsed['items'],
+        'cards': parsed['items'],
     }
 
 
@@ -1746,20 +1822,56 @@ def _get_job_snapshot(job_id=None):
 
 def _run_opportunity_job(job_id, params):
     _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
-    _append_job_log(job_id, '开始执行投资机会挖掘')
+    run_started_ts = time.time()
+    limit = _safe_int(params.get('limit'), 100, minimum=5, maximum=500) or 100
+    workers = _safe_int(params.get('workers'), 10, minimum=1, maximum=32) or 10
+    source = str(params.get('source') or 'multi').strip() or 'multi'
+    stock_codes = params.get('stock_codes') or []
+    source_label = {
+        'multi': '多源综合',
+        'heat': '仅热度榜',
+        'moneyflow_dc': '资金流向榜单',
+    }.get(source, source)
+    mode = 'specified_pool' if stock_codes else 'market_scan'
+    mode_label = '指定股票池' if stock_codes else '全市场扫描'
+    stock_hint = f" · 股票 {','.join(stock_codes)}" if stock_codes else ''
+    _append_job_log(
+        job_id,
+        f'开始执行投资机会挖掘 ({mode_label} · 来源 {source_label} · 条数 {limit} · 线程 {workers}{stock_hint})',
+    )
     try:
         from scripts.run_opportunity_discovery import OpportunityDiscovery
 
         with _JobLogCapture(job_id, ['scripts.run_opportunity_discovery']):
-            discovery = OpportunityDiscovery(max_workers=params['workers'])
+            discovery = OpportunityDiscovery(max_workers=workers)
             report_path = discovery.run(
-                limit=params['limit'],
-                test_codes=params.get('stock_codes') or None,
-                source=params['source'],
+                limit=limit,
+                test_codes=stock_codes or None,
+                source=source,
             )
+        report_file = Path(report_path).name if report_path else ''
+        top_report_path = None
+        if report_file.startswith('opportunity_top10_') and report_file.endswith('.md'):
+            top_report_path = Path(report_path)
+        else:
+            top_report_path = _latest_primary_opportunity_report_since(run_started_ts)
         result = {
             'report_path': str(report_path) if report_path else '',
+            'report_file': report_file,
             'report_url': _report_url(report_path) if report_path else None,
+            'top_report_path': str(top_report_path) if top_report_path else '',
+            'top_report_file': top_report_path.name if top_report_path else '',
+            'top_report_url': _report_url(top_report_path) if top_report_path else None,
+            'mode': mode,
+            'mode_label': mode_label,
+            'source': source,
+            'source_label': source_label,
+            'params': {
+                'limit': limit,
+                'workers': workers,
+                'source': source,
+                'stock_codes': stock_codes,
+            },
         }
         _append_job_log(job_id, f"机会挖掘完成: {result['report_path'] or '未生成报告'}")
         _update_job(
@@ -1896,6 +2008,54 @@ def _run_pattern_refresh_job(job_id, params):
         )
 
 
+def _run_capital_backfill_job(job_id, params):
+    """后台回填资金榜单(主力买入榜 moneyflow + 龙虎榜 dragon_tiger),最近 N 个交易日。"""
+    _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
+    days = int(params.get('days') or 30)
+    kinds = tuple(params.get('kinds') or ('moneyflow', 'dragon_tiger'))
+    _append_job_log(job_id, f'开始回填资金榜单 最近 {days} 个交易日 ({", ".join(kinds)})')
+    try:
+        summary = CAPITAL_RANKINGS_SERVICE.backfill(kinds=kinds, days=days)
+        from webui.services.capital_rankings_service import backfill_outcome
+        outcome = backfill_outcome(summary)
+        parts = [
+            f"{k} {s.get('ok_dates', 0)}/{s.get('dates', 0)}日 {s.get('rows', 0)}行"
+            + (f" 机构席位{s.get('inst_rows')}行" if s.get('inst_rows') else "")
+            + (f" 跳过已存在{s.get('skipped_dates')}日" if s.get('skipped_dates') else "")
+            for k, s in summary.items()
+        ]
+        if not outcome['ok']:
+            # 全部 0 行且有错误(最常见:Tushare Token 无效 / 缺失)→ 标记失败并显形,
+            # 不再静默成「回填完成」让用户对着「暂无数据」一脸懵。
+            msg = '; '.join(outcome['errors']) or '未获取到任何数据(请检查 Tushare Token)'
+            _append_job_log(job_id, '回填失败: ' + msg)
+            _update_job(
+                job_id,
+                status='failed',
+                finished_at=datetime.datetime.now().isoformat(),
+                error=msg,
+                result=summary,
+            )
+            return
+        _append_job_log(job_id, '回填完成: ' + '; '.join(parts))
+        if outcome['errors']:
+            _append_job_log(job_id, '部分日期失败: ' + '; '.join(outcome['errors']))
+        _update_job(
+            job_id,
+            status='finished',
+            finished_at=datetime.datetime.now().isoformat(),
+            result=summary,
+        )
+    except Exception as exc:
+        _append_job_log(job_id, f'资金榜单回填失败: {exc}')
+        _update_job(
+            job_id,
+            status='failed',
+            finished_at=datetime.datetime.now().isoformat(),
+            error=str(exc),
+        )
+
+
 # ----------------------------------------------------------------------------
 # 形态指纹库：收盘后自动重建（A 股「隔日快照」问题的服务端兜底）
 #   指纹库是隔日冻结的 SQLite 快照，过去只能手动点「刷新」。这里加一个守护线程：
@@ -1998,6 +2158,108 @@ def start_pattern_autorefresh():
         return pattern_autorefresh_thread
 
 
+# ----------------------------------------------------------------------------
+# 模拟盘 EOD：收盘后自动复盘
+#   工作日收盘整理后,若当日有持仓/成交,自动撮合补算 pending 单、按收盘价盯市权益、
+#   生成当日复盘 markdown(results_dir/paper_review_YYYY-MM-DD.md)。一天只跑一次。
+# ----------------------------------------------------------------------------
+paper_eod_thread = None
+paper_eod_lock = threading.Lock()
+_paper_eod_last_date = None
+
+
+def _paper_eod_market_env():
+    """复盘的市场环境文本:复用最新机会挖掘报告已算好的 market_env(best-effort)。"""
+    try:
+        env = _load_latest_opportunities().get('market_env')
+        if env and '暂无' not in env and '失败' not in env:
+            return env
+    except Exception:  # noqa: BLE001 — 市场环境只是装饰,取不到不影响复盘
+        pass
+    return None
+
+
+def run_paper_eod(date=None):
+    """执行一次模拟盘 EOD(撮合补算 + 盯市 + 当日复盘 markdown)。
+
+    供守护线程与 /api/paper/settle 复用;返回 PaperTradingService.run_eod(...) 结果。"""
+    return PAPER_TRADING_SERVICE.run_eod(
+        date=date,
+        market_env_text=_paper_eod_market_env(),
+        results_dir=str(RESULTS_DIR),
+    )
+
+
+def _paper_eod_loop(after_close, interval):
+    global _paper_eod_last_date
+    time.sleep(25)  # 冷启动让位:别和首屏请求抢
+    while True:
+        try:
+            now = datetime.datetime.now()
+            today = now.date()
+            if today.weekday() < 5 and now.time() >= after_close and _paper_eod_last_date != today:
+                result = run_paper_eod(today.isoformat())
+                _paper_eod_last_date = today  # 当天只跑一次(run_eod 本身对复盘文件也幂等)
+                if result.get('generated'):
+                    print(f"[paper-eod] 已生成当日复盘 {result.get('review_path')}")
+        except Exception as exc:  # noqa: BLE001 — 守护线程绝不能因偶发错误退出
+            print(f"[paper-eod] 调度循环异常: {exc}")
+        time.sleep(interval)
+
+
+def start_paper_eod():
+    """启动『收盘后模拟盘自动复盘』守护线程(进程内只启一次)。
+
+    环境变量：
+    - KRONOS_DISABLE_PAPER_EOD=1     关闭自动复盘
+    - KRONOS_PAPER_EOD_AFTER=15:30   收盘触发时刻(默认 15:30)
+    - KRONOS_PAPER_EOD_INTERVAL=1800 轮询间隔秒(默认 1800,最低 60)
+    """
+    global paper_eod_thread
+    flag = os.environ.get("KRONOS_DISABLE_PAPER_EOD", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        print("[paper-eod] 已被 KRONOS_DISABLE_PAPER_EOD 关闭")
+        return None
+    with paper_eod_lock:
+        if paper_eod_thread and paper_eod_thread.is_alive():
+            return paper_eod_thread
+        after_close = _parse_after_close(os.environ.get("KRONOS_PAPER_EOD_AFTER", "15:30"))
+        try:
+            interval = float(os.environ.get("KRONOS_PAPER_EOD_INTERVAL", "1800"))
+        except (TypeError, ValueError):
+            interval = 1800.0
+        interval = max(60.0, interval)
+        paper_eod_thread = threading.Thread(
+            target=_paper_eod_loop,
+            args=(after_close, interval),
+            daemon=True,
+        )
+        paper_eod_thread.start()
+        print(f"[paper-eod] 已启动：收盘 {after_close.strftime('%H:%M')} 后自动复盘,轮询 {int(interval)}s")
+        return paper_eod_thread
+
+
+# ----------------------------------------------------------------------------
+# 整库备份(Phase 6):导出一致性 .db 快照 / 导入(校验 → 自动备份 → 灌库 → migrate)
+# ----------------------------------------------------------------------------
+def export_db_snapshot():
+    """生成整库 .db 快照(临时文件),返回 (路径, 下载文件名)。"""
+    path = DB_BACKUP_SERVICE.export_snapshot()
+    return path, Path(path).name
+
+
+def import_db_snapshot(uploaded_path):
+    """导入上传库:自动备份当前库到数据目录 backups/,再 backup-into-live + migrate。"""
+    from data_store.connection import db_path
+    backup_dir = str(Path(db_path()).parent / "backups")
+    return DB_BACKUP_SERVICE.import_snapshot(uploaded_path, backup_dir=backup_dir)
+
+
+def validate_db_snapshot(path):
+    """校验上传库是否为合法 Kronos 库(供导入前预检/调试)。"""
+    return DB_BACKUP_SERVICE.validate_db(path)
+
+
 def _run_pattern_backtest_job(job_id, params):
     _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
     _append_job_log(job_id, '开始同类图形回测')
@@ -2037,6 +2299,14 @@ DESKTOP_PAGES = {
     'watchlist': {
         'title': '自选',
         'subtitle': '自选股实时行情、快捷分析与一键管理',
+    },
+    'capital_rankings': {
+        'title': '资金榜单',
+        'subtitle': '主力买入榜与龙虎榜:单日/多日聚合、刷新补偿、多选股票用机会挖掘算法分析',
+    },
+    'paper_trading': {
+        'title': '模拟盘',
+        'subtitle': '现价买入、开盘价买入、输入价格买入、持仓盯市、成交流水与胜率回测',
     },
     'workbench': {
         'title': '分析工作台',

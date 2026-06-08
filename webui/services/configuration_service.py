@@ -66,9 +66,12 @@ def _mask_secret(value: Any, keep_start: int = 4, keep_end: int = 4) -> str:
 
 
 class RuntimeConfigurationService:
-    def __init__(self, project_root: Path, user_root: Path):
+    def __init__(self, project_root: Path, user_root: Path, token_verifier=None):
         self.project_root = Path(project_root)
         self.user_root = Path(user_root)
+        # token_verifier(token:str) -> {"ok": bool, "error": str|None}; 默认懒加载
+        # tushare_client.verify_token(联网 trade_cal 探针)。注入以便离线测试。
+        self._token_verifier = token_verifier
         configured_config_dir = os.environ.get("KRONOS_CONFIG_DIR")
         self.user_config_dir = Path(configured_config_dir).expanduser() if configured_config_dir else self.user_root / "config"
         self.project_config_dir = self.project_root / "config"
@@ -301,4 +304,24 @@ class RuntimeConfigurationService:
             os.environ["TUSHARE_TOKEN"] = str(tushare["token"])
         elif payload.get("clear_token"):
             os.environ.pop("TUSHARE_TOKEN", None)
-        return {"success": True, "path": str(path), "settings": self.settings_payload()}
+        # Token 变更后清掉 tushare 客户端缓存,让新 Token 立即生效(否则要重启 App
+        # 才能甩掉首次构建的失败客户端 / 失败 latch)。
+        try:
+            from data_store import tushare_client
+            tushare_client.reset()
+        except Exception:  # noqa: BLE001 — 重置失败不应阻断保存
+            pass
+        result = {"success": True, "path": str(path), "settings": self.settings_payload()}
+        if payload.get("verify") and tushare.get("token"):
+            result["token_check"] = self._verify_token(str(tushare["token"]))
+        return result
+
+    def _verify_token(self, token: str) -> dict:
+        verifier = self._token_verifier
+        if verifier is None:
+            from data_store import tushare_client
+            verifier = tushare_client.verify_token
+        try:
+            return verifier(token)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}

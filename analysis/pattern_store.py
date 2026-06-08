@@ -300,6 +300,18 @@ class PatternStore:
             "last_finished_at": last_snap["finished_at"] if last_snap else None,
         }
 
+    def successful_snapshot_exists(self, snapshot_date: datetime.date) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM pattern_snapshot_meta
+                WHERE snapshot_date = ? AND status = 'success'
+                LIMIT 1
+                """,
+                (snapshot_date.isoformat(),),
+            ).fetchone()
+        return row is not None
+
     # ------------------------------------------------------------------
     # 已保存形态（历史图形）
     # ------------------------------------------------------------------
@@ -401,4 +413,3 @@ class PatternStore:
                 "DELETE FROM saved_patterns WHERE id = ?", (int(pattern_id),)
             )
             return cursor.rowcount > 0
-

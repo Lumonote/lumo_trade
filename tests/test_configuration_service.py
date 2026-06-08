@@ -86,6 +86,43 @@ def test_configuration_service_saves_user_configs_and_environment(tmp_path, monk
     assert os.environ["TUSHARE_TOKEN"] == "12345678901234567890"
 
 
+def test_save_tushare_validates_token_when_requested(tmp_path, monkeypatch):
+    """带 verify 标记保存时,用注入的校验器验证 Token,并把结果回传给前端。"""
+    project = tmp_path / "project"
+    user = tmp_path / "user"
+    (project / "config").mkdir(parents=True)
+    monkeypatch.delenv("KRONOS_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+
+    service = RuntimeConfigurationService(
+        project, user,
+        token_verifier=lambda t: {"ok": False, "error": "您的token不对，请确认。"},
+    )
+    result = service.save_tushare_settings({"token": "bad-token-20charslong", "verify": True})
+
+    assert result["success"] is True            # 仍然落盘(离线时不因校验失败而拒存)
+    assert result["token_check"] == {"ok": False, "error": "您的token不对，请确认。"}
+
+
+def test_save_tushare_skips_validation_by_default(tmp_path, monkeypatch):
+    """默认不校验(不联网),token_check 缺省。"""
+    project = tmp_path / "project"
+    user = tmp_path / "user"
+    (project / "config").mkdir(parents=True)
+    monkeypatch.delenv("KRONOS_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+
+    calls: list[str] = []
+    service = RuntimeConfigurationService(
+        project, user,
+        token_verifier=lambda t: calls.append(t) or {"ok": True, "error": None},
+    )
+    result = service.save_tushare_settings({"token": "abc1234567"})
+
+    assert calls == []                           # 未触发联网校验
+    assert result.get("token_check") is None
+
+
 def test_configuration_service_shows_provider_templates_without_user_config(tmp_path, monkeypatch):
     project = tmp_path / "project"
     user = tmp_path / "user"

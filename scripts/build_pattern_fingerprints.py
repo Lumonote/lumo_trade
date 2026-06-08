@@ -467,6 +467,21 @@ def build_all(
 ) -> dict:
     snapshot_date = snapshot_date or datetime.date.today()
     store.init_schema()
+    if limit is None and store.successful_snapshot_exists(snapshot_date):
+        if progress_callback:
+            progress_callback(f"{snapshot_date.isoformat()} 指纹库已是最新，跳过全量重建")
+        status = store.current_status()
+        return {
+            "snapshot_id": None,
+            "snapshot_date": snapshot_date.isoformat(),
+            "total": int(status.get("total_stocks") or 0),
+            "succeeded": 0,
+            "failed": 0,
+            "elapsed_seconds": 0,
+            "status": "skipped",
+            "source": "cache",
+            "skipped": True,
+        }
     snapshot_id = store.start_snapshot(snapshot_date)
     started_at = time.time()
     data_source = (data_source or "auto").lower()

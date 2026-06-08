@@ -38,7 +38,7 @@ def test_get_conn_creates_db_and_applies_schema(tmp_db):
         "sync_log",
     }.issubset(tables)
     version = c.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert version == 6
+    assert version >= 6
 
 
 def test_migrate_is_idempotent(tmp_db):

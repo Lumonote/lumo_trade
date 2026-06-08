@@ -47,6 +47,132 @@
         {# 「总览」页已并入 features 单页（见 DESKTOP_PAGE_ALIASES: overview→features） #}
 
 
+        {% if active_page == 'capital_rankings' %}
+        <section class="capital-rankings-layout">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">资金榜单</h2>
+              <span class="panel-meta" id="capitalRankingsMeta">--</span>
+            </div>
+            <div class="panel-body">
+              <div class="actions capital-tabs" id="capitalTabs">
+                <button class="button compact" type="button" data-cap-tab="moneyflow">主力买入榜</button>
+                <button class="button secondary compact" type="button" data-cap-tab="dragon_tiger">龙虎榜</button>
+              </div>
+              <div class="capital-filter-grid capital-controls">
+                <label>统计模式
+                  <select id="capitalMode">
+                    <option value="single">单日</option>
+                    <option value="aggregate">多日聚合</option>
+                  </select>
+                </label>
+                <label>单日 / 截止日期（留空=最新交易日）
+                  <input id="capitalDate" type="date" />
+                </label>
+                <label>区间开始
+                  <input id="capitalStartDate" type="date" />
+                </label>
+                <label>区间结束
+                  <input id="capitalEndDate" type="date" />
+                </label>
+                <label>聚合天数（多日模式）
+                  <input id="capitalDays" type="number" value="5" min="1" max="120" />
+                </label>
+                <label>Top N
+                  <input id="capitalTopN" type="number" value="50" min="1" max="500" />
+                </label>
+              </div>
+              <div class="actions capital-actions">
+                <button class="button" type="button" id="capitalQueryBtn">查询</button>
+                <label class="capital-backfill-field">补偿天数
+                  <input id="capitalBackfillDays" type="number" value="30" min="1" max="120" />
+                </label>
+                <button class="button secondary" type="button" id="capitalBackfillBtn">刷新 / 补偿数据</button>
+                <span class="panel-meta control-help">补偿会后台回填当前榜单最近 N 个交易日,完成后点「查询」</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <label class="capital-selectall"><input type="checkbox" id="capitalSelectAll" /> 全选</label>
+              <div class="actions">
+                <button class="button" type="button" id="capitalAnalyzeBtn">分析选中 (0)</button>
+              </div>
+            </div>
+            <div class="capital-table-wrap" id="capitalTable"></div>
+          </div>
+
+          <div class="capital-window-grid">
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">5日买入额榜</h2>
+                <span class="panel-meta" id="capitalWindow5Meta">--</span>
+              </div>
+              <div class="capital-table-wrap compact" id="capitalWindow5Table"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">30日买入额榜</h2>
+                <span class="panel-meta" id="capitalWindow30Meta">--</span>
+              </div>
+              <div class="capital-table-wrap compact" id="capitalWindow30Table"></div>
+            </div>
+          </div>
+        </section>
+        {% endif %}
+
+
+        {% if active_page == 'paper_trading' %}
+        <section class="paper-layout">
+          <div class="panel paper-account-panel">
+            <div class="panel-header">
+              <h2 class="panel-title">模拟盘账户</h2>
+              <span class="panel-meta" id="paperAccountMeta">起始 100W · 含简化费用(佣金万2.5最低5 / 印花0.05% / 过户万0.1)</span>
+            </div>
+            <div class="panel-body">
+              <div class="paper-stats" id="paperAccountStats"></div>
+              <div class="actions paper-actions">
+                <button class="button" type="button" id="paperBuyMarketBtn">现价买入</button>
+                <button class="button secondary" type="button" id="paperBuyOpenBtn">开盘价买入</button>
+                <button class="button secondary" type="button" id="paperBuyLimitBtn">输入价格买入</button>
+                <button class="button secondary" type="button" id="paperHistoryBtn">导入历史买入</button>
+                <button class="button secondary" type="button" id="paperSettleBtn">立即结算/复盘</button>
+                <label class="paper-reset-field">重置资金
+                  <input id="paperResetCash" type="number" value="1000000" min="10000" step="10000" />
+                </label>
+                <button class="button secondary" type="button" id="paperResetBtn">重置账户</button>
+                <span class="panel-meta control-help">模拟撮合(日K近似,非分时);重置会清空持仓/委托/成交流水</span>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><h2 class="panel-title">持仓</h2><span class="panel-meta" id="paperPositionsMeta">--</span></div>
+            <div class="list" id="paperPositions"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><h2 class="panel-title">委托(待撮合)</h2></div>
+            <div class="list" id="paperOrders"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><h2 class="panel-title">回测 / 胜率</h2></div>
+            <div class="panel-body"><div class="paper-stats" id="paperStats"></div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><h2 class="panel-title">成交 / 操作日志</h2></div>
+            <div class="list" id="paperTrades"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">当日复盘</h2>
+              <span class="panel-meta">收盘后自动生成(15:30),含市场环境 + 个人操作结算</span>
+            </div>
+            <div class="list" id="paperReviews"></div>
+          </div>
+        </section>
+        {% endif %}
+
+
         {% if active_page == 'workbench' %}
         <section class="workbench-layout">
           <div class="workbench-main">
@@ -618,6 +744,7 @@
                 <div class="actions">
                   <button class="button" type="submit">保存 TuShare 配置</button>
                 </div>
+                <p id="tushareTokenCheck" class="item-meta" style="margin-top: 10px; display: none;"></p>
                 <p id="tushareConfigPath" class="item-meta" style="margin-top: 10px;"></p>
               </form>
             </div>
@@ -646,6 +773,24 @@
                   <button id="loadKronosModelBtn" class="button" type="button">载入 Kronos 模型</button>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">数据备份与恢复</h2>
+              <span id="dataBackupMeta" class="panel-meta">整库 .db 全量导出 / 导入</span>
+            </div>
+            <div class="panel-body">
+              <p class="item-meta">导出当前整库为一致性 <code>.db</code> 快照;导入将用上传库<strong>整库替换</strong>当前数据(导入前会自动备份当前库到数据目录 <code>backups/</code>,并把旧版本升级到当前 schema)。</p>
+              <div class="actions" style="margin-top:12px;flex-wrap:wrap;gap:8px;">
+                <button class="button" type="button" id="dataExportBtn">导出整库 (.db)</button>
+                <label class="button secondary" for="dataImportFile" style="cursor:pointer;">选择 .db 文件…</label>
+                <input id="dataImportFile" type="file" accept=".db,.sqlite,application/octet-stream" hidden />
+                <button class="button secondary" type="button" id="dataImportBtn" disabled>导入并替换</button>
+              </div>
+              <p id="dataBackupFile" class="item-meta" style="margin-top:8px;">未选择文件</p>
+              <div id="dataBackupResult" class="notice" hidden style="margin-top:10px;"></div>
             </div>
           </div>
         </section>
@@ -856,6 +1001,73 @@
           </div>
         </div>
         <div class="modal-body" id="filePreviewBody" style="overflow:auto;padding:1rem;"></div>
+      </div>
+    </div>
+
+    <div id="paperOrderDialog" class="modal-backdrop" aria-hidden="true" hidden>
+      <div class="modal-shell" role="dialog" aria-modal="true" aria-labelledby="paperOrderTitle">
+        <div class="modal-header">
+          <div>
+            <h2 id="paperOrderTitle">现价买入 · 模拟下单</h2>
+            <p id="paperOrderMeta">起始 100W · 含简化费用</p>
+          </div>
+          <div class="modal-header-actions">
+            <button id="paperOrderCloseBtn" class="button secondary compact" type="button">关闭</button>
+          </div>
+        </div>
+        <div class="modal-body" style="padding:1rem;">
+          <div class="form-grid">
+            <label>代码<input id="dlgCode" type="text" placeholder="如 600027" /></label>
+            <label>名称<input id="dlgName" type="text" placeholder="可选" /></label>
+            <label>方向
+              <select id="dlgSide"><option value="buy">买入</option><option value="sell">卖出</option></select>
+            </label>
+            <label>价格类型
+              <select id="dlgPriceType">
+                <option value="market">现价</option>
+                <option value="open">开盘价</option>
+                <option value="limit">输入价格</option>
+              </select>
+            </label>
+            <label id="dlgLimitField" hidden>输入价格<input id="dlgLimitPrice" type="number" step="0.01" min="0" /></label>
+            <label>下单方式
+              <select id="dlgQtyMode"><option value="qty">按股数</option><option value="amount">按金额</option></select>
+            </label>
+            <label id="dlgQtyField">股数(100整数倍)<input id="dlgQty" type="number" step="100" min="100" /></label>
+            <label id="dlgAmountField" hidden>金额(元)<input id="dlgAmount" type="number" step="1000" min="100" /></label>
+            <div id="dlgStockSuggest" class="paper-stock-suggest" hidden></div>
+          </div>
+          <p class="panel-meta" id="dlgHint" style="margin:8px 0;">现价买入会立即按实时价成交;开盘价和输入价格会进入委托区等待撮合。</p>
+          <div class="actions"><button class="button" type="button" id="dlgSubmitBtn">提交下单</button></div>
+          <div id="dlgResult" class="notice" hidden style="margin-top:10px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="paperHistoryDialog" class="modal-backdrop" aria-hidden="true" hidden>
+      <div class="modal-shell" role="dialog" aria-modal="true" aria-labelledby="paperHistoryTitle">
+        <div class="modal-header">
+          <div>
+            <h2 id="paperHistoryTitle">历史买入 · 导入持仓</h2>
+            <p>按已成交买入写入模拟盘,直接生成持仓和成交流水</p>
+          </div>
+          <div class="modal-header-actions">
+            <button id="paperHistoryCloseBtn" class="button secondary compact" type="button">关闭</button>
+          </div>
+        </div>
+        <div class="modal-body" style="padding:1rem;">
+          <div class="form-grid">
+            <label>代码<input id="histCode" type="text" placeholder="如 600027" /></label>
+            <label>名称<input id="histName" type="text" placeholder="输入名称可自动带出代码" /></label>
+            <label>买入日期<input id="histTradeDate" type="date" /></label>
+            <label>成交价<input id="histPrice" type="number" step="0.01" min="0" /></label>
+            <label>股数(100整数倍)<input id="histQty" type="number" step="100" min="100" /></label>
+            <div id="histStockSuggest" class="paper-stock-suggest" hidden></div>
+          </div>
+          <p class="panel-meta" style="margin:8px 0;">保存后按买入费用摊入成本,并从可用资金中扣除成本与费用。</p>
+          <div class="actions"><button class="button" type="button" id="histSubmitBtn">导入历史买入</button></div>
+          <div id="histResult" class="notice" hidden style="margin-top:10px;"></div>
+        </div>
       </div>
     </div>
 

@@ -79,6 +79,48 @@ def available() -> bool:
     return get_pro() is not None
 
 
+def reset() -> None:
+    """Drop the cached ``pro`` client and the failure latch so the next
+    ``get_pro()`` re-reads the (possibly just-updated) token.
+
+    Without this, a token changed at runtime (e.g. via the desktop Settings
+    page) would not take effect until the process restarts, because
+    ``get_pro()`` keeps returning the stale client / ``None`` it cached the
+    first time.
+    """
+    global _pro, _init_failed
+    with _lock:
+        _pro = None
+        _init_failed = False
+
+
+def verify_token(token: Optional[str] = None) -> dict:
+    """Validate a Tushare token with a cheap ``trade_cal`` probe.
+
+    Returns ``{"ok": bool, "error": Optional[str]}``. Empty / placeholder
+    tokens are rejected offline (no network). Used by the desktop Settings
+    page so a broken token is caught at save time with a clear message
+    instead of silently breaking every later Tushare call.
+
+    Builds a throwaway client (``pro_api(token)``) so the module-level cached
+    client is left untouched.
+    """
+    tok = (token if token is not None else _load_token()).strip()
+    if not tok or tok == _PLACEHOLDER:
+        return {"ok": False, "error": "未配置 Tushare Token"}
+    try:
+        import tushare as ts  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"tushare 未安装: {exc}"}
+    try:
+        pro = ts.pro_api(tok)
+        today = _dt.date.today().strftime("%Y%m%d")
+        pro.trade_cal(exchange="SSE", start_date=today, end_date=today)
+        return {"ok": True, "error": None}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def to_ts_code(code: str) -> str:
     """6-digit code → tushare ``ts_code`` (``XXXXXX.SH`` / ``.SZ`` / ``.BJ``).
 

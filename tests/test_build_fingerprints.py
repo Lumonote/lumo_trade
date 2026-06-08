@@ -4,6 +4,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from scripts.build_pattern_fingerprints import (
+    build_all,
     build_fingerprint_for_stock,
     parse_market_from_secid,
 )
@@ -116,3 +117,19 @@ def test_list_all_secids_parses_clist():
     sz_row = next(s for s in stocks if s["stock_code"] == "000001")
     assert sz_row["secid"] == "0.000001"
     assert sz_row["market"] == "SZ"
+
+
+def test_build_all_skips_when_snapshot_already_successful(tmp_path):
+    from analysis.pattern_store import PatternStore
+
+    store = PatternStore(tmp_path / "patterns.db")
+    store.init_schema()
+    snap_id = store.start_snapshot(datetime.date(2026, 6, 5))
+    store.finish_snapshot(snap_id, status="success", total=1, succeeded=1, failed=0)
+
+    with patch("scripts.build_pattern_fingerprints.build_fingerprints_from_tushare") as tushare_build:
+        result = build_all(store, snapshot_date=datetime.date(2026, 6, 5))
+
+    assert result["status"] == "skipped"
+    assert result["skipped"] is True
+    tushare_build.assert_not_called()

@@ -617,6 +617,228 @@ def open_trading_client(request: Request) -> Response:
     return _json_response(result, status_code=200 if result.get("success") else 400)
 
 
+def _capital_ranking_payload(request: Request, kind: str) -> dict[str, Any]:
+    date = (_query_value(request, "date") or "").strip() or None
+    start_date = (_query_value(request, "start_date") or "").strip() or None
+    end_date = (_query_value(request, "end_date") or "").strip() or None
+    mode = (_query_value(request, "mode") or "single").strip()
+    if mode not in ("single", "aggregate"):
+        mode = "single"
+    days = webui_core._safe_int(_query_value(request, "days"), 1, minimum=1, maximum=120) or 1
+    top_n = webui_core._safe_int(_query_value(request, "top"), 50, minimum=1, maximum=500) or 50
+    with_quotes = str(_query_value(request, "quotes", "1")).strip().lower() not in ("0", "false", "no")
+    svc = webui_core.CAPITAL_RANKINGS_SERVICE
+    if kind == "moneyflow":
+        return svc.moneyflow_ranking(
+            date=date,
+            days=days,
+            top_n=top_n,
+            mode=mode,
+            with_quotes=with_quotes,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    return svc.dragon_tiger_ranking(
+        date=date,
+        days=days,
+        top_n=top_n,
+        mode=mode,
+        with_quotes=with_quotes,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+@_native_get("/api/capital-rankings/moneyflow")
+def capital_rankings_moneyflow(request: Request) -> Response:
+    return _json_response(_capital_ranking_payload(request, "moneyflow"))
+
+
+@_native_get("/api/capital-rankings/dragon-tiger")
+def capital_rankings_dragon_tiger(request: Request) -> Response:
+    return _json_response(_capital_ranking_payload(request, "dragon_tiger"))
+
+
+@_native_post("/api/capital-rankings/backfill")
+def capital_rankings_backfill(request: Request) -> Response:
+    body = _request_json(request) or {}
+    days = webui_core._safe_int(body.get("days"), 30, minimum=1, maximum=120) or 30
+    kinds = body.get("kinds") if isinstance(body.get("kinds"), list) else ["moneyflow", "dragon_tiger"]
+    params = {"days": days, "kinds": kinds}
+    job = webui_core.JOB_SERVICE.start(
+        "capital_backfill", params, webui_core._run_capital_backfill_job
+    )
+    return _json_response({
+        "job_id": job["id"], "status": "queued",
+        "job": webui_core._get_job_snapshot(job["id"]),
+    })
+
+
+@_native_get("/api/opportunity-report")
+def opportunity_report_cards(request: Request) -> Response:
+    file = (_query_value(request, "file") or "").strip()
+    payload = webui_core.load_opportunity_report_cards(file)
+    if payload is None:
+        return _json_response({"error": "Report not found"}, status_code=404)
+    return _json_response(payload)
+
+
+# ----------------------------- 模拟盘 paper trading -----------------------------
+
+@_native_get("/api/paper/account")
+def paper_account(request: Request) -> Response:
+    return _json_response(webui_core.PAPER_TRADING_SERVICE.account_summary())
+
+
+@_native_get("/api/paper/positions")
+def paper_positions(request: Request) -> Response:
+    return _json_response({"positions": webui_core.PAPER_TRADING_SERVICE.positions()})
+
+
+@_native_get("/api/paper/orders")
+def paper_orders(request: Request) -> Response:
+    status = (_query_value(request, "status") or "").strip() or None
+    return _json_response({"orders": webui_core.PAPER_TRADING_SERVICE.orders(status=status)})
+
+
+@_native_get("/api/paper/trades")
+def paper_trades(request: Request) -> Response:
+    limit = webui_core._safe_int(_query_value(request, "limit"), 200, minimum=1, maximum=2000)
+    return _json_response({"trades": webui_core.PAPER_TRADING_SERVICE.trades(limit=limit)})
+
+
+@_native_get("/api/paper/stats")
+def paper_stats(request: Request) -> Response:
+    return _json_response(webui_core.PAPER_TRADING_SERVICE.stats())
+
+
+@_native_post("/api/paper/order")
+def paper_place_order(request: Request) -> Response:
+    body = _request_json(request) or {}
+    ts_code = str(body.get("ts_code") or body.get("code") or "").strip()
+    if not ts_code:
+        return _json_response({"error": "ts_code required"}, status_code=400)
+    order = webui_core.PAPER_TRADING_SERVICE.place_order(
+        ts_code,
+        str(body.get("side") or "buy"),
+        str(body.get("price_type") or "market"),
+        qty=body.get("qty"),
+        amount=body.get("amount"),
+        limit_price=body.get("limit_price"),
+        name=str(body.get("name") or ""),
+    )
+    return _json_response({"order": order, "account": webui_core.PAPER_TRADING_SERVICE.account_summary()})
+
+
+@_native_post("/api/paper/history-buy")
+def paper_history_buy(request: Request) -> Response:
+    body = _request_json(request) or {}
+    ts_code = str(body.get("ts_code") or body.get("code") or "").strip()
+    if not ts_code:
+        return _json_response({"error": "ts_code required"}, status_code=400)
+    order = webui_core.PAPER_TRADING_SERVICE.import_historical_buy(
+        ts_code,
+        name=str(body.get("name") or ""),
+        price=body.get("price"),
+        qty=body.get("qty"),
+        trade_date=body.get("trade_date"),
+    )
+    return _json_response({"order": order, "account": webui_core.PAPER_TRADING_SERVICE.account_summary()})
+
+
+@_native_post("/api/paper/order/:order_id/cancel")
+def paper_cancel_order(request: Request, order_id=None) -> Response:
+    oid = webui_core._safe_int(_path_param(request, "order_id", order_id), 0, minimum=0)
+    if not oid:
+        return _json_response({"error": "invalid order id"}, status_code=400)
+    order = webui_core.PAPER_TRADING_SERVICE.cancel_order(oid)
+    if order is None:
+        return _json_response({"error": "order not found"}, status_code=404)
+    return _json_response({"order": order})
+
+
+@_native_post("/api/paper/reset")
+def paper_reset(request: Request) -> Response:
+    body = _request_json(request) or {}
+    initial = body.get("initial_cash")
+    return _json_response(webui_core.PAPER_TRADING_SERVICE.reset(initial_cash=initial))
+
+
+@_native_post("/api/paper/settle")
+def paper_settle(request: Request) -> Response:
+    """手动触发 EOD：撮合补算 pending 单 + 盯市 + 生成/复用当日复盘。"""
+    body = _request_json(request) or {}
+    date = str(body.get("date") or "").strip() or None
+    try:
+        result = webui_core.run_paper_eod(date=date)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"error": str(exc)}, status_code=500)
+    return _json_response(result)
+
+
+@_native_get("/api/paper/reviews")
+def paper_reviews(request: Request) -> Response:
+    limit = webui_core._safe_int(_query_value(request, "limit"), 60, minimum=1, maximum=500)
+    reviews = webui_core.PAPER_TRADING_SERVICE.list_reviews(str(webui_core.RESULTS_DIR), limit=limit)
+    return _json_response({"reviews": reviews})
+
+
+@_native_get("/api/paper/review/:date")
+def paper_review_detail(request: Request, date=None) -> Response:
+    day = _path_param(request, "date", date)
+    content = webui_core.PAPER_TRADING_SERVICE.read_review(day, str(webui_core.RESULTS_DIR))
+    if content is None:
+        return _json_response({"error": "review not found"}, status_code=404)
+    return _json_response({"date": day, "content": content})
+
+
+# ----------------------------- 整库备份 data backup -----------------------------
+
+@_native_get("/api/data/export")
+def data_export(request: Request) -> Response:
+    """整库导出:回传一致性 .db 快照供下载。"""
+    try:
+        path, name = webui_core.export_db_snapshot()
+        data = Path(path).read_bytes()
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"error": f"导出失败:{exc}"}, status_code=500)
+    return Response(
+        status_code=200,
+        headers=Headers({
+            "Content-Type": "application/octet-stream",
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "Cache-Control": "no-store",
+        }),
+        description=data,
+    )
+
+
+@_native_post("/api/data/import")
+def data_import(request: Request) -> Response:
+    """整库导入(multipart 上传 .db):校验 → 自动备份当前库 → 灌库 → migrate。"""
+    files = getattr(request, "files", None) or {}
+    if not files:
+        return _json_response({"error": "未收到上传文件(需 multipart 上传 .db)"}, status_code=400)
+    raw = next(iter(files.values()))
+    if isinstance(raw, str):
+        raw = raw.encode("latin-1", errors="ignore")
+    if not raw:
+        return _json_response({"error": "上传文件为空"}, status_code=400)
+    import tempfile
+    tmp = Path(tempfile.gettempdir()) / "kronos_import_upload.db"
+    tmp.write_bytes(raw)
+    try:
+        result = webui_core.import_db_snapshot(str(tmp))
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"error": f"导入失败:{exc}"}, status_code=500)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return _json_response(result, status_code=200 if result.get("ok") else 400)
+
+
 @_native_get("/api/pattern-search/status")
 def pattern_search_status(request: Request) -> Response:
     return _json_response(webui_core.PATTERN_SEARCH_SERVICE.status())
@@ -725,6 +947,7 @@ def watchlist_remove(request: Request) -> Response:
 def startup() -> None:
     webui_core.start_market_monitor()
     webui_core.start_pattern_autorefresh()
+    webui_core.start_paper_eod()
 
 
 def configure_server_from_env() -> None:

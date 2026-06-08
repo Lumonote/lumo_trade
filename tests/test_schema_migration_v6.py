@@ -25,7 +25,7 @@ def _table_exists(conn, name: str) -> bool:
 
 def test_v6_creates_seven_new_tables(conn):
     final = migrate(conn)
-    assert final == 6
+    assert final >= 6  # v6 表建出即可;全局 max 随后续迁移推进
     for tbl in (
         "dragon_tiger_inst",
         "hsgt_individual",
@@ -40,7 +40,7 @@ def test_v6_creates_seven_new_tables(conn):
 
 def test_v6_idempotent(conn):
     migrate(conn)
-    assert migrate(conn) == 6  # 二次运行不报错也不重复 insert version
+    assert migrate(conn) >= 6  # 二次运行不报错也不重复 insert version
 
 
 def test_dragon_tiger_inst_columns(conn):

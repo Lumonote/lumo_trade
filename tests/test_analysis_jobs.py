@@ -18,13 +18,27 @@ def test_opportunity_params_validate_source_and_defaults():
 
     assert error is None
     assert params == {
-        "limit": 80,
-        "workers": 8,
+        "limit": 100,
+        "workers": 10,
         "source": "heat",
         "stock_codes": ["600000"],
     }
     assert invalid is None
     assert "Unsupported source" in invalid_error
+
+
+def test_opportunity_params_empty_payload_uses_cli_defaults():
+    parser = AnalysisJobRequestParser()
+
+    params, error = parser.opportunity_params({})
+
+    assert error is None
+    assert params == {
+        "limit": 100,
+        "workers": 10,
+        "source": "multi",
+        "stock_codes": [],
+    }
 
 
 def test_batch_params_validate_codes_and_filter_types():

@@ -226,11 +226,22 @@ class OpenAIProvider(LLMProvider):
         if isinstance(timeout, list):
             timeout = tuple(timeout)
 
+        # 瞬时连接级错误——SSL EOF(UNEXPECTED_EOF_WHILE_READING)、连接重置、读/连超时——
+        # 是网络波动而非逻辑错误。即使用户没在配置里打开 retry_enabled,也要带退避自动重试:
+        # 否则一次抖动就会让整次分析失败(线上 DeepSeek 官方报错即此类)。
+        # HTTP 4xx 与解析失败是确定性结果,绝不重试。
+        try:
+            configured_retries = int(model_config.get('retry_times', 3))
+        except (TypeError, ValueError):
+            configured_retries = 3
+        # 瞬时错误至少尝试 3 次(含首次),retry_times 更大则取更大值
+        max_attempts = max(configured_retries, 3) if configured_retries > 0 else 3
         retry_enabled = model_config.get('retry_enabled', False)
-        max_retries = model_config.get('retry_times', 3)
         retry_delay = 2
+        last_error = ''
 
-        for attempt in range(max_retries if retry_enabled else 1):
+        for attempt in range(max_attempts):
+            is_last = attempt >= max_attempts - 1
             try:
                 data = {
                     "model": model_id,
@@ -253,26 +264,54 @@ class OpenAIProvider(LLMProvider):
                 result = response.json()
                 return self._parse_response(result)
 
-            except requests.exceptions.Timeout:
-                if retry_enabled and attempt < max_retries - 1:
-                    print(f"  ⚠️ [{self.provider_name}] 请求超时，第{attempt + 1}次重试...")
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                # ConnectionError 同时覆盖 SSLError(含 UNEXPECTED_EOF)、连接重置、代理错误、ConnectTimeout
+                last_error = self._describe_transient_error(e)
+                if not is_last:
+                    print(f"  ⚠️ [{self.provider_name}] 连接异常，第{attempt + 1}/{max_attempts}次重试: {last_error}")
                     time.sleep(retry_delay)
-                    retry_delay *= 2
+                    retry_delay = min(retry_delay * 2, 15)
                     continue
-                return False, f"[{self.provider_name}] 请求超时"
+                return False, (
+                    f"[{self.provider_name}] API调用失败（连接异常，已重试{max_attempts}次）: {last_error}。"
+                    f"多为网络波动/代理/TLS 中断，请稍后重试或检查网络与代理设置"
+                )
 
             except requests.exceptions.RequestException as e:
-                if retry_enabled and attempt < max_retries - 1:
-                    print(f"  ⚠️ [{self.provider_name}] 请求失败，第{attempt + 1}次重试: {e}")
+                # 非连接级请求错误(如 5xx)。仅在用户显式开启 retry_enabled 时重试。
+                last_error = str(e)
+                if retry_enabled and not is_last:
+                    print(f"  ⚠️ [{self.provider_name}] 请求失败，第{attempt + 1}/{max_attempts}次重试: {last_error}")
                     time.sleep(retry_delay)
-                    retry_delay *= 2
+                    retry_delay = min(retry_delay * 2, 15)
                     continue
-                return False, f"[{self.provider_name}] API调用失败: {str(e)}"
+                return False, f"[{self.provider_name}] API调用失败: {last_error}"
 
             except Exception as e:
                 return False, f"[{self.provider_name}] 未知错误: {str(e)}"
 
-        return False, f"[{self.provider_name}] 请求失败"
+        return False, f"[{self.provider_name}] 请求失败: {last_error}"
+
+    @staticmethod
+    def _describe_transient_error(exc: Exception) -> str:
+        """把瞬时网络错误压成一句可读原因。
+
+        SSL EOF / 连接重置经 urllib3 包装后字符串极长(HTTPSConnectionPool... Caused by...),
+        直接抛给用户既看不懂也刷屏;这里识别常见类型给出短提示,其余截断到首段。
+        """
+        text = str(exc)
+        low = text.lower()
+        if isinstance(exc, requests.exceptions.SSLError) or 'unexpected_eof' in low or 'eof occurred' in low:
+            return 'SSL 连接被意外中断（UNEXPECTED_EOF）'
+        if isinstance(exc, requests.exceptions.ProxyError) or 'proxy' in low:
+            return '代理连接失败'
+        if isinstance(exc, requests.exceptions.Timeout) or 'timed out' in low:
+            return '请求超时'
+        if 'reset by peer' in low or 'connection aborted' in low or 'connection refused' in low:
+            return '连接被重置/拒绝'
+        # 去掉 urllib3 的 "(Caused by ...)" 长尾,只留首段
+        head = text.split('(Caused by')[0].strip()
+        return head or text[:160]
 
     def _parse_response(self, result: Dict) -> Tuple[bool, str]:
         if result.get('choices') and len(result['choices']) > 0:

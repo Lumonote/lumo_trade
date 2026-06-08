@@ -229,6 +229,110 @@ _MIGRATIONS: List[Tuple[int, str]] = [
           ON sync_log(source, ran_at DESC);
         """,
     ),
+    (
+        7,
+        # 资金榜单(龙虎榜单,含游资净额) + 模拟盘台账 (P5)
+        """
+        -- 龙虎榜单(Tushare top_list 口径:个股/日,net_amount 含游资净买入额)。
+        -- 同一股票同日可因多条「上榜原因」出现多行,故 reason 进主键。
+        CREATE TABLE IF NOT EXISTS dragon_tiger_list (
+          trade_date    TEXT NOT NULL,
+          ts_code       TEXT NOT NULL,
+          name          TEXT,
+          close         REAL,
+          pct_change    REAL,
+          turnover_rate REAL,
+          amount        REAL,   -- 当日总成交额
+          l_buy         REAL,   -- 龙虎榜买入额
+          l_sell        REAL,   -- 龙虎榜卖出额
+          l_amount      REAL,   -- 龙虎榜成交额
+          net_amount    REAL,   -- 龙虎榜净买入额(含游资) ← 排序键
+          net_rate      REAL,
+          amount_rate   REAL,
+          reason        TEXT NOT NULL DEFAULT '',  -- 上榜原因
+          PRIMARY KEY (trade_date, ts_code, reason)
+        );
+        CREATE INDEX IF NOT EXISTS idx_dtl_date_net ON dragon_tiger_list(trade_date, net_amount DESC);
+        CREATE INDEX IF NOT EXISTS idx_dtl_code     ON dragon_tiger_list(ts_code, trade_date);
+
+        -- 模拟盘单账户(id 恒为 1)
+        CREATE TABLE IF NOT EXISTS paper_account (
+          id           INTEGER PRIMARY KEY CHECK(id=1),
+          initial_cash REAL NOT NULL,
+          cash         REAL NOT NULL,
+          created_at   TEXT NOT NULL,
+          updated_at   TEXT NOT NULL
+        );
+
+        -- 委托(即时单直接 filled;open/close/limit 进 pending 等撮合)
+        CREATE TABLE IF NOT EXISTS paper_order (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts_code       TEXT NOT NULL,
+          name          TEXT,
+          side          TEXT NOT NULL CHECK(side IN ('buy','sell')),
+          price_type    TEXT NOT NULL CHECK(price_type IN ('market','open','close','limit')),
+          limit_price   REAL,
+          qty           INTEGER,
+          amount_budget REAL,
+          status        TEXT NOT NULL CHECK(status IN ('pending','filled','cancelled','rejected')),
+          created_at    TEXT NOT NULL,
+          created_date  TEXT NOT NULL,
+          filled_at     TEXT,
+          filled_price  REAL,
+          filled_qty    INTEGER,
+          fee           REAL,
+          note          TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_porder_status ON paper_order(status, ts_code);
+
+        -- 持仓(含费摊薄均价)
+        CREATE TABLE IF NOT EXISTS paper_position (
+          ts_code    TEXT PRIMARY KEY,
+          name       TEXT,
+          qty        INTEGER NOT NULL,
+          avg_cost   REAL NOT NULL,
+          opened_at  TEXT,
+          updated_at TEXT
+        );
+
+        -- 成交流水(每笔 fill;卖出结算 realized_pnl)
+        CREATE TABLE IF NOT EXISTS paper_trade (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          order_id     INTEGER,
+          ts_code      TEXT NOT NULL,
+          name         TEXT,
+          side         TEXT NOT NULL,
+          price        REAL NOT NULL,
+          qty          INTEGER NOT NULL,
+          gross        REAL NOT NULL,
+          fee          REAL NOT NULL,
+          realized_pnl REAL,
+          traded_at    TEXT NOT NULL,
+          trade_date   TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ptrade_code ON paper_trade(ts_code, traded_at);
+
+        -- 每日权益曲线(回撤/收益率)
+        CREATE TABLE IF NOT EXISTS paper_equity_curve (
+          trade_date     TEXT PRIMARY KEY,
+          cash           REAL,
+          position_value REAL,
+          total_equity   REAL,
+          daily_pnl      REAL
+        );
+
+        -- 费用等配置(键值)
+        CREATE TABLE IF NOT EXISTS paper_settings (
+          key   TEXT PRIMARY KEY,
+          value TEXT
+        );
+        """,
+    ),
+    (
+        8,
+        # 保留资金榜接口原始列,用于前端展开展示非标准字段。
+        "",
+    ),
 ]
 
 
@@ -245,6 +349,24 @@ def _current_version(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    if not row or column in _table_columns(conn, table):
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
+def _migrate_v8_raw_json(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, "moneyflow_dc", "raw_json", "raw_json TEXT")
+    _add_column_if_missing(conn, "dragon_tiger_list", "raw_json", "raw_json TEXT")
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply pending migrations. Returns the final version.
 
@@ -257,7 +379,10 @@ def migrate(conn: sqlite3.Connection) -> int:
     for version, sql in _MIGRATIONS:
         if version <= current:
             continue
-        conn.executescript(sql)
+        if version == 8:
+            _migrate_v8_raw_json(conn)
+        elif sql.strip():
+            conn.executescript(sql)
         conn.execute(
             "INSERT INTO schema_version(version, applied_at) VALUES(?, ?)",
             (version, _dt.datetime.now().isoformat(timespec="seconds")),

@@ -31,6 +31,36 @@ def test_radar_main_force_phase_formula():
     assert score == 76
 
 
+def test_volume_price_game_uses_net_model_votes_not_missing_buys():
+    """少量多空票 + 大量观望不应被判成强空/空头占优。"""
+    from analysis.stock_analysis_suite import compute_volume_price_game_score
+
+    suite = StockAnalysisSuite()
+    score = compute_volume_price_game_score(4, 30, 5)
+    assert score == 48
+    assert suite._label_vp(score) == "多空胶着"
+
+    radar = suite._compute_radar({
+        "models": {
+            "buy_signal_count": 4,
+            "sell_signal_count": 5,
+            "hold_signal_count": 21,
+            "total": 30,
+        },
+    })
+    assert radar["volume_price_game"]["score"] == 48
+    assert radar["volume_price_game"]["label"] == "多空胶着"
+
+
+def test_quant_matrix_posture_observation_dominant_is_not_strong_bear():
+    suite = StockAnalysisSuite()
+    section = suite._collect_quant_matrix("688322.SH", {
+        "buy_signal_count": 4, "sell_signal_count": 5, "hold_signal_count": 21,
+        "total": 30, "per_model": [],
+    })
+    assert section["current_posture"] == "观望主导"
+
+
 def test_radar_handles_all_missing():
     suite = StockAnalysisSuite()
     radar = suite._compute_radar({})  # all analyzer outputs missing
@@ -88,6 +118,25 @@ def test_compute_overview_assembles_full_payload():
     assert len(overview["key_signals"]) == 6
     assert isinstance(overview["deep_signals"], list)
     assert overview["radar"]["main_force_phase"]["score"] is not None
+
+
+def test_key_signals_include_ma_alignment_when_ohlcv_available():
+    suite = StockAnalysisSuite()
+    signals = suite._build_key_signals({"ohlcv": _fake_ohlcv(80)}, {})
+    tech = next(s for s in signals if s["label"] == "技术趋势")
+    assert tech["value"] in ("多头排列", "空头排列", "均线交织")
+
+
+def test_key_signals_detect_bullish_ma_alignment():
+    suite = StockAnalysisSuite()
+    close = np.arange(1.0, 81.0)
+    df = pd.DataFrame({
+        "timestamps": pd.date_range("2026-01-01", periods=80, freq="D"),
+        "open": close, "high": close * 1.01, "low": close * 0.99,
+        "close": close, "volume": np.ones(80), "amount": close,
+    })
+    signals = suite._build_key_signals({"ohlcv": df}, {})
+    assert {"label": "技术趋势", "value": "多头排列", "tone": "info"} in signals
 
 
 def test_compute_risk_control_with_atr_and_levels():

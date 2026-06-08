@@ -60,11 +60,22 @@ def compute_market_cycle_score(regime: str, capital_flow_ratio: float) -> int:
     return int(round(min(100.0, score)))
 
 
-def compute_volume_price_game_score(buy_signal_count: int, total_models: int = 30) -> int:
-    """5维评分③. Spec §4 ③."""
+def compute_volume_price_game_score(
+    buy_signal_count: int,
+    total_models: int = 30,
+    sell_signal_count: int = 0,
+) -> int:
+    """5维评分③. Spec §4 ③.
+
+    量化模型经常以「观望」为主。旧实现只看买入票数，4 多 / 5 空 / 21 观望
+    会被压成 13 分并误标「空头占优」。这里改用多空净差归一到 0–100：
+    50 为多空均衡，大量观望不会天然等同于空头。
+    """
     if total_models <= 0:
         return 0
-    return int(round(buy_signal_count / total_models * 100.0))
+    net = (buy_signal_count - sell_signal_count) / total_models
+    score = 50.0 + net * 50.0
+    return int(round(max(0.0, min(100.0, score))))
 
 
 def compute_chip_structure_score(concentration_pct: float, profit_ratio_pct: float) -> int:
@@ -474,19 +485,22 @@ class StockAnalysisSuite:
             "signals_matrix": signals_matrix,
             "hit_rate_30d": None,       # M4: 需回测历史命中率
             "multi_period_resonance": {"bull": buy, "bear": sell, "neutral": hold},
-            "current_posture": self._label_posture(buy, total),
+            "current_posture": self._label_posture(buy, sell, total),
         }
 
     @staticmethod
-    def _label_posture(buy: int, total: int) -> str:
-        """当前态势（spec §3.6）。按买入信号占比分 5 档。"""
+    def _label_posture(buy: int, sell: int, total: int) -> str:
+        """当前态势（spec §3.6）。按多空净差分 5 档，并识别观望主导。"""
         if total <= 0:
             return "震荡"
-        ratio = buy / total
-        if ratio >= 0.8: return "强势多头"
-        if ratio >= 0.6: return "震荡偏多"
-        if ratio >= 0.4: return "震荡"
-        if ratio >= 0.2: return "震荡偏空"
+        score = compute_volume_price_game_score(buy, total, sell)
+        neutral_ratio = max(0.0, (total - buy - sell) / total)
+        if neutral_ratio >= 0.6 and 40 <= score <= 60:
+            return "观望主导"
+        if score >= 80: return "强势多头"
+        if score >= 60: return "震荡偏多"
+        if score > 40: return "震荡"
+        if score > 20: return "震荡偏空"
         return "强势空头"
 
     def _build_payload_with_institutional(self, code: str) -> dict:
@@ -544,12 +558,13 @@ class StockAnalysisSuite:
             radar["market_cycle"] = _missing()
         try:
             buy_count = inputs["models"]["buy_signal_count"]
+            sell_count = inputs["models"].get("sell_signal_count", 0)
             total = inputs["models"].get("total", 30)
-            score = compute_volume_price_game_score(buy_count, total)
+            score = compute_volume_price_game_score(buy_count, total, sell_count)
             radar["volume_price_game"] = {
                 "score": score,
                 "label": self._label_vp(score),
-                "reason": f"{total} 模型中 {buy_count} 个买入信号",
+                "reason": f"{total} 模型中 {buy_count} 个买入信号、{sell_count} 个卖出信号",
             }
         except (KeyError, TypeError, ValueError):
             radar["volume_price_game"] = _missing()
@@ -737,7 +752,43 @@ class StockAnalysisSuite:
         quality = inputs.get("quality") or {}
         result.append({"label": "量能质量", "value": quality.get("volume_label", "—"), "tone": "info"})
         result.append({"label": "筹码集中度", "value": quality.get("chip_label", "—"), "tone": "neutral"})
+        tech = self._build_technical_trend_signal(inputs)
+        if tech:
+            result.append(tech)
         return result
+
+    @staticmethod
+    def _last_indicator_value(series: Any) -> Optional[float]:
+        """Return the latest non-NaN numeric value from a pandas-like series."""
+        if series is None:
+            return None
+        try:
+            work = series.dropna() if hasattr(series, "dropna") else pd.Series(series).dropna()
+            if len(work) == 0:
+                return None
+            return float(work.iloc[-1])
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _build_technical_trend_signal(self, inputs: Dict[str, Any]) -> Optional[dict]:
+        """Expose MA alignment in overview key signals when enough OHLCV exists."""
+        df = inputs.get("ohlcv")
+        if df is None or "close" not in getattr(df, "columns", []) or len(df) < 20:
+            return None
+        try:
+            close = df["close"]
+            ma5 = self._last_indicator_value(TechnicalAnalysis.calculate_ma(close, 5))
+            ma10 = self._last_indicator_value(TechnicalAnalysis.calculate_ma(close, 10))
+            ma20 = self._last_indicator_value(TechnicalAnalysis.calculate_ma(close, 20))
+        except Exception:  # noqa: BLE001
+            return None
+        if None in (ma5, ma10, ma20):
+            return None
+        if ma5 > ma10 > ma20:
+            return {"label": "技术趋势", "value": "多头排列", "tone": "info"}
+        if ma5 < ma10 < ma20:
+            return {"label": "技术趋势", "value": "空头排列", "tone": "warn"}
+        return {"label": "技术趋势", "value": "均线交织", "tone": "neutral"}
 
     def _build_deep_signals(self, inputs: Dict[str, Any]) -> list:
         signals: list = []
