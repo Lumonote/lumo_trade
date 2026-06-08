@@ -57,6 +57,41 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def write_signals_sidecar(results, report_path):
+    """Persist per-stock structured risk signals next to the markdown report.
+
+    `results` are the rich per-stock dicts the scorer already builds. Sidecar is
+    `<report stem>.signals.json` in the same directory. Best-effort: a flat list
+    keyed by code with the fields the command-center risk engine needs.
+    """
+    from pathlib import Path
+
+    report_path = Path(report_path)
+    out = report_path.with_suffix("").with_suffix(".signals.json")
+    payload = []
+    for r in results or []:
+        rs = dict(r.get("risk_signals") or {})
+        payload.append({
+            "code": r.get("code") or r.get("stock_code"),
+            "name": r.get("name") or r.get("stock_name"),
+            "total_score": r.get("total_score") or r.get("score"),
+            "rating": r.get("rating"),
+            "sector_score": (r.get("scores") or {}).get("sector"),
+            "risk_signals": {
+                "chase": rs.get("chase"),
+                "rsi": rs.get("rsi"),
+                "change_3d": rs.get("change_3d"),
+                "sell_signals": rs.get("sell_signals"),
+                "quant_score": rs.get("quant_score"),
+                "limit_up_streak": rs.get("limit_up_streak"),
+                "is_st": rs.get("is_st", False),
+                "halt": rs.get("halt", False),
+            },
+        })
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out
+
+
 class OpportunityScorer:
     """
     投资机会多维度打分系统 v4.0 - 游资思维重构版

@@ -1833,6 +1833,41 @@ class OpportunityReportGenerator:
                 mf.write('\n'.join(lines))
             logger.info(f"✓ TOP20统计Markdown已生成: {md_path}")
 
+            # 落结构化信号 sidecar（供「风险·机遇」大屏个股风险层使用，markdown 拿不到这些数值）
+            try:
+                from analysis.opportunity_scorer import write_signals_sidecar
+                _sig_rows = []
+                for _st in top_20:
+                    _sr = _st.get('scoring_result') or {}
+                    _det = _sr.get('details') or {}
+                    _scores = _sr.get('scores') or {}
+                    _mom = _det.get('momentum') or {}
+                    _quant = _det.get('quantitative') or {}
+                    _tech = _det.get('technical') or {}
+                    _pc = _det.get('price_changes') or {}
+                    _chase = (((_sr.get('advanced_analysis') or {}).get('overall_score') or {})
+                              .get('risk_metrics') or {}).get('chase_risk_score')
+                    if not _chase:  # 0/None -> 回退动量明细（与评分逻辑一致）
+                        _chase = _mom.get('chase_risk_score')
+                    _sig_rows.append({
+                        'code': _normalize_stock_code(_st.get('stock_code') or _st.get('code')),
+                        'name': _st.get('name') or _st.get('stock_name'),
+                        'total_score': _st.get('final_score'),
+                        'rating': _resolve_tier_by_display_score(_st),
+                        'scores': {'sector': _scores.get('sector')},
+                        'risk_signals': {
+                            'chase': _chase,
+                            'rsi': _tech.get('RSI'),
+                            'change_3d': _pc.get('change_3d'),
+                            'sell_signals': _quant.get('sell_count'),
+                            'quant_score': _scores.get('quantitative'),
+                        },
+                    })
+                write_signals_sidecar(_sig_rows, md_path)
+                logger.info(f"✓ 结构化信号 sidecar 已生成: {os.path.splitext(md_path)[0]}.signals.json")
+            except Exception as _se:  # sidecar 不可阻塞报告生成
+                logger.warning(f"signals sidecar 写入失败: {_se}")
+
             try:
                 from scripts.generate_xueqiu_article import generate as _gen_xueqiu
                 xueqiu_path = _gen_xueqiu(md_path)
