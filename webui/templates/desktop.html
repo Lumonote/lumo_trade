@@ -47,6 +47,10 @@
         {# 「总览」页已并入 features 单页（见 DESKTOP_PAGE_ALIASES: overview→features） #}
 
 
+        {% if active_page == 'command_center' %}
+        <section id="commandCenterRoot" class="cc-screen"></section>
+        {% endif %}
+
         {% if active_page == 'capital_rankings' %}
         <section class="capital-rankings-layout">
           <div class="panel">

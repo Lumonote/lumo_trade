@@ -437,6 +437,10 @@
             await loadPaperTrading();
             return;
           }
+          if (page === "command_center") {
+            await loadCommandCenter();
+            return;
+          }
           await loadJobs();
         } finally {
           if (button) button.disabled = false;
@@ -6325,6 +6329,342 @@
         return out.join("\n");
       }
 
+      // ===================== 风险·机遇 作战大屏 command center =====================
+      const CC_ACTION_COLOR = { act: "#25b88a", do: "#cfa233", care: "#cf922a", watch: "#25c2b4",
+                                avoid: "#cc5878", none: "#6a93d2", unknown: "#6a93d2" };
+      let ccLiveTimer = null;
+      let ccKeysBound = false;
+      let ccLastData = null;
+
+      function ccRiskLabel(v) { if (v == null) return "未知"; if (v < 40) return "低"; if (v >= 60) return "高"; return "中"; }
+      function ccOppLabel(v) { if (v >= 70) return "较好"; if (v >= 55) return "中性"; return "偏弱"; }
+      function ccPct(v) { return (v == null ? "—" : `${Math.round(v * 100)}%`); }
+      function ccYi(v) {
+        if (v == null || isNaN(v)) return "—";
+        const yi = Number(v) / 1e8;
+        if (Math.abs(yi) >= 0.01) return `${yi >= 0 ? "+" : ""}${yi.toFixed(1)}亿`;
+        const wan = Number(v) / 1e4;
+        return `${wan >= 0 ? "+" : ""}${wan.toFixed(0)}万`;
+      }
+
+      function ccGauge(v, label, color, sub, detail) {
+        const val = (v == null ? 0 : Math.round(v));
+        return `<div class="panel gaugebox">
+          <div class="ring" style="--v:${val};--c:${color}"><div class="rv"><b class="num">${val}</b><s>${html(sub || "")}</s></div></div>
+          <div class="glabel"><b>${html(label)}</b><span style="color:${color}">${html(detail || "")}</span></div></div>`;
+      }
+
+      function ccPills(d) {
+        const p = d.portfolio || {};
+        const m = d.matrix || [];
+        const act = m.filter((t) => t.code_action === "act").length;
+        const avoid = m.filter((t) => t.code_action === "avoid").length;
+        const held = m.filter((t) => t.held).length;
+        const pill = (s, b) => `<div class="pillk"><s>${html(s)}</s><b class="num">${b}</b></div>`;
+        return pill("标的数", (d.as_of && d.as_of.count != null ? d.as_of.count : m.length))
+          + pill("撮合 出手 / 回避", `<span class="up">${act}</span> / <span class="down">${avoid}</span>`)
+          + pill("持仓数", held)
+          + pill("组合敞口", ccPct(p.exposure))
+          + pill("最大集中 / 回撤", `${ccPct(p.concentration)} / ${ccPct(p.max_drawdown)}`);
+      }
+
+      function ccKpiStrip(d) {
+        const i = d.indices || {};
+        const mr = i.market_risk == null ? 0 : i.market_risk;
+        const op = i.opportunity == null ? 0 : i.opportunity;
+        const se = i.sentiment == null ? 0 : i.sentiment;
+        return `<div class="kpi">
+          ${ccGauge(mr, "市场风险", "#cf922a", ccRiskLabel(mr), mr >= 60 ? "系统性偏高 ⚠" : (mr < 40 ? "系统性偏低" : "中性"))}
+          ${ccGauge(op, "机会指数", "#25b88a", ccOppLabel(op), `池 ${(d.as_of && d.as_of.count) || 0} 只`)}
+          ${ccGauge(se, "市场情绪", "#4a82cf", se >= 60 ? "偏暖" : (se <= 40 ? "偏冷" : "中性"), "中性基准")}
+          <div class="panel pills">${ccPills(d)}</div></div>`;
+      }
+
+      function ccStatusBar(d) {
+        const deg = d.degraded || {};
+        const reportTxt = (d.as_of && d.as_of.report) ? `报告 ${html(String(d.as_of.report))}` : "无报告";
+        const sidecarTxt = (d.as_of && d.as_of.sidecar) ? "信号已加载" : "信号缺失·风险未知";
+        const degHint = deg.opportunity ? ' ｜ <span style="color:#cf922a">机会源降级</span>' : "";
+        return `<div class="status">
+          <h1>风险<span class="accent">·</span>机遇 <span style="font-size:13px;letter-spacing:2px;color:var(--muted);">统筹作战大屏</span></h1>
+          <div class="meta">${reportTxt} ｜ 池 <b>${(d.as_of && d.as_of.count) || 0}</b> 只 ｜ <b>${sidecarTxt}</b>${degHint}</div>
+          <div class="sp"></div>
+          <div class="btn hot" data-cc-action="recompute">↻ 重新统筹</div>
+          <div class="btn" data-cc-action="fullscreen">⛶ 全屏大屏</div>
+        </div>`;
+      }
+
+      function ccHeroRow(d) {
+        const hasMatrix = (d.matrix || []).length > 0;
+        const matrixInner = hasMatrix
+          ? `<div class="plotwrap"><div id="ccMatrix" style="width:100%;height:300px;"></div></div>`
+          : `<div class="cc-empty">暂无机会池数据 — 点「↻ 重新统筹」生成报告</div>`;
+        return `<div class="hero">
+          <div class="panel">
+            <div class="ph"><span class="dotmark"></span><b>风险–机遇撮合矩阵</b>
+              <span class="tag">x=机会分 · y=风险(上低下高) · 色=行动</span></div>
+            ${matrixInner}
+          </div>
+          <div class="panel">
+            <div class="ph"><span class="dotmark" style="background:#cf922a"></span><b>行业热力</b><span class="tag">块=标的数 · 色=机会强弱</span></div>
+            <div class="tmwrap"><div id="ccSectorHeat" class="tm"></div></div>
+          </div></div>`;
+      }
+
+      function ccRankRowCapital(row, maxAbs) {
+        const nm = row.name || row.ts_code || row.code || "--";
+        const val = row.main_buy_amount != null ? row.main_buy_amount : row.net_amount;
+        const w = maxAbs > 0 ? Math.max(6, Math.round(Math.abs(val || 0) / maxAbs * 100)) : 6;
+        const cls = (val || 0) >= 0 ? "up" : "down";
+        const code = row.code || (row.ts_code || "").split(".")[0];
+        return `<div class="rk-row">
+          <span class="rno">${row.rank || ""}</span>
+          <div><div class="rnm">${html(nm)}</div><div class="rbar" style="width:${w}%"></div></div>
+          <div><div class="rval ${cls} num">${ccYi(val)}</div>
+            <div class="acts" data-cc-code="${html(code)}" data-cc-name="${html(nm)}">
+              <span class="mini" data-cc-act="analyze">析</span><span class="mini" data-cc-act="watch">自</span><span class="mini" data-cc-act="pool">池</span></div></div></div>`;
+      }
+
+      function ccRankRowOpp(t) {
+        const badge = t.rating === "S" ? "b-s" : (t.rating === "A" ? "b-a" : "b-b");
+        const riskTxt = t.risk == null ? "未知" : Math.round(t.risk);
+        return `<div class="rk-row">
+          <span class="badge ${badge}">${html(t.rating || "—")}</span>
+          <div><div class="rnm">${html(t.name || t.code)}</div><div class="rsub">${html(t.action || "")}${t.sector ? " · " + html(t.sector) : ""}</div></div>
+          <div class="dual" style="text-align:right"><b class="op num">${Math.round(t.opp || 0)}</b><span class="rsub">/ 风险 <span class="rk num">${riskTxt}</span></span></div></div>`;
+      }
+
+      function ccRankRowHold(t) {
+        const flag = t.held_overlay === "减仓/止盈"
+          ? '<span class="flag f-cut">⚠减仓</span>'
+          : (t.held_overlay === "持有" ? '<span class="flag f-hold">持有</span>' : "");
+        const riskTxt = t.risk == null ? "未知" : Math.round(t.risk);
+        return `<div class="rk-row">
+          <span class="rno">持</span>
+          <div><div class="rnm">${html(t.name || t.code)} ${flag}</div><div class="rsub">${html(t.action || "")} · 风险 ${riskTxt} · 机会 ${Math.round(t.opp || 0)}</div></div>
+          <div class="acts" data-cc-code="${html(t.code)}" data-cc-name="${html(t.name || "")}"><span class="mini" data-cc-act="analyze">析</span></div></div>`;
+      }
+
+      function ccRankings(d) {
+        const cap = (d.rankings && d.rankings.capital) ? d.rankings.capital.slice(0, 6) : [];
+        const maxAbs = cap.reduce((mx, r) => Math.max(mx, Math.abs((r.main_buy_amount != null ? r.main_buy_amount : r.net_amount) || 0)), 0);
+        const capRows = cap.length ? cap.map((r) => ccRankRowCapital(r, maxAbs)).join("") : `<div class="cc-empty">资金榜单暂无数据</div>`;
+        const oppTop = (d.matrix || []).slice().sort((a, b) => (b.opp || 0) - (a.opp || 0)).slice(0, 6);
+        const oppRows = oppTop.length ? oppTop.map(ccRankRowOpp).join("") : `<div class="cc-empty">暂无机会标的</div>`;
+        const held = (d.matrix || []).filter((t) => t.held);
+        const p = d.portfolio || {};
+        const portfolioRow = `<div class="rk-row"><span class="rno">组</span>
+          <div><div class="rnm">组合风险 ${Math.round(p.risk || 0)}</div><div class="rsub">敞口 ${ccPct(p.exposure)} · 集中 ${ccPct(p.concentration)} · 回撤 ${ccPct(p.max_drawdown)}</div></div><div></div></div>`;
+        const holdRows = held.length ? held.map(ccRankRowHold).join("") : `<div class="cc-empty">无模拟盘持仓</div>`;
+        return `<div class="ranks">
+          <div class="panel"><div class="ph"><span class="dotmark"></span><b>资金主线榜</b><span class="tag">主力买入 / 净额</span></div>${capRows}</div>
+          <div class="panel"><div class="ph"><span class="dotmark" style="background:#25b88a"></span><b>机会 Top 榜</b><span class="tag">机会分 / 风险分 双标</span></div>${oppRows}</div>
+          <div class="panel"><div class="ph"><span class="dotmark" style="background:#cc5878"></span><b>持仓 · 组合风险</b><span class="tag">集中度 / 回撤 / 提示</span></div>${portfolioRow}${holdRows}</div>
+        </div>`;
+      }
+
+      function ccTicker(d) {
+        const m = d.matrix || [];
+        const acts = m.filter((t) => t.code_action === "act").slice(0, 4).map((t) => `<i class="g">🟢 出手 ${html(t.name || t.code)} 机会${Math.round(t.opp || 0)}/风险${t.risk == null ? "?" : Math.round(t.risk)}</i>`);
+        const cares = m.filter((t) => t.code_action === "care" || t.code_action === "avoid").slice(0, 4).map((t) => `<i>${t.code_action === "avoid" ? "🔴 回避" : "🟠 谨慎"} ${html(t.name || t.code)} ${html(t.reason || "")}</i>`);
+        const items = acts.concat(cares);
+        const body = items.length ? items.join("") : '<i>暂无撮合提示 — 重新统筹后生成</i>';
+        return `<div class="panel ticker"><span class="lead">⚡ 撮合 · 风险提示</span>
+          <div class="tk-track"><span>${body}${body}</span></div></div>`;
+      }
+
+      function ccToggleFullscreen() {
+        const el = $("#commandCenterRoot");
+        if (!el) return;
+        el.classList.toggle("cc-fullscreen");
+        document.body.classList.toggle("cc-fs-on");
+        if (typeof Plotly !== "undefined") { try { Plotly.Plots.resize("ccMatrix"); } catch (e) {} }
+      }
+
+      function ccBindGlobalKeys() {
+        if (ccKeysBound) return;
+        ccKeysBound = true;
+        document.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") {
+            const el = document.querySelector(".cc-screen.cc-fullscreen");
+            if (el) { el.classList.remove("cc-fullscreen"); document.body.classList.remove("cc-fs-on"); }
+          }
+        });
+      }
+
+      // ---- 每标的动作:复用既有 深度分析 / 加自选 / 模拟盘下单 ----
+      function ccTargetAction(act, code, name) {
+        if (!code) return;
+        if (act === "analyze") {
+          openStockContext({ stock_code: code, stock_name: name || "" }).catch(() => {});
+        } else if (act === "watch") {
+          addToWatchlist(code, name || "").catch((e) => alert(e.message));
+        } else if (act === "pool") {
+          try { openPaperOrderDialog({ code: code, ts_code: code, name: name || "", side: "buy" }); }
+          catch (e) { console.warn("paper order open failed", e); }
+        }
+      }
+
+      function ccBindActions(host, data) {
+        host.querySelectorAll("[data-cc-action]").forEach((el) => {
+          el.addEventListener("click", () => {
+            const a = el.dataset.ccAction;
+            if (a === "fullscreen") ccToggleFullscreen();
+            else if (a === "recompute") ccRecompute();
+          });
+        });
+        host.querySelectorAll(".acts").forEach((box) => {
+          const code = box.dataset.ccCode, name = box.dataset.ccName;
+          box.querySelectorAll("[data-cc-act]").forEach((btn) => {
+            btn.addEventListener("click", (e) => { e.stopPropagation(); ccTargetAction(btn.dataset.ccAct, code, name); });
+          });
+        });
+      }
+
+      // ---- Plotly 风险–机遇撮合散点矩阵 ----
+      function ccQuadShapes() {
+        const band = (x0, x1, y0, y1, color) => ({ type: "rect", xref: "x", yref: "y", x0, x1, y0, y1,
+          fillcolor: color, line: { width: 0 }, layer: "below" });
+        return [
+          band(62, 100, 0, 50, "rgba(37,184,138,.13)"),   // 高机会·低风险 出手(右上,y反向后0-50=低风险)
+          band(30, 62, 0, 50, "rgba(74,130,207,.08)"),    // 低机会·低风险 关注
+          band(62, 100, 50, 100, "rgba(207,146,42,.12)"), // 高机会·高风险 谨慎
+          band(30, 62, 50, 100, "rgba(204,88,120,.12)"),  // 低机会·高风险 回避
+        ];
+      }
+
+      function ccDrawMatrix(d) {
+        const host = document.getElementById("ccMatrix");
+        if (!host) return;
+        const pts = (d.matrix || []).filter((t) => t.risk != null);
+        if (typeof Plotly === "undefined") {
+          host.innerHTML = '<div class="cc-empty">图表加载中…</div>';
+          ccDrawMatrix._retry = (ccDrawMatrix._retry || 0) + 1;
+          if (ccDrawMatrix._retry <= 20) setTimeout(() => ccDrawMatrix(d), 300);
+          return;
+        }
+        ccDrawMatrix._retry = 0;
+        if (!pts.length) { host.innerHTML = '<div class="cc-empty">无可定位标的(缺结构化信号)</div>'; return; }
+        const size = pts.map((t) => (t.held ? 20 : 0) + (t.rating === "S" ? 17 : t.rating === "A" ? 14 : 11));
+        const trace = {
+          x: pts.map((t) => t.opp), y: pts.map((t) => t.risk),
+          text: pts.map((t) => t.name || t.code),
+          hovertext: pts.map((t) => `${t.name || t.code}<br>${t.reason || ""}`),
+          hoverinfo: "text",
+          mode: "markers+text",
+          textposition: "top center",
+          textfont: { color: "#aebfda", size: 9 },
+          customdata: pts.map((t) => t.code),
+          marker: { size, color: pts.map((t) => CC_ACTION_COLOR[t.code_action] || "#6a93d2"),
+                    line: { color: "rgba(255,255,255,.32)", width: 1 }, opacity: 0.92 },
+          type: "scatter",
+        };
+        const layout = {
+          paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+          font: { color: "#aebfda", size: 10 }, margin: { l: 40, r: 12, t: 8, b: 30 }, showlegend: false,
+          xaxis: { title: "机会分 →", range: [30, 100], gridcolor: "rgba(95,130,173,.12)", zeroline: false },
+          yaxis: { title: "风险(上低下高)", range: [100, 0], gridcolor: "rgba(95,130,173,.12)", zeroline: false },
+          shapes: ccQuadShapes(),
+        };
+        Plotly.react("ccMatrix", [trace], layout, { displayModeBar: false, responsive: true });
+        host.removeAllListeners && host.removeAllListeners("plotly_click");
+        host.on && host.on("plotly_click", (ev) => {
+          const code = ev.points && ev.points[0] && ev.points[0].customdata;
+          const t = pts.find((x) => x.code === code);
+          if (t) ccTargetAction("analyze", t.code, t.name);
+        });
+      }
+
+      // ---- 行业热力:按 matrix 的 sector 聚合(块=标的数,色=平均机会强弱) ----
+      function ccDrawSectorHeat(d) {
+        const host = document.getElementById("ccSectorHeat");
+        if (!host) return;
+        const bySector = {};
+        (d.matrix || []).forEach((t) => {
+          const s = t.sector || "其他";
+          (bySector[s] = bySector[s] || { n: 0, opp: 0, risk: 0, riskN: 0 });
+          bySector[s].n += 1; bySector[s].opp += (t.opp || 0);
+          if (t.risk != null) { bySector[s].risk += t.risk; bySector[s].riskN += 1; }
+        });
+        const rows = Object.keys(bySector).map((s) => {
+          const v = bySector[s];
+          return { name: s, n: v.n, avgOpp: v.opp / v.n, avgRisk: v.riskN ? v.risk / v.riskN : null };
+        }).sort((a, b) => b.n - a.n).slice(0, 12);
+        if (!rows.length) { host.innerHTML = '<div class="cc-empty">板块数据待接入</div>'; return; }
+        const maxN = rows.reduce((mx, r) => Math.max(mx, r.n), 1);
+        host.innerHTML = rows.map((r) => {
+          const span = Math.max(1, Math.min(3, Math.round(r.n / maxN * 3)));
+          const cls = r.avgOpp >= 70 ? "r-hot" : r.avgOpp >= 58 ? "r-up" : r.avgOpp >= 50 ? "flat" : "g-up";
+          const crowd = (r.avgRisk != null && r.avgRisk >= 60) ? " crowd" : "";
+          const warn = crowd ? '<span class="warn">⚠拥挤</span>' : "";
+          return `<div class="blk ${cls}${crowd}" style="grid-column:span ${span}">${warn}<b>${html(r.name)}</b><s class="num">${r.n}只 · 机会${Math.round(r.avgOpp)}</s></div>`;
+        }).join("");
+      }
+
+      // ---- 实时 30s 叠加(盘中,收盘停):仅刷新报价相关,不重算结构 ----
+      function ccIsTradingHours() {
+        const now = new Date();
+        const day = now.getDay();
+        if (day === 0 || day === 6) return false;
+        const m = now.getHours() * 60 + now.getMinutes();
+        return (m >= 9 * 60 + 30 && m <= 11 * 60 + 30) || (m >= 13 * 60 && m <= 15 * 60);
+      }
+
+      function ccStartLiveRefresh() {
+        if (ccLiveTimer) clearInterval(ccLiveTimer);
+        ccLiveTimer = setInterval(async () => {
+          if (page !== "command_center") { clearInterval(ccLiveTimer); ccLiveTimer = null; return; }
+          if (!ccIsTradingHours()) return;
+          try {
+            const q = await fetchJson("/api/command-center/overview?quotes_only=1");
+            ccLastData = q;
+            const host = $("#commandCenterRoot");
+            if (host) { ccBindActions(host, q); ccDrawMatrix(q); ccDrawSectorHeat(q); }
+            const kpi = host && host.querySelector(".kpi");
+            if (kpi) kpi.outerHTML = ccKpiStrip(q);
+          } catch (e) { /* 静默:实时叠加失败不打断 */ }
+        }, 30000);
+      }
+
+      async function ccRecompute() {
+        const btn = document.querySelector('#commandCenterRoot [data-cc-action="recompute"]');
+        if (btn) { btn.textContent = "↻ 统筹中…"; btn.style.pointerEvents = "none"; }
+        try {
+          const res = await fetchJson("/api/command-center/recompute", { method: "POST" });
+          const jobId = res.job_id || (res.job && res.job.id);
+          if (!jobId) throw new Error("未返回 job_id");
+          await pollJob(jobId, { onDone: async () => { await loadCommandCenter(); } });
+        } catch (e) {
+          alert("重新统筹失败: " + e.message);
+        } finally {
+          if (btn) { btn.textContent = "↻ 重新统筹"; btn.style.pointerEvents = ""; }
+        }
+      }
+
+      function renderCommandCenter(host, data) {
+        host.innerHTML = ccStatusBar(data) + ccKpiStrip(data) + ccHeroRow(data) + ccRankings(data) + ccTicker(data);
+        ccBindActions(host, data);
+        ccDrawMatrix(data);
+        ccDrawSectorHeat(data);
+      }
+
+      async function loadCommandCenter() {
+        const host = $("#commandCenterRoot");
+        if (!host) return;
+        host.classList.add("cc-screen");
+        let data;
+        try { data = await fetchJson("/api/command-center/overview"); }
+        catch (e) { host.innerHTML = `<div class="cc-empty">大屏数据加载失败:${html(e.message)}</div>`; return; }
+        ccLastData = data;
+        renderCommandCenter(host, data);
+        $("#refreshMeta").textContent = `更新 ${new Date().toLocaleTimeString()}`;
+      }
+
+      function setupCommandCenter() {
+        ccBindGlobalKeys();
+        loadCommandCenter().then(() => ccStartLiveRefresh()).catch((e) => console.warn("command center load failed", e));
+      }
+
       async function boot() {
         updateTaskHeader([]);
         bindStockContextModal();
@@ -6361,6 +6701,10 @@
         if (page === "paper_trading") {
           $("#refreshMeta").textContent = "模拟盘";
           setupPaperTrading();
+        }
+        if (page === "command_center") {
+          $("#refreshMeta").textContent = "风险·机遇";
+          setupCommandCenter();
         }
         if (!dashboardPages.includes(page)) {
           loadJobs().catch((error) => {
