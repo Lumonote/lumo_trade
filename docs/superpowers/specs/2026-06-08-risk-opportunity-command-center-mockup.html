@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>风险·机遇统筹大屏 — 暗调 v3</title>
+<style>
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  :root{
+    --bg:#04060e; --txt:#aebfda; --txt-hi:#d6e2f3; --muted:#5f799e; --faint:#43597a;
+    --line:#143052; --line-2:#0f2238;
+    --cyan:#25c2b4; --green:#25b88a; --amber:#cf922a; --red:#cc5878; --blue:#4a82cf;
+  }
+  body{ font-family:-apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+        background:var(--bg); color:var(--txt); padding:14px;
+        background-image:radial-gradient(120% 90% at 30% -10%,#08152a,#04060e 55%),
+                         repeating-linear-gradient(0deg,rgba(74,130,207,.028) 0 1px,transparent 1px 26px),
+                         repeating-linear-gradient(90deg,rgba(74,130,207,.028) 0 1px,transparent 1px 26px); }
+  .screen{ max-width:1360px; margin:0 auto; display:grid; gap:11px;
+           grid-template-rows:auto auto 348px auto auto; }
+  .num{ font-variant-numeric:tabular-nums; font-feature-settings:"tnum"; }
+
+  .panel{ background:linear-gradient(160deg,rgba(11,20,38,.95),rgba(6,12,25,.96));
+          border:1px solid var(--line); border-radius:11px; position:relative; overflow:hidden;
+          box-shadow:0 6px 22px rgba(0,0,0,.5); }
+  .panel::before{ content:''; position:absolute; left:0; top:0; height:2px; width:60%;
+                  background:linear-gradient(90deg,var(--cyan),transparent); opacity:.45; }
+  .ph{ display:flex; align-items:center; gap:7px; padding:8px 12px; font-size:12px;
+       letter-spacing:1px; color:var(--blue); }
+  .ph b{ color:var(--txt-hi); font-size:12px; }
+  .ph .tag{ margin-left:auto; font-size:10px; color:var(--faint); }
+  .dotmark{ width:6px;height:6px;border-radius:50%;background:var(--cyan); }
+
+  .status{ display:flex; align-items:center; gap:14px; padding:10px 16px;
+           background:linear-gradient(90deg,rgba(10,18,34,.96),rgba(6,12,25,.8));
+           border:1px solid var(--line); border-radius:11px; }
+  .status h1{ font-size:18px; color:var(--txt-hi); letter-spacing:3px; font-weight:800; }
+  .status h1 .accent{ color:var(--cyan); }
+  .status .meta{ font-size:11px; color:var(--muted); }
+  .status .meta b{ color:var(--cyan); }
+  .status .sp{ margin-left:auto; }
+  .btn{ background:rgba(74,130,207,.12); border:1px solid #244e7c; color:#8aabd8;
+        font-size:12px; padding:6px 13px; border-radius:7px; cursor:pointer; letter-spacing:1px; }
+  .btn.hot{ background:rgba(37,194,180,.12); border-color:#1d6a62; color:#5fd0c6; }
+
+  .kpi{ display:grid; grid-template-columns:repeat(3,150px) 1fr; gap:11px; align-items:stretch; }
+  .gaugebox{ display:flex; align-items:center; gap:11px; padding:11px 13px; }
+  .ring{ width:74px; height:74px; border-radius:50%; position:relative; flex:0 0 auto;
+         background:conic-gradient(var(--c) 0 calc(var(--v)*1%),rgba(95,130,173,.12) calc(var(--v)*1%) 100%); }
+  .ring::before{ content:''; position:absolute; inset:7px; border-radius:50%; background:#070e1c;
+                 box-shadow:inset 0 0 12px rgba(0,0,0,.7); }
+  .ring .rv{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  .ring .rv b{ font-size:21px; color:var(--txt-hi); }
+  .ring .rv s{ font-size:8px; color:var(--muted); text-decoration:none; letter-spacing:1px; }
+  .glabel b{ font-size:13px; color:var(--txt-hi); display:block; }
+  .glabel span{ font-size:10px; color:var(--c); }
+  .pills{ display:flex; flex-wrap:wrap; align-content:center; gap:9px; padding:0 6px; }
+  .pillk{ background:rgba(8,16,30,.85); border:1px solid #184a42; border-radius:10px; padding:8px 14px; min-width:118px; }
+  .pillk s{ display:block; font-size:10px; color:var(--muted); text-decoration:none; letter-spacing:1px; }
+  .pillk b{ font-size:16px; }
+  .up{ color:var(--red); } .down{ color:var(--green); } /* A股:涨红跌绿 */
+
+  .hero{ display:grid; grid-template-columns:2.25fr 1fr; gap:11px; }
+  .plotwrap{ padding:6px 12px 30px 38px; position:relative; height:100%; }
+  .plot{ position:relative; height:100%; border-left:1px solid rgba(95,130,173,.26);
+         border-bottom:1px solid rgba(95,130,173,.26);
+         background-image:repeating-linear-gradient(0deg,rgba(95,130,173,.055) 0 1px,transparent 1px 48px),
+                          repeating-linear-gradient(90deg,rgba(95,130,173,.055) 0 1px,transparent 1px 56px); }
+  .quad{ position:absolute; inset:0; display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; pointer-events:none; }
+  .quad .q{ display:flex; align-items:flex-start; padding:8px; font-size:10px; letter-spacing:1px; }
+  .q.tr{ background:radial-gradient(120% 120% at 100% 0,rgba(37,184,138,.13),transparent 60%); color:#25b88a; justify-content:flex-end; }
+  .q.tl{ background:radial-gradient(120% 120% at 0 0,rgba(74,130,207,.09),transparent 60%); color:#6a93d2; }
+  .q.br{ background:radial-gradient(120% 120% at 100% 100%,rgba(207,146,42,.12),transparent 60%); color:#cf922a; align-items:flex-end; justify-content:flex-end; }
+  .q.bl{ background:radial-gradient(120% 120% at 0 100%,rgba(204,88,120,.12),transparent 60%); color:#cc5878; align-items:flex-end; }
+  .pt{ position:absolute; transform:translate(-50%,-50%); display:flex; flex-direction:column; align-items:center; z-index:2; }
+  .pt .ball{ border-radius:50%; box-shadow:0 0 6px currentColor; border:1px solid rgba(255,255,255,.32); }
+  .pt .lab{ font-size:9.5px; color:var(--txt); margin-top:3px; white-space:nowrap; background:rgba(4,7,15,.7); padding:0 3px; border-radius:3px; }
+  .axis-x{ position:absolute; bottom:8px; left:38px; right:12px; display:flex; justify-content:space-between; font-size:10px; color:var(--muted); }
+  .axis-y{ position:absolute; left:6px; top:6px; bottom:30px; display:flex; flex-direction:column; justify-content:space-between; font-size:10px; color:var(--muted); writing-mode:vertical-rl; }
+
+  .tmwrap{ padding:8px 10px 10px; height:100%; }
+  .tm{ display:grid; gap:4px; height:calc(100% - 4px); grid-template-columns:repeat(6,1fr); grid-template-rows:repeat(5,1fr); }
+  .blk{ border-radius:5px; padding:6px 7px; display:flex; flex-direction:column; justify-content:space-between;
+        border:1px solid rgba(255,255,255,.06); position:relative; overflow:hidden; }
+  .blk b{ font-size:12px; color:#eaf1fa; } .blk s{ font-size:11px; text-decoration:none; color:rgba(234,241,250,.82); }
+  .blk.crowd{ outline:1.5px dashed rgba(204,88,120,.75); outline-offset:-3px; }
+  .blk .warn{ position:absolute; top:4px; right:5px; font-size:9px; color:rgba(255,214,225,.9); }
+  .r-hot{ background:linear-gradient(150deg,#8a2645,#521630); } .r-up{ background:linear-gradient(150deg,#5e1a36,#391223); }
+  .g-hot{ background:linear-gradient(150deg,#166a47,#0c4530); } .g-up{ background:linear-gradient(150deg,#104d36,#093623); }
+  .flat{ background:linear-gradient(150deg,#182e46,#101f33); }
+
+  .ranks{ display:grid; grid-template-columns:repeat(3,1fr); gap:11px; }
+  .rk-row{ display:grid; grid-template-columns:18px 1fr auto; gap:8px; align-items:center;
+           padding:7px 12px; border-top:1px solid rgba(95,130,173,.08); }
+  .rk-row:hover{ background:rgba(74,130,207,.06); }
+  .rno{ font-size:11px; color:var(--muted); } .rnm{ font-size:13px; color:var(--txt-hi); }
+  .rsub{ font-size:10px; color:var(--muted); }
+  .rbar{ height:5px; border-radius:3px; margin-top:4px; background:var(--cyan); opacity:.85; }
+  .rval{ font-size:13px; text-align:right; }
+  .acts{ display:flex; gap:4px; }
+  .mini{ font-size:10px; padding:2px 6px; border-radius:5px; border:1px solid #244a72; color:#8aabd8; background:rgba(74,130,207,.08); cursor:pointer; }
+  .badge{ font-size:10px; font-weight:800; padding:1px 6px; border-radius:5px; }
+  .b-s{ background:rgba(37,184,138,.15); color:#2ec795; border:1px solid #1d7a5a; }
+  .b-a{ background:rgba(37,194,180,.13); color:#29c8ba; border:1px solid #1c6f67; }
+  .b-b{ background:rgba(74,130,207,.13); color:#6a93d2; border:1px solid #28547f; }
+  .flag{ font-size:9.5px; padding:1px 5px; border-radius:5px; border:1px solid; }
+  .f-cut{ color:#cf922a; border-color:#8a6020; } .f-hold{ color:#25b88a; border-color:#1f7a5b; }
+  .dual b{ font-size:14px; } .dual .rk{ color:#cf922a; } .dual .op{ color:#25b88a; }
+
+  .ticker{ display:flex; align-items:center; gap:10px; padding:8px 14px; }
+  .ticker .lead{ font-size:11px; color:var(--cyan); letter-spacing:1px; flex:0 0 auto; }
+  .tk-track{ overflow:hidden; flex:1; white-space:nowrap; }
+  .tk-track span{ display:inline-block; animation:scroll 26s linear infinite; font-size:12px; color:#8ea4c4; }
+  .tk-track i{ color:#cc5878; font-style:normal; margin:0 18px 0 0; }
+  .tk-track i.g{ color:#25b88a; }
+  @keyframes scroll{ from{transform:translateX(0)} to{transform:translateX(-50%)} }
+</style>
+</head>
+<body>
+<div class="screen">
+
+  <div class="status">
+    <h1>风险<span class="accent">·</span>机遇 <span style="font-size:13px;letter-spacing:2px;color:var(--muted);">统筹作战大屏</span></h1>
+    <div class="meta">交易日 <b>2026-06-08</b> ｜ 报告 09:15 ｜ 实时 <b>09:42:18</b> ｜ 池 <b>96</b> 只</div>
+    <div class="sp"></div>
+    <div class="btn hot">↻ 重新统筹</div>
+    <div class="btn">⛶ 全屏大屏</div>
+  </div>
+
+  <div class="kpi">
+    <div class="panel gaugebox">
+      <div class="ring" style="--v:62;--c:#cf922a"><div class="rv"><b class="num">62</b><s>偏高</s></div></div>
+      <div class="glabel"><b>市场风险</b><span>系统性偏高 ⚠</span></div>
+    </div>
+    <div class="panel gaugebox">
+      <div class="ring" style="--v:71;--c:#25b88a"><div class="rv"><b class="num">71</b><s>较好</s></div></div>
+      <div class="glabel"><b>机会指数</b><span style="color:#25b88a">S 4 / A 11</span></div>
+    </div>
+    <div class="panel gaugebox">
+      <div class="ring" style="--v:55;--c:#4a82cf"><div class="rv"><b class="num">55</b><s>中性</s></div></div>
+      <div class="glabel"><b>市场情绪</b><span style="color:#4a82cf">中性偏暖</span></div>
+    </div>
+    <div class="panel pills">
+      <div class="pillk"><s>主力净流入</s><b class="up num">+38.2亿</b></div>
+      <div class="pillk"><s>北向资金</s><b class="up num">+12.4亿</b></div>
+      <div class="pillk"><s>涨 / 跌 家数</s><b class="num"><span class="up">2103</span> / <span class="down">2876</span></b></div>
+      <div class="pillk"><s>涨停 / 跌停</s><b class="num"><span class="up">47</span> / <span class="down">6</span></b></div>
+      <div class="pillk"><s>两市成交</s><b class="num" style="color:var(--txt-hi)">1.32万亿</b></div>
+    </div>
+  </div>
+
+  <div class="hero">
+    <div class="panel">
+      <div class="ph"><span class="dotmark"></span><b>风险–机遇撮合矩阵</b>
+        <span class="tag">x=机会分 · y=风险(上低下高) · 点大小=主力净流入 · 色=行动</span></div>
+      <div class="plotwrap">
+        <div class="plot">
+          <div class="quad">
+            <div class="q tl">关注 / 观望区</div><div class="q tr">🟢 重点出手区</div>
+            <div class="q bl">🔴 回避区</div><div class="q br">🟠 谨慎 / 轻仓区</div>
+          </div>
+          <div class="pt" style="left:84%;top:30%;color:#25b88a"><span class="ball" style="width:17px;height:17px;background:#25b88a"></span><span class="lab">兆易创新 S</span></div>
+          <div class="pt" style="left:73%;top:36%;color:#25b88a"><span class="ball" style="width:13px;height:13px;background:#25b88a"></span><span class="lab">韦尔股份 A</span></div>
+          <div class="pt" style="left:70%;top:46%;color:#25c2b4"><span class="ball" style="width:12px;height:12px;background:#25c2b4"></span><span class="lab">立讯精密</span></div>
+          <div class="pt" style="left:77%;top:54%;color:#cfa233"><span class="ball" style="width:15px;height:15px;background:#cfa233"></span><span class="lab">中际旭创 A</span></div>
+          <div class="pt" style="left:83%;top:72%;color:#cf922a"><span class="ball" style="width:19px;height:19px;background:#cf922a"></span><span class="lab">寒武纪 ⚠持仓</span></div>
+          <div class="pt" style="left:55%;top:48%;color:#6a93d2"><span class="ball" style="width:10px;height:10px;background:#6a93d2"></span><span class="lab">紫光国微</span></div>
+          <div class="pt" style="left:48%;top:34%;color:#6a93d2"><span class="ball" style="width:9px;height:9px;background:#6a93d2"></span><span class="lab">中芯国际</span></div>
+          <div class="pt" style="left:41%;top:75%;color:#cc5878"><span class="ball" style="width:11px;height:11px;background:#cc5878"></span><span class="lab">某ST股</span></div>
+          <div class="pt" style="left:30%;top:62%;color:#cc5878"><span class="ball" style="width:9px;height:9px;background:#cc5878"></span><span class="lab">退潮股</span></div>
+          <div class="pt" style="left:62%;top:64%;color:#cf922a"><span class="ball" style="width:12px;height:12px;background:#cf922a"></span><span class="lab">华工科技</span></div>
+        </div>
+        <div class="axis-x"><span>机会低 30</span><span>55</span><span>70</span><span>机会高 95 →</span></div>
+        <div class="axis-y"><span>风险高 ↓</span><span>低风险 ↑</span></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="ph"><span class="dotmark" style="background:#cf922a"></span><b>行业热力</b><span class="tag">强弱 × 拥挤(红框=死区)</span></div>
+      <div class="tmwrap">
+        <div class="tm">
+          <div class="blk r-hot crowd" style="grid-column:span 3;grid-row:span 2"><span class="warn">⚠拥挤</span><b>算力 / CPO</b><s class="num">+5.1%</s></div>
+          <div class="blk r-up" style="grid-column:span 3;grid-row:span 2"><b>半导体</b><s class="num">+3.2%</s></div>
+          <div class="blk r-up" style="grid-column:span 2"><b>消费电子</b><s class="num">+1.1%</s></div>
+          <div class="blk flat" style="grid-column:span 2"><b>军工</b><s class="num">+0.6%</s></div>
+          <div class="blk flat" style="grid-column:span 2"><b>券商</b><s class="num">+0.3%</s></div>
+          <div class="blk g-up" style="grid-column:span 2"><b>医药</b><s class="num">-0.8%</s></div>
+          <div class="blk g-up" style="grid-column:span 2"><b>白酒</b><s class="num">-1.4%</s></div>
+          <div class="blk g-hot crowd" style="grid-column:span 2"><span class="warn" style="color:#bfe">⚠超跌</span><b>新能源</b><s class="num">-2.1%</s></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ranks">
+    <div class="panel">
+      <div class="ph"><span class="dotmark"></span><b>资金主线榜</b><span class="tag">龙虎榜净买入 · 多日聚合</span></div>
+      <div class="rk-row"><span class="rno">1</span><div><div class="rnm">寒武纪</div><div class="rbar" style="width:92%"></div></div><div><div class="rval up num">+6.8亿</div><div class="acts"><span class="mini">析</span><span class="mini">自</span><span class="mini">池</span></div></div></div>
+      <div class="rk-row"><span class="rno">2</span><div><div class="rnm">中际旭创</div><div class="rbar" style="width:74%"></div></div><div><div class="rval up num">+5.1亿</div><div class="acts"><span class="mini">析</span><span class="mini">自</span><span class="mini">池</span></div></div></div>
+      <div class="rk-row"><span class="rno">3</span><div><div class="rnm">兆易创新</div><div class="rbar" style="width:61%"></div></div><div><div class="rval up num">+4.0亿</div><div class="acts"><span class="mini">析</span><span class="mini">自</span><span class="mini">池</span></div></div></div>
+      <div class="rk-row"><span class="rno">4</span><div><div class="rnm">华工科技</div><div class="rbar" style="width:45%"></div></div><div><div class="rval up num">+2.9亿</div><div class="acts"><span class="mini">析</span><span class="mini">自</span><span class="mini">池</span></div></div></div>
+    </div>
+
+    <div class="panel">
+      <div class="ph"><span class="dotmark" style="background:#25b88a"></span><b>机会 Top 榜</b><span class="tag">机会分 / 风险分 双标</span></div>
+      <div class="rk-row"><span class="badge b-s">S</span><div><div class="rnm">兆易创新</div><div class="rsub">出手区 · 半导体存储</div></div><div class="dual" style="text-align:right"><b class="op num">88</b><span class="rsub">/ 风险 <span class="rk num">32</span></span></div></div>
+      <div class="rk-row"><span class="badge b-s">S</span><div><div class="rnm">韦尔股份</div><div class="rsub">出手区 · CIS 龙头</div></div><div class="dual" style="text-align:right"><b class="op num">84</b><span class="rsub">/ 风险 <span class="rk num">36</span></span></div></div>
+      <div class="rk-row"><span class="badge b-a">A</span><div><div class="rnm">中际旭创</div><div class="rsub">可做·控仓 · CPO</div></div><div class="dual" style="text-align:right"><b class="op num">78</b><span class="rsub">/ 风险 <span class="rk num">52</span></span></div></div>
+      <div class="rk-row"><span class="badge b-a">A</span><div><div class="rnm">寒武纪</div><div class="rsub" style="color:#cf922a">谨慎·轻仓 · RSI 81 过热</div></div><div class="dual" style="text-align:right"><b class="op num">85</b><span class="rsub">/ 风险 <span class="rk num">72</span></span></div></div>
+    </div>
+
+    <div class="panel">
+      <div class="ph"><span class="dotmark" style="background:#cc5878"></span><b>持仓 · 自选风险</b><span class="tag">集中度 / 回撤 / 提示</span></div>
+      <div class="rk-row"><span class="rno">持</span><div><div class="rnm">寒武纪 <span class="flag f-cut">⚠减仓</span></div><div class="rsub">仓位 38% · 浮盈 +22% · RSI 81</div></div><div><div class="rval up num">+22.4%</div></div></div>
+      <div class="rk-row"><span class="rno">持</span><div><div class="rnm">中际旭创 <span class="flag f-hold">持有</span></div><div class="rsub">仓位 19% · 浮盈 +8% · 风险中</div></div><div><div class="rval up num">+8.1%</div></div></div>
+      <div class="rk-row"><span class="rno">选</span><div><div class="rnm">立讯精密</div><div class="rsub">关注 · 风险低 45 · 机会 72</div></div><div class="acts"><span class="mini">池</span></div></div>
+      <div class="rk-row"><span class="rno" style="color:#cc5878">!</span><div><div class="rnm">某ST股</div><div class="rsub" style="color:#cc5878">回避 · 停牌风险 · 风险 75</div></div><div class="acts"><span class="mini">移除</span></div></div>
+    </div>
+  </div>
+
+  <div class="panel ticker">
+    <span class="lead">⚡ 异动 · 事件 · 复盘</span>
+    <div class="tk-track"><span>
+      <i>09:42 半导体板块异动拉升,寒武纪触及涨停</i><i class="g">09:40 北向资金加速流入,净买入破 12 亿</i><i>09:38 CPO 概念持续走强,中际旭创 +7%</i><i>09:30 早盘集合竞价 47 股一字板</i><i class="g">08:15 当日复盘:昨持仓胜率 58.3%,权益 +1.2%</i>
+      <i>09:42 半导体板块异动拉升,寒武纪触及涨停</i><i class="g">09:40 北向资金加速流入,净买入破 12 亿</i><i>09:38 CPO 概念持续走强,中际旭创 +7%</i><i>09:30 早盘集合竞价 47 股一字板</i><i class="g">08:15 当日复盘:昨持仓胜率 58.3%,权益 +1.2%</i>
+    </span></div>
+  </div>
+
+</div>
+</body>
+</html>
