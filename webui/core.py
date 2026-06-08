@@ -70,6 +70,7 @@ from webui.services.watchlist_service import WatchlistService
 from webui.services.capital_rankings_service import CapitalRankingsService
 from webui.services.paper_trading_service import PaperTradingService
 from webui.services.db_backup_service import DbBackupService
+from webui.services.command_center_service import CommandCenterService
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,64 @@ CAPITAL_RANKINGS_SERVICE = CapitalRankingsService(quote_provider=WATCHLIST_SERVI
 PAPER_TRADING_SERVICE = PaperTradingService(quote_provider=WATCHLIST_SERVICE.quotes)
 # 整库备份(导出一致性快照 / 导入校验→自动备份→灌库→migrate)
 DB_BACKUP_SERVICE = DbBackupService()
+
+
+# ----------------------------- 风险·机遇 作战大屏 -----------------------------
+def _cc_market_env():
+    """Systemic-risk backdrop for the command center.
+
+    仓内暂无干净的「涨跌家数 / 沪深300 区间收益」数值源(market_intelligence 以快讯·热榜
+    为主,且 load() 为重型联网聚合,不宜挂在 overview 热路径)。返回 {} 时引擎给出中性
+    backdrop(score_market_risk 基线 35)。后续接入真实 breadth 源时,在此映射为
+    {hs300_ret_5d, hs300_ret_20d, advance, decline, sentiment}。
+    """
+    return {}
+
+
+def _cc_holdings():
+    """Paper-trading account + positions + max drawdown,供组合风险层。"""
+    account = PAPER_TRADING_SERVICE.account_summary()
+    positions = PAPER_TRADING_SERVICE.positions()
+    # stats().max_drawdown 为负值(峰值回撤比例);引擎期望正的回撤幅度
+    try:
+        mdd = abs(float(PAPER_TRADING_SERVICE.stats().get("max_drawdown") or 0.0))
+    except Exception:
+        mdd = 0.0
+    return {"account": account, "positions": positions, "max_drawdown": mdd}
+
+
+def _command_center_report():
+    """Latest opportunity report parsed to items + its on-disk path(供 signals sidecar)。"""
+    reports = _latest_primary_opportunity_reports(limit=1)
+    if not reports:
+        return {"items": [], "market_env": "", "file": None, "report_path": None}
+    path = reports[0]
+    parsed = _parse_opportunity_report(path)
+    parsed["report_path"] = str(path)
+    return parsed
+
+
+COMMAND_CENTER_SERVICE = CommandCenterService(
+    load_report=lambda: _command_center_report(),
+    capital_rankings=lambda: CAPITAL_RANKINGS_SERVICE.moneyflow_ranking(top_n=20),
+    market_env=_cc_market_env,
+    holdings=_cc_holdings,
+    quotes=WATCHLIST_SERVICE.quotes,
+)
+
+
+def command_center_overview(quotes_only=False):
+    """Whole-screen payload for the 风险·机遇 大屏(见 CommandCenterService.overview)。"""
+    return COMMAND_CENTER_SERVICE.overview(quotes_only=bool(quotes_only))
+
+
+def start_command_center_recompute():
+    """复用机会挖掘后台 job(全市场重扫)刷新大屏数据,返回 job 快照。"""
+    params = {"source": "multi", "limit": 100, "workers": 10, "stock_codes": []}
+    job = JOB_SERVICE.start("opportunity_discovery", params, _run_opportunity_job)
+    return {"success": True, "job_id": job["id"], "job": _get_job_snapshot(job["id"])}
+
+
 # 形态指纹是隔日快照；给命中结果叠加自选同款实时报价（东财 ulist.np→腾讯回退），形态页可见当日最新价。
 PATTERN_SEARCH_SERVICE.set_quote_provider(WATCHLIST_SERVICE.quotes)
 # K线默认是新浪日K（隔日/盘中按天一根）；叠加自选同款实时报价，让当日那根bar与「实时价」徽章跟随盘中最新价。
@@ -2299,6 +2358,10 @@ DESKTOP_PAGES = {
     'watchlist': {
         'title': '自选',
         'subtitle': '自选股实时行情、快捷分析与一键管理',
+    },
+    'command_center': {
+        'title': '风险·机遇',
+        'subtitle': '统筹机会与四层风险,撮合成出手/规避决策的作战大屏',
     },
     'capital_rankings': {
         'title': '资金榜单',
