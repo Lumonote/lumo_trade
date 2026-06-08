@@ -69,3 +69,42 @@ def test_score_stock_risk_empty_signals_unknown():
     r = eng.score_stock_risk({})
     assert r["unknown"] is True
     assert r["risk"] is None
+
+
+def test_sector_crowding_dead_zone_high():
+    assert eng.score_sector_crowding({"sector_score": 70}) >= 60   # 65-75 死区
+    assert eng.score_sector_crowding({"sector_score": 50}) < 50
+
+
+def test_market_risk_drawdown_and_breadth():
+    r = eng.score_market_risk({"hs300_ret_5d": -4.0, "hs300_ret_20d": -8.0,
+                               "advance": 800, "decline": 4000, "sentiment": 30})
+    assert r["risk"] >= 60
+    assert any("回撤" in f["name"] or "breadth" in f["name"] or "家数" in f["name"]
+               for f in r["factors"])
+
+
+def test_market_risk_calm_low():
+    r = eng.score_market_risk({"hs300_ret_5d": 1.0, "hs300_ret_20d": 2.0,
+                               "advance": 3000, "decline": 1800, "sentiment": 60})
+    assert r["risk"] <= 45
+
+
+def test_portfolio_risk_concentration_and_drawdown():
+    acct = {"total_equity": 1_000_000}
+    pos = [{"ts_code": "600000", "market_value": 600_000},
+           {"ts_code": "000001", "market_value": 200_000}]
+    r = eng.score_portfolio_risk(acct, pos, max_drawdown=0.18)
+    assert r["concentration"] == 0.6
+    assert r["exposure"] == 0.8
+    assert r["risk"] >= 55
+
+
+def test_combine_stock_risk_blends_layers():
+    # stock 60, sector 40, market 50 -> .55*60 +.2*40 +.25*50 = 53.5
+    v = eng.combine_stock_risk({"risk": 60, "unknown": False}, 40, 50)
+    assert round(v, 1) == 53.5
+
+
+def test_combine_stock_risk_unknown_propagates():
+    assert eng.combine_stock_risk({"risk": None, "unknown": True}, 40, 50) is None

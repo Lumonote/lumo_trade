@@ -113,3 +113,69 @@ def score_stock_risk(signals):
     dominant = max(scored, key=lambda f: f["contrib"])["name"] if scored else (
         "ST/停牌硬闸" if (is_st or halt) else None)
     return {"risk": risk, "factors": factors, "dominant": dominant, "unknown": False}
+
+
+def score_sector_crowding(sector):
+    s = _num(sector or {}, "sector_score")
+    if s is None:
+        return 35.0
+    if 65 <= s <= 75:        # memory: 死区 25.5%wr
+        return 65.0
+    if s > 75:               # 过热追高
+        return 55.0
+    if s < 45:
+        return 30.0
+    return 45.0
+
+
+def score_market_risk(market_env):
+    m = market_env or {}
+    risk, factors = 35.0, []
+
+    def add(name, contrib, detail):
+        nonlocal risk
+        risk += contrib
+        factors.append({"name": name, "contrib": contrib, "detail": detail})
+
+    r5 = _num(m, "hs300_ret_5d")
+    r20 = _num(m, "hs300_ret_20d")
+    if r5 is not None and r5 <= -3:
+        add("近5日回撤", 15, f"沪深300 {r5:.1f}%")
+    if r20 is not None and r20 <= -6:
+        add("近20日回撤", 12, f"沪深300 {r20:.1f}%")
+    adv, dec = _num(m, "advance"), _num(m, "decline")
+    if adv is not None and dec is not None and (adv + dec) > 0:
+        ratio = dec / (adv + dec)
+        if ratio >= 0.6:
+            add("涨跌家数", 15, f"跌{int(dec)}/涨{int(adv)}")
+    sent = _num(m, "sentiment")
+    if sent is not None and sent <= 35:
+        add("情绪冰点", 8, f"情绪 {sent:.0f}")
+    elif sent is not None and sent >= 80:
+        add("情绪过热", 8, f"情绪 {sent:.0f}")
+    risk = max(0.0, min(100.0, risk))
+    return {"risk": risk, "factors": factors}
+
+
+def score_portfolio_risk(account, positions, max_drawdown=0.0):
+    account = account or {}
+    positions = positions or []
+    equity = _num(account, "total_equity") or 0.0
+    pos_val = sum((_num(p, "market_value") or 0.0) for p in positions)
+    weights = [((_num(p, "market_value") or 0.0) / equity) for p in positions] if equity else []
+    concentration = round(max(weights), 4) if weights else 0.0
+    exposure = round(pos_val / equity, 4) if equity else 0.0
+    dd = float(max_drawdown or 0.0)
+    risk = 20.0 + concentration * 60 + min(exposure, 1.0) * 20 + min(dd, 0.5) * 60
+    risk = max(0.0, min(100.0, risk))
+    return {"risk": risk, "concentration": concentration,
+            "exposure": exposure, "max_drawdown": dd}
+
+
+def combine_stock_risk(stock, sector_crowding, market_backdrop):
+    if not stock or stock.get("unknown") or stock.get("risk") is None:
+        return None
+    v = (RISK_BLEND["stock"] * stock["risk"]
+         + RISK_BLEND["sector"] * float(sector_crowding or 35.0)
+         + RISK_BLEND["market"] * float(market_backdrop or 35.0))
+    return max(0.0, min(100.0, v))
