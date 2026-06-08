@@ -108,3 +108,36 @@ def test_combine_stock_risk_blends_layers():
 
 def test_combine_stock_risk_unknown_propagates():
     assert eng.combine_stock_risk({"risk": None, "unknown": True}, 40, 50) is None
+
+
+def test_opportunity_index_aggregates_tiers():
+    items = [{"score": 88, "rating": "S"}, {"score": 80, "rating": "A"},
+             {"score": 60, "rating": "C"}]
+    idx = eng.opportunity_index(items)
+    assert 0 <= idx <= 100
+    assert idx >= 60        # has S+A
+
+
+def test_market_risk_index_blends_sentiment():
+    assert 0 <= eng.market_risk_index(62, 55) <= 100
+
+
+def test_build_target_assembles_action_and_reason():
+    item = {"code": "603986", "name": "兆易创新", "score": 88, "rating": "S",
+            "sector": "半导体"}
+    signals = {"rsi": 58, "chase": 30, "change_3d": 6, "sell_signals": 0,
+               "quant_score": 62, "sector_score": 50}
+    t = eng.build_target(item, signals, sector_crowding=45, market_backdrop=50,
+                         held=False)
+    assert t["code"] == "603986"
+    assert t["opp"] == 88
+    assert t["risk"] is not None
+    assert t["action"] == "重点出手"
+    assert "机会" in t["reason"] and "→" in t["reason"]
+
+
+def test_build_target_unknown_risk_when_no_signals():
+    item = {"code": "000001", "name": "X", "score": 75, "rating": "B"}
+    t = eng.build_target(item, {}, sector_crowding=40, market_backdrop=40, held=False)
+    assert t["risk"] is None
+    assert t["code_action"] == "unknown"

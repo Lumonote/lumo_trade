@@ -179,3 +179,54 @@ def combine_stock_risk(stock, sector_crowding, market_backdrop):
          + RISK_BLEND["sector"] * float(sector_crowding or 35.0)
          + RISK_BLEND["market"] * float(market_backdrop or 35.0))
     return max(0.0, min(100.0, v))
+
+
+def opportunity_index(items):
+    items = items or []
+    if not items:
+        return 0.0
+    scores = sorted((float(i.get("score") or 0) for i in items), reverse=True)
+    top = scores[: max(1, len(scores) // 3)]      # 取头部 1/3 的均分
+    base = sum(top) / len(top)
+    s_a = sum(1 for i in items if str(i.get("rating")) in ("S", "A"))
+    boost = min(15.0, s_a * 1.5)
+    return max(0.0, min(100.0, base + boost))
+
+
+def market_risk_index(market_risk, sentiment):
+    sent = float(sentiment if sentiment is not None else 50.0)
+    # 情绪越低,系统性风险体感越高
+    return max(0.0, min(100.0, 0.7 * float(market_risk) + 0.3 * (100 - sent)))
+
+
+def _reason_line(item, risk_result, action_obj):
+    opp_part = f"机会{item.get('score'):.0f}({item.get('rating', '—')})"
+    if risk_result.get("unknown") or risk_result.get("risk") is None:
+        risk_part = "风险未知(无结构化信号)"
+    elif risk_result.get("dominant"):
+        risk_part = f"{risk_result['dominant']}"
+    else:
+        risk_part = "风险可控"
+    return f"{opp_part} · {risk_part} → {action_obj['action']}"
+
+
+def build_target(item, signals, sector_crowding, market_backdrop, *, held):
+    stock = score_stock_risk(signals)
+    combined = combine_stock_risk(stock, sector_crowding, market_backdrop)
+    action = match_action(float(item.get("score") or 0), combined, held=held)
+    return {
+        "code": item.get("code") or item.get("stock_code"),
+        "name": item.get("name") or item.get("stock_name"),
+        "sector": item.get("sector"),
+        "opp": float(item.get("score") or 0),
+        "rating": item.get("rating"),
+        "risk": round(combined, 1) if combined is not None else None,
+        "risk_unknown": stock["unknown"],
+        "quadrant": action["quadrant"],
+        "action": action["action"],
+        "code_action": action["code"],
+        "color": action["color"],
+        "held": held,
+        "held_overlay": action["held_overlay"],
+        "reason": _reason_line(item, stock, action),
+    }
