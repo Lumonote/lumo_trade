@@ -683,6 +683,19 @@ def opportunity_report_cards(request: Request) -> Response:
     return _json_response(payload)
 
 
+# ----------------------------- 风险·机遇 作战大屏 command center -----------------------------
+
+@_native_get("/api/command-center/overview")
+def command_center_overview(request: Request) -> Response:
+    quotes_only = str(_query_value(request, "quotes_only", "") or "").lower() in {"1", "true", "yes"}
+    return _json_response(webui_core.command_center_overview(quotes_only=quotes_only))
+
+
+@_native_post("/api/command-center/recompute")
+def command_center_recompute(request: Request) -> Response:
+    return _json_response(webui_core.start_command_center_recompute())
+
+
 # ----------------------------- 模拟盘 paper trading -----------------------------
 
 @_native_get("/api/paper/account")
