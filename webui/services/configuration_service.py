@@ -65,6 +65,24 @@ def _mask_secret(value: Any, keep_start: int = 4, keep_end: int = 4) -> str:
     return f"{text[:keep_start]}{'*' * 8}{text[-keep_end:]}"
 
 
+def _token_value(config: dict[str, Any]) -> str:
+    tushare = config.get("tushare") if isinstance(config.get("tushare"), dict) else {}
+    return str((tushare or {}).get("token") or config.get("token") or "").strip()
+
+
+def _looks_like_placeholder_token(token: Any) -> bool:
+    text = str(token or "").strip()
+    if not text:
+        return True
+    lowered = text.lower()
+    if lowered in {"your_tushare_token_here", "your_token_here", "placeholder"}:
+        return True
+    # The installer/tests historically used this value as a visible placeholder.
+    if text == "12345678901234567890":
+        return True
+    return False
+
+
 class RuntimeConfigurationService:
     def __init__(self, project_root: Path, user_root: Path, token_verifier=None):
         self.project_root = Path(project_root)
@@ -83,6 +101,13 @@ class RuntimeConfigurationService:
     @staticmethod
     def default_llm_config() -> dict[str, Any]:
         return {"enabled_models": [], "api_keys": {}}
+
+    @staticmethod
+    def default_auto_follow_config() -> dict[str, Any]:
+        # 模拟盘自动跟单(机会报告→模拟盘前向验证):默认关闭。
+        from webui.services.paper_auto_follow_service import DEFAULT_CONFIG
+
+        return dict(DEFAULT_CONFIG)
 
     @staticmethod
     def default_tushare_config() -> dict[str, Any]:
@@ -200,6 +225,20 @@ class RuntimeConfigurationService:
 
     def load_tushare_config(self) -> dict[str, Any]:
         cfg = self._load_first("tushare_config.json", self.default_tushare_config())
+        # Desktop installs may already have an old placeholder token in the
+        # user config. Do not let that shadow a real project/source token.
+        if _looks_like_placeholder_token(_token_value(cfg)):
+            for path in self._candidate_paths("tushare_config.json")[1:]:
+                if not path.exists():
+                    continue
+                try:
+                    candidate = self._load_json(path)
+                except Exception:
+                    continue
+                candidate_token = _token_value(candidate)
+                if not _looks_like_placeholder_token(candidate_token):
+                    cfg = _deep_merge(cfg, {"tushare": {"token": candidate_token}})
+                    break
         tushare = cfg.get("tushare") if isinstance(cfg.get("tushare"), dict) else {}
         cfg["tushare"] = {
             "token": str(tushare.get("token") or cfg.get("token") or ""),
@@ -207,6 +246,19 @@ class RuntimeConfigurationService:
             "retry_count": int(tushare.get("retry_count") or cfg.get("retry_count") or 3),
         }
         return _deep_merge(self.default_tushare_config(), cfg)
+
+    def load_auto_follow_config(self) -> dict[str, Any]:
+        from webui.services.paper_auto_follow_service import normalize_config
+
+        return normalize_config(self._load_first("paper_auto_follow.json", self.default_auto_follow_config()))
+
+    def save_auto_follow_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from webui.services.paper_auto_follow_service import normalize_config
+
+        current = self.load_auto_follow_config()
+        merged = normalize_config(_deep_merge(current, payload or {}))
+        path = self._save_user_config("paper_auto_follow.json", merged)
+        return {"success": True, "path": str(path), "auto_follow": merged}
 
     def settings_payload(self) -> dict[str, Any]:
         llm = self.load_llm_config()
@@ -242,6 +294,7 @@ class RuntimeConfigurationService:
             })
 
         token = tushare.get("tushare", {}).get("token", "")
+        configured = bool(token) and not _looks_like_placeholder_token(token)
         return {
             "llm": {
                 "enabled_models": llm.get("enabled_models", []),
@@ -253,7 +306,7 @@ class RuntimeConfigurationService:
                 "config_path": str(self.user_config_dir / "llm_config.json"),
             },
             "tushare": {
-                "configured": bool(token),
+                "configured": configured,
                 "token_masked": _mask_secret(token),
                 "timeout": tushare.get("tushare", {}).get("timeout", 30),
                 "retry_count": tushare.get("tushare", {}).get("retry_count", 3),
@@ -261,6 +314,7 @@ class RuntimeConfigurationService:
                 "default_params": tushare.get("default_params", {}),
                 "config_path": str(self.user_config_dir / "tushare_config.json"),
             },
+            "auto_follow": self.load_auto_follow_config(),
         }
 
     def save_llm_settings(self, payload: dict[str, Any]) -> dict[str, Any]:

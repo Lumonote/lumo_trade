@@ -366,3 +366,21 @@ def test_panel_overlay_endpoint_bad_code_returns_400(robyn_module, monkeypatch):
         resp = client.post("/api/stock-analysis-suite/zzz/panel-overlay", json_data={"tier": "deep"})
 
     assert resp.status_code == 400
+
+
+def test_configure_server_defaults_to_concurrent_workers(robyn_module, monkeypatch):
+    """workers=1时所有同步handler串行：一个8s的Sina K线请求会卡住整页导航。"""
+    monkeypatch.delenv("ROBYN_WORKERS", raising=False)
+
+    robyn_module.configure_server_from_env()
+
+    assert robyn_module.app.config.workers >= 4
+    assert robyn_module.app.config.processes == 1
+
+
+def test_configure_server_respects_workers_env(robyn_module, monkeypatch):
+    monkeypatch.setenv("ROBYN_WORKERS", "2")
+
+    robyn_module.configure_server_from_env()
+
+    assert robyn_module.app.config.workers == 2

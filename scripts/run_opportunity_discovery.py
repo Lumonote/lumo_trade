@@ -93,6 +93,31 @@ class OpportunityDiscovery:
     def _load_tushare_token(self) -> str:
         return load_tushare_token()
 
+    @staticmethod
+    def _ruleset_version() -> str:
+        try:
+            from analysis.scoring_rules import RULESET_VERSION
+            return RULESET_VERSION
+        except Exception:
+            return ''
+
+    @staticmethod
+    def _scoring_config_hash() -> str:
+        """运行时评分配置内容哈希(短),用于解释跨端/跨次分数差异。"""
+        try:
+            import hashlib
+            from webui.services.paths import scoring_config_path
+            path = scoring_config_path()
+            if not path.exists():
+                return ''
+            return hashlib.sha1(path.read_bytes()).hexdigest()[:12]
+        except Exception:
+            return ''
+
+    @staticmethod
+    def _env_truthy(name: str) -> bool:
+        return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes', 'on')
+
     def _resolve_latest_trade_date(self, pro, base_dt: datetime, max_back_days: int = 14) -> str:
         base_str = base_dt.strftime('%Y%m%d')
         try:
@@ -1313,6 +1338,19 @@ class OpportunityDiscovery:
         # 步骤4: 生成报表
         logger.info(f"\n步骤4: 正在生成投资机会挖掘报表...")
 
+        # 运行元信息:写进报告头与 DB,让「哪次 run/哪版规则/哪份配置」可追溯,
+        # 解释桌面端与 quick_start 两侧报告分数差异。
+        run_meta = {
+            'run_at': start_time.isoformat(timespec='seconds'),
+            'source': source,
+            'candidate_limit': limit,
+            'mode': 'specified_pool' if test_codes else 'market_scan',
+            'ruleset_version': self._ruleset_version(),
+            'config_hash': self._scoring_config_hash(),
+            'candidates': len(hot_stocks),
+            'analyzed': len(scored_stocks),
+        }
+
         report_path = self.report_generator.generate_report(
             analysis_results=filter_results,
             report_title="投资机会挖掘报告",
@@ -1320,7 +1358,9 @@ class OpportunityDiscovery:
             sector_hot_news=self.sector_hot_news,
             hot_news_title=hot_news_title,
             market_regime=getattr(self, 'market_regime', None),
+            run_meta=run_meta,
         )
+        top_report_path = getattr(self.report_generator, 'latest_top_report_path', '') or ''
 
         # 完成
         end_time = datetime.now()
@@ -1333,7 +1373,23 @@ class OpportunityDiscovery:
         logger.info(f"分析股票: {len(scored_stocks)} 只")
         logger.info(f"通过筛选: {passed_count} 只")
         logger.info(f"报表路径: {report_path}")
+        if top_report_path:
+            logger.info(f"Top榜路径: {top_report_path}")
         logger.info("=" * 60)
+
+        # 步骤4.6: 结果入库(按天) —— 桌面 job 与 CLI 共用此入口,best-effort 不阻塞主流程
+        try:
+            from data_store import opportunity_repo
+            run_meta = dict(run_meta)
+            run_meta.update({
+                'report_file': os.path.basename(top_report_path or report_path) if (top_report_path or report_path) else None,
+                'html_report_file': os.path.basename(report_path) if report_path else None,
+                'duration_sec': round(duration, 1),
+            })
+            run_id = opportunity_repo.save_run(run_meta, opportunity_repo.build_items(filter_results))
+            logger.info(f"✓ 挖掘结果已入库: run_id={run_id} ({run_meta['run_at'][:10]})")
+        except Exception as db_e:
+            logger.warning(f"挖掘结果入库失败(不影响主流程): {db_e}")
 
         # 步骤5: 自动回测 - 保存推荐记录并更新历史收益
         try:
@@ -1351,9 +1407,15 @@ class OpportunityDiscovery:
             if bt_report:
                 logger.info(f"回测报告: {bt_report}")
 
-            auto_optimize_disabled = os.environ.get('KRONOS_SKIP_AUTO_OPTIMIZE', '').strip().lower() in ('1', 'true', 'yes', 'on')
+            auto_optimize_disabled = self._env_truthy('KRONOS_SKIP_AUTO_OPTIMIZE')
+            auto_optimize_enabled = (
+                self._env_truthy('KRONOS_ENABLE_AUTO_OPTIMIZE') or
+                self._env_truthy('KRONOS_AUTO_OPTIMIZE')
+            )
             if auto_optimize_disabled:
                 logger.info("⏭️ KRONOS_SKIP_AUTO_OPTIMIZE=1，跳过自动参数优化")
+            elif not auto_optimize_enabled:
+                logger.info("⏭️ 自动参数优化默认关闭，未改写评分配置；如需开启请设置 KRONOS_ENABLE_AUTO_OPTIMIZE=1 或使用 --enable-auto-optimize")
             else:
                 logger.info("步骤6: 自动参数优化...")
                 optimize_result = optimize_scoring_config(days_back=120, min_samples=30)
@@ -1952,8 +2014,11 @@ def main():
     parser.add_argument('--source', type=str, default='multi', choices=['heat', 'moneyflow_dc', 'multi'], help='候选来源：multi(多源融合,默认) / heat(热度榜) / moneyflow_dc(资金流向榜单)')
     parser.add_argument('--workers', type=int, default=10, help='并发处理线程数（默认10）')
     parser.add_argument('--test-codes', type=str, help='指定测试股票代码，逗号分隔')
+    parser.add_argument('--enable-auto-optimize', action='store_true', help='运行结束后按回测结果改写评分配置（默认关闭，避免跨次分数漂移）')
 
     args = parser.parse_args()
+    if args.enable_auto_optimize:
+        os.environ['KRONOS_ENABLE_AUTO_OPTIMIZE'] = '1'
     
     test_codes = None
     if args.test_codes:

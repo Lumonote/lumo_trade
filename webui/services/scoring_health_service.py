@@ -1,0 +1,129 @@
+"""评分算法健康度服务。
+
+读取 results 目录(经 webui/services/paths.py 的 results_dir() 解析,可叠加额外
+搜索目录)最新一份 ``backtest_rebuilt_*.csv``,计算:
+
+- S/A/B/C 分档样本数、5 日胜率、平均收益(全量 + 最近 20 个交易日两组)
+- 降级 run 占比(quant_score==0 或 score<50;降级=取数失败封顶,污染样本)
+- 数据日期范围 / 基线胜率
+
+无 CSV 时返回 ``{"available": False}`` 的明确空态,前端显示「暂无回测数据」。
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
+
+from webui.services.paths import results_dir
+
+TIER_ORDER = ("S", "A", "B", "C")
+# 与报告/记忆中的置信度档位一致:S>=85, A>=78, B>=70, C<70
+TIER_THRESHOLDS = ((85.0, "S"), (78.0, "A"), (70.0, "B"))
+RECENT_DAYS = 20
+B_RECENT_WINRATE_WARN = 0.45
+
+
+def _tier(score: float) -> str:
+    for threshold, name in TIER_THRESHOLDS:
+        if score >= threshold:
+            return name
+    return "C"
+
+
+class ScoringHealthService:
+    def __init__(self, search_dirs=None):
+        # 默认仅 results_dir()(桌面/打包/CLI 的统一报告目录);调用方可附加目录。
+        self._search_dirs = [Path(p) for p in (search_dirs or [results_dir()])]
+
+    def latest_csv(self) -> Path | None:
+        candidates: list[Path] = []
+        for directory in self._search_dirs:
+            try:
+                if directory.exists():
+                    candidates.extend(p for p in directory.glob("backtest_rebuilt_*.csv") if p.is_file())
+            except OSError:
+                continue
+        if not candidates:
+            return None
+        return max(candidates, key=lambda p: p.stat().st_mtime)
+
+    def health(self) -> dict:
+        path = self.latest_csv()
+        if path is None:
+            return {"available": False, "message": "暂无回测数据(未找到 backtest_rebuilt_*.csv)"}
+        try:
+            df = pd.read_csv(path, encoding="utf-8-sig")
+        except Exception as exc:  # noqa: BLE001 — 读取失败按空态降级
+            return {"available": False, "message": f"回测数据读取失败: {exc}"}
+        required = {"report_date", "score", "return_5d"}
+        if df.empty or not required.issubset(df.columns):
+            return {"available": False, "message": "回测数据缺少必需列(report_date/score/return_5d)"}
+
+        df = df.copy()
+        df["score"] = pd.to_numeric(df["score"], errors="coerce")
+        df["return_5d"] = pd.to_numeric(df["return_5d"], errors="coerce")
+        if "quant_score" in df.columns:
+            df["quant_score"] = pd.to_numeric(df["quant_score"], errors="coerce")
+        else:
+            df["quant_score"] = pd.NA
+        df = df[df["score"].notna()]
+        if df.empty:
+            return {"available": False, "message": "回测数据无有效评分行"}
+        df["tier"] = df["score"].apply(_tier)
+        df["degraded"] = (df["quant_score"].fillna(-1) == 0) | (df["score"] < 50)
+
+        dates = sorted(str(d) for d in df["report_date"].dropna().unique())
+        recent_dates = set(dates[-RECENT_DAYS:])
+        recent = df[df["report_date"].astype(str).isin(recent_dates)]
+
+        def _stats(frame: pd.DataFrame) -> dict:
+            evaluable = frame[frame["return_5d"].notna()]
+            n = int(len(evaluable))
+            if n == 0:
+                return {"n": int(len(frame)), "evaluable": 0, "win_rate": None, "avg_return": None}
+            return {
+                "n": int(len(frame)),
+                "evaluable": n,
+                "win_rate": round(float((evaluable["return_5d"] > 0).mean()), 4),
+                "avg_return": round(float(evaluable["return_5d"].mean()), 4),
+            }
+
+        tiers = []
+        for tier in TIER_ORDER:
+            full = _stats(df[df["tier"] == tier])
+            rec = _stats(recent[recent["tier"] == tier])
+            tiers.append({
+                "tier": tier,
+                "full": full,
+                "recent": rec,
+            })
+
+        b_recent = next(t for t in tiers if t["tier"] == "B")["recent"]
+        b_recent_wr = b_recent.get("win_rate")
+        degraded_count = int(df["degraded"].sum())
+        recent_degraded = int(recent["degraded"].sum()) if len(recent) else 0
+        return {
+            "available": True,
+            "file": path.name,
+            "path": str(path),
+            "date_range": {
+                "start": dates[0] if dates else None,
+                "end": dates[-1] if dates else None,
+                "days": len(dates),
+            },
+            "recent_window_days": min(RECENT_DAYS, len(dates)),
+            "total_rows": int(len(df)),
+            "baseline": {"full": _stats(df), "recent": _stats(recent)},
+            "tiers": tiers,
+            "degraded": {
+                "count": degraded_count,
+                "ratio": round(degraded_count / len(df), 4) if len(df) else 0.0,
+                "recent_count": recent_degraded,
+                "recent_ratio": round(recent_degraded / len(recent), 4) if len(recent) else 0.0,
+            },
+            "warnings": {
+                # B 级近 20 日胜率 < 45% → 退化警示(前端显示徽章)
+                "b_tier_recent_degraded": bool(b_recent_wr is not None and b_recent_wr < B_RECENT_WINRATE_WARN),
+            },
+        }

@@ -44,6 +44,10 @@ from analysis.investor_sentiment import InvestorSentimentAnalyzer
 from analysis.fundamental_data_collector import FundamentalDataCollector
 from analysis.news_sentiment_collector import NewsSentimentCollector
 from analysis.event_analyzer import EventAnalyzer
+from analysis.scoring_rules import (
+    LIVE_PATTERN_COVERED_RULES, RULESET_VERSION,
+    evaluate_shared_rules, is_degraded_quant,
+)
 
 try:
     from analysis.advanced_analysis import AdvancedAnalyzer
@@ -77,10 +81,13 @@ def write_signals_sidecar(results, report_path):
             "total_score": r.get("total_score") or r.get("score"),
             "rating": r.get("rating"),
             "sector_score": (r.get("scores") or {}).get("sector"),
+            "degraded": bool(r.get("degraded")),  # v24: 数据缺失降级标记透传
             "risk_signals": {
                 "chase": rs.get("chase"),
                 "rsi": rs.get("rsi"),
+                "day_change": rs.get("day_change"),
                 "change_3d": rs.get("change_3d"),
+                "change_5d": rs.get("change_5d"),
                 "sell_signals": rs.get("sell_signals"),
                 "quant_score": rs.get("quant_score"),
                 "limit_up_streak": rs.get("limit_up_streak"),
@@ -234,10 +241,16 @@ class OpportunityScorer:
             self._init_data_fetcher()
 
     def _load_runtime_config(self):
-        config_path = os.environ.get(
-            'KRONOS_SCORING_CONFIG',
-            os.path.join(project_root, 'config', 'scoring_runtime_config.json')
-        )
+        # 统一路径(env > user 目录 > 仓库 config),与 auto_backtest 写入侧一致,
+        # 避免桌面打包 App 与 CLI 各自读写一份配置导致两侧评分参数漂移。
+        try:
+            from webui.services.paths import scoring_config_path
+            config_path = str(scoring_config_path())
+        except Exception:
+            config_path = os.environ.get(
+                'KRONOS_SCORING_CONFIG',
+                os.path.join(project_root, 'config', 'scoring_runtime_config.json')
+            )
         if not os.path.exists(config_path):
             return
 
@@ -417,6 +430,8 @@ class OpportunityScorer:
             quant_score, quant_details = self._score_quantitative_models(stock_code, historical_data)
             result['scores']['quantitative'] = quant_score
             result['details']['quantitative'] = quant_details
+            # v24: degraded 标记 — 仅"历史数据缺失"才算降级run, quant 正常算出的低分不算
+            result['degraded'] = is_degraded_quant(quant_details)
 
             # 早期跳过: 量化买入信号 < 卖出信号，直接返回低分，省去后续分析
             quant_buy = quant_details.get('buy_count', 0)
@@ -583,16 +598,14 @@ class OpportunityScorer:
             if quant_cap_limit is not None:
                 total_score = min(total_score, quant_cap_limit)
 
-            # v23+ P0-1: 量化分极端共识反指标硬约束
-            # 实测 qs >= 95 胜率 42.86%(低于基线),回测打分加 -18,生产侧此前没有处理
-            # 此处保守处理: -10 + 强制不进入 S 级(≤ 84)
+            # v23+ P0-1 / v24: 量化分极端共识 S 级硬约束
+            # 实测 qs >= 95 胜率 42.86%(低于基线)。扣分部分已统一由共享规则
+            # (scoring_rules.qs_extreme, -18, 走 v5.4 惩罚池) 承担, 此处仅保留
+            # "强制不进入 S 级(≤84)" 的档位防线
             if quant_score >= 95:
-                penalty = 10
-                total_score -= penalty
-                # 强制压在 A 级以下,防止"30 个模型一致看好"的过度共识冲到 S 级
                 total_score = min(total_score, 84.0)
-                logger.info(f"{stock_code} 量化分极端共识({quant_score:.0f}>=95) 反指标处理: -{penalty} 分 + 限 ≤ 84")
-                score_adjustments.append(f"量化分极端({quant_score:.0f}): -{penalty} + 限 A 级以下(过度共识反指标)")
+                logger.info(f"{stock_code} 量化分极端共识({quant_score:.0f}>=95) 反指标处理: 限 ≤ 84 (扣分由v24共享规则承担)")
+                score_adjustments.append(f"量化分极端({quant_score:.0f}): 限 A 级以下(过度共识反指标)")
 
             total_score = self._clamp_score(total_score)
 
@@ -609,108 +622,54 @@ class OpportunityScorer:
                 total_score = max(0, total_score - penalty)
                 logger.warning(f"{stock_code} 风险标记: 严重{len(critical_flags)}个/警告{len(warning_flags)}个, 扣除{penalty}分(原始{raw_penalty})")
 
-            # ========== v5.4 回测优化惩罚机制（含累计上限） ==========
-            # 基于v5.3回测 + v5.4调整: 提高量化评分、设置惩罚上限避免分数过低
-            # 累计惩罚上限30分，防止多重惩罚叠加导致筛选结果过少
+            # ========== v24 共享奖惩规则池（sim/live 同源, 含累计上限） ==========
+            # 事后奖惩规则统一来自 analysis/scoring_rules.py (RULESET v24),
+            # 与 scripts/simulate_v5_backtest.py 消费同一套规则, 消除双轨漂移。
+            # 历史分歧处理见 scoring_rules.py 模块 docstring:
+            # - 移除 live 的 chase>=75 +4 / >=50 +2 奖励 (v24#2, 方向冲突源头)
+            # - 移除 live 的 RSI 60-80 +3 奖励 (回测无证据)
+            # - 板块过热/死区惩罚并入本池 (此前在池外不受上限保护)
 
-            v54_total_penalty = 0  # 追踪v5.4惩罚累计值
-            v54_total_bonus = 0    # 追踪v5.4奖励累计值
+            v54_total_penalty = 0  # 追踪惩罚累计值
+            v54_total_bonus = 0    # 追踪奖励累计值
             V54_PENALTY_CAP = 25   # v20优化: 30→25 (更稳健, 避免过度惩罚)
 
-            # 1. v21重构: 追高风险 → 强势动量奖励（真回测:chase>=75: 54.3%wr/+3.13%）
+            # --- 因子提取 (牛股Pattern块仍需这些变量) ---
             chase_risk_score = result.get('advanced_analysis', {}).get('overall_score', {}).get('risk_metrics', {}).get('chase_risk_score', 0)
             if chase_risk_score == 0:
                 chase_risk_score = result.get('details', {}).get('momentum', {}).get('chase_risk_score', 0)
-            if chase_risk_score >= 75:
-                chase_bonus = 4  # v21: 真回测chase>=75=54.3%wr
-                v54_total_bonus += chase_bonus
-                logger.info(f"{stock_code} 强势动量奖励: chase={chase_risk_score}>=75, 加{chase_bonus}分")
-                score_adjustments.append(f"强势动量奖励: chase={chase_risk_score}>=75, 加{chase_bonus}分")
-            elif chase_risk_score >= 50:
-                chase_bonus = 2  # v21: 真回测chase>=50=50%wr/+2.55%
-                v54_total_bonus += chase_bonus
-                logger.info(f"{stock_code} 动量奖励: chase={chase_risk_score}>=50, 加{chase_bonus}分")
-                score_adjustments.append(f"动量奖励: chase={chase_risk_score}>=50, 加{chase_bonus}分")
 
-            # 2. v21重构: RSI超买惩罚移除,改为RSI强势区奖励
-            # v22增强: 基于真回测优化
-            #   - RSI>=80是毁灭性信号(23.8%wr/-8.77%)，需重罚
-            #   - RSI 40-50是黄金区(52.5%wr/+2.79%)，需奖励
-            current_rsi = tech_details.get('RSI', 50)
-            if isinstance(current_rsi, (int, float)):
-                if current_rsi >= 80:
-                    # v22新增: RSI>=80重罚（真回测23.8%wr/-8.77%）
-                    rsi_extreme_pen = 15
-                    v54_total_penalty += rsi_extreme_pen
-                    logger.info(f"{stock_code} RSI极端超买惩罚: RSI={current_rsi:.1f}>=80, 扣{rsi_extreme_pen}分")
-                    score_adjustments.append(f"RSI极端超买: RSI={current_rsi:.1f}>=80, 扣{rsi_extreme_pen}分")
-                elif 60 <= current_rsi < 80:
-                    rsi_strong_bonus = 3  # v22提高: 2→3
-                    v54_total_bonus += rsi_strong_bonus
-                    logger.info(f"{stock_code} RSI强势区奖励: RSI={current_rsi:.1f}在60-80, 加{rsi_strong_bonus}分")
-                elif 50 < current_rsi < 60:
-                    # v23新增: RSI 50-60 涨停后回落区惩罚 (实测 36.7%wr/-1.37%)
-                    # 该区间多为涨停次日位置, 大概率回落, 之前未扣分等于鼓励
-                    rsi_pullback_pen = 4
-                    v54_total_penalty += rsi_pullback_pen
-                    logger.info(f"{stock_code} RSI回落区惩罚: RSI={current_rsi:.1f}在50-60, 扣{rsi_pullback_pen}分")
-                    score_adjustments.append(f"RSI回落区: RSI={current_rsi:.1f}在50-60, 扣{rsi_pullback_pen}分")
-                elif 40 <= current_rsi < 50:
-                    # v22新增: RSI黄金区奖励（真回测52.5%wr/+2.79%）
-                    rsi_golden_bonus = 4
-                    v54_total_bonus += rsi_golden_bonus
-                    logger.info(f"{stock_code} RSI黄金区奖励: RSI={current_rsi:.1f}在40-50, 加{rsi_golden_bonus}分")
-                    score_adjustments.append(f"RSI黄金区: RSI={current_rsi:.1f}在40-50, 加{rsi_golden_bonus}分")
+            _rsi_raw = tech_details.get('RSI')  # 不设默认: RSI缺失时共享规则不触发(不伪造黄金区)
+            rsi_for_rules = _rsi_raw if isinstance(_rsi_raw, (int, float)) and not isinstance(_rsi_raw, bool) else None
+            current_rsi = rsi_for_rules if rsi_for_rules is not None else 50  # Pattern块沿用旧默认
 
-            # 3. 当日涨幅惩罚
-            # v14优化: 涨停+3日<15%不惩罚(回测53.8%胜率+1.73%),只惩罚连板/暴涨
             price_changes = result.get('details', {}).get('price_changes', {})
             today_change = price_changes.get('change_1d', 0) or 0
-            change_3d_for_limit = price_changes.get('change_3d', 0) or 0
-            if today_change >= 19.5:
-                limit_penalty = 20
-                v54_total_penalty += limit_penalty
-                logger.info(f"{stock_code} 大涨惩罚: 当日涨幅{today_change:.1f}%>=19.5%, 扣{limit_penalty}分")
-            elif today_change >= 9.5:
-                if change_3d_for_limit >= 15:
-                    limit_penalty = 5  # v14: 连板涨停(3日>=15%)才惩罚
-                    v54_total_penalty += limit_penalty
-                    logger.info(f"{stock_code} 连板涨停惩罚: 涨幅{today_change:.1f}%+3日{change_3d_for_limit:.1f}%>=15%, 扣{limit_penalty}分")
-                    score_adjustments.append(f"连板涨停惩罚: 涨幅{today_change:.1f}%+3日{change_3d_for_limit:.1f}%>=15%, 扣{limit_penalty}分")
-                else:
-                    logger.info(f"{stock_code} 涨停首板: 涨幅{today_change:.1f}%+3日{change_3d_for_limit:.1f}%<15%, 不惩罚")
-            # v9优化: 7%涨幅轻度扣分
-            elif today_change >= 7:
-                limit_penalty = 3
-                v54_total_penalty += limit_penalty
-                logger.info(f"{stock_code} 中涨惩罚: 当日涨幅{today_change:.1f}%>=7%, 扣{limit_penalty}分")
-            elif today_change >= 5:
-                limit_penalty = 5  # v9优化: 3→5
-                v54_total_penalty += limit_penalty
-                logger.info(f"{stock_code} 轻涨惩罚: 当日涨幅{today_change:.1f}%>=5%, 扣{limit_penalty}分")
-
-            # 4. v21精简: 短期涨幅惩罚（真回测: 3d 10-20%=48.8%/+1.67%, 动量续航有效）
             change_3d = price_changes.get('change_3d', 0) or 0
             change_5d = price_changes.get('change_5d', 0) or 0
-            if change_5d > 25:
-                surge_penalty = 15  # v21: 保留极端惩罚
-                v54_total_penalty += surge_penalty
-                logger.info(f"{stock_code} 5日暴涨惩罚: 5日涨幅{change_5d:.1f}%>25%, 扣{surge_penalty}分")
-                score_adjustments.append(f"5日暴涨惩罚: 5日涨幅{change_5d:.1f}%>25%, 扣{surge_penalty}分")
-            if change_3d > 20:
-                surge_penalty = 8   # v21: 15→8 (真回测3d>=20%仅37.5%wr/-0.99%)
-                v54_total_penalty += surge_penalty
-                logger.info(f"{stock_code} 3日暴涨惩罚: 3日涨幅{change_3d:.1f}%>20%, 扣{surge_penalty}分")
-                score_adjustments.append(f"3日暴涨惩罚: 3日涨幅{change_3d:.1f}%>20%, 扣{surge_penalty}分")
-            # v21移除: 3d 10-15%惩罚 (真回测: 3d 10-20%=48.8%wr/+1.67%, 不应惩罚)
 
-            # 5. v21移除信号拥挤惩罚 (买入信号越多越好,不应惩罚)
-            # 原: buy>=15扣8分, 真回测buy>=10=55%wr
-
-            # 6. 量化分反转惩罚 — 已移除(v8.0)
-
-            # v21移除: 卖出信号>=3惩罚 (真回测sell>=3: 43.9%wr/+0.55%, 不差)
-            # v21移除: 量化分极高惩罚 (真回测qs>=90: 44.9%wr/+1.01%, 不差)
+            # --- 共享规则评估 ---
+            # skip: 涨停/低chase/动量启动奖励由下方 v5.5 牛股Pattern块实现, 避免重复计分
+            shared_factors = {
+                'rsi': rsi_for_rules,
+                'chase_risk': chase_risk_score if isinstance(chase_risk_score, (int, float)) else None,
+                'change_3d': change_3d,
+                'change_5d': change_5d,
+                'day_change': today_change,
+                'quant_score': quant_score,
+                'tech_score': tech_score,
+                'sector_score': sector_score,
+                'buy_signals': quant_buy_count,
+                'sell_signals': quant_sell_count,
+            }
+            shared_hits = evaluate_shared_rules(shared_factors, skip=LIVE_PATTERN_COVERED_RULES)
+            for hit in shared_hits:
+                if hit.delta < 0:
+                    v54_total_penalty += -hit.delta
+                else:
+                    v54_total_bonus += hit.delta
+                logger.info(f"{stock_code} 共享规则[{RULESET_VERSION}] {hit.rule}: {hit.detail}")
+                score_adjustments.append(f"[{RULESET_VERSION}]{hit.detail}")
 
             # === 应用惩罚（含上限保护） ===
             actual_penalty = min(v54_total_penalty, V54_PENALTY_CAP)
@@ -827,10 +786,8 @@ class OpportunityScorer:
             if today_change >= 9.5 and chase_risk_score < 50:
                 momentum_bonus += 10  # v13优化: 12→10
                 momentum_signals.append(f'首板涨停(chase={chase_risk_score:.0f}<50):+10')
-            elif today_change >= 9.5 and chase_risk_score >= 50:
-                # v17新增: 涨停首板+高chase也有正收益(51.0%wr)
-                momentum_bonus += 8
-                momentum_signals.append(f'首板涨停高chase(chase={chase_risk_score:.0f}>=50):+8')
+            # v24#3 移除: 涨停首板+高chase奖励 (v17加入, 新回测该子群 210/35.2%/-2.86%,
+            # 劣于涨停&chase<50 的 167/37.1%/-0.63%, v17结论已失效)
             elif today_change >= 7 and chase_risk_score < 40:
                 momentum_bonus += 12  # v13优化: 15→12
                 momentum_signals.append(f'强势涨幅(涨{today_change:.1f}%+chase={chase_risk_score:.0f}):+12')
@@ -869,22 +826,8 @@ class OpportunityScorer:
             # v21移除: 低追高+低RSI组合奖励 (真回测: 低chase/低RSI都是差信号)
             # 原: chase<25且RSI<50加8分
 
-            # v10优化: 板块过热惩罚（大幅增加）
-            if sector_score >= 95:
-                sector_hot_penalty = 12  # v12优化: 10→12
-                total_score -= sector_hot_penalty
-                logger.info(f"{stock_code} 板块过热惩罚: sector_score={sector_score:.0f}>=95, 扣{sector_hot_penalty}分")
-
-            # v10优化 + v23: 板块死区 U 型连续函数 (消除 60/75 边界跳变)
-            # peak penalty 在死区中心 67.5(原 flat -10), 边界 60/75 处自然为 0
-            # 之前 sector=59 不扣分而 sector=60 突然扣 10 分,违反单调性
-            if 60 <= sector_score <= 75:
-                distance = abs(sector_score - 67.5) / 7.5
-                sector_dead_penalty = round(10 * (1 - distance))
-                if sector_dead_penalty > 0:
-                    total_score -= sector_dead_penalty
-                    logger.info(f"{stock_code} 板块死区惩罚(U型): sector_score={sector_score:.0f}, 扣{sector_dead_penalty}分")
-                    score_adjustments.append(f"板块死区惩罚: sector_score={sector_score:.0f}, 扣{sector_dead_penalty}分")
+            # v24: 板块过热/死区惩罚已统一并入共享规则池 (scoring_rules.sector_hot /
+            # sector_dead, U型连续函数), 此处不再单独扣分
 
             # v21移除: 技术面虚高惩罚 (真回测tech>=80: 41.2%wr, 不算差)
             tech_score = result.get('dimension_scores', {}).get('technical', 50)
@@ -966,12 +909,70 @@ class OpportunityScorer:
 
             logger.info(f"使用权重模式: {weight_mode} -> {weights_used}")
 
-            logger.info(f"✓ {stock_code} 综合评分完成: {result['total_score']}分 ({result['rating']}级)")
+            final_score = result.get('combined_score', result['total_score'])
+            final_rating = result.get('combined_rating', result['rating'])
+            if final_score != result['total_score'] or final_rating != result['rating']:
+                logger.info(
+                    f"✓ {stock_code} 最终报告评分: {final_score}分 ({final_rating}级)；"
+                    f"基础评分: {result['total_score']}分 ({result['rating']}级)"
+                )
+            else:
+                logger.info(f"✓ {stock_code} 最终报告评分: {final_score}分 ({final_rating}级)")
 
         except Exception as e:
             logger.error(f"计算 {stock_code} 综合评分失败: {e}", exc_info=True)
 
         return result
+
+    @staticmethod
+    def _normalize_historical_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        if df is None or df.empty:
+            return None
+        work = df.copy()
+        column_mapping = {
+            'trade_date': 'timestamps',
+            'timestamp': 'timestamps',
+            'date': 'timestamps',
+            'vol': 'volume',
+            'turnover': 'amount',
+        }
+        work = work.rename(columns={k: v for k, v in column_mapping.items() if k in work.columns})
+        required_cols = {'timestamps', 'open', 'high', 'low', 'close', 'volume'}
+        if not required_cols.issubset(set(work.columns)):
+            return None
+        keep_cols = ['timestamps', 'open', 'high', 'low', 'close', 'volume']
+        if 'amount' in work.columns:
+            keep_cols.append('amount')
+        work = work[keep_cols].copy()
+        work['timestamps'] = pd.to_datetime(work['timestamps'])
+        work = work.sort_values('timestamps').reset_index(drop=True)
+        return work
+
+    def _load_historical_from_sqlite(self, stock_code: str, min_rows: int = 60) -> Optional[pd.DataFrame]:
+        try:
+            from data_store import ohlcv_repo
+            df = ohlcv_repo.load_dataframe(str(stock_code).zfill(6), '1d', limit=max(260, min_rows))
+            df = self._normalize_historical_df(df)
+            if df is not None and len(df) >= min_rows:
+                logger.info(f"{stock_code}: 从SQLite读取K线 ({len(df)}行)")
+                return df
+        except Exception as exc:
+            logger.debug(f"{stock_code}: SQLite K线读取失败: {exc}")
+        return None
+
+    def _fetch_historical_from_public_daily(self, stock_code: str, min_rows: int = 60) -> Optional[pd.DataFrame]:
+        try:
+            from data_store import ohlcv_fetch
+            end_date = pd.Timestamp.today().strftime('%Y%m%d')
+            start_date = (pd.Timestamp.today() - pd.Timedelta(days=750)).strftime('%Y%m%d')
+            df = ohlcv_fetch.ensure_daily(str(stock_code).zfill(6), start_date, end_date)
+            df = self._normalize_historical_df(df)
+            if df is not None and len(df) >= min_rows:
+                logger.info(f"{stock_code}: 公共日线源获取K线 ({len(df)}行)")
+                return df
+        except Exception as exc:
+            logger.warning(f"{stock_code}: 公共日线源获取失败: {exc}")
+        return None
 
     def _fetch_historical_data(self, stock_code: str) -> Optional[pd.DataFrame]:
         """获取历史K线数据（日线，优先使用统一缓存）"""
@@ -997,11 +998,21 @@ class OpportunityScorer:
                 stale = get_ohlcv(stock_code, min_rows=60, max_age_seconds=None)
                 if stale is not None:
                     logger.warning(f"{stock_code}: 刷新失败，回退到陈旧缓存K线 ({len(stale)}行)")
-                    return stale
-            except ImportError:
-                pass  # 缓存模块不可用, 降级到原始方式
+                    return self._normalize_historical_df(stale)
+            except Exception as exc:
+                logger.debug(f"{stock_code}: 统一K线缓存不可用: {exc}")
 
-            # 2. 降级: 使用MultiSourceDataFetcher
+            # 2. 桌面/打包兜底：先读用户SQLite，再用免token公共日线源抓取并写入SQLite。
+            # 不能让 Tushare token 异常直接导致 quant=0/tech=0，终端与桌面口径会被拉开。
+            sqlite_df = self._load_historical_from_sqlite(stock_code)
+            if sqlite_df is not None:
+                return sqlite_df
+
+            public_df = self._fetch_historical_from_public_daily(stock_code)
+            if public_df is not None:
+                return public_df
+
+            # 3. 降级: 使用MultiSourceDataFetcher
             if not self._data_fetcher:
                 # 惰性初始化：避免程序启动阶段卡住；只有确实需要降级取数时才初始化
                 self._init_data_fetcher()
@@ -1051,26 +1062,11 @@ class OpportunityScorer:
                 logger.warning(f"{stock_code}: 历史数据获取为空，技术面与量化评分可能为0")
                 return None
 
-            # 列名映射：兼容不同数据源的列名差异
-            column_mapping = {
-                'trade_date': 'timestamps',
-                'timestamp': 'timestamps',
-                'date': 'timestamps',
-                'vol': 'volume',
-                'turnover': 'amount',
-            }
-            df = df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns})
-
-            # 确保列名兼容
-            required_cols = {'timestamps', 'open', 'high', 'low', 'close', 'volume'}
-            if not required_cols.issubset(set(df.columns)):
-                logger.warning(f"{stock_code}: 历史数据列不完整，实际列: {list(df.columns)}")
+            raw_columns = list(df.columns)
+            df = self._normalize_historical_df(df)
+            if df is None:
+                logger.warning(f"{stock_code}: 历史数据列不完整，实际列: {raw_columns}")
                 return None
-
-            # 只保留必要列并按时间排序
-            df = df[list(required_cols)].copy()
-            df['timestamps'] = pd.to_datetime(df['timestamps'])
-            df = df.sort_values('timestamps').reset_index(drop=True)
 
             return df
         except Exception as e:
@@ -1179,10 +1175,8 @@ class OpportunityScorer:
         bonus = dominance * 2.5 + max(0, buy_count - 3) * 1.0  # v5.4: 提升奖励系数(2.0→2.5, 0.5→1.0)
         bonus = min(18.0, bonus)  # v5.4: 上限从12提升至18
 
-        # v22新增: sell=0是最强正向信号（真回测53.8%wr/+5.02%）
-        if sell_count == 0:
-            bonus += 5
-            logger.info(f"卖出信号为0，增加额外奖励+5分")
+        # v24: sell=0 额外+5已移除 — 零卖出奖励统一由共享规则池承担
+        # (scoring_rules.sell0: +4 / 涨停+8), 避免双重计分
 
         if score < 45:
             bonus = min(5.0, bonus)  # v5.4: 低分时也给更多奖励(3→5)
@@ -1235,8 +1229,8 @@ class OpportunityScorer:
         """
         try:
             if historical_data is None or historical_data.empty:
-                logger.warning(f"{stock_code}: 无历史数据，量化模型评分为0")
-                return 0.0, {'error': '无历史数据'}
+                logger.warning(f"{stock_code}: 无历史数据，量化模型评分为0 (degraded)")
+                return 0.0, {'error': '无历史数据', 'degraded': True}
 
             # 使用量化模型系统
             quant_models = QuantitativeModels(historical_data)

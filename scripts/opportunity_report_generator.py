@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import json
 import logging
+import requests
 from urllib.parse import quote
 from scripts.stock_filter_utils import (
     filter_st_stocks,
@@ -23,6 +24,8 @@ from scripts.stock_filter_utils import (
 # 添加项目根目录到路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
+
+from analysis.scoring_rules import RULESET_VERSION  # noqa: E402  v24共享规则版本号
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -108,6 +111,24 @@ def _pick_display_text(*values, default='未知') -> str:
 
 def _pick_stock_display_name(name=None, stock_name=None, code=None, default='未知') -> str:
     return _pick_display_text(name, stock_name, _normalize_stock_code(code), default=default)
+
+
+def _stock_final_score(stock: Dict) -> float:
+    try:
+        return float(stock.get('final_score', 0) or 0)
+    except Exception:
+        return 0.0
+
+
+def _is_degraded_opportunity(stock: Dict) -> bool:
+    scoring = stock.get('scoring_result') or {}
+    details = scoring.get('details') or {}
+    quant = details.get('quantitative') or {}
+    return bool(
+        scoring.get('degraded')
+        or quant.get('degraded')
+        or quant.get('error') == '无历史数据'
+    )
 
 
 def _get_displayable_sector_change(
@@ -257,6 +278,9 @@ class OpportunityReportGenerator:
         self._price_history_cache = {}
         self._historical_stock_name_cache = None
         self._tushare_name_cache = None  # 6位代码 → 中文名 (lazy)
+        self._local_stock_name_cache = None
+        self._quote_stock_name_cache = {}
+        self.latest_top_report_path = None
 
     def _normalize_topic_url(self, raw_url: str, title: str = '') -> str:
         url = (raw_url or '').strip()
@@ -421,6 +445,89 @@ class OpportunityReportGenerator:
             logger.debug(f"Tushare 股票名称加载失败: {e}")
         return self._tushare_name_cache
 
+    def _load_local_stock_name_map(self) -> Dict[str, str]:
+        """从本地 SQLite/缓存中读取代码→名称映射，不依赖 TuShare。"""
+        if self._local_stock_name_cache is not None:
+            return self._local_stock_name_cache
+
+        mapping: Dict[str, str] = {}
+
+        def add(code, name):
+            normalized_code = _normalize_stock_code(code)
+            clean_name = self._sanitize_stock_name(name, normalized_code)
+            if normalized_code and clean_name and normalized_code not in mapping:
+                mapping[normalized_code] = clean_name
+
+        try:
+            from data_store.connection import get_conn
+            conn = get_conn()
+            for sql in (
+                "SELECT code, name FROM opportunity_item WHERE name IS NOT NULL AND name <> '' ORDER BY run_id DESC",
+                "SELECT ts_code AS code, name FROM moneyflow_dc WHERE name IS NOT NULL AND name <> '' ORDER BY trade_date DESC",
+            ):
+                try:
+                    for row in conn.execute(sql).fetchall():
+                        add(row["code"], row["name"])
+                except Exception:
+                    continue
+
+            try:
+                row = conn.execute(
+                    "SELECT payload FROM kv_cache WHERE namespace='hot_stocks' AND key='latest'"
+                ).fetchone()
+                payload = json.loads(row["payload"]) if row else None
+                candidates = payload
+                if isinstance(payload, dict):
+                    candidates = payload.get("stocks") or payload.get("data") or payload.get("items") or []
+                if isinstance(candidates, list):
+                    for item in candidates:
+                        if isinstance(item, dict):
+                            add(item.get("code") or item.get("stock_code"), item.get("name") or item.get("stock_name"))
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.debug(f"本地股票名称映射加载失败: {exc}")
+
+        self._local_stock_name_cache = mapping
+        return mapping
+
+    def _fetch_tencent_stock_names(self, codes: List[str]) -> Dict[str, str]:
+        """从腾讯行情接口补股票名。该接口免 token，用于打包环境兜底。"""
+        missing = []
+        for code in codes:
+            normalized_code = _normalize_stock_code(code)
+            if normalized_code and normalized_code not in self._quote_stock_name_cache:
+                missing.append(normalized_code)
+        if not missing:
+            return self._quote_stock_name_cache
+
+        symbols = [
+            ("sh" if code.startswith(("5", "6", "9")) else "sz") + code
+            for code in missing
+        ]
+        try:
+            resp = requests.get(
+                "https://qt.gtimg.cn/q=" + ",".join(symbols),
+                timeout=5,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            resp.encoding = "gbk"
+            for line in resp.text.splitlines():
+                if '="' not in line:
+                    continue
+                left, right = line.split('="', 1)
+                api_code = left.strip().replace("v_", "")
+                code = _normalize_stock_code(api_code)
+                fields = right.strip().strip('";').split("~")
+                name = fields[1] if len(fields) > 1 else ""
+                clean = self._sanitize_stock_name(name, code)
+                if code and clean:
+                    self._quote_stock_name_cache[code] = clean
+        except Exception as exc:
+            logger.debug(f"腾讯行情股票名称补全失败: {exc}")
+
+        return self._quote_stock_name_cache
+
     def _filter_st_analysis_results(self, analysis_results: List[Dict], context: str) -> List[Dict]:
         """报表生成前最终过滤 ST/退市股票，防止上游漏网。"""
         filtered, removed = filter_st_stocks(analysis_results, self._load_tushare_name_map())
@@ -455,7 +562,19 @@ class OpportunityReportGenerator:
         if ts_name:
             return ts_name
 
-        # 3) 仍然找不到 → 显示代码
+        # 3) 本地库/缓存兜底
+        local_name = self._load_local_stock_name_map().get(normalized_code, '')
+        local_name = self._sanitize_stock_name(local_name, normalized_code)
+        if local_name:
+            return local_name
+
+        # 4) 免 token 行情接口兜底
+        quote_name = self._fetch_tencent_stock_names([normalized_code]).get(normalized_code, '')
+        quote_name = self._sanitize_stock_name(quote_name, normalized_code)
+        if quote_name:
+            return quote_name
+
+        # 5) 仍然找不到 → 显示代码
         return _pick_stock_display_name(None, '', normalized_code, default=default)
 
     def _load_price_history(self, stock_code: str):
@@ -995,7 +1114,8 @@ class OpportunityReportGenerator:
                        global_hot_news: List[Dict] = None,
                        sector_hot_news: List[Dict] = None,
                        hot_news_title: str = None,
-                       market_regime: Optional[Dict] = None) -> str:
+                       market_regime: Optional[Dict] = None,
+                       run_meta: Optional[Dict] = None) -> str:
         """
         生成投资机会挖掘HTML报表
 
@@ -1020,17 +1140,30 @@ class OpportunityReportGenerator:
         # 生成漏斗数据
         funnel_data = self._generate_funnel_data(stage_stats, total_count)
 
+        degraded_count = sum(1 for stock in passed_stocks if _is_degraded_opportunity(stock))
+        if degraded_count:
+            logger.warning(
+                "机会挖掘存在数据降级候选: %s/%s，Top榜排序将优先展示非降级样本",
+                degraded_count,
+                passed_count,
+            )
+
         # TOP 推荐（完整排序，前端默认显示20行并可滚动）
-        top_20 = sorted(passed_stocks, key=lambda x: x.get('final_score', 0), reverse=True)
+        # 历史行情缺失时，情绪/消息分可能把降级样本推高；排序层必须把正常样本放在前面。
+        top_20 = sorted(
+            passed_stocks,
+            key=lambda stock: (not _is_degraded_opportunity(stock), _stock_final_score(stock)),
+            reverse=True,
+        )
 
         # 量化优先排名（量化模型数量优先 + 分数排名）
         def quant_sort_key(stock):
-            score = stock.get('final_score', 0)
+            score = _stock_final_score(stock)
             details = (stock.get('scoring_result') or {}).get('details') or {}
             quant = details.get('quantitative') or {}
             models = quant.get('top_buy_models') or []
             model_count = len(models)
-            return (model_count, score)
+            return (not _is_degraded_opportunity(stock), model_count, score)
 
         quant_top_20 = sorted(passed_stocks, key=quant_sort_key, reverse=True)
 
@@ -1086,6 +1219,51 @@ class OpportunityReportGenerator:
 
             lines = []
 
+            # === 运行元信息: 机器可读注释 + 人可读一行(桌面端/解析器用于区分 run 与评分版本) ===
+            if run_meta:
+                try:
+                    _meta_payload = {
+                        'run_at': run_meta.get('run_at'),
+                        'source': run_meta.get('source'),
+                        'candidate_limit': run_meta.get('candidate_limit'),
+                        'mode': run_meta.get('mode'),
+                        'ruleset_version': run_meta.get('ruleset_version'),
+                        'config_hash': run_meta.get('config_hash'),
+                        'candidates': run_meta.get('candidates'),
+                        'analyzed': run_meta.get('analyzed'),
+                    }
+                    lines.append(f"<!-- kronos-run-meta {json.dumps(_meta_payload, ensure_ascii=False)} -->")
+                    _meta_bits = [f"运行 {str(run_meta.get('run_at') or '')[:16].replace('T', ' ')}"]
+                    if run_meta.get('ruleset_version'):
+                        _meta_bits.append(f"评分规则 {run_meta['ruleset_version']}")
+                    if run_meta.get('source'):
+                        _meta_bits.append(f"来源 {run_meta['source']}")
+                    if run_meta.get('candidate_limit'):
+                        _meta_bits.append(f"候选上限 {run_meta['candidate_limit']}")
+                    if run_meta.get('config_hash'):
+                        _meta_bits.append(f"配置 {run_meta['config_hash']}")
+                    lines.append(f"> 🧾 {' · '.join(_meta_bits)}\n")
+                except Exception as _me:
+                    logger.debug(f"运行元信息写入失败: {_me}")
+
+            if degraded_count:
+                if passed_count and degraded_count == passed_count:
+                    lines.append("## 🛑 数据质量提示")
+                    lines.append(
+                        '<div style="border: 2px solid #d32f2f; background: #ffebee; '
+                        'padding: 12px; border-radius: 6px; font-size: 14px;">'
+                        '<p style="margin: 4px 0;"><strong>本次机会挖掘全部候选缺少有效历史行情数据。</strong>'
+                        '量化与技术评分已降级，Top 榜仅用于诊断，不应视为正常推荐。</p>'
+                        '<p style="margin: 8px 0 0;">请检查 TuShare token、网络与本地 K 线缓存后重新运行。</p>'
+                        '</div>'
+                    )
+                    lines.append("---\n")
+                else:
+                    lines.append(
+                        f"> ⚠️ 本次有 {degraded_count}/{passed_count} 只候选缺少有效历史行情数据，"
+                        "已在 Top 榜排序中排到非降级样本之后。\n"
+                    )
+
             # === 头部增强: 昨日推荐复盘 + 大盘环境/候选不足提示 ===
             try:
                 _recap = self._build_yesterday_recap(current_report_dt)
@@ -1096,8 +1274,8 @@ class OpportunityReportGenerator:
                 logger.debug(f"昨日复盘失败: {_re}")
 
             try:
-                _s_count = sum(1 for _s in top_20 if float(_s.get('final_score', 0) or 0) >= 85)
-                _a_count = sum(1 for _s in top_20 if 78 <= float(_s.get('final_score', 0) or 0) < 85)
+                _s_count = sum(1 for _s in top_20 if _stock_final_score(_s) >= 85)
+                _a_count = sum(1 for _s in top_20 if 78 <= _stock_final_score(_s) < 85)
                 _alert = self._build_market_regime_alert(market_regime, _s_count, _a_count, passed_count)
                 if _alert:
                     lines.extend(_alert)
@@ -1608,15 +1786,20 @@ class OpportunityReportGenerator:
 
             def _resolve_stock_name(stock: Dict):
                 code = _normalize_stock_code(stock.get('stock_code') or stock.get('code') or '')
-                name = _pick_display_text(stock.get('name'), stock.get('stock_name'), default='')
-                if name and name not in ('未知', code):
-                    return name
+                resolved = self._resolve_stock_display_name_from_reports(
+                    code=code,
+                    name=stock.get('name'),
+                    stock_name=stock.get('stock_name'),
+                    default=code or '未知',
+                )
+                if resolved and resolved not in ('未知', code):
+                    return resolved
                 if code:
                     _load_sector_from_tushare(code)
                     cached_name = stock_name_by_code.get(code)
                     if not _is_missing_display_value(cached_name):
                         return str(cached_name).strip()
-                return _pick_stock_display_name(name, None, code)
+                return _pick_stock_display_name(None, None, code)
 
             for stock in analysis_results:
                 sector_name, sector_chg = _resolve_sector_and_change(stock)
@@ -1649,7 +1832,7 @@ class OpportunityReportGenerator:
 
                     stock_parts = []
                     for stock in stocks:
-                        code = stock.get('stock_code') or stock.get('code') or '未知'
+                        code = _normalize_stock_code(stock.get('stock_code') or stock.get('code') or '未知') or '未知'
                         name = _resolve_stock_name(stock)
                         price_changes = stock.get('scoring_result', {}).get('details', {}).get('price_changes', {})
                         change_pct = price_changes.get('change_1d') if price_changes else None
@@ -1737,8 +1920,13 @@ class OpportunityReportGenerator:
                 lines.append("## 🤖 AI智能分析结果\n")
                 for stock in llm_stocks:
                     llm_result = stock.get('llm_analysis', {})
-                    stock_name = stock.get('name', '未知')
-                    stock_code = stock.get('stock_code', '')
+                    stock_code = _normalize_stock_code(stock.get('stock_code') or stock.get('code') or '')
+                    stock_name = self._resolve_stock_display_name_from_reports(
+                        code=stock_code,
+                        name=stock.get('name'),
+                        stock_name=stock.get('stock_name'),
+                        default=stock_code or '未知',
+                    )
                     rating = stock.get('rating', 'C')
 
                     lines.append(f"### {stock_name}({stock_code}) - {rating}级\n")
@@ -1831,6 +2019,7 @@ class OpportunityReportGenerator:
 
             with open(md_path, 'w', encoding='utf-8') as mf:
                 mf.write('\n'.join(lines))
+            self.latest_top_report_path = md_path
             logger.info(f"✓ TOP20统计Markdown已生成: {md_path}")
 
             # 落结构化信号 sidecar（供「风险·机遇」大屏个股风险层使用，markdown 拿不到这些数值）
@@ -1851,14 +2040,24 @@ class OpportunityReportGenerator:
                         _chase = _mom.get('chase_risk_score')
                     _sig_rows.append({
                         'code': _normalize_stock_code(_st.get('stock_code') or _st.get('code')),
-                        'name': _st.get('name') or _st.get('stock_name'),
+                        'name': self._resolve_stock_display_name_from_reports(
+                            code=_st.get('stock_code') or _st.get('code'),
+                            name=_st.get('name'),
+                            stock_name=_st.get('stock_name'),
+                            default=_normalize_stock_code(_st.get('stock_code') or _st.get('code')),
+                        ),
                         'total_score': _st.get('final_score'),
                         'rating': _resolve_tier_by_display_score(_st),
                         'scores': {'sector': _scores.get('sector')},
+                        # v24: degraded(数据缺失降级) 透传, 供回测重建/统计剔除
+                        'degraded': bool(_sr.get('degraded') or _quant.get('degraded')
+                                         or _quant.get('error') == '无历史数据'),
                         'risk_signals': {
                             'chase': _chase,
                             'rsi': _tech.get('RSI'),
+                            'day_change': _pc.get('change_1d'),
                             'change_3d': _pc.get('change_3d'),
+                            'change_5d': _pc.get('change_5d'),
                             'sell_signals': _quant.get('sell_count'),
                             'quant_score': _scores.get('quantitative'),
                         },
@@ -3170,6 +3369,13 @@ class OpportunityReportGenerator:
             rating = stock.get('rating', 'C')
             rating_class = f"rating-{rating.replace('+', '-plus')}"
             score = stock.get('final_score', 0)
+            stock_code = _normalize_stock_code(stock.get('stock_code') or stock.get('code') or '')
+            stock_name = self._resolve_stock_display_name_from_reports(
+                code=stock_code,
+                name=stock.get('name'),
+                stock_name=stock.get('stock_name'),
+                default=stock_code or '未知',
+            )
 
             # 为TOP表格生成简短分析
             analysis_brief = self._build_short_analysis(stock)
@@ -3181,8 +3387,8 @@ class OpportunityReportGenerator:
                     <tr>
                         <td><span class="rank-badge {rank_class}">{i}</span></td>
                         <td>
-                            <strong>{stock.get('name', '未知')}</strong>
-                            <span class="stock-code">({stock.get('stock_code', '')})</span>
+                            <strong>{stock_name}</strong>
+                            <span class="stock-code">({stock_code})</span>
                             <div class="filter-brief">筛选结果: {'全部通过' if stock.get('eliminated_at_stage', -1) in (0, -1, None) else f"阶段{stock.get('eliminated_at_stage')}淘汰"}</div>
                         </td>
                         <td><span class="rating-badge {rating_class}">{rating}</span></td>
@@ -3359,6 +3565,10 @@ class OpportunityReportGenerator:
             }
             model_names = '、'.join([MODEL_DISPLAY_MAP.get(m, m) for m in models[:3]]) if models else '无'
             quant_str = f"买{buy_count}/卖{sell_count}/总{total_count}({buy_pct})，{_fmt_score(quant_score)}分，模型[{model_names}]"
+            # v24: degraded(数据缺失降级)标记 — 回测重建/统计据此剔除降级run
+            _is_degraded = bool(qd.get('degraded')) or qd.get('error') == '无历史数据' or scoring.get('degraded')
+            if _is_degraded:
+                quant_str += "，⚠️数据降级"
 
             # 3. 技术
             tech = details.get('technical') or {}
@@ -3456,11 +3666,24 @@ class OpportunityReportGenerator:
                 overview = f"【概览】评级{rating}，{filter_res}，建议：{suggestion}<br>【涨幅】当日:{change_1d_str}，3日:{change_3d_str}，5日:{change_5d_str}"
 
             parts = [overview]
-            
-            # 仅在数据有效时展示板块信息
+
+            # v24: 板块分始终写入 (即使板块明细无效也保留评分) —
+            # 回测重建依赖 detail 单元格里的 "【板块】...N分" 提取 sector_score
             if is_valid_sector:
                 parts.append(f"【板块】{sec_str}")
-                
+            else:
+                parts.append(f"【板块】未知(—, —, {_fmt_score(sec_score)}分)")
+
+            # v24: 追高风险始终写入 (此前藏在 score_adjustments 里, v21 后缺失) —
+            # 回测重建依赖 "追高风险...N分" 提取 chase_risk
+            _mom = details.get('momentum') or {}
+            _chase_val = (((scoring.get('advanced_analysis') or {}).get('overall_score') or {})
+                          .get('risk_metrics') or {}).get('chase_risk_score')
+            if not _chase_val:  # 0/None -> 回退动量明细（与评分逻辑一致）
+                _chase_val = _mom.get('chase_risk_score')
+            if isinstance(_chase_val, (int, float)):
+                parts.append(f"【风险】追高风险{max(0, min(100, float(_chase_val))):.0f}分")
+
             parts.extend([
                 f"【量化】{quant_str}",
                 f"【技术】{tech_str}",
@@ -3474,7 +3697,8 @@ class OpportunityReportGenerator:
                 wanted_keywords = (
                     '量化评分过低', '追高风险惩罚', 'RSI超买惩罚', 'RSI严重超买惩罚',
                     '连板涨停惩罚', '短期急涨惩罚', '短期暴涨惩罚', '惩罚触及上限',
-                    '牛股动量识别', '板块死区惩罚'
+                    '牛股动量识别', '板块死区惩罚',
+                    f'[{RULESET_VERSION}]',  # v24: 共享规则命中明细统一带版本前缀
                 )
                 selected_adjustments = []
                 for item in score_adjustments:
@@ -3843,6 +4067,13 @@ class OpportunityReportGenerator:
             rating = stock.get('rating', 'C')
             rating_class = f"rating-{rating.replace('+', '-plus')}"
             score = stock.get('final_score', 0)
+            stock_code = _normalize_stock_code(stock.get('stock_code') or stock.get('code') or '')
+            stock_name = self._resolve_stock_display_name_from_reports(
+                code=stock_code,
+                name=stock.get('name'),
+                stock_name=stock.get('stock_name'),
+                default=stock_code or '未知',
+            )
             scoring_result = stock.get('scoring_result', {})
             scores = (scoring_result.get('scores') or {})
             weights_used = (scoring_result.get('weights_used') or {})
@@ -3938,8 +4169,8 @@ class OpportunityReportGenerator:
                     <div class="stock-card">
                         <div class="stock-header">
                             <div>
-                                <span class="stock-name">{stock.get('name', '未知')}</span>
-                                <span class="stock-code">{stock.get('stock_code', '')}</span>
+                                <span class="stock-name">{stock_name}</span>
+                                <span class="stock-code">{stock_code}</span>
                             </div>
                             <div>
                                 <span class="rating-badge {rating_class}">{rating}</span>
@@ -4345,8 +4576,13 @@ class OpportunityReportGenerator:
 
         for stock in llm_stocks:
             llm_result = stock.get('llm_analysis', {})
-            stock_name = stock.get('name', '未知')
-            stock_code = stock.get('stock_code', '')
+            stock_code = _normalize_stock_code(stock.get('stock_code') or stock.get('code') or '')
+            stock_name = self._resolve_stock_display_name_from_reports(
+                code=stock_code,
+                name=stock.get('name'),
+                stock_name=stock.get('stock_name'),
+                default=stock_code or '未知',
+            )
             rating = stock.get('rating', 'C')
             rating_class = f"rating-{rating.replace('+', '-plus')}"
 

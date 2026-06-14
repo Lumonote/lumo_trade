@@ -651,13 +651,51 @@ class StockAnalysisSuite:
             ic = fundam_raw.get("industry_comparison") or {}
             out["fundamental"] = {
                 "pe": fi.get("pe"),
+                "pb": fi.get("pb"),  # panel features 消费 pb,此前漏传导致估值类 persona「数据不足」
                 "roe": fi.get("roe"),
                 "pe_industry_rank": ic.get("pe_rank"),
                 "net_profit_yoy": fr.get("net_profit_yoy"),
             }
         except Exception as exc:  # noqa: BLE001
             out["fundamental_error"] = str(exc)
+        self._augment_fundamental_from_local(code, out)
         return out
+
+    @staticmethod
+    def _augment_fundamental_from_local(code: str, out: Dict[str, Any]) -> None:
+        """PE/PB 本地兜底:采集失败或字段缺失时读 data_store.daily_basic 最近一行。
+
+        联网基本面采集(同花顺/腾讯/tushare)在代理/限流环境下经常整组失败,
+        panel 的估值特征(pe/pb)随之全空 → persona 大面积「数据不足」。库内
+        daily_basic 是离线快照,至少把估值两项补上(roe/净利同比无本地源仍可能缺)。
+        """
+        try:
+            fundam = out.get("fundamental") or {}
+            if fundam.get("pe") is not None and fundam.get("pb") is not None:
+                return
+
+            from data_store import daily_basic_repo
+            from data_store.tushare_client import to_ts_code
+
+            df = daily_basic_repo.get_for_code(to_ts_code(code), limit=1)
+            if df is None or df.empty:
+                return
+            row = df.iloc[0]
+
+            def _first_valid(*keys):
+                for key in keys:
+                    v = _to_optional_float(row.get(key))
+                    if v is not None:
+                        return v
+                return None
+
+            if fundam.get("pe") is None:
+                fundam["pe"] = _first_valid("pe_ttm", "pe")
+            if fundam.get("pb") is None:
+                fundam["pb"] = _first_valid("pb")
+            out["fundamental"] = fundam
+        except Exception:  # noqa: BLE001 — 兜底失败保持原状
+            pass
 
     def compute_overview(self, code: str, inputs: Dict[str, Any] | None = None) -> Dict[str, Any]:
         if inputs is None:

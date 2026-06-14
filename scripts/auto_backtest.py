@@ -34,10 +34,43 @@ sys.path.insert(0, project_root)
 logger = logging.getLogger(__name__)
 
 # 回测数据存储路径
-BACKTEST_DIR = os.path.join(project_root, 'results', 'backtest')
+# 统一走 webui.services.paths(KRONOS_RESULTS_DIR / user 目录),与机会报告同根目录:
+# 否则 CLI 写仓库 results/、打包 App 写自己冻结目录,优化器各自训练、配置各自漂移,
+# 导致桌面端与 quick_start 对同一只票打出不同分。导入失败时回退仓库相对路径。
+
+
+def _resolve_backtest_dir() -> str:
+    try:
+        from webui.services.paths import results_dir
+        base = os.path.join(str(results_dir()), 'backtest')
+    except Exception:
+        return os.path.join(project_root, 'results', 'backtest')
+    # 首次迁移:统一目录还没有历史样本而仓库有 → 播种,保留既有回测/优化数据
+    repo_rec = os.path.join(project_root, 'results', 'backtest', 'recommendations.csv')
+    user_rec = os.path.join(base, 'recommendations.csv')
+    if not os.path.exists(user_rec) and os.path.exists(repo_rec):
+        try:
+            os.makedirs(base, exist_ok=True)
+            shutil.copy2(repo_rec, user_rec)
+        except OSError:
+            pass
+    return base
+
+
+def _resolve_scoring_config() -> str:
+    try:
+        from webui.services.paths import scoring_config_path
+        return str(scoring_config_path())
+    except Exception:
+        return os.environ.get(
+            'KRONOS_SCORING_CONFIG',
+            os.path.join(project_root, 'config', 'scoring_runtime_config.json'))
+
+
+BACKTEST_DIR = _resolve_backtest_dir()
 RECOMMENDATIONS_FILE = os.path.join(BACKTEST_DIR, 'recommendations.csv')
 BACKTEST_REPORT_DIR = os.path.join(BACKTEST_DIR, 'reports')
-SCORING_RUNTIME_CONFIG = os.path.join(project_root, 'config', 'scoring_runtime_config.json')
+SCORING_RUNTIME_CONFIG = _resolve_scoring_config()
 
 # 回测基线（v8.0算法优化 - 去重后Top10 + 置信度分级，score>=78阈值）
 BASELINE = {

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import threading
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -21,11 +23,17 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 
 class StockKlineService:
+    # Sina日K短缓存：日K盘中只靠报价叠加更新当根bar，60s内重复请求(点开弹窗、
+    # 30s盘中自刷、列表多处入口)复用同一份记录，避免每次都同步占住后端worker打Sina(超时8s)。
+    SINA_CACHE_TTL = 60.0
+
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir)
         # 实时报价源（如 WatchlistService.quotes）。日K是隔日/盘中按天一根的快照，
         # 叠加当日最新价后，盘中那根bar与「实时价」徽章可跟随最新成交价。
         self._quote_provider: Optional[Callable[[list], dict]] = None
+        self._sina_cache: dict[tuple[str, str, int], tuple[float, list[dict[str, Any]]]] = {}
+        self._sina_cache_lock = threading.Lock()
 
     def set_quote_provider(self, provider: Optional[Callable[[list], dict]]) -> None:
         """注入/更换实时报价源（如 WatchlistService.quotes）。与自选行情共用同一行情口径。"""
@@ -188,6 +196,20 @@ class StockKlineService:
         records = self.parse_sina_klines(payload if isinstance(payload, list) else [])
         return records, ''
 
+    def _fetch_sina_kline_cached(self, stock_code: str, period: str, limit: int) -> list[dict[str, Any]]:
+        """TTL内复用Sina结果；命中返回逐条浅拷贝(实时叠加会就地改写当日bar)。失败不缓存。"""
+        key = (str(stock_code), self.period_to_sina_scale(period), int(limit))
+        now = time.monotonic()
+        with self._sina_cache_lock:
+            cached = self._sina_cache.get(key)
+            if cached and now - cached[0] < self.SINA_CACHE_TTL:
+                return [dict(record) for record in cached[1]]
+        records, _name = self.fetch_sina_kline(stock_code, period, limit)
+        if records:
+            with self._sina_cache_lock:
+                self._sina_cache[key] = (now, [dict(record) for record in records])
+        return records
+
     @staticmethod
     def _apply_quote_to_records(records: list[dict[str, Any]], quote: Any, today: str) -> bool:
         """把实时报价就地叠加到「当日」那根日K上(close/high/low/pct_chg)。
@@ -257,7 +279,7 @@ class StockKlineService:
         sina_records: list[dict[str, Any]] = []
         sina_error: str | None = None
         try:
-            sina_records, _sina_name = self.fetch_sina_kline(code, normalized_period, normalized_limit)
+            sina_records = self._fetch_sina_kline_cached(code, normalized_period, normalized_limit)
         except Exception as exc:
             sina_error = str(exc)
 

@@ -937,6 +937,56 @@ def market_hotspots(request: Request) -> Response:
     return _json_response(webui_core.MARKET_INTELLIGENCE_SERVICE.load())
 
 
+@_native_get("/api/notifications/events")
+def notification_events(request: Request) -> Response:
+    """应用内系统事件（EOD 复盘 / 机会挖掘 / 自动跟单完成），通知条「系统」分类数据源。"""
+    since = webui_core._safe_int(_query_value(request, "since"), 0, minimum=0) or 0
+    limit = webui_core._safe_int(_query_value(request, "limit"), 50, minimum=1, maximum=200) or 50
+    return _json_response(webui_core.NOTIFICATION_EVENTS.list(since_id=since, limit=limit))
+
+
+@_native_get("/api/scoring-health")
+def scoring_health(request: Request) -> Response:
+    """评分算法健康度：最新 backtest_rebuilt_*.csv 的分档胜率 / 降级占比 / 日期范围。"""
+    try:
+        return _json_response(webui_core.SCORING_HEALTH_SERVICE.health())
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"available": False, "message": str(exc)}, status_code=500)
+
+
+@_native_get("/api/opportunity-runs")
+def opportunity_runs(request: Request) -> Response:
+    """机会挖掘入库 run 列表（?date=YYYY-MM-DD 过滤单日；?days=1 返回按天聚合）。"""
+    try:
+        from data_store import opportunity_repo
+        if str(_query_value(request, "days") or "").strip() in ("1", "true", "yes"):
+            return _json_response({"days": opportunity_repo.runs_by_day(limit=60)})
+        run_date = str(_query_value(request, "date") or "").strip() or None
+        limit = webui_core._safe_int(_query_value(request, "limit"), 50, minimum=1, maximum=200) or 50
+        return _json_response({"runs": opportunity_repo.list_runs(run_date=run_date, limit=limit)})
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"runs": [], "error": str(exc)}, status_code=500)
+
+
+@_native_get("/api/opportunity-runs/:run_id/items")
+def opportunity_run_items(request: Request, run_id=None) -> Response:
+    """单次挖掘 run 的全量评分明细（按名次升序）。"""
+    try:
+        from data_store import opportunity_repo
+        rid = webui_core._safe_int(_path_param(request, "run_id", run_id), 0, minimum=1)
+        if not rid:
+            return _json_response({"items": [], "error": "invalid run_id"}, status_code=400)
+        return _json_response({"items": opportunity_repo.items_for_run(rid)})
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"items": [], "error": str(exc)}, status_code=500)
+
+
+@_native_post("/api/settings/auto-follow")
+def save_auto_follow_settings(request: Request) -> Response:
+    """保存模拟盘自动跟单配置（开关 / 最低档位 / 单票金额 / 持有天数 / 买入方式）。"""
+    return _json_response(webui_core.CONFIGURATION_SERVICE.save_auto_follow_settings(_request_json(request)))
+
+
 @_native_get("/api/watchlist")
 def watchlist_list(request: Request) -> Response:
     return _json_response(webui_core.WATCHLIST_SERVICE.list_with_quotes())
@@ -964,8 +1014,12 @@ def startup() -> None:
 
 
 def configure_server_from_env() -> None:
+    # processes 必须保持 1：任务注册表/自选/形态库等都是进程内共享状态。
+    # workers 是单进程内并发执行 handler 的线程数——本服务 handler 全是同步函数，
+    # workers=1 时任意一个慢请求(如 Sina K线超时8s)会让 /desktop/* 页面 HTML 一起排队，
+    # 表现为点左侧菜单整页卡顿。handler 以 I/O 等待为主，多线程即可解除串行。
     app.config.processes = _env_int("ROBYN_PROCESSES", 1)
-    app.config.workers = _env_int("ROBYN_WORKERS", 1)
+    app.config.workers = _env_int("ROBYN_WORKERS", 8)
     app.config.log_level = os.environ.get("ROBYN_LOG_LEVEL", app.config.log_level)
 
 

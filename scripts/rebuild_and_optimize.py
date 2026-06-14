@@ -74,6 +74,9 @@ def parse_new_format(text, code):
     if m:
         feat['chase_risk'] = float(m.group(1))
 
+    # v24: degraded(数据缺失降级)标记 — 报告中量化段带 "数据降级" 标签
+    feat['degraded'] = 1 if '数据降级' in text else 0
+
     return feat
 
 
@@ -1077,12 +1080,17 @@ def print_final_results(df, params, threshold):
 
 def main():
     parser = argparse.ArgumentParser(description='参数优化器 (支持 walk-forward CV 防过拟合)')
-    parser.add_argument('--walk-forward', action='store_true',
-                        help='启用时间序列 walk-forward CV + 多目标 (强烈推荐, 防过拟合)')
+    parser.add_argument('--walk-forward', dest='walk_forward', action='store_true', default=True,
+                        help='启用时间序列 walk-forward CV + 多目标 (v24起默认启用, 防过拟合)')
+    parser.add_argument('--no-walk-forward', dest='walk_forward', action='store_false',
+                        help='禁用 walk-forward CV, 退回全样本单目标优化')
     parser.add_argument('--n-folds', type=int, default=5,
                         help='walk-forward 折数 (默认 5)')
+    parser.add_argument('--include-degraded', action='store_true',
+                        help='优化样本中包含 degraded(数据缺失降级) 行 (默认剔除)')
     args = parser.parse_args()
     use_wf = args.walk_forward
+    include_degraded = args.include_degraded
 
     print("=" * 70)
     if use_wf:
@@ -1116,8 +1124,26 @@ def main():
     if before != after:
         print(f"  去重: {before} → {after} (移除{before - after}条)")
 
+    # v24: degraded 列补全 — 显式标签优先, 否则 quant_score==0 启发式
+    # (scorer 无历史数据时量化评分恒为 0; 真实弱信号不会是精确 0)
+    if 'degraded' not in df.columns:
+        df['degraded'] = 0
+    df['degraded'] = df['degraded'].fillna(0).astype(int)
+    if 'quant_score' in df.columns:
+        df.loc[df['quant_score'].notna() & (df['quant_score'] == 0), 'degraded'] = 1
+    degraded_n = int(df['degraded'].sum())
+
     # 只保留有收益的数据
     df_valid = df[df['return_5d'].notna()].copy()
+
+    # v24: 优化器样本默认剔除 degraded(数据缺失降级) 行
+    if include_degraded:
+        print(f"\n  degraded行: {degraded_n} 条 [--include-degraded: 保留]")
+    else:
+        v_before = len(df_valid)
+        df_valid = df_valid[df_valid['degraded'] == 0].copy()
+        print(f"\n  degraded行: {degraded_n} 条 [默认剔除, 有效样本 {v_before} → {len(df_valid)}]")
+
     print(f"\n  有效数据 (有5d收益): {len(df_valid)} 条, {df_valid['report_date'].nunique()} 个日期")
 
     # 特征覆盖率

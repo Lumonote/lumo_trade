@@ -204,6 +204,36 @@ def test_parse_opportunity_report_prefers_market_env_line_over_review_heading(tm
     assert "昨日选股复盘" not in parsed["market_env"]
 
 
+def test_parse_opportunity_report_extracts_run_meta(tmp_path, monkeypatch):
+    """报告头的 kronos-run-meta 注释要解析为 run_meta 并透传 latest_report。"""
+    module = _load_webui_core(tmp_path, monkeypatch)
+    results_dir = tmp_path / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    report = results_dir / "opportunity_top10_20260610_153102.md"
+    report.write_text(
+        '<!-- kronos-run-meta {"run_at": "2026-06-10T15:31:02", "source": "multi", '
+        '"candidate_limit": 100, "ruleset_version": "v24", "config_hash": "abc123def456"} -->\n'
+        "> 🧾 运行 2026-06-10 15:31 · 评分规则 v24 · 来源 multi\n\n"
+        "## 综合排名 TOP20\n"
+        "<table>\n"
+        "<tbody>\n"
+        f"<tr><td>1</td><td>688111</td><td>金山办公</td><td>87.08</td><td>{_RICH_DETAIL}</td></tr>\n"
+        "</tbody></table>\n",
+        encoding="utf-8",
+    )
+
+    parsed = module._parse_opportunity_report(report)
+    assert parsed["run_meta"]["ruleset_version"] == "v24"
+    assert parsed["run_meta"]["source"] == "multi"
+    assert parsed["run_meta"]["config_hash"] == "abc123def456"
+
+    cards = module.load_opportunity_report_cards(report.name)
+    assert cards["latest_report"]["run_meta"]["ruleset_version"] == "v24"
+
+    latest = module._load_latest_opportunities()
+    assert latest["latest_report"]["run_meta"]["source"] == "multi"
+
+
 def test_stock_dashboard_route_survives_existing_report(tmp_path, monkeypatch):
     _load_webui_core(tmp_path, monkeypatch)
     results_dir = tmp_path / "results"

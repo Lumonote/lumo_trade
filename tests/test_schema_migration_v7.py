@@ -28,8 +28,8 @@ def _cols(conn, table: str) -> set:
     return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def test_v8_reaches_version_8(conn):
-    assert migrate(conn) == 8
+def test_migrate_reaches_latest_version(conn):
+    assert migrate(conn) == 9  # v9: opportunity_run / opportunity_item(机会挖掘按天入库)
 
 
 def test_v7_creates_all_tables(conn):
@@ -48,7 +48,7 @@ def test_v7_creates_all_tables(conn):
 
 def test_v7_idempotent(conn):
     migrate(conn)
-    assert migrate(conn) == 8  # 二次运行不报错、不重复推进
+    assert migrate(conn) == 9  # 二次运行不报错、不重复推进
 
 
 def test_dragon_tiger_list_columns(conn):

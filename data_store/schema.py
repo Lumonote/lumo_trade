@@ -333,6 +333,46 @@ _MIGRATIONS: List[Tuple[int, str]] = [
         # 保留资金榜接口原始列,用于前端展开展示非标准字段。
         "",
     ),
+    (
+        9,
+        # 投资机会挖掘结果入库(按天):每次 run 一行 + 全量评分明细。
+        # 桌面 job 与 quick_start CLI 共用 OpportunityDiscovery.run 落库,
+        # ruleset_version/config_hash 让两侧分数可比对、分歧可解释。
+        """
+        CREATE TABLE IF NOT EXISTS opportunity_run (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_at          TEXT NOT NULL,            -- ISO 时间
+          run_date        TEXT NOT NULL,            -- YYYY-MM-DD(按天键)
+          source          TEXT,                     -- multi/heat/moneyflow_dc
+          candidate_limit INTEGER,
+          mode            TEXT,                     -- market_scan/specified_pool
+          ruleset_version TEXT,                     -- analysis.scoring_rules.RULESET_VERSION
+          config_hash     TEXT,                     -- scoring_runtime_config.json 内容哈希
+          report_file     TEXT,
+          candidates      INTEGER,
+          analyzed        INTEGER,
+          duration_sec    REAL,
+          extra_json      TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_opp_run_date ON opportunity_run(run_date, run_at DESC);
+
+        CREATE TABLE IF NOT EXISTS opportunity_item (
+          run_id       INTEGER NOT NULL REFERENCES opportunity_run(id) ON DELETE CASCADE,
+          code         TEXT NOT NULL,
+          name         TEXT,
+          item_rank    INTEGER,                     -- 该次 run 内按总分降序的名次
+          total_score  REAL,
+          rating       TEXT,
+          degraded     INTEGER NOT NULL DEFAULT 0,  -- 数据缺失降级(quant 无历史数据等)
+          source       TEXT,                        -- 候选来源 heat/oversold/moneyflow/...
+          change_pct   REAL,
+          scores_json  TEXT,                        -- 七维分项
+          signals_json TEXT,                        -- chase/rsi/涨幅/卖出信号等风险信号
+          PRIMARY KEY (run_id, code)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_opp_item_code ON opportunity_item(code, run_id);
+        """,
+    ),
 ]
 
 

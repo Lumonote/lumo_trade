@@ -446,6 +446,15 @@
         {% endif %}
 
         {% if active_page == 'reports' %}
+        <section class="panel" style="margin-bottom: 14px;">
+          <div class="panel-header">
+            <h2 class="panel-title">评分健康度</h2>
+            <span id="scoringHealthMeta" class="panel-meta">读取中</span>
+          </div>
+          <div id="scoringHealthBody" class="panel-body">
+            <p class="muted">正在读取回测健康度…</p>
+          </div>
+        </section>
         <section class="grid two">
           <div class="panel">
             <div class="panel-header">
@@ -782,6 +791,37 @@
 
           <div class="panel">
             <div class="panel-header">
+              <h2 class="panel-title">模拟盘自动跟单</h2>
+              <span id="autoFollowMeta" class="panel-meta">读取中</span>
+            </div>
+            <form id="autoFollowForm" class="panel-body">
+              <p class="item-meta">机会挖掘报告生成后，对达档股票自动以<strong>次日开盘价</strong>在模拟盘建仓，持有 N 个交易日后自动挂次日开盘价卖单平仓（同一报告同一股票不重复下单）。仅模拟盘记账，不涉及真实资金。</p>
+              <div class="form-grid" style="margin-top: 10px;">
+                <label>自动跟单
+                  <select name="enabled">
+                    <option value="0">关闭（默认）</option>
+                    <option value="1">开启</option>
+                  </select>
+                </label>
+                <label>最低档位（评分）
+                  <input name="min_score" type="number" min="50" max="100" step="1" value="78" title="默认 78 = A 级" />
+                </label>
+                <label>单票金额（元）
+                  <input name="per_stock_amount" type="number" min="2000" step="1000" value="20000" />
+                </label>
+                <label>持有天数（交易日）
+                  <input name="hold_days" type="number" min="1" max="60" value="5" />
+                </label>
+              </div>
+              <div class="actions">
+                <button class="button" type="submit">保存自动跟单配置</button>
+              </div>
+              <p id="autoFollowStatus" class="item-meta" style="margin-top: 10px;"></p>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
               <h2 class="panel-title">数据备份与恢复</h2>
               <span id="dataBackupMeta" class="panel-meta">整库 .db 全量导出 / 导入</span>
             </div>
@@ -863,6 +903,7 @@
         <button class="notify-cat" data-notify-cat="watchlist" type="button" title="自选股实时行情">自选</button>
         <button class="notify-cat" data-notify-cat="boards" type="button" title="热门概念/板块">板块</button>
         <button class="notify-cat" data-notify-cat="flash" type="button" title="金十快讯">快讯</button>
+        <button class="notify-cat" data-notify-cat="system" type="button" title="系统事件·复盘/挖掘/自动跟单完成">系统</button>
       </div>
       <div class="notify-bar-viewport" id="notifyViewport">
         <div class="notify-track" id="notifyTrack"></div>

@@ -69,6 +69,9 @@ from webui.services.trading_client_service import TradingClientService
 from webui.services.watchlist_service import WatchlistService
 from webui.services.capital_rankings_service import CapitalRankingsService
 from webui.services.paper_trading_service import PaperTradingService
+from webui.services.paper_auto_follow_service import PaperAutoFollowService
+from webui.services.notification_events import NotificationEventService
+from webui.services.scoring_health_service import ScoringHealthService
 from webui.services.db_backup_service import DbBackupService
 from webui.services.command_center_service import CommandCenterService
 
@@ -99,6 +102,17 @@ CAPITAL_RANKINGS_SERVICE = CapitalRankingsService(quote_provider=WATCHLIST_SERVI
 PAPER_TRADING_SERVICE = PaperTradingService(quote_provider=WATCHLIST_SERVICE.quotes)
 # 整库备份(导出一致性快照 / 导入校验→自动备份→灌库→migrate)
 DB_BACKUP_SERVICE = DbBackupService()
+# 应用内通知事件(EOD 复盘 / 机会挖掘 / 自动跟单完成时入队,前端通知条「系统」分类消费)
+NOTIFICATION_EVENTS = NotificationEventService()
+# 评分算法健康度:优先读 results_dir()(桌面/CLI 统一目录),回退仓内 results/(历史回测CSV所在)
+SCORING_HEALTH_SERVICE = ScoringHealthService([RESULTS_DIR, PROJECT_ROOT / "results"])
+# 模拟盘自动跟单(机会报告达档自动建仓,EOD 持有到期平仓;默认关闭,配置见后台设置页)
+AUTO_FOLLOW_SERVICE = PaperAutoFollowService(
+    PAPER_TRADING_SERVICE,
+    CONFIGURATION_SERVICE.load_auto_follow_config,
+    USER_ROOT / "data" / "paper_auto_follow.json",
+    events=NOTIFICATION_EVENTS,
+)
 
 
 # ----------------------------- 风险·机遇 作战大屏 -----------------------------
@@ -1028,6 +1042,7 @@ def _parse_opportunity_report(path):
         score = float(score_match.group(0)) if score_match else 0.0
         reason = _extract_detail_section(detail, '入选原因') or _truncate_text(detail, 180)
         quant = _extract_detail_section(detail, '量化')
+        degraded = '数据降级' in (detail or '') or '无历史数据' in (detail or '') or 'degraded' in (detail or '').lower()
         item = {
             'rank': _safe_int(rank_raw, len(items) + 1, minimum=1),
             'code': code_match.group(0),
@@ -1047,6 +1062,7 @@ def _parse_opportunity_report(path):
             'summary': reason,
             'quant_models': _parse_quant_models(detail),
             'fields': _extract_all_detail_sections(detail),
+            'degraded': degraded,
             'has_local_kline': False,
         }
         items.append(item)
@@ -1063,11 +1079,25 @@ def _parse_opportunity_report(path):
         heading_match = re.search(r'##\s*([^\n]+)', content)
         market_env = _strip_markup(heading_match.group(1)) if heading_match else '已解析最新机会挖掘报告'
 
+    # 报告头的机器可读运行元信息(评分规则版本/来源/配置哈希),用于前端区分 run
+    run_meta = {}
+    meta_match = re.search(r'<!--\s*kronos-run-meta\s+(\{.*?\})\s*-->', content, flags=re.S)
+    if meta_match:
+        try:
+            run_meta = json.loads(meta_match.group(1))
+        except (ValueError, TypeError):
+            run_meta = {}
+
+    degraded_count = len([item for item in items if item.get('degraded')])
+
     return {
         'file': report_path.name,
         'url': _report_url(report_path),
         'updated_at': _format_datetime(report_path.stat().st_mtime) if report_path.exists() else '--',
         'market_env': market_env,
+        'run_meta': run_meta,
+        'degraded_count': degraded_count,
+        'all_degraded': bool(items) and degraded_count == len(items),
         'items': items,
     }
 
@@ -1096,7 +1126,12 @@ def load_opportunity_report_cards(file):
             'file': parsed['file'],
             'url': parsed['url'],
             'updated_at': parsed['updated_at'],
+            'run_meta': parsed.get('run_meta') or {},
+            'degraded_count': parsed.get('degraded_count', 0),
+            'all_degraded': parsed.get('all_degraded', False),
         },
+        'degraded_count': parsed.get('degraded_count', 0),
+        'all_degraded': parsed.get('all_degraded', False),
         'items': parsed['items'],
         'cards': parsed['items'],
     }
@@ -1582,7 +1617,33 @@ def _load_latest_opportunities():
                 'top_score': 0,
             },
         }
-    items = parsed['items']
+    all_degraded = bool(parsed.get('all_degraded'))
+    raw_items = parsed['items']
+    if all_degraded:
+        raw_count = len(raw_items)
+        return {
+            'latest_report': {
+                'file': parsed['file'],
+                'url': parsed['url'],
+                'updated_at': parsed['updated_at'],
+                'run_meta': parsed.get('run_meta') or {},
+                'degraded_count': parsed.get('degraded_count', 0),
+                'all_degraded': True,
+            },
+            'market_env': f"最新机会报告数据降级({raw_count}/{raw_count})，量化和技术评分不可用，请重新运行机会挖掘。",
+            'empty_reason': "最新机会报告全部候选缺少有效历史行情数据，已隐藏诊断性 Top 榜，避免误当正常推荐。",
+            'items': [],
+            'quant_models': [],
+            'quant_models_note': '',
+            'stats': {
+                'total': 0,
+                'strong_count': 0,
+                'average_score': 0,
+                'top_score': 0,
+            },
+        }
+
+    items = raw_items
     scores = [item['score'] for item in items]
     strong_count = len([item for item in items if item['score'] >= 80])
     quant_models = _build_quant_model_summary(items)
@@ -1596,8 +1657,12 @@ def _load_latest_opportunities():
             'file': parsed['file'],
             'url': parsed['url'],
             'updated_at': parsed['updated_at'],
+            'run_meta': parsed.get('run_meta') or {},
+            'degraded_count': parsed.get('degraded_count', 0),
+            'all_degraded': False,
         },
         'market_env': parsed['market_env'],
+        'empty_reason': '',
         'items': items,
         'quant_models': quant_models,
         'quant_models_note': quant_models_note,
@@ -1908,9 +1973,12 @@ def _run_opportunity_job(job_id, params):
                 test_codes=stock_codes or None,
                 source=source,
             )
+            generated_top_report = getattr(discovery.report_generator, 'latest_top_report_path', '') or ''
         report_file = Path(report_path).name if report_path else ''
         top_report_path = None
-        if report_file.startswith('opportunity_top10_') and report_file.endswith('.md'):
+        if generated_top_report:
+            top_report_path = Path(generated_top_report)
+        elif report_file.startswith('opportunity_top10_') and report_file.endswith('.md'):
             top_report_path = Path(report_path)
         else:
             top_report_path = _latest_primary_opportunity_report_since(run_started_ts)
@@ -1939,6 +2007,29 @@ def _run_opportunity_job(job_id, params):
             finished_at=datetime.datetime.now().isoformat(),
             result=result,
         )
+        # ── 通知 + 自动跟单钩子(best-effort,绝不影响任务成败)──
+        try:
+            NOTIFICATION_EVENTS.push(
+                'opportunity_done',
+                '机会挖掘任务完成',
+                f"报告 {result['top_report_file'] or result['report_file'] or '未生成'} 已生成",
+                payload={'report_file': result['top_report_file'] or result['report_file']},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if top_report_path:
+                follow = AUTO_FOLLOW_SERVICE.follow_report(
+                    _parse_opportunity_report(top_report_path),
+                    report_file=top_report_path.name,
+                )
+                if follow.get('enabled'):
+                    _append_job_log(
+                        job_id,
+                        f"自动跟单: 新建 {follow['placed']} 笔次日开盘买单(幂等跳过 {follow['skipped']})",
+                    )
+        except Exception as exc:  # noqa: BLE001
+            _append_job_log(job_id, f'自动跟单失败(不影响挖掘结果): {exc}')
     except Exception as exc:
         _append_job_log(job_id, f'机会挖掘失败: {exc}')
         _update_job(
@@ -2241,12 +2332,33 @@ def _paper_eod_market_env():
 def run_paper_eod(date=None):
     """执行一次模拟盘 EOD(撮合补算 + 盯市 + 当日复盘 markdown)。
 
-    供守护线程与 /api/paper/settle 复用;返回 PaperTradingService.run_eod(...) 结果。"""
-    return PAPER_TRADING_SERVICE.run_eod(
+    供守护线程与 /api/paper/settle 复用;返回 PaperTradingService.run_eod(...) 结果。
+    复盘完成后联动:① 自动跟单到期检查(持有 N 个交易日后挂次日开盘卖单);
+    ② 当日有持仓/成交时把「复盘完成 + 盈亏/胜率摘要」写入应用内通知事件。"""
+    result = PAPER_TRADING_SERVICE.run_eod(
         date=date,
         market_env_text=_paper_eod_market_env(),
         results_dir=str(RESULTS_DIR),
     )
+    try:
+        result['auto_follow'] = AUTO_FOLLOW_SERVICE.process_eod(result.get('date'))
+    except Exception as exc:  # noqa: BLE001 — 跟单收尾失败不影响复盘本身
+        logger.warning(f"自动跟单 EOD 处理失败: {exc}")
+    if result.get('activity'):
+        try:
+            stats = PAPER_TRADING_SERVICE.stats()
+            equity = result.get('equity') or {}
+            NOTIFICATION_EVENTS.push(
+                'paper_eod',
+                f"模拟盘复盘完成({result.get('date')})",
+                f"当日盈亏 {float(equity.get('daily_pnl') or 0):+,.2f}"
+                f" · 累计胜率 {float(stats.get('win_rate') or 0) * 100:.1f}%"
+                f" · 已实现 {float(stats.get('total_realized') or 0):+,.2f}",
+                payload={'date': result.get('date'), 'review_path': result.get('review_path')},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return result
 
 
 def _paper_eod_loop(after_close, interval):

@@ -132,19 +132,23 @@ def fetch_daily_eastmoney(code: str, start: str, end: str) -> pd.DataFrame:
 
 
 def _tushare_token() -> str:
-    tok = os.environ.get("TUSHARE_TOKEN", "").strip()
-    if tok:
-        return tok
     try:
-        cfg_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "config", "tushare_config.json",
-        )
-        with open(cfg_path, "r", encoding="utf-8") as fh:
-            cfg = json.load(fh)
-        return str((cfg.get("tushare") or {}).get("token") or "").strip()
+        from scripts.stock_filter_utils import load_tushare_token
+        return load_tushare_token()
     except Exception:  # noqa: BLE001
-        return ""
+        tok = os.environ.get("TUSHARE_TOKEN", "").strip()
+        if tok:
+            return tok
+        try:
+            cfg_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "config", "tushare_config.json",
+            )
+            with open(cfg_path, "r", encoding="utf-8") as fh:
+                cfg = json.load(fh)
+            return str((cfg.get("tushare") or {}).get("token") or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
 
 
 def fetch_daily_tushare(code: str, start: str, end: str) -> pd.DataFrame:

@@ -591,6 +591,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![open_main, hide_popup])
         .setup(|app| {
             let user_dir = user_data_dir(app);

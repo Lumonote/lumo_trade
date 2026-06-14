@@ -35,15 +35,19 @@ _init_failed = False  # latch: once init fails (no token / not installed) stop r
 
 
 def _load_token() -> str:
-    tok = os.environ.get("TUSHARE_TOKEN", "").strip()
-    if tok:
-        return tok
     try:
-        cfg_path = Path(__file__).resolve().parents[1] / "config" / "tushare_config.json"
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        return str((cfg.get("tushare") or {}).get("token") or "").strip()
+        from scripts.stock_filter_utils import load_tushare_token
+        return load_tushare_token()
     except Exception:  # noqa: BLE001
-        return ""
+        tok = os.environ.get("TUSHARE_TOKEN", "").strip()
+        if tok:
+            return tok
+        try:
+            cfg_path = Path(__file__).resolve().parents[1] / "config" / "tushare_config.json"
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            return str((cfg.get("tushare") or {}).get("token") or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
 
 
 def get_pro():

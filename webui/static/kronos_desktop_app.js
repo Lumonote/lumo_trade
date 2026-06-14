@@ -29,6 +29,7 @@
         notifyCats: null,
         notifyTimer: null,
         _notifyItems: [],
+        systemEvents: [],
         lastQueryParams: null,
         lastMatchSnapshot: null,
       };
@@ -610,7 +611,16 @@
 
       function renderOpportunities(data) {
         const opportunity = data.opportunity || {};
-        $("#opportunityMeta").textContent = opportunity.latest_report?.updated_at || "--";
+        const report = opportunity.latest_report || {};
+        const meta = report.run_meta || {};
+        // 时间 + 报告文件 + 评分版本 + 候选来源:区分「展示的是哪次 run/哪版规则」
+        const metaBits = [report.updated_at || "--"];
+        if (report.file) metaBits.push(report.file);
+        if (meta.ruleset_version) metaBits.push(`规则 ${meta.ruleset_version}`);
+        if (meta.source) metaBits.push(`来源 ${meta.source}`);
+        if (meta.config_hash) metaBits.push(`配置 ${meta.config_hash}`);
+        if (report.all_degraded) metaBits.push("数据降级");
+        $("#opportunityMeta").textContent = metaBits.join(" · ");
         const items = opportunity.items || [];
         const list = $("#opportunityList");
         list.innerHTML = items.map((item, index) => {
@@ -624,7 +634,7 @@
           </button>`;
         }).join("");
         if (!items.length) {
-          empty(list, "还没有机会报告。", emptyAction("start-opportunity", "启动机会挖掘"));
+          empty(list, opportunity.empty_reason || "还没有机会报告。", emptyAction("start-opportunity", "启动机会挖掘"));
         }
         list.querySelectorAll("[data-stock]").forEach((el) => {
           el.addEventListener("click", async () => {
@@ -757,8 +767,27 @@
       async function openStockKlineModal(code, limit = 240) {
         if (!code) return;
         const normalizedCode = String(code || "").trim().padStart(6, "0");
-        const data = await fetchKlineData(normalizedCode, 500);
+        // 先把弹窗打开给出「读取中」反馈，数据到了再渲染——行情接口慢时按钮不再"点了没反应"。
+        const modal = $("#klineModal");
+        if (modal) {
+          closeOtherStockModals("#klineModal");
+          modal.hidden = false;
+          modal.setAttribute("aria-hidden", "false");
+          syncModalOpenState();
+          $("#klineModalTitle").textContent = `${normalizedCode} 股票K线与分析`;
+          $("#klineModalMeta").textContent = "K线读取中...";
+          const chart = $("#klineModalChart");
+          if (chart) chart.innerHTML = `<div class="stock-context-loading">K线读取中…</div>`;
+        }
+        let data;
+        try {
+          data = await fetchKlineData(normalizedCode, 500);
+        } catch (error) {
+          if (modal) closeKlineModal();
+          throw error;
+        }
         if (!data.records?.length) {
+          if (modal) closeKlineModal();
           alert(data.message || "暂无K线数据");
           return;
         }
@@ -1512,7 +1541,10 @@
               updated_at: payload.updated_at || "--",
             },
             market_env: payload.market_env || "",
-            items: payload.items || payload.cards || [],
+            empty_reason: payload.all_degraded
+              ? "本次机会报告全部候选缺少有效历史行情数据，已隐藏诊断性 Top 榜，避免误当正常推荐。"
+              : "",
+            items: payload.all_degraded ? [] : (payload.items || payload.cards || []),
             quant_models: payload.quant_models || {},
             quant_models_note: payload.quant_models_note || "",
           },
@@ -3584,6 +3616,12 @@
 
       function renderReports(data) {
         renderReportsDrawer(data.reports);
+        if ($("#scoringHealthBody")) {
+          loadScoringHealth().catch((error) => {
+            const body = $("#scoringHealthBody");
+            if (body) body.innerHTML = `<div class="notice status error">健康度读取失败：${html(error.message)}</div>`;
+          });
+        }
         const reports = $("#reportList");
         if (reports) {
           reports.innerHTML = (data.reports || []).map((item) => `
@@ -3633,6 +3671,62 @@
             empty(batchRuns, "暂无批量结果。", emptyAction("start-batch", "启动批量分析"));
           }
         }
+      }
+
+      // ── 评分健康度卡片（reports 页顶部；数据源 /api/scoring-health）──────────
+      async function loadScoringHealth() {
+        const data = await fetchJson("/api/scoring-health");
+        renderScoringHealth(data);
+        return data;
+      }
+      function renderScoringHealth(data) {
+        const body = $("#scoringHealthBody");
+        const meta = $("#scoringHealthMeta");
+        if (!body) return;
+        if (!data || !data.available) {
+          if (meta) meta.textContent = "暂无回测数据";
+          body.innerHTML = `<div class="item empty-state"><p class="item-meta">${html((data && data.message) || "暂无回测数据")}</p></div>`;
+          return;
+        }
+        const range = data.date_range || {};
+        if (meta) meta.textContent = `${html(data.file || "")} · ${range.start || "--"} ~ ${range.end || "--"} · ${range.days || 0} 个交易日`;
+        const pct = (v) => (v == null ? "--" : `${(v * 100).toFixed(1)}%`);
+        const ret = (v) => (v == null ? "--" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`);
+        const wrCls = (v) => (v == null ? "" : v >= 0.5 ? "change-up" : v < 0.45 ? "change-down" : "");
+        const rows = (data.tiers || []).map((t) => {
+          const f = t.full || {}, r = t.recent || {};
+          const warn = t.tier === "B" && data.warnings?.b_tier_recent_degraded
+            ? ` <span class="pill warn" title="B级近20日胜率低于45%">⚠ 退化</span>` : "";
+          return `<tr>
+            <td><strong>${html(t.tier)}</strong>${warn}</td>
+            <td>${f.evaluable ?? 0}/${f.n ?? 0}</td>
+            <td class="${wrCls(f.win_rate)}">${pct(f.win_rate)}</td>
+            <td>${ret(f.avg_return)}</td>
+            <td>${r.evaluable ?? 0}/${r.n ?? 0}</td>
+            <td class="${wrCls(r.win_rate)}">${pct(r.win_rate)}</td>
+            <td>${ret(r.avg_return)}</td>
+          </tr>`;
+        }).join("");
+        const base = data.baseline || {};
+        const degraded = data.degraded || {};
+        const degradedCls = (degraded.ratio || 0) > 0.15 ? "change-down" : "";
+        body.innerHTML = `
+          <div class="actions" style="flex-wrap:wrap;gap:14px;margin-bottom:10px;font-size:0.86rem;">
+            <span>基线胜率(全量) <strong class="${wrCls(base.full?.win_rate)}">${pct(base.full?.win_rate)}</strong></span>
+            <span>基线胜率(近${data.recent_window_days || 20}日) <strong class="${wrCls(base.recent?.win_rate)}">${pct(base.recent?.win_rate)}</strong></span>
+            <span>降级run占比 <strong class="${degradedCls}">${pct(degraded.ratio)}</strong>（近${data.recent_window_days || 20}日 ${pct(degraded.recent_ratio)}）</span>
+            ${data.warnings?.b_tier_recent_degraded ? `<span class="pill warn">⚠ B级近${data.recent_window_days || 20}日胜率退化(&lt;45%)</span>` : ""}
+          </div>
+          <div style="overflow:auto;">
+            <table class="csv-preview-table" style="width:100%;font-size:0.84rem;">
+              <thead><tr>
+                <th>分档</th><th>全量样本(可评估/总)</th><th>全量5日胜率</th><th>全量平均收益</th>
+                <th>近${data.recent_window_days || 20}日样本</th><th>近${data.recent_window_days || 20}日胜率</th><th>近${data.recent_window_days || 20}日平均</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+          <p class="item-meta" style="margin-top:8px;">降级run = quant_score=0 或评分&lt;50（取数失败导致评分封顶，污染样本）；胜率按 5 日收益&gt;0 统计。</p>`;
       }
 
       function normalizeCurve(values) {
@@ -4587,6 +4681,22 @@
         `).join("");
       }
 
+      function autoFollowMetaText(af) {
+        return af && af.enabled
+          ? `已开启 · ≥${num(af.min_score, 0)}分 · 单票${num(af.per_stock_amount, 0)}元 · 持有${af.hold_days}日`
+          : "已关闭";
+      }
+      function fillAutoFollowForm(af) {
+        const form = $("#autoFollowForm");
+        if (!form || !af) return;
+        form.elements.enabled.value = af.enabled ? "1" : "0";
+        form.elements.min_score.value = af.min_score ?? 78;
+        form.elements.per_stock_amount.value = af.per_stock_amount ?? 20000;
+        form.elements.hold_days.value = af.hold_days ?? 5;
+        const meta = $("#autoFollowMeta");
+        if (meta) meta.textContent = autoFollowMetaText(af);
+      }
+
       async function loadSettings() {
         const settings = await fetchJson("/api/settings");
         $("#llmProviderList").innerHTML = providerModelRows(settings);
@@ -4596,6 +4706,7 @@
         $("#tushareConfigPath").textContent = `保存位置：${settings.tushare?.config_path || "--"}`;
         $("#tushareSettingsForm [name='timeout']").value = settings.tushare?.timeout || 30;
         $("#tushareSettingsForm [name='retry_count']").value = settings.tushare?.retry_count || 3;
+        fillAutoFollowForm(settings.auto_follow);
         return settings;
       }
 
@@ -4691,7 +4802,8 @@
 
         $("#tushareSettingsForm").addEventListener("submit", async (event) => {
           event.preventDefault();
-          const form = new FormData(event.currentTarget);
+          const formEl = event.currentTarget;
+          const form = new FormData(formEl);
           const payload = Object.fromEntries(form.entries());
           payload.timeout = Number(payload.timeout);
           payload.retry_count = Number(payload.retry_count);
@@ -4707,7 +4819,8 @@
               body: JSON.stringify(payload),
             });
             $("#tushareConfigMeta").textContent = data.settings.tushare?.configured ? `已保存 ${data.settings.tushare.token_masked}` : "未配置";
-            event.currentTarget.elements.token.value = "";
+            const tokenInput = formEl?.elements?.token;
+            if (tokenInput) tokenInput.value = "";
             if (check) {
               const tc = data.token_check;
               if (tc && tc.ok) {
@@ -4722,6 +4835,32 @@
             }
           } catch (error) {
             if (check) { check.style.display = ""; check.style.color = "var(--danger, #c62828)"; check.textContent = `保存失败:${error.message}`; }
+            alert(error.message);
+          }
+        });
+
+        const autoFollowForm = $("#autoFollowForm");
+        if (autoFollowForm) autoFollowForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          const payload = {
+            enabled: form.get("enabled") === "1",
+            min_score: Number(form.get("min_score")),
+            per_stock_amount: Number(form.get("per_stock_amount")),
+            hold_days: Number(form.get("hold_days")),
+          };
+          const statusEl = $("#autoFollowStatus");
+          try {
+            const data = await fetchJson("/api/settings/auto-follow", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            fillAutoFollowForm(data.auto_follow);
+            if (statusEl) statusEl.textContent = `已保存：${data.path || ""}`;
+            showToast("自动跟单配置已保存");
+          } catch (error) {
+            if (statusEl) statusEl.textContent = `保存失败：${error.message}`;
             alert(error.message);
           }
         });
@@ -4804,6 +4943,38 @@
         state.notifyData = data;
         return data;
       }
+      // ── 系统事件（EOD 复盘 / 机会挖掘 / 自动跟单完成；通知条「系统」分类 + OS 级通知）──
+      async function loadSystemEvents() {
+        const data = await fetchJson("/api/notifications/events?limit=50");
+        state.systemEvents = data.events || [];
+        maybeOsNotify(data);
+        return data;
+      }
+      function maybeOsNotify(data) {
+        const lastId = Number(data.last_id || 0);
+        const seenRaw = lsGet("kronos_sys_notify_last_id");
+        if (seenRaw == null || seenRaw === "") {
+          lsSet("kronos_sys_notify_last_id", String(lastId)); // 首次启动不回放历史事件
+          return;
+        }
+        const seen = Number(seenRaw) || 0;
+        const fresh = (data.events || []).filter((e) => Number(e.id) > seen);
+        if (lastId > seen) lsSet("kronos_sys_notify_last_id", String(lastId));
+        if (!fresh.length) return;
+        // 仅 Tauri 环境发 OS 级通知（tauri-plugin-notification，withGlobalTauri 注入）；浏览器环境静默跳过。
+        const tauriNotify = window.__TAURI__ && window.__TAURI__.notification;
+        if (!tauriNotify || typeof tauriNotify.sendNotification !== "function") return;
+        (async () => {
+          try {
+            let granted = await tauriNotify.isPermissionGranted();
+            if (!granted) granted = (await tauriNotify.requestPermission()) === "granted";
+            if (!granted) return;
+            fresh.slice(-3).forEach((e) => {
+              try { tauriNotify.sendNotification({ title: e.title || "Kronos", body: e.message || "" }); } catch (err) {}
+            });
+          } catch (err) { console.warn("OS 通知失败", err); }
+        })();
+      }
       async function loadWatchlist() {
         const data = await fetchJson("/api/watchlist");
         state.watchlist = data.items || [];
@@ -4849,7 +5020,7 @@
       }
 
       // ── 热点条渲染 ────────────────────────────────────────────────
-      const NOTIFY_CAT_LABEL = { hot: "热点", changes: "异动", watchlist: "自选", boards: "板块", flash: "快讯" };
+      const NOTIFY_CAT_LABEL = { hot: "热点", changes: "异动", watchlist: "自选", boards: "板块", flash: "快讯", system: "系统" };
       function notifyItems() {
         const cats = state.notifyCats || new Set();
         const intel = state.notifyData || {};
@@ -4881,6 +5052,13 @@
         if (cats.has("flash")) {
           (intel.jinshi || []).slice(0, 10).forEach((n) => out.push({
             kind: "flash", cat: "flash", title: n.title, important: n.important, source: n.source, time: n.time,
+          }));
+        }
+        if (cats.has("system")) {
+          (state.systemEvents || []).slice(-10).reverse().forEach((e) => out.push({
+            kind: "flash", cat: "system",
+            title: `${e.title || ""}${e.message ? "：" + e.message : ""}`,
+            important: e.level === "warn", source: "系统", time: e.created_at,
           }));
         }
         return out;
@@ -4971,7 +5149,8 @@
       }
       function notifyDetailHtml(it) {
         if (it.kind === "flash") {
-          return `<div class="ndc-head">金十快讯${it.important ? " · <span class=\"ndc-warn\">重要</span>" : ""}</div>
+          const head = it.cat === "system" ? "系统通知" : "金十快讯";
+          return `<div class="ndc-head">${head}${it.important ? " · <span class=\"ndc-warn\">重要</span>" : ""}</div>
             <div class="ndc-title">${html(it.title || "")}</div>
             <div class="ndc-meta">${html(it.source || "金十")} · ${html(it.time || "")}</div>`;
         }
@@ -5054,6 +5233,7 @@
         await Promise.all([
           loadHotspots().catch((e) => console.warn("热点读取失败", e)),
           loadWatchlist().catch((e) => console.warn("自选读取失败", e)),
+          loadSystemEvents().catch((e) => console.warn("系统事件读取失败", e)),
         ]);
         renderNotifyBar();
       }
@@ -5062,7 +5242,7 @@
         if (!bar) return;
         const savedCats = (lsGet("kronos_notify_cats2") || "").split(",").map((s) => s.trim()).filter(Boolean);
         const valid = savedCats.filter((c) => NOTIFY_CAT_LABEL[c]);
-        state.notifyCats = new Set(valid.length ? valid : ["hot", "changes", "watchlist"]);
+        state.notifyCats = new Set(valid.length ? valid : ["hot", "changes", "watchlist", "system"]);
         bindNotifyControls();
         if (lsGet("kronos_notify_hidden") === "1") setNotifyHidden(true);
         await refreshNotifyData();

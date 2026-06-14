@@ -9,6 +9,8 @@ import types
 from importlib import metadata
 from pathlib import Path
 
+CANONICAL_USER_DIR_NAME = "com.kronos.app"
+
 
 def _torch_disabled() -> bool:
     if os.environ.get("KRONOS_BACKEND_BUNDLE_MODE", "lite").lower() == "lite":
@@ -61,10 +63,10 @@ def _default_user_dir() -> Path:
     if os.environ.get("KRONOS_USER_DIR"):
         return Path(os.environ["KRONOS_USER_DIR"]).expanduser()
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "Kronos"
+        return Path.home() / "Library" / "Application Support" / CANONICAL_USER_DIR_NAME
     if os.name == "nt":
-        return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "Kronos"
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "Kronos"
+        return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / CANONICAL_USER_DIR_NAME
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / CANONICAL_USER_DIR_NAME
 
 
 def _configure_runtime() -> Path:

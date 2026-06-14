@@ -162,3 +162,76 @@ def test_get_payload_without_quote_provider_is_unquoted():
 
     assert payload["quoted"] is False
     assert payload["quote"] is None
+
+
+class CountingKlineService(StubKlineService):
+    def __init__(self, records=None):
+        super().__init__(records=records)
+        self.fetch_calls = 0
+
+    def fetch_sina_kline(self, stock_code, period, limit):
+        self.fetch_calls += 1
+        return super().fetch_sina_kline(stock_code, period, limit)
+
+
+def test_get_payload_caches_sina_records_within_ttl():
+    """同一(code,period,limit)短时间内复用缓存，不重复打Sina——
+
+    每次点K线都同步打一次Sina(超时8s)会占住后端worker、放大整页卡顿。
+    """
+    service = CountingKlineService(
+        records=[{"date": "2026-06-02", "open": 1.0, "close": 2.0, "high": 2.0, "low": 1.0}]
+    )
+
+    first, _ = service.get_payload("600000")
+    second, _ = service.get_payload("600000")
+
+    assert service.fetch_calls == 1
+    assert second["records"] == first["records"]
+
+
+def test_get_payload_cache_returns_independent_copies():
+    """实时报价叠加会就地改写records，缓存命中必须返回独立副本。"""
+    service = CountingKlineService(
+        records=[{"date": "2026-06-02", "open": 1.0, "close": 2.0, "high": 2.0, "low": 1.0}]
+    )
+
+    first, _ = service.get_payload("600000")
+    first["records"][-1]["close"] = 999.0
+    second, _ = service.get_payload("600000")
+
+    assert second["records"][-1]["close"] == 2.0
+
+
+def test_get_payload_cache_expires_after_ttl(monkeypatch):
+    service = CountingKlineService(
+        records=[{"date": "2026-06-02", "open": 1.0, "close": 2.0, "high": 2.0, "low": 1.0}]
+    )
+
+    service.get_payload("600000")
+    for key, (stamp, records) in list(service._sina_cache.items()):
+        service._sina_cache[key] = (stamp - service.SINA_CACHE_TTL - 1, records)
+    service.get_payload("600000")
+
+    assert service.fetch_calls == 2
+
+
+def test_get_payload_cache_keyed_by_limit_and_period():
+    service = CountingKlineService(
+        records=[{"date": "2026-06-02", "open": 1.0, "close": 2.0, "high": 2.0, "low": 1.0}]
+    )
+
+    service.get_payload("600000", limit=120)
+    service.get_payload("600000", limit=240)
+    service.get_payload("600000", period="60m", limit=120)
+
+    assert service.fetch_calls == 3
+
+
+def test_get_payload_does_not_cache_failures():
+    service = CountingKlineService(records=[])
+
+    service.get_payload("600000")
+    service.get_payload("600000")
+
+    assert service.fetch_calls == 2

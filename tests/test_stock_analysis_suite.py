@@ -241,6 +241,56 @@ def test_collect_inputs_pulls_from_all_analyzers(monkeypatch):
     assert inputs["capital_flow"]["details"]["order_analysis"]["main_net_inflow"] == -1e6
 
 
+def test_collect_inputs_passes_pb_to_fundamental(monkeypatch):
+    """panel features 消费 fundamental.pb,_collect_inputs 必须透传(此前漏传)。"""
+    from analysis import stock_analysis_suite as mod
+
+    class _Fundam:
+        def __init__(self, code, minimal_api_mode=True): pass
+        def get_comprehensive_data(self):
+            return {"financial_indicators": {"pe": 9.5, "pb": 1.3, "roe": 11.0},
+                    "industry_comparison": {}, "financial_reports": {}}
+
+    monkeypatch.setattr(mod, "FundamentalDataCollector", _Fundam)
+
+    suite = StockAnalysisSuite()
+    suite._load_ohlcv = lambda code: (_ for _ in ()).throw(RuntimeError("no ohlcv"))  # type: ignore[attr-defined]
+    suite._classify_market_regime = lambda: ("sideways", 0.5)  # type: ignore[attr-defined]
+
+    inputs = suite._collect_inputs("000001")
+    assert inputs["fundamental"]["pb"] == 1.3
+
+
+def test_fundamental_local_daily_basic_fallback(monkeypatch):
+    """联网基本面整组失败时,PE/PB 从库内 daily_basic 最近一行兜底。"""
+    import pandas as pd
+    from analysis import stock_analysis_suite as mod
+    from data_store import daily_basic_repo
+
+    class _Boom:
+        def __init__(self, code, minimal_api_mode=True): pass
+        def get_comprehensive_data(self):
+            raise RuntimeError("network down")
+
+    monkeypatch.setattr(mod, "FundamentalDataCollector", _Boom)
+    monkeypatch.setattr(
+        daily_basic_repo, "get_for_code",
+        lambda ts_code, limit=None: pd.DataFrame([
+            {"ts_code": ts_code, "trade_date": "2026-06-09",
+             "pe": 12.0, "pe_ttm": 10.5, "pb": 1.8},
+        ]),
+    )
+
+    suite = StockAnalysisSuite()
+    suite._load_ohlcv = lambda code: (_ for _ in ()).throw(RuntimeError("no ohlcv"))  # type: ignore[attr-defined]
+    suite._classify_market_regime = lambda: ("sideways", 0.5)  # type: ignore[attr-defined]
+
+    inputs = suite._collect_inputs("000001")
+    assert inputs["fundamental_error"]  # 采集确实失败
+    assert inputs["fundamental"]["pe"] == 10.5  # pe_ttm 优先
+    assert inputs["fundamental"]["pb"] == 1.8
+
+
 def test_compute_full_payload_assembles_overview_and_risk(monkeypatch, tmp_path):
     """Smoke test: _compute_full_payload returns the spec §5.1 shape."""
     from analysis import stock_analysis_suite as mod

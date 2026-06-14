@@ -42,6 +42,31 @@ def results_dir() -> Path:
     return user_root() / "results"
 
 
+def scoring_config_path() -> Path:
+    """Single source of truth for ``scoring_runtime_config.json`` (read & write).
+
+    Resolution: ``KRONOS_SCORING_CONFIG`` env > ``user_root()/config/...``
+    (seeded once from the repo's ``config/`` copy when absent) > the user
+    path even if nothing exists yet (it is the canonical write target).
+
+    Both the scorer (``analysis/opportunity_scorer.py``) and the auto
+    optimizer (``scripts/auto_backtest.py``) resolve through here, so the
+    packaged desktop app and quick_start CLI mutate/consume the SAME config —
+    previously each side kept its own drifting copy, which is why the two
+    sides scored the same stocks differently.
+    """
+    configured = os.environ.get("KRONOS_SCORING_CONFIG")
+    if configured:
+        return Path(configured).expanduser()
+    user_cfg = user_root() / "config" / "scoring_runtime_config.json"
+    if not user_cfg.exists():
+        repo_cfg = project_root() / "config" / "scoring_runtime_config.json"
+        if repo_cfg.exists():
+            user_cfg.parent.mkdir(parents=True, exist_ok=True)
+            user_cfg.write_text(repo_cfg.read_text(encoding="utf-8"), encoding="utf-8")
+    return user_cfg
+
+
 def ensure_user_subdirs(root: Path) -> None:
     for name in ("data", "logs", "models", "results", "reports", "integrated_results", "config"):
         (root / name).mkdir(parents=True, exist_ok=True)
