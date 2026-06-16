@@ -13,14 +13,14 @@ def test_safe_int_bounds_values():
 def test_opportunity_params_validate_source_and_defaults():
     parser = AnalysisJobRequestParser()
 
-    params, error = parser.opportunity_params({"source": "heat", "stock_codes": "600000"})
+    params, error = parser.opportunity_params({"source": "sector_hot", "stock_codes": "600000"})
     invalid, invalid_error = parser.opportunity_params({"source": "bad"})
 
     assert error is None
     assert params == {
         "limit": 100,
         "workers": 10,
-        "source": "heat",
+        "source": "sector_hot",
         "stock_codes": ["600000"],
     }
     assert invalid is None

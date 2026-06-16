@@ -6,6 +6,15 @@
         source: "multi",
         stock_codes: "",
       });
+      const OPPORTUNITY_CANVAS_VIEW_FALLBACK = Object.freeze([
+        { id: "hierarchy", label: "层级", description: "报告 → 板块 → 股票 → 分析内容" },
+        { id: "score_rank", label: "排名", description: "全部股票按综合评分降序" },
+        { id: "sector", label: "板块", description: "按板块聚合股票关系" },
+        { id: "business_tag", label: "标签", description: "按概念 / 板块 / 股票等业务标签组织关系" },
+        { id: "hot_sector", label: "热门", description: "前十大热门板块全量关系" },
+        { id: "funds", label: "资金", description: "按主力净流入维度聚合" },
+        { id: "dragon_tiger", label: "龙虎榜", description: "热门板块与龙虎榜命中关系" },
+      ]);
       const state = {
         dashboard: null,
         selectedCurve: null,
@@ -32,6 +41,61 @@
         systemEvents: [],
         lastQueryParams: null,
         lastMatchSnapshot: null,
+        opportunityCanvas: {
+          scale: 0.86,
+          offsetX: 12,
+          offsetY: 18,
+          activeId: "root",
+          view: "hierarchy",
+          raw: null,
+          dragging: false,
+          dragStart: null,
+          layout: null,
+          bound: false,
+          snapshotId: null,
+          raf: 0,
+          inertiaRaf: 0,
+          spacePanning: false,
+          viewX: null,
+          viewY: null,
+          viewScale: null,
+          panVelocityX: 0,
+          panVelocityY: 0,
+          lastPanMove: null,
+          nodeDragging: null,
+          fitted: false,
+          fitOnNextRender: true,
+          minimap: null,
+          drawRaf: 0,
+          hoverId: null,
+          textCache: new Map(),
+          resizeObserver: null,
+          surfaceWidth: 0,
+          surfaceHeight: 0,
+          gridState: null,
+          activeRunId: null,
+        },
+        opportunityData: {
+          tab: "all",
+          runs: null,
+          activeRunId: null,
+          itemsByRun: {},
+          search: "",
+          sortRuns: { key: "run_at", dir: "desc" },
+          sortRunItems: { key: null, dir: null },
+          sortPattern: { key: "pattern_score", dir: "desc" },
+          patternResult: null,
+        },
+        hotSectorHistory: {
+          snapshots: null,
+          summaries: {},
+          stocksByBoard: {},
+          activeSnapshotId: null,
+          activeBoardCode: null,
+          sortSnapshots: { key: "created_at", dir: "desc" },
+          sortBoards: { key: null, dir: null },
+          sortBoardStocks: { key: null, dir: null },
+        },
       };
 
       function html(value) {
@@ -47,6 +111,26 @@
       function num(value, digits = 2) {
         const n = Number(value);
         return Number.isFinite(n) ? n.toFixed(digits) : "--";
+      }
+
+      function parseMaybeJson(value, fallback = {}) {
+        if (value && typeof value === "object") return value;
+        if (typeof value !== "string" || !value.trim()) return fallback;
+        try {
+          const parsed = JSON.parse(value);
+          return parsed && typeof parsed === "object" ? parsed : fallback;
+        } catch (_error) {
+          return fallback;
+        }
+      }
+
+      function formatMoneyText(value, fallback = "--") {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return fallback || "--";
+        const abs = Math.abs(n);
+        if (abs >= 100000000) return `${(n / 100000000).toFixed(2)}亿`;
+        if (abs >= 10000) return `${(n / 10000).toFixed(2)}万`;
+        return n.toFixed(0);
       }
 
       function changeClass(value) {
@@ -115,6 +199,154 @@
           volume: volumes.length ? volumeLabel(volumes.reduce((sum, value) => sum + value, 0) / volumes.length) : "--",
           delta,
         };
+      }
+
+      function klinePivotPoints(records, type = "high", lookback = 2) {
+        const key = type === "low" ? "low" : "high";
+        const out = [];
+        for (let i = lookback; i < records.length - lookback; i += 1) {
+          const value = Number(records[i][key]);
+          if (!Number.isFinite(value)) continue;
+          let isPivot = true;
+          for (let j = i - lookback; j <= i + lookback; j += 1) {
+            if (j === i) continue;
+            const other = Number(records[j][key]);
+            if (!Number.isFinite(other)) continue;
+            if (type === "low" ? other < value : other > value) {
+              isPivot = false;
+              break;
+            }
+          }
+          if (isPivot) out.push({ index: i, date: records[i].date, price: value, type });
+        }
+        return out;
+      }
+
+      function klineClusterLevels(points, tolerance) {
+        const sorted = [...points].sort((a, b) => a.price - b.price);
+        const groups = [];
+        sorted.forEach((point) => {
+          let group = groups.find((g) => Math.abs(g.price - point.price) <= tolerance);
+          if (!group) {
+            group = { price: point.price, points: [] };
+            groups.push(group);
+          }
+          group.points.push(point);
+          group.price = group.points.reduce((sum, item) => sum + item.price, 0) / group.points.length;
+        });
+        return groups
+          .map((group) => ({
+            price: Number(group.price.toFixed(2)),
+            touches: group.points.length,
+            latestIndex: Math.max(...group.points.map((point) => point.index)),
+            type: group.points[0]?.type || "level",
+          }))
+          .sort((a, b) => (b.touches - a.touches) || (b.latestIndex - a.latestIndex));
+      }
+
+      function klineTrendShape(points, records, color, label) {
+        const usable = points.filter((point) => point.index >= records.length - 160).slice(-3);
+        if (usable.length < 2) return null;
+        const a = usable[usable.length - 2];
+        const b = usable[usable.length - 1];
+        if (b.index <= a.index) return null;
+        const slope = (b.price - a.price) / (b.index - a.index);
+        const endIndex = records.length - 1;
+        const projected = b.price + slope * (endIndex - b.index);
+        return {
+          shape: {
+            type: "line",
+            xref: "x",
+            yref: "y",
+            x0: a.date,
+            y0: a.price,
+            x1: records[endIndex].date,
+            y1: Number(projected.toFixed(2)),
+            line: { color, width: 1.4, dash: "dot" },
+            layer: "above",
+          },
+          annotation: {
+            x: records[endIndex].date,
+            y: Number(projected.toFixed(2)),
+            xref: "x",
+            yref: "y",
+            text: label,
+            showarrow: false,
+            xanchor: "right",
+            yanchor: label === "下降压力" ? "bottom" : "top",
+            font: { size: 10, color },
+            bgcolor: "rgba(255,255,255,0.78)",
+            bordercolor: color,
+            borderwidth: 1,
+          },
+        };
+      }
+
+      function buildKlineAutoDrawings(records, mode = "preview") {
+        if (!records.length) return { shapes: [], annotations: [] };
+        const dates = records.map((r) => r.date);
+        const highs = records.map((r) => Number(r.high)).filter(Number.isFinite);
+        const lows = records.map((r) => Number(r.low)).filter(Number.isFinite);
+        if (!highs.length || !lows.length) return { shapes: [], annotations: [] };
+        const lastClose = Number(records[records.length - 1]?.close);
+        const high = Math.max(...highs);
+        const low = Math.min(...lows);
+        const span = Math.max(high - low, 0.01);
+        const tolerance = Math.max(span * 0.018, Math.abs(lastClose || high) * 0.006);
+        const highPivots = klinePivotPoints(records, "high");
+        const lowPivots = klinePivotPoints(records, "low");
+        const supports = klineClusterLevels(lowPivots, tolerance)
+          .filter((level) => !Number.isFinite(lastClose) || level.price <= lastClose + tolerance)
+          .slice(0, mode === "modal" ? 3 : 2);
+        const resistances = klineClusterLevels(highPivots, tolerance)
+          .filter((level) => !Number.isFinite(lastClose) || level.price >= lastClose - tolerance)
+          .slice(0, mode === "modal" ? 3 : 2);
+        if (!supports.length && Number.isFinite(low)) supports.push({ price: Number(low.toFixed(2)), touches: 1, latestIndex: 0, type: "low" });
+        if (!resistances.length && Number.isFinite(high)) resistances.push({ price: Number(high.toFixed(2)), touches: 1, latestIndex: 0, type: "high" });
+
+        const startDate = dates[0];
+        const endDate = dates[dates.length - 1];
+        const shapes = [];
+        const annotations = [];
+        const addLevel = (level, kind, index) => {
+          const color = kind === "support" ? "rgba(20, 132, 92, 0.72)" : "rgba(196, 61, 54, 0.72)";
+          shapes.push({
+            type: "line",
+            xref: "x",
+            yref: "y",
+            x0: startDate,
+            y0: level.price,
+            x1: endDate,
+            y1: level.price,
+            line: { color, width: index === 0 ? 1.65 : 1.05, dash: index === 0 ? "solid" : "dash" },
+            layer: "below",
+          });
+          if (mode === "modal" || index === 0) {
+            annotations.push({
+              x: endDate,
+              y: level.price,
+              xref: "x",
+              yref: "y",
+              text: `${kind === "support" ? "支撑" : "压力"} ${level.price}`,
+              showarrow: false,
+              xanchor: "right",
+              yanchor: kind === "support" ? "top" : "bottom",
+              font: { size: 10, color },
+              bgcolor: "rgba(255,255,255,0.82)",
+              bordercolor: color,
+              borderwidth: 1,
+            });
+          }
+        };
+        supports.forEach((level, index) => addLevel(level, "support", index));
+        resistances.forEach((level, index) => addLevel(level, "resistance", index));
+        [klineTrendShape(lowPivots, records, "rgba(16, 120, 83, 0.78)", "上升支撑"), klineTrendShape(highPivots, records, "rgba(179, 55, 48, 0.78)", "下降压力")]
+          .filter(Boolean)
+          .forEach((item) => {
+            shapes.push(item.shape);
+            if (mode === "modal") annotations.push(item.annotation);
+          });
+        return { shapes, annotations };
       }
 
       function klineAxisTitle(limit) {
@@ -194,6 +426,683 @@
         if (!jobs?.length) empty(list, "暂无任务。");
       }
 
+      function opportunityDataSummary(text) {
+        const target = $("#opportunityDataSummary");
+        if (target) target.textContent = text || "";
+      }
+
+      function opportunityDataItemRow(item, index, options = {}) {
+        const code = stockCodeFromItem(item);
+        const rank = item.score_rank || item.item_rank || item.rank || index + 1;
+        const score = item.score ?? item.total_score;
+        const name = item.stock_name || item.name || code || "--";
+        const sector = item.sector || item.industry || item.source || "--";
+        const reason = item.reason || item.summary || item.hot_sector_rank_summary || "";
+        return `
+          <button class="item opportunity-data-row" type="button"
+                  data-stock="${html(code)}"
+                  data-stock-code="${html(code)}"
+                  data-stock-name="${html(name)}"
+                  data-sector="${html(sector)}"
+                  data-search="${html(name)} ${html(code)} ${html(sector)}">
+            <div class="item-top">
+              <p class="item-title">#${html(rank)} ${html(name)} <span class="muted">${html(code)}</span></p>
+              <strong>${score != null ? num(score) : "--"}</strong>
+            </div>
+            <p class="item-meta">${html(sector)}${reason ? ` · ${html(reason)}` : ""}${options.history ? ` · ${html(item.rating || "")}` : ""}</p>
+          </button>
+        `;
+      }
+
+      function bindOpportunityDataStockClicks(container) {
+        container?.querySelectorAll("[data-stock]").forEach((el) => {
+          if (el.dataset.bound) return;
+          el.dataset.bound = "1";
+          el.addEventListener("click", async () => {
+            loadKline(el.dataset.stock, el.dataset.stockName || "");
+            await openStockContext(stockTargetFromDataset(el.dataset));
+          });
+          el.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            openStockKlineModal(el.dataset.stock, 240, { stockName: el.dataset.stockName || "" }).catch((error) => alert(error.message));
+          });
+        });
+      }
+
+      function applyOpportunityDataSearch() {
+        const body = $("#opportunityDataBody");
+        if (!body) return;
+        const q = (state.opportunityData.search || "").trim().toLowerCase();
+        const hint = $("#opportunityDataSearchHint");
+        let total = 0;
+        let shown = 0;
+        // 表格化后,可过滤单元是表体里的 <tr>(否则整张表会被当作一个 body 子节点整体隐藏);
+        // 无表格时退回按 body 直接子节点过滤(卡片/占位等)。
+        const tableRows = body.querySelectorAll("table.sortable-data-table tbody tr");
+        const units = tableRows.length ? Array.from(tableRows) : Array.from(body.children);
+        units.forEach((row) => {
+          if (row.classList.contains("opp-no-filter")) return;
+          total += 1;
+          if (!q) {
+            row.hidden = false;
+            shown += 1;
+            return;
+          }
+          const hay = (row.dataset.search || row.textContent || "").toLowerCase();
+          const match = hay.includes(q);
+          row.hidden = !match;
+          if (match) shown += 1;
+        });
+        if (hint) hint.textContent = q ? `匹配 ${shown}/${total} 条` : "";
+      }
+
+      function renderOpportunityAllData() {
+        const body = $("#opportunityDataBody");
+        if (!body) return;
+        const items = state.dashboard?.opportunity?.items || [];
+        opportunityDataSummary(`全部数据 ${items.length} 条 · 当前总览仅显示前 10 条，画布使用全量数据。`);
+        body.innerHTML = items.map((item, index) => opportunityDataItemRow(item, index)).join("");
+        if (!items.length) empty(body, "暂无机会数据。");
+        bindOpportunityDataStockClicks(body);
+        applyOpportunityDataSearch();
+      }
+
+      async function loadOpportunityRuns() {
+        if (Array.isArray(state.opportunityData.runs)) return state.opportunityData.runs;
+        const payload = await fetchJson("/api/opportunity-runs?limit=80");
+        state.opportunityData.runs = payload.runs || [];
+        return state.opportunityData.runs;
+      }
+
+      async function loadOpportunityRunItems(runId) {
+        if (!runId) return [];
+        if (state.opportunityData.itemsByRun[runId]) return state.opportunityData.itemsByRun[runId];
+        const payload = await fetchJson(`/api/opportunity-runs/${encodeURIComponent(runId)}/items`);
+        const rows = (payload.items || []).map((row) => ({
+          ...row,
+          stock_code: row.code,
+          stock_name: row.name,
+          score: row.total_score,
+          score_rank: row.item_rank,
+        }));
+        state.opportunityData.itemsByRun[runId] = rows;
+        return rows;
+      }
+
+      // ===== 通用可排序表格(历史/板块四层共用)=====
+      // 据 sortedCapitalRows 的纯算法新建;资金榜单链路完全不改(回归隔离 D1)。
+      function sortRows(rows, key, dir, valueFor) {
+        const factor = dir === "asc" ? 1 : -1;
+        const isEmpty = (v) => v == null || v === "" || (typeof v === "number" && !Number.isFinite(v));
+        const decorated = (rows || []).map((row, i) => {
+          const raw = typeof valueFor === "function" ? valueFor(row, key) : row[key];
+          const n = Number(raw);
+          return { row, i, raw, isNum: !isEmpty(raw) && Number.isFinite(n), n, empty: isEmpty(raw) };
+        });
+        decorated.sort((a, b) => {
+          if (a.empty && b.empty) return a.i - b.i;
+          if (a.empty) return 1;     // 缺失值恒沉底,与方向无关
+          if (b.empty) return -1;
+          let cmp;
+          if (a.isNum && b.isNum) cmp = a.n - b.n;
+          else cmp = String(a.raw).localeCompare(String(b.raw), "zh-Hans-CN", { numeric: true });
+          if (cmp !== 0) return cmp * factor;
+          return a.i - b.i;          // 同值稳定(原序)
+        });
+        return decorated.map((d) => d.row);
+      }
+
+      // spec = { columns, sortState, sortAttr?, tableClass?, rowAttrs?, emptyText? }
+      // columns[i] = { key, label, sortable=true, cell(row), value(row)?, className? }
+      function sortableTableHtml(rows, spec) {
+        const cols = spec.columns || [];
+        const sortAttr = spec.sortAttr || "sort-key";
+        const sort = spec.sortState || {};
+        const valueFor = (row, key) => {
+          const col = cols.find((c) => c.key === key);
+          if (col && typeof col.value === "function") return col.value(row);
+          return Object.prototype.hasOwnProperty.call(row, key) ? row[key] : undefined;
+        };
+        let viewRows = rows || [];
+        if (sort.key && cols.some((c) => c.key === sort.key)) {
+          viewRows = sortRows(viewRows, sort.key, sort.dir, valueFor);
+        }
+        const th = cols.map((col) => {
+          const label = html(col.label != null ? col.label : col.key);
+          const extra = col.className ? ` ${col.className}` : "";
+          if (col.sortable === false) return `<th class="${html(col.className || "")}">${label}</th>`;
+          const active = sort.key === col.key;
+          const arrow = active ? (sort.dir === "asc" ? "▲" : "▼") : "";
+          return `<th class="sortable-col${active ? " sorted" : ""}${extra}" data-${sortAttr}="${html(col.key)}" title="点击按此列排序">${label}<span class="sort-arrow">${arrow}</span></th>`;
+        }).join("");
+        const tableClass = spec.tableClass || "sortable-data-table";
+        if (!viewRows.length) {
+          return `<div class="sortable-table-wrap"><table class="${tableClass}"><thead><tr>${th}</tr></thead><tbody><tr class="opp-no-filter"><td colspan="${cols.length}" class="sortable-empty">${html(spec.emptyText || "暂无数据")}</td></tr></tbody></table></div>`;
+        }
+        const tr = viewRows.map((row) => {
+          const attrs = (typeof spec.rowAttrs === "function" ? spec.rowAttrs(row) : "") || "";
+          const tds = cols.map((col) => {
+            const cls = col.className ? ` class="${html(col.className)}"` : "";
+            const content = typeof col.cell === "function" ? col.cell(row) : html(row[col.key]);
+            return `<td${cls}>${content}</td>`;
+          }).join("");
+          return `<tr ${attrs}>${tds}</tr>`;
+        }).join("");
+        return `<div class="sortable-table-wrap"><table class="${tableClass}"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`;
+      }
+
+      // 三态表头:不同 key→降序;同 key 降→升;同 key 升→清空(恢复原序)。
+      function bindSortableHeaders(container, sortState, rerender, sortAttr = "sort-key") {
+        if (!container) return;
+        const dataKey = sortAttr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        container.querySelectorAll(`[data-${sortAttr}]`).forEach((thEl) => {
+          thEl.addEventListener("click", () => {
+            const key = thEl.dataset[dataKey];
+            if (!key) return;
+            if (sortState.key !== key) { sortState.key = key; sortState.dir = "desc"; }
+            else if (sortState.dir === "desc") { sortState.dir = "asc"; }
+            else { sortState.key = null; sortState.dir = null; }
+            rerender();
+          });
+        });
+      }
+
+      function opportunityRunRow(run) {
+        const count = run.item_count ?? run.analyzed ?? "--";
+        const source = run.source || "--";
+        return `
+          <div class="item opportunity-run-row">
+            <div class="item-top">
+              <p class="item-title">${html(run.run_at || run.created_at || "--")}</p>
+              <span class="pill">${html(count)}条</span>
+            </div>
+            <p class="item-meta">${html(run.report_file || "未记录报告")} · 来源 ${html(source)} · ${html(run.mode || "--")}</p>
+            <div class="actions">
+              <button class="button secondary compact" type="button" data-opportunity-run="${html(run.id || "")}">查看全部</button>
+            </div>
+          </div>
+        `;
+      }
+
+      async function renderOpportunityHistoryData(runId = null) {
+        const body = $("#opportunityDataBody");
+        if (!body) return;
+        opportunityDataSummary("读取历史数据...");
+        body.innerHTML = "";
+        try {
+          const runs = await loadOpportunityRuns();
+          if (!runs.length) {
+            opportunityDataSummary("暂无历史 run。");
+            empty(body, "暂无历史机会挖掘数据。");
+            return;
+          }
+          const activeRunId = runId || state.opportunityData.activeRunId;
+          if (!activeRunId) {
+            opportunityDataSummary(`历史数据 ${runs.length} 次 run · 点击表格行打开某次全量股票。`);
+            const sortState = state.opportunityData.sortRuns;
+            const renderTable = () => {
+              body.innerHTML = sortableTableHtml(runs, {
+                sortState,
+                tableClass: "sortable-data-table opportunity-run-table",
+                emptyText: "暂无历史机会挖掘数据。",
+                rowAttrs: (run) => `class="opp-run-row" data-opportunity-run="${html(run.id || "")}" data-search="${html(run.run_at || "")} ${html(run.source || "")} ${html(run.report_file || "")}" role="button" tabindex="0"`,
+                columns: [
+                  { key: "run_at", label: "时间", className: "col-left", cell: (r) => `<span class="cell-strong">${html(r.run_at || r.created_at || "--")}</span>`, value: (r) => r.run_at || r.created_at },
+                  { key: "item_count", label: "条数", cell: (r) => html(r.item_count ?? r.analyzed ?? "--"), value: (r) => r.item_count ?? r.analyzed },
+                  { key: "source", label: "来源", className: "col-left", cell: (r) => html(zhLabel("source", r.source) || "--"), value: (r) => r.source },
+                  { key: "mode", label: "模式", className: "col-left", cell: (r) => html(zhLabel("strategy", r.mode) || "--"), value: (r) => r.mode },
+                  { key: "report_file", label: "报告", className: "col-left", cell: (r) => `<span class="cell-sub">${html(r.report_file || "未记录")}</span>`, value: (r) => r.report_file },
+                  { key: "_action", label: "操作", sortable: false, cell: () => `<button class="button secondary compact" type="button">查看全部</button>` },
+                ],
+              });
+              bindSortableHeaders(body.querySelector("table"), sortState, renderTable);
+              body.querySelectorAll("[data-opportunity-run]").forEach((row) => {
+                row.addEventListener("click", () => {
+                  const id = row.dataset.opportunityRun;
+                  if (!id) return;
+                  state.opportunityData.activeRunId = id;
+                  renderOpportunityHistoryData(id).catch((error) => alert(error.message));
+                });
+              });
+              applyOpportunityDataSearch();
+            };
+            renderTable();
+            return;
+          }
+          const activeRun = runs.find((run) => String(run.id) === String(activeRunId));
+          const items = await loadOpportunityRunItems(activeRunId);
+          opportunityDataSummary(`历史 run ${activeRun?.run_at || activeRunId} · 全部数据 ${items.length} 条`);
+          // 评分维度为动态列(不同 run 的 scores key 可能不同):取当前数据并集
+          const scoreKeys = [];
+          const seenScore = new Set();
+          items.forEach((it) => {
+            const sc = parseMaybeJson(it.scores_json || it.scores, {});
+            Object.keys(sc || {}).forEach((k) => {
+              if (!seenScore.has(k)) { seenScore.add(k); scoreKeys.push(k); }
+            });
+          });
+          const sg = (r) => parseMaybeJson(r.signals_json || r.signals, {});
+          const sigCell = (k, suf = "") => (r) => {
+            const v = sg(r)[k];
+            return v == null || v === "" ? "--" : num(v, k === "rsi" ? 1 : 2) + suf;
+          };
+          const sigVal = (k) => (r) => { const v = Number(sg(r)[k]); return Number.isFinite(v) ? v : null; };
+          const sortState = state.opportunityData.sortRunItems;
+          const renderTable = () => {
+            const back = `<button class="button secondary compact opp-no-filter opportunity-history-back" type="button">返回历史列表</button>`;
+            if (!items.length) {
+              body.innerHTML = back + `<div class="item empty-state opp-no-filter"><p class="item-meta">这次 run 没有入库股票明细。</p></div>`;
+            } else {
+              body.innerHTML = back + sortableTableHtml(items, {
+                sortState,
+                tableClass: "sortable-data-table opportunity-run-items-table",
+                rowAttrs: (r) => {
+                  const code = r.code || r.stock_code || "";
+                  const name = r.stock_name || r.name || "";
+                  return `data-stock="${html(code)}" data-stock-code="${html(code)}" data-stock-name="${html(name)}" data-sector="${html(r.sector || "")}" data-search="${html(name)} ${html(code)} ${html(r.sector || "")}" role="button" tabindex="0"`;
+                },
+                columns: [
+                  { key: "rank", label: "名次", cell: (r) => `#${html(r.score_rank || r.item_rank || r.rank || "--")}`, value: (r) => r.score_rank || r.item_rank || r.rank },
+                  { key: "name", label: "名称·代码", className: "col-left", cell: (r) => `<span class="cell-strong">${html(r.stock_name || r.name || r.code || "--")}</span> <span class="cell-sub">${html(r.code || "")}</span>`, value: (r) => r.stock_name || r.name || r.code },
+                  { key: "score", label: "综合分", cell: (r) => { const s = r.score ?? r.total_score; return s != null ? `<span class="cell-strong">${num(s)}</span>` : "--"; }, value: (r) => r.score ?? r.total_score },
+                  { key: "rating", label: "评级", cell: (r) => html(r.rating || "--"), value: (r) => r.rating },
+                  { key: "change_pct", label: "涨跌幅", cell: (r) => r.change_pct != null ? `<span class="${changeClass(r.change_pct)}">${num(r.change_pct)}%</span>` : "--", value: (r) => r.change_pct },
+                  ...scoreKeys.map((k) => ({
+                    key: `score_${k}`,
+                    label: zhLabel("score", k),
+                    cell: (r) => { const v = parseMaybeJson(r.scores_json || r.scores, {})[k]; return v == null || v === "" ? "--" : num(v, 1); },
+                    value: (r) => { const v = Number(parseMaybeJson(r.scores_json || r.scores, {})[k]); return Number.isFinite(v) ? v : null; },
+                  })),
+                  { key: "sig_chase", label: zhLabel("signal", "chase"), cell: sigCell("chase"), value: sigVal("chase") },
+                  { key: "sig_rsi", label: "RSI", cell: sigCell("rsi"), value: sigVal("rsi") },
+                  { key: "sig_change_3d", label: zhLabel("signal", "change_3d"), cell: sigCell("change_3d", "%"), value: sigVal("change_3d") },
+                  { key: "sig_sell", label: zhLabel("signal", "sell_signals"), cell: sigCell("sell_signals"), value: sigVal("sell_signals") },
+                  { key: "degraded", label: "降级", cell: (r) => r.degraded ? `<span class="cell-sub">降级</span>` : "", value: (r) => r.degraded ? 1 : 0 },
+                ],
+              });
+            }
+            body.querySelector(".opportunity-history-back")?.addEventListener("click", () => {
+              state.opportunityData.activeRunId = null;
+              renderOpportunityHistoryData().catch((error) => alert(error.message));
+            });
+            if (items.length) bindSortableHeaders(body.querySelector("table"), sortState, renderTable);
+            bindOpportunityDataStockClicks(body);
+            applyOpportunityDataSearch();
+          };
+          renderTable();
+        } catch (error) {
+          opportunityDataSummary("历史数据读取失败");
+          empty(body, `历史数据读取失败：${error.message}`);
+        }
+      }
+
+      async function renderOpportunitySectorsData() {
+        const body = $("#opportunityDataBody");
+        if (!body) return;
+        opportunityDataSummary("读取热门板块快照...");
+        body.innerHTML = "";
+        try {
+          const snapshots = await loadHotSectorSnapshots();
+          if (!snapshots.length) {
+            opportunityDataSummary("暂无热门板块快照。");
+            empty(body, "暂无热门板块快照。先运行一次机会挖掘或热门板块扫描。");
+            return;
+          }
+          const activeSnapshotId = state.hotSectorHistory.activeSnapshotId;
+          if (!activeSnapshotId) {
+            opportunityDataSummary(`热门板块 ${snapshots.length} 个快照 · 点击表格行查看板块排名。`);
+            const sortState = state.hotSectorHistory.sortSnapshots;
+            const renderTable = () => {
+              body.innerHTML = sortableTableHtml(snapshots, {
+                sortState,
+                tableClass: "sortable-data-table hot-sector-snapshot-table",
+                emptyText: "暂无热门板块快照。",
+                rowAttrs: (s) => `data-hot-sector-snapshot="${html(s.id || "")}" data-search="${html(s.created_at || "")} ${html(s.trade_date || "")} ${html(s.source || "")}" role="button" tabindex="0"`,
+                columns: [
+                  { key: "created_at", label: "快照时间", className: "col-left", cell: (s) => `<span class="cell-strong">${html(s.created_at || "--")}</span>`, value: (s) => s.created_at },
+                  { key: "trade_date", label: "交易日", className: "col-left", cell: (s) => html(s.trade_date || "--"), value: (s) => s.trade_date },
+                  { key: "board_count", label: "板块数", cell: (s) => html(s.board_count ?? 0), value: (s) => s.board_count },
+                  { key: "stock_count", label: "股票数", cell: (s) => html(s.stock_count ?? 0), value: (s) => s.stock_count },
+                  { key: "relation_count", label: "关联数", cell: (s) => html(s.relation_count ?? 0), value: (s) => s.relation_count },
+                  { key: "source", label: "来源", className: "col-left", cell: (s) => html(zhLabel("source", s.source) || "--"), value: (s) => s.source },
+                ],
+              });
+              bindSortableHeaders(body.querySelector("table"), sortState, renderTable);
+              body.querySelectorAll("[data-hot-sector-snapshot]").forEach((row) => {
+                row.addEventListener("click", () => {
+                  state.hotSectorHistory.activeSnapshotId = row.dataset.hotSectorSnapshot;
+                  state.hotSectorHistory.activeBoardCode = null;
+                  renderOpportunitySectorsData().catch((error) => alert(error.message));
+                });
+              });
+              applyOpportunityDataSearch();
+            };
+            renderTable();
+            return;
+          }
+          const summary = await loadHotSectorSummary(activeSnapshotId);
+          const boards = summary?.boards || [];
+          const activeBoardCode = state.hotSectorHistory.activeBoardCode;
+          if (!activeBoardCode) {
+            opportunityDataSummary(`快照 ${summary?.snapshot?.created_at || activeSnapshotId} · ${boards.length} 个板块`);
+            const sortState = state.hotSectorHistory.sortBoards;
+            const renderTable = () => {
+              const back = `<button class="button secondary compact opp-no-filter opportunity-sector-back" type="button">返回快照列表</button>`;
+              if (!boards.length) {
+                body.innerHTML = back + `<div class="item empty-state opp-no-filter"><p class="item-meta">该快照没有板块明细。</p></div>`;
+              } else {
+                body.innerHTML = back + sortableTableHtml(boards, {
+                  sortState,
+                  tableClass: "sortable-data-table hot-sector-board-table",
+                  rowAttrs: (b) => { const code = b.board_code || b.code || ""; return `data-hot-sector-board="${html(code)}" data-search="${html(b.board_name || b.name || "")} ${html(code)} ${html(b.board_type || "")}" role="button" tabindex="0"`; },
+                  columns: [
+                    { key: "board_rank", label: "名次", cell: (b) => `#${html(b.board_rank ?? "--")}`, value: (b) => b.board_rank },
+                    { key: "board_name", label: "板块名", className: "col-left", cell: (b) => `<span class="cell-strong">${html(b.board_name || b.name || b.board_code || "--")}</span>`, value: (b) => b.board_name || b.name },
+                    { key: "change_pct", label: "涨跌幅", cell: (b) => { const p = Number(b.change_pct); return Number.isFinite(p) ? `<span class="${changeClass(p)}">${p >= 0 ? "+" : ""}${num(p)}%</span>` : "--"; }, value: (b) => b.change_pct },
+                    { key: "board_type", label: "类型", className: "col-left", cell: (b) => html(b.board_type || "--"), value: (b) => b.board_type },
+                    { key: "main_net_inflow", label: "主力净流入", cell: (b) => html(formatMoneyText(b.main_net_inflow, b.main_net_inflow_text)), value: (b) => b.main_net_inflow },
+                    { key: "stock_count", label: "股票数", cell: (b) => html(b.stock_count ?? 0), value: (b) => b.stock_count },
+                    { key: "relation_count", label: "关联数", cell: (b) => html(b.relation_count ?? 0), value: (b) => b.relation_count },
+                  ],
+                });
+              }
+              body.querySelector(".opportunity-sector-back")?.addEventListener("click", () => {
+                state.hotSectorHistory.activeSnapshotId = null;
+                renderOpportunitySectorsData().catch((error) => alert(error.message));
+              });
+              if (boards.length) bindSortableHeaders(body.querySelector("table"), sortState, renderTable);
+              body.querySelectorAll("[data-hot-sector-board]").forEach((row) => {
+                row.addEventListener("click", () => {
+                  state.hotSectorHistory.activeBoardCode = row.dataset.hotSectorBoard;
+                  renderOpportunitySectorsData().catch((error) => alert(error.message));
+                });
+              });
+              applyOpportunityDataSearch();
+            };
+            renderTable();
+            return;
+          }
+          const payload = await loadHotSectorBoardStocks(activeSnapshotId, activeBoardCode);
+          const stocks = payload.stocks || [];
+          const board = boards.find((b) => String(b.board_code) === String(activeBoardCode));
+          opportunityDataSummary(`${board?.board_name || activeBoardCode} · ${stocks.length} 条${payload.has_more ? " · 还有更多" : ""}`);
+          const sortState = state.hotSectorHistory.sortBoardStocks;
+          const renderTable = () => {
+            const back = `<button class="button secondary compact opp-no-filter opportunity-sector-back" type="button">返回板块排名</button>`;
+            if (!stocks.length) {
+              body.innerHTML = back + `<div class="item empty-state opp-no-filter"><p class="item-meta">该板块暂无成分股明细。</p></div>`;
+            } else {
+              body.innerHTML = back + sortableTableHtml(stocks, {
+                sortState,
+                tableClass: "sortable-data-table hot-sector-stock-table",
+                rowAttrs: (s) => `data-stock-code="${html(s.code || "")}" data-stock-name="${html(s.name || "")}" data-search="${html(s.name || "")} ${html(s.code || "")}" role="button" tabindex="0"`,
+                columns: [
+                  { key: "stock_rank", label: "名次", cell: (s) => `#${html(s.stock_rank ?? "--")}`, value: (s) => s.stock_rank },
+                  { key: "name", label: "名称·代码", className: "col-left", cell: (s) => `<span class="cell-strong">${html(s.name || s.code || "--")}</span> <span class="cell-sub">${html(s.code || "")}</span>`, value: (s) => s.name || s.code },
+                  { key: "change_pct", label: "涨跌幅", cell: (s) => { const p = Number(s.change_pct); return Number.isFinite(p) ? `<span class="${changeClass(p)}">${p >= 0 ? "+" : ""}${num(p)}%</span>` : "--"; }, value: (s) => s.change_pct },
+                  { key: "main_net_inflow", label: "主力净流入", cell: (s) => html(s.main_net_inflow_text || formatMoneyText(s.main_net_inflow, "--")), value: (s) => s.main_net_inflow },
+                  { key: "candidate_rank", label: "候选排名", cell: (s) => html(s.candidate_rank ?? "--"), value: (s) => s.candidate_rank },
+                  { key: "price", label: "最新价", cell: (s) => s.price != null ? html(s.price) : "--", value: (s) => s.price },
+                  { key: "lhb", label: "龙虎榜命中", className: "col-left", cell: (s) => s.lhb_trade_date ? html(`${s.lhb_trade_date} 净买 ${formatMoneyText(s.lhb_net_amount, "--")}${s.lhb_reason ? " · " + s.lhb_reason : ""}`) : `<span class="cell-sub">未命中</span>`, value: (s) => s.lhb_trade_date || "" },
+                ],
+              });
+            }
+            body.querySelector(".opportunity-sector-back")?.addEventListener("click", () => {
+              state.hotSectorHistory.activeBoardCode = null;
+              renderOpportunitySectorsData().catch((error) => alert(error.message));
+            });
+            if (stocks.length) bindSortableHeaders(body.querySelector("table"), sortState, renderTable);
+            bindHotStockClicks(body);
+            applyOpportunityDataSearch();
+          };
+          renderTable();
+        } catch (error) {
+          opportunityDataSummary("热门板块读取失败");
+          empty(body, `热门板块读取失败：${error.message}`);
+        }
+      }
+
+      // 机会挖掘形态回测(item H):对当前/选定 run 的 Top-N 股票做形态自回测打分。
+      async function renderOpportunityPatternBacktest() {
+        const body = $("#opportunityDataBody");
+        if (!body) return;
+        const runId = state.opportunityCanvas.activeRunId || null;
+        const cached = state.opportunityData.patternResult;
+
+        const renderResult = (result) => {
+          const rows = (result && result.rows) || [];
+          const sortState = state.opportunityData.sortPattern;
+          const meta = result?.run
+            ? `形态回测 · ${html(result.run.date || result.run.run_at || "")} · 扫描 ${result.scanned}/${result.total} 只 · 窗口 ${result.window_days || "--"}日`
+            : "形态回测";
+          opportunityDataSummary(meta);
+          const draw = () => {
+            const head = `<button class="button compact opp-no-filter opp-pattern-run" type="button">重新回测</button>
+              <p class="item-meta opp-no-filter">形态评分 = 该股最近形态在自身历史相似片段的 10 日胜率;收益为相似形态后 10 日平均收益。仅供研究参考。</p>`;
+            body.innerHTML = head + sortableTableHtml(rows, {
+              sortState,
+              tableClass: "sortable-data-table opportunity-pattern-table",
+              emptyText: "无回测结果。",
+              rowAttrs: (r) => `data-stock="${html(r.code || "")}" data-stock-code="${html(r.code || "")}" data-stock-name="${html(r.name || "")}" data-search="${html(r.name || "")} ${html(r.code || "")}" role="button" tabindex="0"`,
+              columns: [
+                { key: "name", label: "名称·代码", className: "col-left", cell: (r) => `<span class="cell-strong">${html(r.name || r.code || "--")}</span> <span class="cell-sub">${html(r.code || "")}</span>`, value: (r) => r.name || r.code },
+                { key: "total_score", label: "综合分", cell: (r) => r.total_score != null ? num(r.total_score) : "--", value: (r) => r.total_score },
+                { key: "rating", label: "评级", cell: (r) => html(r.rating || "--"), value: (r) => r.rating },
+                { key: "pattern_score", label: "形态评分", cell: (r) => r.pattern_score != null ? `<span class="cell-strong">${num(r.pattern_score, 1)}</span>` : `<span class="cell-sub">${html(r.note || "--")}</span>`, value: (r) => r.pattern_score },
+                { key: "win_rate", label: "10日胜率", cell: (r) => r.win_rate != null ? `${num(r.win_rate * 100, 1)}%` : "--", value: (r) => r.win_rate },
+                { key: "avg_return", label: "10日平均收益", cell: (r) => r.avg_return != null ? `<span class="${changeClass(r.avg_return)}">${num(r.avg_return * 100, 2)}%</span>` : "--", value: (r) => r.avg_return },
+                { key: "sample_count", label: "样本数", cell: (r) => html(r.sample_count ?? 0), value: (r) => r.sample_count },
+              ],
+            });
+            body.querySelector(".opp-pattern-run")?.addEventListener("click", () => runPatternBacktest());
+            bindSortableHeaders(body.querySelector("table"), sortState, draw);
+            bindOpportunityDataStockClicks(body);
+            applyOpportunityDataSearch();
+          };
+          draw();
+        };
+
+        const runPatternBacktest = async () => {
+          opportunityDataSummary("形态回测中…(联网拉取日线,约 10–40 秒)");
+          body.innerHTML = `<p class="item-meta opp-no-filter"><span class="spinner"></span> 正在对 Top 股票联网回测形态,请稍候…</p>`;
+          try {
+            const start = await fetchJson("/api/opportunity/pattern-backtest", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ run_id: runId ? Number(runId) : undefined, top_n: 20 }),
+            });
+            const jobId = start.job_id || start.job?.id;
+            if (!jobId) throw new Error("回测任务创建失败");
+            const job = await pollJob(jobId, {
+              intervalMs: 2000,
+              maxAttempts: 90,
+              onUpdate: (j) => { const log = latestJobLog(j); if (log) opportunityDataSummary(log); },
+            });
+            if (!job || job.status === "failed") {
+              body.innerHTML = `<p class="notice status error opp-no-filter">形态回测失败：${html(job?.error || "超时,请重试")}</p>`;
+              return;
+            }
+            state.opportunityData.patternResult = job.result || {};
+            renderResult(state.opportunityData.patternResult);
+          } catch (error) {
+            body.innerHTML = `<p class="notice status error opp-no-filter">${html(error.message)}</p>`;
+          }
+        };
+
+        if (cached && cached.rows) {
+          renderResult(cached);
+          return;
+        }
+        opportunityDataSummary("形态回测:基于个股形态打分并展示历史收益率");
+        body.innerHTML = `
+          <div class="opp-no-filter" style="padding:8px 2px;">
+            <button class="button opp-pattern-run" type="button">运行形态回测</button>
+            <p class="item-meta">对当前选定挖掘 run 的 Top 20 股票联网回测:用每只票最近形态在自身历史里找相似片段,统计后续 10 日胜率与平均收益作为「形态评分」。</p>
+          </div>`;
+        body.querySelector(".opp-pattern-run")?.addEventListener("click", () => runPatternBacktest());
+      }
+
+      function setOpportunityDataTab(tab) {
+        const valid = ["all", "history", "sectors", "pattern"];
+        state.opportunityData.tab = valid.includes(tab) ? tab : "all";
+        document.querySelectorAll("[data-opportunity-data-tab]").forEach((btn) => {
+          const active = btn.dataset.opportunityDataTab === state.opportunityData.tab;
+          btn.classList.toggle("active", active);
+          btn.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        state.opportunityData.search = "";
+        const searchInput = $("#opportunityDataSearch");
+        if (searchInput) searchInput.value = "";
+        const hint = $("#opportunityDataSearchHint");
+        if (hint) hint.textContent = "";
+        if (state.opportunityData.tab === "history") {
+          renderOpportunityHistoryData().catch((error) => alert(error.message));
+        } else if (state.opportunityData.tab === "sectors") {
+          renderOpportunitySectorsData().catch((error) => alert(error.message));
+        } else if (state.opportunityData.tab === "pattern") {
+          renderOpportunityPatternBacktest().catch((error) => alert(error.message));
+        } else {
+          renderOpportunityAllData();
+        }
+      }
+
+      function renderOpportunityDataDrawer() {
+        setOpportunityDataTab(state.opportunityData.tab || "all");
+      }
+
+      function opportunityAnalysisCard(item, index) {
+        const code = stockCodeFromItem(item);
+        const rank = item.score_rank || item.item_rank || item.rank || index + 1;
+        const score = item.score ?? item.total_score;
+        const name = item.stock_name || item.name || code || "--";
+        const source = item.sector || item.industry || item.source_detail || item.source || "--";
+        const scores = parseMaybeJson(item.scores_json || item.scores, {});
+        const signals = parseMaybeJson(item.signals_json || item.signals, {});
+        const scoreBits = Object.entries(scores || {})
+          .slice(0, 8)
+          .map(([key, value]) => `<span>${html(key)} <strong>${num(value)}</strong></span>`)
+          .join("");
+        const signalBits = [
+          ["追高风险", signals.chase],
+          ["RSI", signals.rsi],
+          ["1日", signals.day_change],
+          ["3日", signals.change_3d],
+          ["5日", signals.change_5d],
+          ["卖出信号", signals.sell_signals],
+        ]
+          .filter(([, value]) => value != null && value !== "")
+          .map(([label, value]) => `<span>${html(label)} <strong>${num(value)}</strong></span>`)
+          .join("");
+        const reason = item.reason || item.summary || item.hot_sector_rank_summary || "";
+        return `
+          <article class="item opportunity-analysis-card"
+                   data-stock="${html(code)}"
+                   data-stock-code="${html(code)}"
+                   data-stock-name="${html(name)}"
+                   data-sector="${html(source)}"
+                   data-search="${html(name)} ${html(code)} ${html(source)}"
+                   role="button"
+                   tabindex="0">
+            <div class="item-top">
+              <p class="item-title">#${html(rank)} ${html(name)} <span class="muted">${html(code)}</span></p>
+              <strong>${score != null ? num(score) : "--"}</strong>
+            </div>
+            <p class="item-meta">${html(source)} · ${html(item.rating || "--")}${item.change_pct != null ? ` · 涨跌 ${num(item.change_pct)}%` : ""}${item.degraded ? " · 数据降级" : ""}</p>
+            ${reason ? `<p class="opportunity-analysis-text">${html(reason)}</p>` : ""}
+            ${scoreBits ? `<div class="analysis-mini-grid">${scoreBits}</div>` : ""}
+            ${signalBits ? `<div class="analysis-mini-grid muted-grid">${signalBits}</div>` : ""}
+          </article>
+        `;
+      }
+
+      async function loadHotSectorSnapshots() {
+        if (Array.isArray(state.hotSectorHistory.snapshots)) return state.hotSectorHistory.snapshots;
+        const payload = await fetchJson("/api/hot-sector-snapshots?limit=80");
+        state.hotSectorHistory.snapshots = payload.snapshots || [];
+        return state.hotSectorHistory.snapshots;
+      }
+
+      async function loadHotSectorSummary(snapshotId) {
+        if (!snapshotId) return null;
+        if (state.hotSectorHistory.summaries[snapshotId]) return state.hotSectorHistory.summaries[snapshotId];
+        const payload = await fetchJson(`/api/hot-sector-snapshot?snapshot_id=${encodeURIComponent(snapshotId)}`);
+        state.hotSectorHistory.summaries[snapshotId] = payload;
+        return payload;
+      }
+
+      async function loadHotSectorBoardStocks(snapshotId, boardCode) {
+        if (!snapshotId || !boardCode) return { stocks: [], relations: [] };
+        const key = `${snapshotId}:${boardCode}`;
+        if (state.hotSectorHistory.stocksByBoard[key]) return state.hotSectorHistory.stocksByBoard[key];
+        const payload = await fetchJson(`/api/hot-sector-snapshot/${encodeURIComponent(snapshotId)}/stocks?board_code=${encodeURIComponent(boardCode)}&limit=1000`);
+        state.hotSectorHistory.stocksByBoard[key] = payload;
+        return payload;
+      }
+
+      function hotSectorSnapshotRow(snapshot, activeId) {
+        const id = String(snapshot.id || "");
+        const active = String(activeId || "") === id ? " active" : "";
+        return `
+          <button class="item hot-sector-snapshot-row${active}" type="button" data-hot-sector-snapshot="${html(id)}">
+            <div class="item-top">
+              <p class="item-title">${html(snapshot.created_at || "--")}</p>
+              <span class="pill">${html(snapshot.board_count ?? 0)}板块</span>
+            </div>
+            <p class="item-meta">${html(snapshot.trade_date || "交易日未记录")} · 股票 ${html(snapshot.stock_count ?? 0)} · 关联 ${html(snapshot.relation_count ?? 0)} · ${html(snapshot.source || "--")}</p>
+          </button>
+        `;
+      }
+
+      function hotSectorBoardHistoryRow(board, activeCode) {
+        const code = board.board_code || board.code || "";
+        const active = String(activeCode || "") === String(code) ? " active" : "";
+        const inflow = formatMoneyText(board.main_net_inflow, board.main_net_inflow_text);
+        const pct = Number(board.change_pct || 0);
+        return `
+          <button class="item hot-sector-board-row${active}" type="button" data-hot-sector-board="${html(code)}">
+            <div class="item-top">
+              <p class="item-title">#${html(board.board_rank || "--")} ${html(board.board_name || board.name || code)}</p>
+              <strong class="${changeClass(pct)}">${pct >= 0 ? "+" : ""}${num(pct)}%</strong>
+            </div>
+            <p class="item-meta">${html(board.board_type || "--")} · 主力净流入 ${html(inflow)} · 股票 ${html(board.stock_count ?? 0)} · 关联 ${html(board.relation_count ?? 0)}</p>
+          </button>
+        `;
+      }
+
+      function hotSectorStockAnalysisCard(stock, index) {
+        const code = stock.code || "";
+        const pct = Number(stock.change_pct || 0);
+        const inflow = stock.main_net_inflow_text || formatMoneyText(stock.main_net_inflow, "");
+        const lhb = stock.lhb_trade_date
+          ? `龙虎榜 ${html(stock.lhb_trade_date)} · 净买 ${html(formatMoneyText(stock.lhb_net_amount, "--"))}${stock.lhb_reason ? ` · ${html(stock.lhb_reason)}` : ""}`
+          : "未命中龙虎榜";
+        return `
+          <article class="item opportunity-analysis-card hot-sector-stock-card"
+                   data-stock-code="${html(code)}"
+                   data-stock-name="${html(stock.name || "")}"
+                   data-search="${html(stock.name || "")} ${html(code)}"
+                   role="button"
+                   tabindex="0">
+            <div class="item-top">
+              <p class="item-title">#${html(stock.stock_rank || index + 1)} ${html(stock.name || code)} <span class="muted">${html(code)}</span></p>
+              <strong class="${changeClass(pct)}">${pct >= 0 ? "+" : ""}${num(pct)}%</strong>
+            </div>
+            <p class="item-meta">候选排名 ${html(stock.candidate_rank || "--")} · 主力净流入 ${html(inflow || "--")} · 最新价 ${stock.price != null ? html(stock.price) : "--"}</p>
+            <p class="opportunity-analysis-text">${lhb}</p>
+          </article>
+        `;
+      }
+
+      function renderOpportunitiesPage(data) {
+        state.opportunityData.runs = null;
+        state.opportunityData.activeRunId = null;
+        state.hotSectorHistory.snapshots = null;
+        state.hotSectorHistory.activeSnapshotId = null;
+        state.hotSectorHistory.activeBoardCode = null;
+        setupWorkbench(data);
+        renderOpportunities(data);
+      }
+
       function hotStockRow(s, i) {
         const pct = Number(s.change_pct || 0);
         const cls = pct >= 0 ? "hot-up" : "hot-down";
@@ -237,6 +1146,12 @@
               stock_name: el.dataset.stockName || "",
               board_name: "",
             }).catch((error) => console.warn("打开个股失败", error));
+          });
+          el.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            const code = el.dataset.stockCode;
+            if (!code) return;
+            openStockKlineModal(code, 240, { stockName: el.dataset.stockName || "" }).catch((error) => alert(error.message));
           });
         });
       }
@@ -344,6 +1259,57 @@
         });
       }
 
+      function marketCornerItemHtml(item, index) {
+        const pct = Number(item.change_pct || 0);
+        const pctText = Number.isFinite(pct) ? `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%` : "--";
+        const meta = item.meta ? `<span class="market-corner-meta">${html(item.meta)}</span>` : "";
+        return `
+          <span class="market-corner-item" data-market-corner-idx="${index}">
+            <span class="market-corner-kind">${html(item.kind)}</span>
+            <strong>${html(item.name || "--")}</strong>
+            ${item.value ? `<span>${html(item.value)}</span>` : ""}
+            <span class="${changeClass(pct)}">${pctText}</span>
+            ${meta}
+          </span>
+        `;
+      }
+
+      function renderMarketCornerTicker(market = {}) {
+        const box = $("#marketCornerTicker");
+        const track = $("#marketCornerTrack");
+        if (!box || !track) return;
+        const em = market.intelligence?.eastmoney || {};
+        const items = [];
+        (market.indices || []).filter((item) => item.available !== false).slice(0, 5).forEach((item) => {
+          items.push({
+            kind: "指数",
+            name: item.name,
+            value: item.price != null ? num(item.price) : "",
+            change_pct: item.change_pct,
+            meta: item.code,
+          });
+        });
+        [...(em.industry_boards || []), ...(em.concept_boards || [])].slice(0, 12).forEach((board) => {
+          items.push({
+            kind: board.type || "板块",
+            name: board.name,
+            value: board.main_net_inflow_text ? `主力 ${board.main_net_inflow_text}` : "",
+            change_pct: board.change_pct,
+            meta: board.code || board.board_code || "",
+          });
+        });
+        if (!items.length) {
+          box.hidden = true;
+          return;
+        }
+        const single = items.map(marketCornerItemHtml).join("");
+        track.innerHTML = single + single;
+        track.style.setProperty("--market-corner-dur", `${Math.min(160, Math.max(34, items.length * 4)).toFixed(0)}s`);
+        const time = $("#marketCornerTime");
+        if (time) time.textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+        box.hidden = false;
+      }
+
       function setupDrawers() {
         const openDrawer = (id) => {
           const d = $("#" + id);
@@ -369,6 +1335,22 @@
           renderJobsDrawer(state.jobs || []);
           try { await loadJobs(); } catch (error) { console.warn(error); }
         });
+        document.querySelectorAll(".opportunity-data-menu-btn").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const target = btn.dataset.opportunityDataTabTarget;
+            if (target) state.opportunityData.tab = target;
+            openDrawer("opportunityDataDrawer");
+            try { if (!state.dashboard) await loadDashboard(); } catch (error) { console.warn(error); }
+            renderOpportunityDataDrawer();
+          });
+        });
+        document.querySelectorAll("[data-opportunity-data-tab]").forEach((btn) => {
+          btn.addEventListener("click", () => setOpportunityDataTab(btn.dataset.opportunityDataTab));
+        });
+        $("#opportunityDataSearch")?.addEventListener("input", (event) => {
+          state.opportunityData.search = event.target.value || "";
+          applyOpportunityDataSearch();
+        });
         document.querySelectorAll("[data-drawer-close]").forEach((btn) => {
           btn.addEventListener("click", () => closeDrawer($("#" + btn.dataset.drawerClose)));
         });
@@ -383,6 +1365,7 @@
       }
 
       function renderDashboardPage(data) {
+        renderMarketCornerTicker(data.market || {});
         if (page === "overview") {
           renderOverview(data);
           return;
@@ -402,6 +1385,10 @@
         if (page === "features") {
           renderFeatureOverview(data);
           bindKlineInteractions();
+          return;
+        }
+        if (page === "opportunities") {
+          renderOpportunitiesPage(data);
         }
       }
 
@@ -409,7 +1396,7 @@
         const button = $("#refreshBtn");
         if (button) button.disabled = true;
         try {
-          if (["overview", "workbench", "reports", "features"].includes(page)) {
+          if (["overview", "workbench", "reports", "features", "opportunities"].includes(page)) {
             const data = await loadDashboard();
             renderDashboardPage(data);
             return;
@@ -505,7 +1492,7 @@
         if (!code) return;
         event.preventDefault();
         event.stopPropagation();
-        openStockKlineModal(code).catch((error) => alert(error.message));
+        openStockKlineModal(code, 240, { stockName: target.dataset.stockName || "" }).catch((error) => alert(error.message));
       });
 
       document.addEventListener("keydown", (event) => {
@@ -516,14 +1503,14 @@
         const code = normalizeStockCode(target.dataset.klineTarget);
         if (!code) return;
         event.preventDefault();
-        openStockKlineModal(code).catch((error) => alert(error.message));
+        openStockKlineModal(code, 240, { stockName: target.dataset.stockName || "" }).catch((error) => alert(error.message));
       });
 
       function klineTargetAttr(code, name = "") {
         const normalized = normalizeStockCode(code);
         if (!normalized) return "";
         const tip = name ? `${name} ${normalized} 点击查看K线大图` : `${normalized} 点击查看K线大图`;
-        return `data-kline-target="${html(normalized)}" role="button" tabindex="0" title="${html(tip)}"`;
+        return `data-kline-target="${html(normalized)}" data-stock-name="${html(name || "")}" role="button" tabindex="0" title="${html(tip)}"`;
       }
 
       function renderOverview(data) {
@@ -540,16 +1527,18 @@
         $("#opportunityStats").textContent = `强机会 ${opportunity.stats?.strong_count ?? 0} · 最高 ${num(opportunity.stats?.top_score)}`;
 
         const indexList = $("#indexList");
-        indexList.innerHTML = (market.indices || []).map((item) => `
-          <div class="item">
-            <div class="item-top">
-              <p class="item-title">${html(item.name)}</p>
-              <span class="pill ${item.available ? "ok" : "warn"}">${item.available ? "在线" : "不可用"}</span>
+        if (indexList) {
+          indexList.innerHTML = (market.indices || []).map((item) => `
+            <div class="item">
+              <div class="item-top">
+                <p class="item-title">${html(item.name)}</p>
+                <span class="pill ${item.available ? "ok" : "warn"}">${item.available ? "在线" : "不可用"}</span>
+              </div>
+              <p class="item-meta">${html(item.code)} · ${item.available ? num(item.price) : "--"} · <span class="${changeClass(item.change_pct)}">${item.available ? num(item.change_pct) + "%" : "--"}</span></p>
             </div>
-            <p class="item-meta">${html(item.code)} · ${item.available ? num(item.price) : "--"} · <span class="${changeClass(item.change_pct)}">${item.available ? num(item.change_pct) + "%" : "--"}</span></p>
-          </div>
-        `).join("");
-        if (!market.indices?.length) empty(indexList);
+          `).join("");
+          if (!market.indices?.length) empty(indexList);
+        }
 
         const topMovers = $("#topMovers");
         topMovers.innerHTML = (market.top_movers || []).map((item) => `
@@ -566,7 +1555,7 @@
           el.addEventListener("click", () => openStockContext(stockTargetFromDataset(el.dataset)));
           el.addEventListener("dblclick", (event) => {
             event.preventDefault();
-            openStockKlineModal(el.dataset.stockCode).catch((error) => alert(error.message));
+            openStockKlineModal(el.dataset.stockCode, 240, { stockName: el.dataset.stockName || "" }).catch((error) => alert(error.message));
           });
         });
 
@@ -609,6 +1598,1785 @@
         return item.stock_code || item.code || item.symbol || "";
       }
 
+      function opportunityCanvasViews(canvas) {
+        const views = Array.isArray(canvas?.views) && canvas.views.length
+          ? canvas.views
+          : OPPORTUNITY_CANVAS_VIEW_FALLBACK;
+        return views.filter((view) => view && view.id && view.label);
+      }
+
+      function opportunityCanvasViewLabel(canvas, viewId) {
+        return (opportunityCanvasViews(canvas).find((view) => view.id === viewId) || {}).label || "层级";
+      }
+
+      function cloneOpportunityCanvasNode(node, overrides = {}) {
+        return {
+          ...(node || {}),
+          tags: Array.isArray(node?.tags) ? [...node.tags] : [],
+          analysis: Array.isArray(node?.analysis) ? node.analysis.map((item) => ({ ...item })) : [],
+          ...overrides,
+        };
+      }
+
+      function opportunityCanvasRoot(canvas, subtitle) {
+        const root = (canvas?.nodes || []).find((node) => node.id === "root") || {
+          id: "root",
+          type: "root",
+          title: "投资机会分析",
+          subtitle: "",
+          detail: "",
+          tags: [],
+        };
+        return cloneOpportunityCanvasNode(root, {
+          subtitle: subtitle || root.subtitle || "",
+        });
+      }
+
+      function baseOpportunityCanvas(canvas) {
+        return canvas || {
+          title: "投资机会分析",
+          subtitle: "暂无机会挖掘报告",
+          nodes: [],
+          edges: [],
+          stats: {},
+          views: OPPORTUNITY_CANVAS_VIEW_FALLBACK,
+        };
+      }
+
+      function sectorOpportunityCanvasView(canvas) {
+        const base = baseOpportunityCanvas(canvas);
+        const keepTypes = new Set(["root", "sector", "stock", "hot_sector", "hot_board"]);
+        const nodes = (base.nodes || [])
+          .filter((node) => keepTypes.has(node.type))
+          .map((node) => node.id === "root"
+            ? opportunityCanvasRoot(base, "板块维度 · 聚合股票与热门板块")
+            : cloneOpportunityCanvasNode(node));
+        const ids = new Set(nodes.map((node) => node.id));
+        const edges = (base.edges || []).filter((edge) => ids.has(edge.from) && ids.has(edge.to));
+        return {
+          ...base,
+          view: "sector",
+          subtitle: "板块维度",
+          nodes,
+          edges,
+        };
+      }
+
+      function scoreRankOpportunityCanvasView(canvas) {
+        const base = baseOpportunityCanvas(canvas);
+        const root = opportunityCanvasRoot(base, "排名维度 · 全部股票按综合分排序");
+        const stocks = (base.nodes || [])
+          .filter((node) => node.type === "stock")
+          .map((node) => cloneOpportunityCanvasNode(node))
+          .sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+        const group = {
+          id: "score-rank-all-stocks",
+          type: "sector",
+          level: 1,
+          title: "全部股票排行",
+          subtitle: `${stocks.length}只 · 按综合评分降序`,
+          detail: "当前机会挖掘 run 的全量股票，按综合评分从高到低排列。",
+          tags: ["全量", "分数排序"],
+          count: stocks.length,
+          top_score: stocks.length ? Number(stocks[0].score || 0) : 0,
+        };
+        const nodes = [root, group];
+        const edges = [{ from: "root", to: group.id, relation: "score_rank_group" }];
+        stocks.forEach((stock, index) => {
+          const rank = stock.score_rank || stock.report_rank || index + 1;
+          nodes.push(cloneOpportunityCanvasNode(stock, {
+            level: 2,
+            subtitle: `全量#${rank} · 板块#${stock.sector_rank || "--"} · ${stock.rating || "评分"} · ${num(stock.score)}`,
+            tags: [`全量#${rank}`, stock.rating || "评分", stock.sector || "板块"].filter(Boolean).slice(0, 4),
+          }));
+          edges.push({ from: group.id, to: stock.id, relation: "score_rank_stock" });
+        });
+        return {
+          ...base,
+          view: "score_rank",
+          subtitle: "排名维度",
+          nodes,
+          edges,
+          stats: {
+            ...(base.stats || {}),
+            stocks: stocks.length,
+          },
+        };
+      }
+
+      function hotBoardCanvasNodes(canvas) {
+        return (canvas?.nodes || []).filter((node) => node.type === "hot_board");
+      }
+
+      function businessTagOpportunityCanvasView(canvas) {
+        const base = baseOpportunityCanvas(canvas);
+        const sectors = (base.nodes || []).filter((node) => node.type === "sector");
+        const stocks = (base.nodes || []).filter((node) => node.type === "stock");
+        const hotBoards = hotBoardCanvasNodes(base);
+        const lhbBoards = hotBoards.filter((node) => Number(node.relation_count || 0) > 0);
+        const fundBoards = hotBoards.filter((node) => Number.isFinite(Number(node.main_net_inflow)));
+        const root = opportunityCanvasRoot(base, "标签维度 · 概念 / 板块 / 股票 / 资金 / 龙虎榜");
+        const nodes = [root];
+        const edges = [];
+        const groups = [
+          {
+            id: "business-tag-sector",
+            title: "板块",
+            subtitle: `${sectors.length}个报告板块`,
+            detail: "机会挖掘报告解析出的所属板块，用于查看板块到股票的关系。",
+            tags: ["业务标签", "板块"],
+            children: sectors,
+          },
+          {
+            id: "business-tag-stock",
+            title: "股票",
+            subtitle: `${stocks.length}只候选股票`,
+            detail: "机会挖掘报告中的候选股票，可继续打开个股分析、K线和完整分析内容。",
+            tags: ["业务标签", "股票"],
+            children: stocks,
+          },
+          {
+            id: "business-tag-concept",
+            title: "概念 / 热门板块",
+            subtitle: `${hotBoards.length}个热门板块`,
+            detail: "前十大热门行业 / 概念板块快照，记录板块排名、资金和成分股关系。",
+            tags: ["业务标签", "概念"],
+            children: hotBoards,
+          },
+          {
+            id: "business-tag-funds",
+            title: "资金",
+            subtitle: `${fundBoards.length}个板块有资金字段`,
+            detail: "按主力净流入字段连接热门板块，便于继续展开成分股资金排名。",
+            tags: ["业务标签", "资金"],
+            children: fundBoards,
+          },
+          {
+            id: "business-tag-lhb",
+            title: "龙虎榜",
+            subtitle: `${lhbBoards.length}个板块命中`,
+            detail: "命中龙虎榜的热门板块关系，点击板块可继续展开命中股票和买卖资金。",
+            tags: ["业务标签", "龙虎榜"],
+            children: lhbBoards,
+          },
+        ].filter((group) => group.children.length);
+        groups.forEach((group, index) => {
+          nodes.push({
+            id: group.id,
+            type: "tag",
+            level: 1,
+            title: group.title,
+            subtitle: group.subtitle,
+            detail: group.detail,
+            tags: group.tags,
+            entity_kind: group.title,
+            analysis: group.children.slice(0, 16).map((child) => ({
+              label: child.title || child.stock_name || child.board_code || "节点",
+              value: child.subtitle || child.detail || "",
+            })),
+          });
+          edges.push({ from: "root", to: group.id, relation: "business_tag" });
+          group.children.slice(0, group.id === "business-tag-stock" ? 80 : 40).forEach((child) => {
+            const childId = `${group.id}-${child.id}`;
+            nodes.push(cloneOpportunityCanvasNode(child, {
+              id: childId,
+              source_node_id: child.id,
+              level: 2,
+              tags: [group.title, ...(child.tags || [])].slice(0, 4),
+            }));
+            edges.push({ from: group.id, to: childId, relation: `business_tag_${index + 1}` });
+          });
+        });
+        return {
+          ...base,
+          view: "business_tag",
+          subtitle: "业务标签维度",
+          nodes,
+          edges,
+          stats: {
+            ...(base.stats || {}),
+            business_tags: groups.length,
+            stocks: stocks.length,
+          },
+        };
+      }
+
+      function hotSectorOpportunityCanvasView(canvas) {
+        const base = baseOpportunityCanvas(canvas);
+        const root = opportunityCanvasRoot(base, "热门板块维度 · 前十大板块全量快照");
+        const hotRoot = (base.nodes || []).find((node) => node.id === "hot-sector-root");
+        const boards = hotBoardCanvasNodes(base);
+        const nodes = [root];
+        const edges = [];
+        if (hotRoot) {
+          nodes.push(cloneOpportunityCanvasNode(hotRoot, { level: 1 }));
+          edges.push({ from: "root", to: hotRoot.id, relation: "hot_sector_snapshot" });
+        }
+        boards.forEach((board) => {
+          nodes.push(cloneOpportunityCanvasNode(board, { level: 2 }));
+          edges.push({ from: hotRoot?.id || "root", to: board.id, relation: "hot_sector_board" });
+        });
+        return {
+          ...base,
+          view: "hot_sector",
+          subtitle: "热门板块维度",
+          nodes,
+          edges,
+        };
+      }
+
+      function fundsOpportunityCanvasView(canvas) {
+        const base = baseOpportunityCanvas(canvas);
+        const root = opportunityCanvasRoot(base, "资金维度 · 按主力净流入聚合板块");
+        const boards = hotBoardCanvasNodes(base)
+          .map((node) => cloneOpportunityCanvasNode(node))
+          .sort((a, b) => Number(b.main_net_inflow || 0) - Number(a.main_net_inflow || 0));
+        const groups = [
+          {
+            id: "funds-inflow",
+            title: "主力净流入",
+            test: (node) => Number(node.main_net_inflow || 0) > 0,
+            tags: ["资金维度", "净流入"],
+          },
+          {
+            id: "funds-outflow",
+            title: "主力净流出",
+            test: (node) => Number(node.main_net_inflow || 0) < 0,
+            tags: ["资金维度", "净流出"],
+          },
+          {
+            id: "funds-unknown",
+            title: "资金待确认",
+            test: (node) => !Number.isFinite(Number(node.main_net_inflow)),
+            tags: ["资金维度", "待确认"],
+          },
+        ];
+        const nodes = [root];
+        const edges = [];
+        groups.forEach((group) => {
+          const matched = boards.filter(group.test);
+          if (!matched.length) return;
+          nodes.push({
+            id: group.id,
+            type: "hot_sector",
+            level: 1,
+            title: group.title,
+            subtitle: `${matched.length}个热门板块`,
+            detail: `${group.title} 下包含 ${matched.length} 个热门板块。`,
+            tags: group.tags,
+          });
+          edges.push({ from: "root", to: group.id, relation: "fund_group" });
+          matched.forEach((board) => {
+            const inflow = Number(board.main_net_inflow);
+            nodes.push(cloneOpportunityCanvasNode(board, {
+              level: 2,
+              subtitle: `#${board.board_rank || "--"} · 主力 ${Number.isFinite(inflow) ? volumeLabel(inflow) : "--"} · 龙虎榜 ${board.relation_count || 0}`,
+              tags: ["资金", ...(board.tags || [])].slice(0, 4),
+            }));
+            edges.push({ from: group.id, to: board.id, relation: "fund_to_board" });
+          });
+        });
+        return {
+          ...base,
+          view: "funds",
+          subtitle: "资金维度",
+          nodes,
+          edges,
+        };
+      }
+
+      function dragonTigerOpportunityCanvasView(canvas) {
+        const base = baseOpportunityCanvas(canvas);
+        const root = opportunityCanvasRoot(base, "龙虎榜维度 · 热门板块命中关系");
+        const boards = hotBoardCanvasNodes(base)
+          .filter((node) => Number(node.relation_count || 0) > 0)
+          .sort((a, b) => Number(b.relation_count || 0) - Number(a.relation_count || 0));
+        const group = {
+          id: "dragon-tiger-relations",
+          type: "hot_sector",
+          level: 1,
+          title: "龙虎榜命中",
+          subtitle: `${boards.length}个热门板块`,
+          detail: "展示热门板块与龙虎榜命中记录的关联关系，点击板块可继续展开成分股和命中明细。",
+          tags: ["龙虎榜", "关系维度"],
+          drilldown: (base.nodes || []).find((node) => node.id === "hot-sector-root")?.drilldown,
+        };
+        const nodes = [root, group];
+        const edges = [{ from: "root", to: group.id, relation: "dragon_tiger_group" }];
+        boards.forEach((board) => {
+          nodes.push(cloneOpportunityCanvasNode(board, {
+            level: 2,
+            subtitle: `#${board.board_rank || "--"} · 龙虎榜 ${board.relation_count || 0}条 · ${board.stock_count || 0}只`,
+            tags: ["龙虎榜", ...(board.tags || [])].slice(0, 4),
+          }));
+          edges.push({ from: group.id, to: board.id, relation: "dragon_tiger_to_board" });
+        });
+        return {
+          ...base,
+          view: "dragon_tiger",
+          subtitle: "龙虎榜维度",
+          nodes,
+          edges,
+        };
+      }
+
+      function opportunityCanvasViewPayload(canvas, viewId) {
+        const base = baseOpportunityCanvas(canvas);
+        if (viewId === "score_rank" || viewId === "rank") return scoreRankOpportunityCanvasView(base);
+        if (viewId === "sector") return sectorOpportunityCanvasView(base);
+        if (viewId === "business_tag" || viewId === "tag") return businessTagOpportunityCanvasView(base);
+        if (viewId === "hot_sector") return hotSectorOpportunityCanvasView(base);
+        if (viewId === "funds") return fundsOpportunityCanvasView(base);
+        if (viewId === "dragon_tiger") return dragonTigerOpportunityCanvasView(base);
+        return {
+          ...base,
+          view: "hierarchy",
+          nodes: (base.nodes || []).map((node) => cloneOpportunityCanvasNode(node)),
+          edges: [...(base.edges || [])],
+        };
+      }
+
+      function opportunityCanvasNodeSize(type) {
+        if (type === "root") return { width: 230, height: 112 };
+        if (type === "sector") return { width: 250, height: 104 };
+        if (type === "stock") return { width: 280, height: 116 };
+        if (type === "hot_sector") return { width: 270, height: 108 };
+        if (type === "hot_board") return { width: 280, height: 100 };
+        return { width: 270, height: 92 };
+      }
+
+      function layoutOpportunityCanvas(canvas) {
+        const nodes = (canvas && canvas.nodes) || [];
+        const edges = (canvas && canvas.edges) || [];
+        const children = new Map();
+        edges.forEach((edge) => {
+          if (!children.has(edge.from)) children.set(edge.from, []);
+          children.get(edge.from).push(edge.to);
+        });
+        const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+        const positions = new Map();
+        let row = 0;
+        const rowHeight = 82;
+        const top = 74;
+        const columns = { root: 70, sector: 360, stock: 700, tag: 1040 };
+        const rootChildren = children.get("root") || [];
+        const sectors = rootChildren.filter((id) => nodeMap.get(id)?.type === "sector");
+        const extraRootChildren = rootChildren.filter((id) => nodeMap.get(id)?.type !== "sector");
+        if (!rootChildren.length && nodeMap.has("root")) {
+          positions.set("root", { x: columns.root, y: top + 120, ...opportunityCanvasNodeSize("root") });
+        }
+
+        sectors.forEach((sectorId) => {
+          const stocks = (children.get(sectorId) || []).filter((id) => nodeMap.get(id)?.type === "stock");
+          const sectorStartRow = row;
+          const stockCenters = [];
+          if (!stocks.length) {
+            positions.set(sectorId, { x: columns.sector, y: top + row * rowHeight, ...opportunityCanvasNodeSize("sector") });
+            row += 2;
+            return;
+          }
+          stocks.forEach((stockId) => {
+            const tags = (children.get(stockId) || []).filter((id) => nodeMap.get(id)?.type === "tag");
+            const tagRows = Math.max(1, tags.length);
+            tags.forEach((tagId, tagIndex) => {
+              positions.set(tagId, { x: columns.tag, y: top + (row + tagIndex) * rowHeight, ...opportunityCanvasNodeSize("tag") });
+            });
+            const stockY = top + (row + (tagRows - 1) / 2) * rowHeight;
+            positions.set(stockId, { x: columns.stock, y: stockY, ...opportunityCanvasNodeSize("stock") });
+            stockCenters.push(stockY);
+            row += tagRows + 0.55;
+          });
+          const sectorY = stockCenters.length
+            ? stockCenters.reduce((sum, value) => sum + value, 0) / stockCenters.length
+            : top + sectorStartRow * rowHeight;
+          positions.set(sectorId, { x: columns.sector, y: sectorY, ...opportunityCanvasNodeSize("sector") });
+          row += 0.8;
+        });
+
+        extraRootChildren.forEach((parentId) => {
+          const parentNode = nodeMap.get(parentId);
+          const childIds = children.get(parentId) || [];
+          const startRow = row + 0.8;
+          if (!childIds.length) {
+            positions.set(parentId, { x: columns.sector, y: top + startRow * rowHeight, ...opportunityCanvasNodeSize(parentNode?.type) });
+            row = startRow + 1.8;
+            return;
+          }
+          const childCenters = [];
+          childIds.forEach((childId, childIndex) => {
+            const childNode = nodeMap.get(childId);
+            const y = top + (startRow + childIndex * 1.35) * rowHeight;
+            positions.set(childId, { x: columns.stock, y, ...opportunityCanvasNodeSize(childNode?.type) });
+            childCenters.push(y);
+          });
+          const parentY = childCenters.reduce((sum, value) => sum + value, 0) / childCenters.length;
+          positions.set(parentId, { x: columns.sector, y: parentY, ...opportunityCanvasNodeSize(parentNode?.type) });
+          row = startRow + childIds.length * 1.35 + 0.8;
+        });
+
+        if (nodeMap.has("root")) {
+          const childPositions = rootChildren.map((id) => positions.get(id)).filter(Boolean);
+          const rootY = childPositions.length
+            ? childPositions.reduce((sum, pos) => sum + pos.y, 0) / childPositions.length
+            : top + 120;
+          positions.set("root", { x: columns.root, y: rootY, ...opportunityCanvasNodeSize("root") });
+        }
+
+        const width = 1380;
+        const height = Math.max(620, Math.ceil(row * rowHeight + 220));
+        return { nodeMap, children, positions, width, height, edges };
+      }
+
+      function opportunityCanvasCurrentTransform() {
+        const c = state.opportunityCanvas;
+        return {
+          x: c.viewX ?? c.offsetX ?? 0,
+          y: c.viewY ?? c.offsetY ?? 0,
+          scale: Math.max(0.1, c.viewScale ?? c.scale ?? 1),
+        };
+      }
+
+      function setupOpportunityCanvasSurface() {
+        const canvas = $("#opportunityCanvasSurface");
+        const viewport = $("#opportunityCanvasViewport");
+        if (!canvas || !viewport) return null;
+        const rect = viewport.getBoundingClientRect();
+        const width = Math.max(1, Math.floor(rect.width));
+        const height = Math.max(1, Math.floor(rect.height));
+        const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+        const pixelWidth = Math.round(width * dpr);
+        const pixelHeight = Math.round(height * dpr);
+        if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+          canvas.width = pixelWidth;
+          canvas.height = pixelHeight;
+          state.opportunityCanvas.surfaceWidth = width;
+          state.opportunityCanvas.surfaceHeight = height;
+        }
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        const ctx = canvas.getContext("2d");
+        return ctx ? { canvas, viewport, ctx, width, height, dpr } : null;
+      }
+
+      function opportunityCanvasViewportPoint(clientX, clientY) {
+        const viewport = $("#opportunityCanvasViewport");
+        const rect = viewport?.getBoundingClientRect();
+        return rect ? { x: clientX - rect.left, y: clientY - rect.top } : { x: 0, y: 0 };
+      }
+
+      function opportunityCanvasWorldPoint(clientX, clientY) {
+        const point = opportunityCanvasViewportPoint(clientX, clientY);
+        const transform = opportunityCanvasCurrentTransform();
+        return {
+          x: (point.x - transform.x) / transform.scale,
+          y: (point.y - transform.y) / transform.scale,
+        };
+      }
+
+      function scheduleOpportunityCanvasDraw() {
+        const c = state.opportunityCanvas;
+        if (c.drawRaf) return;
+        const draw = () => {
+          c.drawRaf = 0;
+          drawOpportunityCanvasSurface();
+        };
+        c.drawRaf = window.requestAnimationFrame ? window.requestAnimationFrame(draw) : 0;
+        if (!c.drawRaf) draw();
+      }
+
+      function opportunityCanvasPath(fromPos, toPos) {
+        const x1 = fromPos.x + fromPos.width;
+        const y1 = fromPos.y + fromPos.height / 2;
+        const x2 = toPos.x;
+        const y2 = toPos.y + toPos.height / 2;
+        const dx = Math.max(70, (x2 - x1) * 0.48);
+        return { x1, y1, x2, y2, c1x: x1 + dx, c1y: y1, c2x: x2 - dx, c2y: y2 };
+      }
+
+      function opportunityCanvasConnectedIds(layout, activeId) {
+        const ids = new Set(activeId ? [activeId] : []);
+        if (!layout || !activeId) return ids;
+        (layout.edges || []).forEach((edge) => {
+          if (edge.from === activeId) ids.add(edge.to);
+          if (edge.to === activeId) ids.add(edge.from);
+        });
+        return ids;
+      }
+
+      function opportunityCanvasBounds(layout) {
+        const positions = Array.from(layout?.positions?.values?.() || []);
+        if (!positions.length) return { minX: 0, minY: 0, maxX: 800, maxY: 500, width: 800, height: 500 };
+        const minX = Math.min(...positions.map((pos) => pos.x));
+        const minY = Math.min(...positions.map((pos) => pos.y));
+        const maxX = Math.max(...positions.map((pos) => pos.x + pos.width));
+        const maxY = Math.max(...positions.map((pos) => pos.y + pos.height));
+        return { minX, minY, maxX, maxY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
+      }
+
+      function opportunityCanvasViewportWorldBounds(width, height, transform) {
+        const margin = 360 / transform.scale;
+        return {
+          minX: (-transform.x / transform.scale) - margin,
+          minY: (-transform.y / transform.scale) - margin,
+          maxX: ((width - transform.x) / transform.scale) + margin,
+          maxY: ((height - transform.y) / transform.scale) + margin,
+        };
+      }
+
+      function opportunityCanvasRectIntersects(pos, bounds) {
+        return pos.x + pos.width >= bounds.minX
+          && pos.x <= bounds.maxX
+          && pos.y + pos.height >= bounds.minY
+          && pos.y <= bounds.maxY;
+      }
+
+      function opportunityCanvasNodeMetric(node) {
+        if (!node) return "";
+        if (node.score != null) return `${node.score_rank ? `#${node.score_rank} · ` : ""}评分 ${num(node.score)}`;
+        if (node.board_rank) return `#${node.board_rank}`;
+        if (node.stock_count != null) return `${node.stock_count}只`;
+        return "";
+      }
+
+      function opportunityCanvasNodePalette(node) {
+        const palettes = {
+          root: { fill: "#eef5ff", border: "#2f6fdd", chip: "#dbeafe", chipText: "#174a9b" },
+          sector: { fill: "#eef8f6", border: "#11756f", chip: "#d7f1ee", chipText: "#0f5f59" },
+          stock: { fill: "#fff9ec", border: "#a86d00", chip: "#ffedc2", chipText: "#7a4d00" },
+          tag: { fill: "#fbf7fb", border: "#8d7190", chip: "#eee2ef", chipText: "#654b67" },
+          hot_sector: { fill: "#f4f1ff", border: "#6f55d8", chip: "#e8e2ff", chipText: "#4932a8" },
+          hot_board: { fill: "#fff3f1", border: "#c43d36", chip: "#ffe0dc", chipText: "#9f2923" },
+        };
+        return palettes[node?.type] || { fill: "#ffffff", border: "#8da2bd", chip: "#edf2f7", chipText: "#314158" };
+      }
+
+      function canvasRoundRect(ctx, x, y, width, height, radius) {
+        const r = Math.min(radius, width / 2, height / 2);
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(x, y, width, height, r);
+          return;
+        }
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + width, y, x + width, y + height, r);
+        ctx.arcTo(x + width, y + height, x, y + height, r);
+        ctx.arcTo(x, y + height, x, y, r);
+        ctx.arcTo(x, y, x + width, y, r);
+        ctx.closePath();
+      }
+
+      function opportunityCanvasWrapText(ctx, value, maxWidth, maxLines) {
+        const text = String(value ?? "").replace(/\s+/g, " ").trim();
+        if (!text) return [];
+        const c = state.opportunityCanvas;
+        const key = `${ctx.font}|${Math.round(maxWidth)}|${maxLines}|${text}`;
+        if (c.textCache?.has(key)) return c.textCache.get(key);
+        const lines = [];
+        let line = "";
+        Array.from(text).forEach((char) => {
+          const test = line + char;
+          if (line && ctx.measureText(test).width > maxWidth) {
+            lines.push(line);
+            line = char.trimStart();
+          } else {
+            line = test;
+          }
+        });
+        if (line) lines.push(line);
+        let out = lines;
+        if (lines.length > maxLines) {
+          out = lines.slice(0, maxLines);
+          let last = out[out.length - 1] || "";
+          while (last.length > 1 && ctx.measureText(`${last}...`).width > maxWidth) {
+            last = last.slice(0, -1);
+          }
+          out[out.length - 1] = `${last}...`;
+        }
+        if (c.textCache) {
+          if (c.textCache.size > 2400) c.textCache.clear();
+          c.textCache.set(key, out);
+        }
+        return out;
+      }
+
+      function opportunityCanvasDrawPill(ctx, text, x, y, options = {}) {
+        const label = String(text || "");
+        if (!label) return 0;
+        ctx.save();
+        ctx.font = options.font || "700 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+        const width = Math.min(options.maxWidth || 140, Math.ceil(ctx.measureText(label).width + 14));
+        const height = options.height || 20;
+        canvasRoundRect(ctx, x, y, width, height, options.radius || 6);
+        ctx.fillStyle = options.fill || "#edf2f7";
+        ctx.fill();
+        ctx.fillStyle = options.color || "#314158";
+        ctx.textBaseline = "middle";
+        const clipped = ctx.measureText(label).width + 14 > width ? label.slice(0, Math.max(1, Math.floor(width / 8))) + "..." : label;
+        ctx.fillText(clipped, x + 7, y + height / 2);
+        ctx.restore();
+        return width;
+      }
+
+      function opportunityCanvasDrawNode(ctx, node, pos, flags, transform) {
+        const palette = opportunityCanvasNodePalette(node);
+        const scale = Math.max(0.1, transform.scale);
+        const dimmed = flags.activeId && !flags.connected.has(node.id);
+        const active = node.id === flags.activeId;
+        const hover = node.id === flags.hoverId;
+        const dragging = flags.draggingId === node.id;
+        ctx.save();
+        ctx.globalAlpha = dimmed ? 0.36 : 1;
+        if (active || hover || dragging) {
+          ctx.shadowColor = "rgba(47, 111, 221, 0.18)";
+          ctx.shadowBlur = 18 / scale;
+          ctx.shadowOffsetY = 8 / scale;
+        }
+        canvasRoundRect(ctx, pos.x, pos.y, pos.width, pos.height, 8);
+        ctx.fillStyle = palette.fill;
+        ctx.fill();
+        ctx.shadowColor = "transparent";
+        ctx.lineWidth = (active || hover ? 2 : 1) / scale;
+        ctx.strokeStyle = active || hover ? "#2f6fdd" : palette.border;
+        ctx.stroke();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = "#c6d0dd";
+        ctx.lineWidth = 1 / scale;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y + pos.height / 2, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = palette.border;
+        ctx.beginPath();
+        ctx.arc(pos.x + pos.width, pos.y + pos.height / 2, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        const pad = 12;
+        let y = pos.y + 10;
+        const typeLabel = opportunityCanvasNodeTypeLabel(node);
+        opportunityCanvasDrawPill(ctx, typeLabel, pos.x + pad, y, {
+          fill: palette.chip,
+          color: palette.chipText,
+          maxWidth: 116,
+        });
+        const metric = opportunityCanvasNodeMetric(node);
+        if (metric) {
+          ctx.font = "700 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+          const metricWidth = Math.min(116, Math.ceil(ctx.measureText(metric).width + 14));
+          opportunityCanvasDrawPill(ctx, metric, pos.x + pos.width - pad - metricWidth, y, {
+            fill: "rgba(47, 111, 221, 0.1)",
+            color: "#174a9b",
+            maxWidth: metricWidth,
+          });
+        }
+
+        y += 32;
+        ctx.fillStyle = "#172033";
+        ctx.font = "700 14px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+        ctx.textBaseline = "top";
+        const titleLines = opportunityCanvasWrapText(ctx, node.title || "--", pos.width - pad * 2, 2);
+        titleLines.forEach((line) => {
+          ctx.fillText(line, pos.x + pad, y);
+          y += 17;
+        });
+
+        ctx.fillStyle = "#6b778a";
+        ctx.font = "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+        const subtitleLines = opportunityCanvasWrapText(ctx, node.subtitle || "", pos.width - pad * 2, 2);
+        subtitleLines.forEach((line) => {
+          if (y < pos.y + pos.height - 24) ctx.fillText(line, pos.x + pad, y);
+          y += 15;
+        });
+
+        const tags = (node.tags || []).filter(Boolean).slice(0, 3);
+        if (tags.length && pos.height >= 92) {
+          let tagX = pos.x + pad;
+          const tagY = pos.y + pos.height - 24;
+          tags.forEach((tag) => {
+            if (tagX > pos.x + pos.width - 42) return;
+            ctx.font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+            const width = Math.min(92, Math.ceil(ctx.measureText(String(tag)).width + 14));
+            if (tagX + width > pos.x + pos.width - pad) return;
+            canvasRoundRect(ctx, tagX, tagY, width, 18, 9);
+            ctx.fillStyle = "rgba(255, 255, 255, 0.72)";
+            ctx.fill();
+            ctx.strokeStyle = "#dbe3ee";
+            ctx.lineWidth = 1 / scale;
+            ctx.stroke();
+            ctx.fillStyle = "#314158";
+            ctx.textBaseline = "middle";
+            ctx.fillText(String(tag).slice(0, 12), tagX + 7, tagY + 9);
+            tagX += width + 5;
+          });
+        }
+        ctx.restore();
+      }
+
+      function opportunityCanvasDrawEdge(ctx, edge, layout, flags, transform, bounds) {
+        const fromPos = layout.positions.get(edge.from);
+        const toPos = layout.positions.get(edge.to);
+        if (!fromPos || !toPos) return;
+        const edgeBounds = {
+          x: Math.min(fromPos.x, toPos.x) - 110,
+          y: Math.min(fromPos.y, toPos.y) - 80,
+          width: Math.abs((toPos.x + toPos.width) - fromPos.x) + 220,
+          height: Math.abs((toPos.y + toPos.height) - fromPos.y) + 160,
+        };
+        if (!opportunityCanvasRectIntersects(edgeBounds, bounds)) return;
+        const path = opportunityCanvasPath(fromPos, toPos);
+        const active = !!flags.activeId && (edge.from === flags.activeId || edge.to === flags.activeId);
+        const related = !flags.activeId || active;
+        const scale = Math.max(0.1, transform.scale);
+        ctx.save();
+        ctx.globalAlpha = related ? (active ? 1 : 0.8) : 0.2;
+        ctx.strokeStyle = active ? "#2f6fdd" : "#b8c5d6";
+        ctx.lineWidth = (active ? 3 : 2) / scale;
+        ctx.beginPath();
+        ctx.moveTo(path.x1, path.y1);
+        ctx.bezierCurveTo(path.c1x, path.c1y, path.c2x, path.c2y, path.x2, path.y2);
+        ctx.stroke();
+
+        const angle = Math.atan2(path.y2 - path.c2y, path.x2 - path.c2x);
+        const size = (active ? 8 : 7) / scale;
+        ctx.fillStyle = active ? "#2f6fdd" : "#b8c5d6";
+        ctx.beginPath();
+        ctx.moveTo(path.x2, path.y2);
+        ctx.lineTo(path.x2 - Math.cos(angle - 0.42) * size, path.y2 - Math.sin(angle - 0.42) * size);
+        ctx.lineTo(path.x2 - Math.cos(angle + 0.42) * size, path.y2 - Math.sin(angle + 0.42) * size);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawOpportunityCanvasSurface() {
+        const setup = setupOpportunityCanvasSurface();
+        const layout = state.opportunityCanvas.layout;
+        if (!setup) return;
+        const { ctx, width, height, dpr } = setup;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        if (!layout) return;
+        const transform = opportunityCanvasCurrentTransform();
+        const bounds = opportunityCanvasViewportWorldBounds(width, height, transform);
+        const c = state.opportunityCanvas;
+        const connected = opportunityCanvasConnectedIds(layout, c.activeId);
+        const flags = {
+          activeId: c.activeId,
+          hoverId: c.hoverId,
+          draggingId: c.nodeDragging?.id || null,
+          connected,
+        };
+        ctx.save();
+        ctx.translate(transform.x, transform.y);
+        ctx.scale(transform.scale, transform.scale);
+        (layout.edges || []).forEach((edge) => opportunityCanvasDrawEdge(ctx, edge, layout, flags, transform, bounds));
+        const nodes = Array.from(layout.positions.entries())
+          .map(([id, pos]) => ({ id, pos, node: layout.nodeMap.get(id) }))
+          .filter((item) => item.node && opportunityCanvasRectIntersects(item.pos, bounds))
+          .sort((a, b) => {
+            const aTop = (a.id === flags.activeId ? 2 : 0) + (a.id === flags.hoverId ? 1 : 0) + (a.id === flags.draggingId ? 3 : 0);
+            const bTop = (b.id === flags.activeId ? 2 : 0) + (b.id === flags.hoverId ? 1 : 0) + (b.id === flags.draggingId ? 3 : 0);
+            return aTop - bTop;
+          });
+        nodes.forEach(({ node, pos }) => opportunityCanvasDrawNode(ctx, node, pos, flags, transform));
+        ctx.restore();
+      }
+
+      function applyOpportunityCanvasTransform() {
+        const viewport = $("#opportunityCanvasViewport");
+        const c = state.opportunityCanvas;
+        if (c.viewX == null) c.viewX = c.offsetX;
+        if (c.viewY == null) c.viewY = c.offsetY;
+        if (c.viewScale == null) c.viewScale = c.scale;
+        const commit = () => {
+          const factor = c.dragging || c.nodeDragging ? 0.5 : 0.24;
+          c.viewX += (c.offsetX - c.viewX) * factor;
+          c.viewY += (c.offsetY - c.viewY) * factor;
+          c.viewScale += (c.scale - c.viewScale) * factor;
+          const close = Math.abs(c.offsetX - c.viewX) < 0.12
+            && Math.abs(c.offsetY - c.viewY) < 0.12
+            && Math.abs(c.scale - c.viewScale) < 0.001;
+          if (close) {
+            c.viewX = c.offsetX;
+            c.viewY = c.offsetY;
+            c.viewScale = c.scale;
+          }
+          if (viewport) {
+            const nextGrid = {
+              x: Math.round(c.viewX),
+              y: Math.round(c.viewY),
+              size: Math.round(Math.max(10, 28 * c.viewScale) * 10) / 10,
+            };
+            const prevGrid = c.gridState || {};
+            if (Math.abs((prevGrid.x ?? Infinity) - nextGrid.x) >= 2
+              || Math.abs((prevGrid.y ?? Infinity) - nextGrid.y) >= 2
+              || Math.abs((prevGrid.size ?? Infinity) - nextGrid.size) >= 0.5) {
+              viewport.style.setProperty("--canvas-grid-x", `${nextGrid.x}px`);
+              viewport.style.setProperty("--canvas-grid-y", `${nextGrid.y}px`);
+              viewport.style.setProperty("--canvas-grid-size", `${nextGrid.size}px`);
+              c.gridState = nextGrid;
+            }
+          }
+          drawOpportunityCanvasSurface();
+          updateOpportunityCanvasMinimapViewport();
+          if (close) {
+            c.raf = 0;
+          } else {
+            c.raf = window.requestAnimationFrame ? window.requestAnimationFrame(commit) : 0;
+          }
+        };
+        if (c.raf) return;
+        c.raf = window.requestAnimationFrame ? window.requestAnimationFrame(commit) : 0;
+        if (!c.raf) commit();
+      }
+
+      function stopOpportunityCanvasInertia() {
+        const c = state.opportunityCanvas;
+        if (c.inertiaRaf) {
+          cancelAnimationFrame(c.inertiaRaf);
+          c.inertiaRaf = 0;
+        }
+        c.panVelocityX = 0;
+        c.panVelocityY = 0;
+      }
+
+      function startOpportunityCanvasInertia() {
+        const c = state.opportunityCanvas;
+        const speed = Math.hypot(c.panVelocityX, c.panVelocityY);
+        if (!window.requestAnimationFrame || speed < 0.06) return;
+        if (c.inertiaRaf) cancelAnimationFrame(c.inertiaRaf);
+        let last = performance.now();
+        const step = (now) => {
+          const dt = Math.min(34, Math.max(1, now - last));
+          last = now;
+          c.offsetX += c.panVelocityX * dt;
+          c.offsetY += c.panVelocityY * dt;
+          const decay = Math.pow(0.9, dt / 16);
+          c.panVelocityX *= decay;
+          c.panVelocityY *= decay;
+          applyOpportunityCanvasTransform();
+          if (Math.hypot(c.panVelocityX, c.panVelocityY) > 0.02) {
+            c.inertiaRaf = requestAnimationFrame(step);
+          } else {
+            c.inertiaRaf = 0;
+            c.panVelocityX = 0;
+            c.panVelocityY = 0;
+          }
+        };
+        c.inertiaRaf = requestAnimationFrame(step);
+      }
+
+      function updateOpportunityCanvasSelection(activeId) {
+        if (!state.opportunityCanvas.layout) return;
+        state.opportunityCanvas.activeId = activeId;
+        scheduleOpportunityCanvasDraw();
+      }
+
+      function fitOpportunityCanvas() {
+        const viewport = $("#opportunityCanvasViewport");
+        const layout = state.opportunityCanvas.layout;
+        if (!viewport || !layout) return;
+        const c = state.opportunityCanvas;
+        const rect = viewport.getBoundingClientRect();
+        const bounds = opportunityCanvasBounds(layout);
+        const pad = 64;
+        const fitScale = Math.min(
+          1.08,
+          Math.max(0.26, Math.min((rect.width - pad * 2) / bounds.width, (rect.height - pad * 2) / bounds.height)),
+        );
+        c.scale = fitScale;
+        c.offsetX = Math.round((rect.width - bounds.width * fitScale) / 2 - bounds.minX * fitScale);
+        c.offsetY = Math.round((rect.height - bounds.height * fitScale) / 2 - bounds.minY * fitScale);
+        applyOpportunityCanvasTransform();
+      }
+
+      function ensureOpportunityCanvasMinimap() {
+        const viewport = $("#opportunityCanvasViewport");
+        if (!viewport) return null;
+        let mini = $("#opportunityCanvasMinimap");
+        if (!mini) {
+          mini = document.createElement("div");
+          mini.id = "opportunityCanvasMinimap";
+          mini.className = "opportunity-canvas-minimap";
+          viewport.appendChild(mini);
+        }
+        return mini;
+      }
+
+      function renderOpportunityCanvasMinimap() {
+        const layout = state.opportunityCanvas.layout;
+        const mini = ensureOpportunityCanvasMinimap();
+        if (!layout || !mini) return;
+        const bounds = opportunityCanvasBounds(layout);
+        const width = 176;
+        const height = 110;
+        const pad = 8;
+        const scale = Math.min((width - pad * 2) / bounds.width, (height - pad * 2) / bounds.height);
+        state.opportunityCanvas.minimap = { bounds, width, height, pad, scale };
+        mini.innerHTML = `
+          <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-hidden="true">
+            ${(Array.from(layout.positions.entries())).map(([id, pos]) => {
+              const node = layout.nodeMap.get(id) || {};
+              const x = pad + (pos.x - bounds.minX) * scale;
+              const y = pad + (pos.y - bounds.minY) * scale;
+              const w = Math.max(3, pos.width * scale);
+              const h = Math.max(3, pos.height * scale);
+              return `<rect class="${html(node.type || "node")}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="2"></rect>`;
+            }).join("")}
+          </svg>
+          <div class="canvas-minimap-view"></div>
+        `;
+        updateOpportunityCanvasMinimapViewport();
+      }
+
+      function updateOpportunityCanvasMinimapViewport() {
+        const c = state.opportunityCanvas;
+        const mini = $("#opportunityCanvasMinimap");
+        const view = mini?.querySelector(".canvas-minimap-view");
+        const viewport = $("#opportunityCanvasViewport");
+        if (!view || !viewport || !c.minimap) return;
+        const { bounds, pad, scale } = c.minimap;
+        const rect = viewport.getBoundingClientRect();
+        const transform = opportunityCanvasCurrentTransform();
+        const x = pad + (((-transform.x / transform.scale) - bounds.minX) * scale);
+        const y = pad + (((-transform.y / transform.scale) - bounds.minY) * scale);
+        const w = (rect.width / transform.scale) * scale;
+        const h = (rect.height / transform.scale) * scale;
+        view.style.left = `${x}px`;
+        view.style.top = `${y}px`;
+        view.style.width = `${w}px`;
+        view.style.height = `${h}px`;
+      }
+
+      function selectOpportunityCanvasNode(id) {
+        const layout = state.opportunityCanvas.layout;
+        if (!layout) return;
+        const node = layout.nodeMap.get(id);
+        if (!node) return;
+        state.opportunityCanvas.activeId = id;
+        updateOpportunityCanvasSelection(id);
+        renderOpportunityCanvasDetail(node);
+      }
+
+      function opportunityCanvasHitNode(clientX, clientY) {
+        const layout = state.opportunityCanvas.layout;
+        if (!layout) return null;
+        const point = opportunityCanvasWorldPoint(clientX, clientY);
+        const entries = Array.from(layout.positions.entries()).reverse();
+        for (const [id, pos] of entries) {
+          if (point.x >= pos.x && point.x <= pos.x + pos.width && point.y >= pos.y && point.y <= pos.y + pos.height) {
+            return { id, pos, node: layout.nodeMap.get(id) };
+          }
+        }
+        return null;
+      }
+
+      function bindOpportunityCanvasNodeInteractions() {
+        scheduleOpportunityCanvasDraw();
+      }
+
+      function opportunityCanvasNodeTypeLabel(node) {
+        if (!node) return "节点";
+        if (node.entity_kind) return "业务标签";
+        if (node.type === "root") return "报告";
+        if (node.type === "sector") return "板块";
+        if (node.type === "stock") return "股票";
+        if (node.type === "hot_sector") return "热门板块";
+        if (node.type === "hot_board") return "板块快照";
+        if (node.type === "tag") return "分析内容";
+        return "节点";
+      }
+
+      function opportunityCanvasFactRows(node) {
+        const rows = [];
+        const add = (label, value) => {
+          if (value === null || value === undefined || value === "") return;
+          rows.push({ label, value });
+        };
+        add("类型", opportunityCanvasNodeTypeLabel(node));
+        add("股票代码", node.stock_code);
+        add("股票名称", node.stock_name);
+        add("所属板块", node.sector);
+        add("全量排名", node.score_rank ? `#${node.score_rank}` : "");
+        add("报告排名", node.report_rank ? `#${node.report_rank}` : "");
+        add("板块内排名", node.sector_rank ? `#${node.sector_rank}${node.sector_peer_count ? ` / ${node.sector_peer_count}` : ""}` : "");
+        add("综合评分", node.score != null ? num(node.score) : "");
+        add("评级", node.rating);
+        add("候选来源", node.source);
+        add("相关热门板块数", node.hot_sector_count != null ? `${node.hot_sector_count}个` : "");
+        add("热门板块排名", node.hot_sector_rank_summary);
+        add("龙虎榜命中", node.lhb_hit ? `是${node.lhb_relation_count ? ` · ${node.lhb_relation_count}条关系` : ""}` : "");
+        add("板块代码", node.board_code);
+        add("板块类型", node.board_type);
+        add("板块排名", node.board_rank ? `#${node.board_rank}` : "");
+        add("成分股数量", node.stock_count != null ? `${node.stock_count}只` : "");
+        add("龙虎榜关系", node.relation_count != null ? `${node.relation_count}条` : "");
+        add("主力净流入", node.main_net_inflow != null ? volumeLabel(node.main_net_inflow) : "");
+        add("涨跌幅", node.change_pct != null ? `${num(node.change_pct)}%` : "");
+        add("快照ID", node.snapshot_id);
+        add("快照时间", node.created_at);
+        add("业务标签", node.entity_kind);
+        return rows;
+      }
+
+      function opportunityCanvasHotSectorMemberships(node) {
+        const rows = Array.isArray(node?.hot_sector_memberships) ? node.hot_sector_memberships : [];
+        if (!rows.length) return "";
+        const itemHtml = rows.slice(0, 16).map((item) => {
+          const inflow = item.main_net_inflow_text || (item.main_net_inflow != null ? volumeLabel(item.main_net_inflow) : "--");
+          const lhb = item.lhb_hit
+            ? `龙虎榜 ${item.lhb_trade_date || ""} · 净 ${volumeLabel(item.lhb_net_amount)}`
+            : "龙虎榜未命中";
+          return `
+            <div class="canvas-membership-row">
+              <strong>${html(item.board_name || item.board_code || "热门板块")}</strong>
+              <p class="item-meta">板块#${html(item.board_rank || "--")} · 成分股#${html(item.stock_rank || "--")} · 主力 ${html(inflow)} · 涨跌 ${item.change_pct != null ? `${num(item.change_pct)}%` : "--"} · ${html(lhb)}</p>
+              ${item.lhb_reason ? `<p class="item-meta">${html(item.lhb_reason)}</p>` : ""}
+            </div>
+          `;
+        }).join("");
+        const more = rows.length > 16 ? `<p class="item-meta">另有 ${rows.length - 16} 个关联热门板块，可在热门/标签维度继续钻取。</p>` : "";
+        return `
+          <div class="canvas-detail-section">
+            <strong>相关热门板块</strong>
+            <div class="canvas-membership-list">${itemHtml}</div>
+            ${more}
+          </div>
+        `;
+      }
+
+      function opportunityCanvasRelationSummary(node) {
+        const layout = state.opportunityCanvas.layout;
+        if (!node || !layout) return "";
+        const parentIds = (layout.edges || []).filter((edge) => edge.to === node.id).map((edge) => edge.from);
+        const childIds = (layout.children?.get(node.id) || []).slice();
+        const itemHtml = (ids) => ids.slice(0, 18).map((id) => {
+          const related = layout.nodeMap?.get(id);
+          if (!related) return "";
+          return `<span>${html(related.title || id)}</span>`;
+        }).join("");
+        const parentHtml = itemHtml(parentIds);
+        const childHtml = itemHtml(childIds);
+        if (!parentHtml && !childHtml) return "";
+        return `
+          <div class="canvas-detail-section">
+            <strong>画布关系</strong>
+            ${parentHtml ? `<p class="item-meta">上级 ${parentIds.length} 个</p><div class="canvas-detail-chip-list">${parentHtml}</div>` : ""}
+            ${childHtml ? `<p class="item-meta">下级 ${childIds.length} 个</p><div class="canvas-detail-chip-list">${childHtml}</div>` : ""}
+          </div>
+        `;
+      }
+
+      // 评分分项 / 风险信号 维度的中文标签（与后端 core.py 对齐）
+      // 统一术语字典(EN→CN):评分维度 / 风险信号 / 来源 / 策略 / 关系 / 量化模型。
+      // 凡展示给用户的英文 key 都走 zhLabel(kind,key);未命中回退原 key(绝不空白)。
+      const OPP_LABELS = {
+        score: {
+          sector: "板块", technical: "技术", quantitative: "量化", fundamental: "基本面",
+          sentiment: "情绪", news: "消息", event: "事件", events: "事件", moneyflow: "资金",
+          momentum: "动量", volume_health: "量能", liquidity: "流动性", dragon_tiger: "龙虎榜",
+          position_timing: "仓位择时", capital_flow: "资金流", capital: "资金",
+          valuation: "估值", risk: "风险", trend: "趋势", pattern: "形态",
+        },
+        signal: {
+          chase: "追高风险", rsi: "RSI", day_change: "当日涨幅", change_1d: "当日涨幅",
+          change_3d: "3日涨幅", change_5d: "5日涨幅", sell_signals: "卖出信号",
+          buy_signals: "买入信号", quant_score: "量化总分",
+        },
+        source: {
+          multi: "多源候选", sector_hot: "热门板块成分股", heat: "热度候选",
+          moneyflow_dc: "东方财富资金", oversold: "超跌反弹", dragon: "龙虎榜机构",
+          dragon_tiger: "龙虎榜", manual: "手动指定",
+        },
+        strategy: { balanced: "均衡", strict: "严格", loose: "宽松", market_scan: "全市场扫描" },
+        relation: { dragon_tiger: "龙虎榜", sector: "板块", concept: "概念" },
+        model: {
+          turtle_trading_system: "海龟交易", macd_golden_cross: "MACD金叉",
+          atr_momentum: "ATR动量", cta_trend: "CTA趋势", ml_random_forest: "机器学习RF",
+          multi_factor_alpha: "多因子Alpha", pairs_arbitrage: "配对套利",
+          hft_microstructure: "高频微观结构", ichimoku_cloud: "一目均衡云",
+          bollinger_squeeze: "布林挤压", rsi_divergence: "RSI背离",
+          parabolic_sar: "抛物转向", money_flow_index: "资金流量", vwap_deviation: "VWAP偏离",
+        },
+      };
+      function zhLabel(kind, key) {
+        return (OPP_LABELS[kind] || {})[key] || key;
+      }
+      // 旧引用名保留为统一字典的别名,避免双份字典漂移
+      const CANVAS_SCORE_LABELS = OPP_LABELS.score;
+      const CANVAS_SIGNAL_LABELS = OPP_LABELS.signal;
+      const CANVAS_SIGNAL_ORDER = ["chase", "rsi", "day_change", "change_3d", "change_5d", "sell_signals", "quant_score"];
+      const CANVAS_SIGNAL_PCT = new Set(["day_change", "change_3d", "change_5d"]);
+
+      function opportunityCanvasScoreBreakdown(node) {
+        const raw = node && typeof node.score_breakdown === "object" ? node.score_breakdown : null;
+        if (!raw) return "";
+        const entries = Object.entries(raw).filter(([, v]) => v !== null && v !== undefined && v !== "");
+        if (!entries.length) return "";
+        const cells = entries.map(([key, value]) => {
+          const numeric = Number(value);
+          return `
+            <div class="canvas-detail-fact">
+              <span>${html(zhLabel('score', key))}</span>
+              <strong>${Number.isFinite(numeric) ? num(numeric, 1) : html(String(value))}</strong>
+            </div>
+          `;
+        }).join("");
+        return `
+          <div class="canvas-detail-section">
+            <strong>评分分项</strong>
+            <div class="canvas-detail-facts">${cells}</div>
+          </div>
+        `;
+      }
+
+      function opportunityCanvasSignals(node) {
+        const raw = node && typeof node.signals === "object" ? node.signals : null;
+        if (!raw) return "";
+        const cells = CANVAS_SIGNAL_ORDER
+          .filter((key) => raw[key] !== null && raw[key] !== undefined && raw[key] !== "")
+          .map((key) => {
+            const numeric = Number(raw[key]);
+            const suffix = CANVAS_SIGNAL_PCT.has(key) ? "%" : "";
+            return `
+              <div class="canvas-detail-fact">
+                <span>${html(zhLabel('signal', key))}</span>
+                <strong>${Number.isFinite(numeric) ? num(numeric, 2) + suffix : html(String(raw[key]))}</strong>
+              </div>
+            `;
+          }).join("");
+        const exclusions = Array.isArray(raw.exclusions) ? raw.exclusions.filter(Boolean) : [];
+        const exclusionHtml = exclusions.length
+          ? `<p class="item-meta">过滤标记：${exclusions.map((x) => html(String(x))).join("、")}</p>`
+          : "";
+        if (!cells && !exclusionHtml) return "";
+        return `
+          <div class="canvas-detail-section">
+            <strong>风险信号</strong>
+            ${cells ? `<div class="canvas-detail-facts">${cells}</div>` : ""}
+            ${exclusionHtml}
+          </div>
+        `;
+      }
+
+      function opportunityCanvasQuantModels(node) {
+        const models = Array.isArray(node?.quant_models) ? node.quant_models.filter(Boolean) : [];
+        if (!models.length) return "";
+        const chips = models.map((m) => `<span class="pill">${html(String(m))}</span>`).join("");
+        return `
+          <div class="canvas-detail-section">
+            <strong>量化模型 <span class="muted">${models.length}</span></strong>
+            <div class="canvas-detail-tags">${chips}</div>
+          </div>
+        `;
+      }
+
+      // 评分明细重做为「综合总览」样式:统一卡片(总评+评级)+维度进度条+信号 tone 卡片。
+      function opportunityScoreRatingLean(rating, score) {
+        const s = Number(score);
+        if (rating === "S" || rating === "A" || (Number.isFinite(s) && s >= 78)) return "bull";
+        if (rating === "C" || rating === "D" || (Number.isFinite(s) && s < 60)) return "bear";
+        return "neutral";
+      }
+      function opportunitySignalTone(key, n) {
+        if (!Number.isFinite(n)) return "neutral";
+        if (key === "chase") return n >= 60 ? "danger" : (n >= 40 ? "warn" : "good");
+        if (key === "rsi") return (n >= 80 || n <= 20) ? "warn" : "good";
+        if (key === "day_change" || key === "change_3d" || key === "change_5d") return n >= 15 ? "warn" : (n < 0 ? "neutral" : "good");
+        if (key === "sell_signals") return n >= 2 ? "warn" : "good";
+        if (key === "quant_score") return n >= 90 ? "warn" : (n < 50 ? "good" : "neutral");
+        return "neutral";
+      }
+      function opportunityCanvasScoreSummary(node) {
+        const breakdown = node && typeof node.score_breakdown === "object" ? node.score_breakdown : null;
+        const signals = node && typeof node.signals === "object" ? node.signals : null;
+        const hasScore = node && node.score != null && node.score !== "";
+        const dimEntries = breakdown
+          ? Object.entries(breakdown).filter(([, v]) => v !== null && v !== undefined && v !== "")
+          : [];
+        const sigKeys = signals
+          ? CANVAS_SIGNAL_ORDER.filter((k) => signals[k] !== null && signals[k] !== undefined && signals[k] !== "")
+          : [];
+        const exclusions = signals && Array.isArray(signals.exclusions) ? signals.exclusions.filter(Boolean) : [];
+        if (!hasScore && !dimEntries.length && !sigKeys.length && !exclusions.length) return "";
+
+        const scoreTxt = hasScore ? num(node.score, 1) : "--";
+        const rating = node.rating || "";
+        const lean = opportunityScoreRatingLean(rating, node.score);
+        const dims = dimEntries.map(([key, value]) => {
+          const n = Number(value);
+          const pct = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
+          const valTxt = Number.isFinite(n) ? num(n, 1) : html(String(value));
+          const tone = Number.isFinite(n) ? (n >= 70 ? "good" : (n >= 50 ? "mid" : "low")) : "mid";
+          return `
+            <div class="opp-score-row">
+              <span class="opp-score-label">${html(zhLabel("score", key))}</span>
+              <span class="opp-score-bar"><i class="tone-${tone}" style="width:${pct}%"></i></span>
+              <strong class="opp-score-val">${valTxt}</strong>
+            </div>`;
+        }).join("");
+        let sigChips = sigKeys.map((k) => {
+          const n = Number(signals[k]);
+          const suffix = CANVAS_SIGNAL_PCT.has(k) ? "%" : "";
+          const tone = opportunitySignalTone(k, n);
+          const val = Number.isFinite(n) ? num(n, 2) + suffix : html(String(signals[k]));
+          return `<div class="opp-signal-chip tone-${tone}"><span>${html(zhLabel("signal", k))}</span><strong>${val}</strong></div>`;
+        }).join("");
+        if (exclusions.length) {
+          sigChips += `<div class="opp-signal-chip tone-warn"><span>过滤标记</span><strong>${exclusions.slice(0, 4).map((x) => html(String(x))).join("、")}</strong></div>`;
+        }
+        return `
+          <div class="opp-score-card">
+            <div class="opp-score-head">
+              <span class="opp-score-title">📊 评分总览</span>
+              <span class="opp-score-verdict lean-${lean}">综合 ${scoreTxt}${rating ? " · " + html(rating) : ""}</span>
+            </div>
+            ${dims ? `<div class="opp-score-dims">${dims}</div>` : ""}
+            ${sigChips ? `<div class="opp-score-signals">${sigChips}</div>` : ""}
+          </div>`;
+      }
+
+      function renderOpportunityCanvasDetail(node) {        const detail = $("#opportunityCanvasDetail");
+        if (!detail) return;
+        if (!node) {
+          detail.innerHTML = `
+            <div class="canvas-detail-empty">
+              <p class="item-meta">暂无可展示的层级分析。</p>
+            </div>
+          `;
+          return;
+        }
+        const tags = (node.tags || []).map((tag) => `<span class="pill">${html(tag)}</span>`).join("");
+        const facts = opportunityCanvasFactRows(node).map((row) => `
+          <div class="canvas-detail-fact">
+            <span>${html(row.label)}</span>
+            <strong>${html(row.value)}</strong>
+          </div>
+        `).join("");
+        const analysis = (node.analysis || []).map((section) => `
+          <div class="canvas-detail-section">
+            <strong>${html(section.label)}</strong>
+            <p>${html(section.value)}</p>
+          </div>
+        `).join("");
+        const stockActions = node.stock_code ? `
+          <div class="actions canvas-detail-actions">
+            <button class="button secondary compact" type="button" data-canvas-stock="${html(node.stock_code)}" data-canvas-stock-name="${html(node.stock_name || '')}">个股分析</button>
+            <button class="button secondary compact" type="button" data-canvas-kline="${html(node.stock_code)}">K线</button>
+          </div>
+        ` : "";
+        const typeLabel = opportunityCanvasNodeTypeLabel(node);
+        const scoreSummaryHtml = opportunityCanvasScoreSummary(node);
+        const quantModelsHtml = opportunityCanvasQuantModels(node);
+        const drilldown = node.drilldown ? `
+          <div class="actions canvas-detail-actions">
+            <button class="button compact" type="button" data-canvas-drill-node="${html(node.id)}">展开相关信息</button>
+          </div>
+          <div id="canvasDrilldown" class="canvas-drilldown"></div>
+        ` : "";
+        detail.innerHTML = `
+          <div class="canvas-detail-head">
+            <span class="pill">${html(typeLabel)}</span>
+            <h3>${html(node.title || "--")}</h3>
+            <p class="item-meta">${html(node.subtitle || "")}</p>
+            <div class="canvas-detail-tags">${tags}</div>
+          </div>
+          ${stockActions}
+          ${drilldown}
+          ${facts ? `<div class="canvas-detail-facts">${facts}</div>` : ""}
+          ${scoreSummaryHtml}
+          ${quantModelsHtml}
+          ${opportunityCanvasHotSectorMemberships(node)}
+          ${opportunityCanvasRelationSummary(node)}
+          ${node.detail ? `<div class="canvas-detail-section"><strong>分析摘要</strong><p>${html(node.detail)}</p></div>` : ""}
+          ${analysis ? `<div class="canvas-detail-section canvas-detail-section-title"><strong>内容明细</strong><p>按当前节点列出完整分析字段和关系内容。</p></div>` : ""}
+          ${analysis}
+        `;
+        detail.querySelector("[data-canvas-stock]")?.addEventListener("click", (event) => {
+          const btn = event.currentTarget;
+          openStockContext({
+            type: "stock",
+            stock_code: btn.dataset.canvasStock,
+            stock_name: btn.dataset.canvasStockName || "",
+            board_name: node.sector || "",
+          }).catch((error) => alert(error.message));
+        });
+        detail.querySelector("[data-canvas-kline]")?.addEventListener("click", (event) => {
+          openStockKlineModal(event.currentTarget.dataset.canvasKline, 240, { stockName: node.stock_name || "" }).catch((error) => alert(error.message));
+        });
+        detail.querySelector("[data-canvas-drill-node]")?.addEventListener("click", (event) => {
+          const id = event.currentTarget.dataset.canvasDrillNode;
+          const targetNode = state.opportunityCanvas.layout?.nodeMap?.get(id);
+          loadCanvasDrilldown(targetNode, event.currentTarget).catch((error) => alert(error.message));
+        });
+      }
+
+      function hotSectorStockRow(row) {
+        const lhb = row.lhb_trade_date
+          ? `龙虎榜 ${html(row.lhb_trade_date)} · 买入 ${volumeLabel(row.lhb_buy_amount)} · 净 ${volumeLabel(row.lhb_net_amount)}`
+          : "龙虎榜未命中";
+        const inflow = row.main_net_inflow_text || volumeLabel(row.main_net_inflow);
+        return `
+          <div class="canvas-drill-row">
+            <div>
+              <strong>${html(row.stock_rank || row.candidate_rank || "--")}. ${html(row.name || row.code)} <span class="muted">${html(row.code || "")}</span></strong>
+              <p class="item-meta">主力净流入 ${html(inflow)} · 涨跌 ${num(row.change_pct)}% · ${lhb}</p>
+              ${row.lhb_reason ? `<p class="item-meta">${html(row.lhb_reason)}</p>` : ""}
+            </div>
+            <div class="actions">
+              <button class="button secondary compact" type="button" data-drill-stock="${html(row.code || "")}" data-drill-stock-name="${html(row.name || "")}">分析</button>
+              <button class="button secondary compact" type="button" data-drill-kline="${html(row.code || "")}" data-drill-stock-name="${html(row.name || "")}">K线</button>
+            </div>
+          </div>
+        `;
+      }
+
+      async function loadCanvasDrilldown(node, button, offset = 0) {
+        if (!node?.drilldown) return;
+        const target = $("#canvasDrilldown");
+        if (!target) return;
+        const originalText = button?.textContent || "";
+        if (button) {
+          button.disabled = true;
+          button.textContent = "读取中...";
+        }
+        try {
+          const drill = node.drilldown;
+          if (drill.type === "hot_sector_snapshot") {
+            const payload = await fetchJson(`/api/hot-sector-snapshot?snapshot_id=${encodeURIComponent(drill.snapshot_id)}`);
+            const boards = payload.boards || [];
+            target.innerHTML = `
+              <div class="canvas-drill-block">
+                ${boards.map((board) => `
+                  <button class="canvas-drill-row canvas-drill-board" type="button"
+                          data-hot-board="${html(board.board_code || '')}"
+                          data-hot-snapshot="${html(payload.snapshot?.id || drill.snapshot_id || '')}">
+                    <div>
+                      <strong>${html(board.board_rank || "--")}. ${html(board.board_name || board.board_code)}</strong>
+                      <p class="item-meta">成分股 ${html(board.stock_count || 0)} · 龙虎榜关系 ${html(board.relation_count || 0)} · 涨跌 ${num(board.change_pct)}%</p>
+                    </div>
+                  </button>
+                `).join("")}
+              </div>
+            `;
+            target.querySelectorAll("[data-hot-board]").forEach((el) => {
+              el.addEventListener("click", () => {
+                loadCanvasDrilldown({
+                  title: el.textContent,
+                  drilldown: {
+                    type: "hot_sector_stocks",
+                    snapshot_id: el.dataset.hotSnapshot,
+                    board_code: el.dataset.hotBoard,
+                  },
+                }, button).catch((error) => alert(error.message));
+              });
+            });
+            return;
+          }
+          if (drill.type === "hot_sector_stocks") {
+            const limit = 120;
+            const url = `/api/hot-sector-snapshot/${encodeURIComponent(drill.snapshot_id)}/stocks?board_code=${encodeURIComponent(drill.board_code || "")}&limit=${limit}&offset=${offset}`;
+            const payload = await fetchJson(url);
+            const rows = payload.stocks || [];
+            const rowsHtml = rows.map(hotSectorStockRow).join("");
+            const moreHtml = payload.has_more
+              ? `<button class="button secondary compact canvas-more-btn" type="button" data-next-offset="${html(payload.next_offset || 0)}">继续展开</button>`
+              : "";
+            if (offset > 0) {
+              const existing = target.querySelector(".canvas-drill-list");
+              if (existing) existing.insertAdjacentHTML("beforeend", rowsHtml);
+              target.querySelector(".canvas-more-btn")?.remove();
+              target.insertAdjacentHTML("beforeend", moreHtml);
+            } else {
+              target.innerHTML = `
+                <div class="canvas-drill-block">
+                  <div class="canvas-drill-list">${rowsHtml || `<p class="item-meta">暂无成分股明细。</p>`}</div>
+                  ${moreHtml}
+                </div>
+              `;
+            }
+            target.querySelectorAll("[data-drill-stock]").forEach((el) => {
+              if (el.dataset.bound) return;
+              el.dataset.bound = "1";
+              el.addEventListener("click", () => {
+                openStockContext({
+                  type: "stock",
+                  stock_code: el.dataset.drillStock,
+                  stock_name: el.dataset.drillStockName || "",
+                  board_name: node.title || "",
+                }).catch((error) => alert(error.message));
+              });
+            });
+            target.querySelectorAll("[data-drill-kline]").forEach((el) => {
+              if (el.dataset.bound) return;
+              el.dataset.bound = "1";
+              el.addEventListener("click", () => openStockKlineModal(el.dataset.drillKline, 240, { stockName: el.dataset.drillStockName || "" }).catch((error) => alert(error.message)));
+            });
+            target.querySelector(".canvas-more-btn")?.addEventListener("click", (event) => {
+              loadCanvasDrilldown(node, event.currentTarget, Number(event.currentTarget.dataset.nextOffset || 0)).catch((error) => alert(error.message));
+            });
+          }
+        } finally {
+          if (button) {
+            button.disabled = false;
+            button.textContent = originalText || "展开相关信息";
+          }
+        }
+      }
+
+      function opportunityCanvasPanel() {
+        return $("#opportunityCanvasViewport")?.closest(".opportunity-canvas-panel") || null;
+      }
+
+      function syncOpportunityCanvasFullscreenState() {
+        const panel = opportunityCanvasPanel();
+        const btn = $("#opportunityCanvasFullscreen");
+        const active = !!panel && (document.fullscreenElement === panel || panel.dataset.canvasFallbackFullscreen === "1");
+        if (panel) panel.classList.toggle("is-canvas-fullscreen", active);
+        document.body.classList.toggle("canvas-fullscreen-open", active);
+        if (btn) {
+          btn.textContent = active ? "退出全屏" : "全屏";
+          btn.title = active ? "退出全屏画布" : "全屏查看画布";
+        }
+      }
+
+      function refreshOpportunityCanvasViewport(fit = false) {
+        window.requestAnimationFrame(() => {
+          if (fit) fitOpportunityCanvas();
+          else applyOpportunityCanvasTransform();
+        });
+      }
+
+      function bindOpportunityCanvasControls() {
+        const viewport = $("#opportunityCanvasViewport");
+        if (!viewport || state.opportunityCanvas.bound) return;
+        state.opportunityCanvas.bound = true;
+        const c = state.opportunityCanvas;
+        const clampScale = (nextScale) => Math.max(0.26, Math.min(2.4, nextScale));
+        const viewportPoint = (clientX, clientY) => {
+          const rect = viewport.getBoundingClientRect();
+          return { x: clientX - rect.left, y: clientY - rect.top };
+        };
+        const viewportCenter = () => {
+          const rect = viewport.getBoundingClientRect();
+          return { x: rect.width / 2, y: rect.height / 2 };
+        };
+        const setScale = (nextScale, anchor = viewportCenter()) => {
+          const current = c.scale || 1;
+          const next = clampScale(nextScale);
+          if (Math.abs(next - current) < 0.001) return;
+          const ratio = next / current;
+          c.offsetX = anchor.x - (anchor.x - c.offsetX) * ratio;
+          c.offsetY = anchor.y - (anchor.y - c.offsetY) * ratio;
+          c.scale = next;
+          applyOpportunityCanvasTransform();
+        };
+        $("#opportunityCanvasZoomOut")?.addEventListener("click", () => setScale(c.scale / 1.18));
+        $("#opportunityCanvasZoomIn")?.addEventListener("click", () => setScale(c.scale * 1.18));
+        $("#opportunityCanvasReset")?.addEventListener("click", () => {
+          stopOpportunityCanvasInertia();
+          fitOpportunityCanvas();
+        });
+        $("#opportunityCanvasFullscreen")?.addEventListener("click", async () => {
+          const panel = opportunityCanvasPanel();
+          if (!panel) return;
+          const wasActive = document.fullscreenElement === panel || panel.dataset.canvasFallbackFullscreen === "1";
+          try {
+            if (document.fullscreenElement === panel) {
+              await document.exitFullscreen?.();
+            } else if (panel.dataset.canvasFallbackFullscreen === "1") {
+              panel.dataset.canvasFallbackFullscreen = "0";
+            } else if (panel.requestFullscreen) {
+              try {
+                await panel.requestFullscreen();
+              } catch (_) {
+                panel.dataset.canvasFallbackFullscreen = "1";
+              }
+            } else {
+              panel.dataset.canvasFallbackFullscreen = "1";
+            }
+          } finally {
+            syncOpportunityCanvasFullscreenState();
+            refreshOpportunityCanvasViewport(!wasActive);
+          }
+        });
+        document.addEventListener("fullscreenchange", () => {
+          syncOpportunityCanvasFullscreenState();
+          refreshOpportunityCanvasViewport();
+        });
+        $("#opportunityCanvasExport")?.addEventListener("click", async (event) => {
+          const btn = event.currentTarget;
+          const snapshotId = c.snapshotId;
+          const old = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = "导出中...";
+          try {
+            const url = snapshotId
+              ? `/api/hot-sector-snapshot/${encodeURIComponent(snapshotId)}/export`
+              : "/api/opportunity-canvas/export";
+            const payload = await fetchJson(url, { method: "POST", timeout: 180000 });
+            if (!payload.url) throw new Error("导出完成但未返回下载地址");
+            downloadUrl(payload.url, payload.file || "opportunity_canvas.xlsx");
+          } catch (error) {
+            alert(`导出失败：${error.message}`);
+          } finally {
+            btn.disabled = false;
+            btn.textContent = old;
+          }
+        });
+        if (window.ResizeObserver && !c.resizeObserver) {
+          c.resizeObserver = new ResizeObserver(() => refreshOpportunityCanvasViewport());
+          c.resizeObserver.observe(viewport);
+        } else if (!window.ResizeObserver && !c.resizeBound) {
+          c.resizeBound = true;
+          window.addEventListener("resize", () => refreshOpportunityCanvasViewport());
+        }
+        const finishNodeDrag = (event) => {
+          const drag = c.nodeDragging;
+          if (!drag) return false;
+          c.nodeDragging = null;
+          viewport.releasePointerCapture?.(drag.pointerId);
+          selectOpportunityCanvasNode(drag.id);
+          renderOpportunityCanvasMinimap();
+          scheduleOpportunityCanvasDraw();
+          if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+          return true;
+        };
+        viewport.addEventListener("wheel", (event) => {
+          event.preventDefault();
+          stopOpportunityCanvasInertia();
+          const horizontalPan = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) * 1.2;
+          if (horizontalPan) {
+            c.offsetX -= event.deltaX || event.deltaY;
+            c.offsetY -= event.deltaX ? event.deltaY : 0;
+            applyOpportunityCanvasTransform();
+            return;
+          }
+          const zoomFactor = Math.exp(-event.deltaY * 0.0014);
+          setScale(c.scale * zoomFactor, viewportPoint(event.clientX, event.clientY));
+        }, { passive: false });
+        viewport.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0 && event.button !== 1) return;
+          const hit = event.button === 0 ? opportunityCanvasHitNode(event.clientX, event.clientY) : null;
+          event.preventDefault();
+          stopOpportunityCanvasInertia();
+          viewport.focus?.({ preventScroll: true });
+          if (hit && !c.spacePanning) {
+            c.nodeDragging = {
+              id: hit.id,
+              pointerId: event.pointerId,
+              startX: event.clientX,
+              startY: event.clientY,
+              posX: hit.pos.x,
+              posY: hit.pos.y,
+              moved: false,
+            };
+            c.hoverId = hit.id;
+            viewport.setPointerCapture?.(event.pointerId);
+            scheduleOpportunityCanvasDraw();
+            return;
+          }
+          c.dragging = true;
+          c.dragStart = { x: event.clientX, y: event.clientY, offsetX: c.offsetX, offsetY: c.offsetY };
+          c.lastPanMove = { x: event.clientX, y: event.clientY, t: performance.now() };
+          viewport.classList.add("is-panning");
+          viewport.setPointerCapture?.(event.pointerId);
+        });
+        viewport.addEventListener("pointermove", (event) => {
+          if (c.nodeDragging) {
+            const drag = c.nodeDragging;
+            const pos = c.layout?.positions?.get(drag.id);
+            if (!pos) return;
+            event.preventDefault();
+            const dx = (event.clientX - drag.startX) / Math.max(0.1, c.scale || 1);
+            const dy = (event.clientY - drag.startY) / Math.max(0.1, c.scale || 1);
+            if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
+            pos.x = Math.round(drag.posX + dx);
+            pos.y = Math.round(drag.posY + dy);
+            scheduleOpportunityCanvasDraw();
+            return;
+          }
+          if (!c.dragging || !c.dragStart) {
+            const hit = opportunityCanvasHitNode(event.clientX, event.clientY);
+            const hoverId = hit?.id || null;
+            if (hoverId !== c.hoverId) {
+              c.hoverId = hoverId;
+              viewport.style.cursor = hoverId && !c.spacePanning ? "pointer" : "";
+              scheduleOpportunityCanvasDraw();
+            }
+            return;
+          }
+          c.offsetX = c.dragStart.offsetX + event.clientX - c.dragStart.x;
+          c.offsetY = c.dragStart.offsetY + event.clientY - c.dragStart.y;
+          const now = performance.now();
+          if (c.lastPanMove) {
+            const dt = Math.max(1, now - c.lastPanMove.t);
+            c.panVelocityX = (event.clientX - c.lastPanMove.x) / dt;
+            c.panVelocityY = (event.clientY - c.lastPanMove.y) / dt;
+          }
+          c.lastPanMove = { x: event.clientX, y: event.clientY, t: now };
+          applyOpportunityCanvasTransform();
+        });
+        viewport.addEventListener("pointerup", (event) => {
+          if (finishNodeDrag(event)) return;
+          c.dragging = false;
+          c.dragStart = null;
+          c.lastPanMove = null;
+          viewport.classList.remove("is-panning");
+          viewport.releasePointerCapture?.(event.pointerId);
+          startOpportunityCanvasInertia();
+        });
+        viewport.addEventListener("pointercancel", (event) => {
+          if (finishNodeDrag(event)) return;
+          c.dragging = false;
+          c.dragStart = null;
+          c.lastPanMove = null;
+          viewport.classList.remove("is-panning");
+        });
+        viewport.addEventListener("pointerleave", () => {
+          if (c.dragging || c.nodeDragging || !c.hoverId) return;
+          c.hoverId = null;
+          viewport.style.cursor = "";
+          scheduleOpportunityCanvasDraw();
+        });
+        viewport.addEventListener("dblclick", (event) => {
+          if (opportunityCanvasHitNode(event.clientX, event.clientY)) return;
+          setScale(c.scale * 1.25, viewportPoint(event.clientX, event.clientY));
+        });
+        document.addEventListener("keydown", (event) => {
+          const active = document.activeElement;
+          const typing = active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName);
+          if (event.code !== "Space" || typing || (!viewport.matches(":hover") && active !== viewport)) return;
+          event.preventDefault();
+          c.spacePanning = true;
+          viewport.classList.add("space-pan");
+        });
+        document.addEventListener("keyup", (event) => {
+          if (event.code !== "Space") return;
+          c.spacePanning = false;
+          viewport.classList.remove("space-pan");
+        });
+        document.addEventListener("keydown", (event) => {
+          if (event.key !== "Escape") return;
+          const panel = opportunityCanvasPanel();
+          if (!panel || panel.dataset.canvasFallbackFullscreen !== "1") return;
+          panel.dataset.canvasFallbackFullscreen = "0";
+          syncOpportunityCanvasFullscreenState();
+          refreshOpportunityCanvasViewport();
+        });
+      }
+
+      function renderOpportunityCanvasViewSwitch(canvas) {
+        const target = $("#opportunityCanvasViewSwitch");
+        if (!target) return;
+        const views = opportunityCanvasViews(canvas);
+        const activeView = state.opportunityCanvas.view;
+        target.innerHTML = views.map((view) => `
+          <button class="canvas-view-tab${view.id === activeView ? " active" : ""}" type="button"
+                  role="tab"
+                  aria-selected="${view.id === activeView ? "true" : "false"}"
+                  data-canvas-view="${html(view.id)}"
+                  title="${html(view.description || view.label)}">${html(view.label)}</button>
+        `).join("");
+        target.querySelectorAll("[data-canvas-view]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const view = btn.dataset.canvasView || "hierarchy";
+            if (view === state.opportunityCanvas.view) return;
+            stopOpportunityCanvasInertia();
+            state.opportunityCanvas.view = view;
+            state.opportunityCanvas.activeId = "root";
+            state.opportunityCanvas.fitOnNextRender = true;
+            renderOpportunityCanvas(state.opportunityCanvas.raw);
+          });
+        });
+      }
+
+      // 画布按日切换:头部选择器(默认=最新);切到历史 run → /api/opportunity-canvas
+      async function setupOpportunityCanvasDatePicker() {
+        const selects = document.querySelectorAll("#opportunityCanvasDateSelect");
+        if (!selects.length) return;
+        let runs = [];
+        try { runs = await loadOpportunityRuns(); } catch (_e) { runs = []; }
+        const opts = [`<option value="">最新(默认)</option>`].concat(
+          runs.map((r) => `<option value="${html(r.id)}">${html(r.run_at || r.created_at || "--")} · ${html(zhLabel("source", r.source) || "")}</option>`)
+        ).join("");
+        selects.forEach((sel) => {
+          sel.innerHTML = opts;
+          sel.value = state.opportunityCanvas.activeRunId || "";
+          if (sel.dataset.bound) return;
+          sel.dataset.bound = "1";
+          sel.addEventListener("change", () => onOpportunityCanvasDateChange(sel.value));
+        });
+      }
+
+      async function onOpportunityCanvasDateChange(runId) {
+        state.opportunityCanvas.activeRunId = runId || null;
+        document.querySelectorAll("#opportunityCanvasDateSelect").forEach((s) => { s.value = runId || ""; });
+        state.opportunityCanvas.activeId = "root";
+        state.opportunityCanvas.fitOnNextRender = true;
+        if (!runId) {
+          const canvas = state.dashboard?.opportunity?.canvas;
+          if (canvas) { renderOpportunityCanvas(canvas); return; }
+          try { const p = await fetchJson("/api/opportunity-canvas"); renderOpportunityCanvas(p.canvas); }
+          catch (e) { alert(`回到最新失败：${e.message}`); }
+          return;
+        }
+        try {
+          const payload = await fetchJson(`/api/opportunity-canvas?run_id=${encodeURIComponent(runId)}`);
+          renderOpportunityCanvas(payload.canvas);
+          const meta = $("#opportunityCanvasMeta");
+          if (meta && payload.date) meta.textContent = `${payload.date} 快照 · ${meta.textContent}`;
+        } catch (e) {
+          alert(`切换失败：${e.message}`);
+        }
+      }
+
+      function renderOpportunityCanvas(canvas) {
+        const viewport = $("#opportunityCanvasViewport");
+        const surface = $("#opportunityCanvasSurface");
+        const meta = $("#opportunityCanvasMeta");
+        if (!viewport || !surface) return;
+        const rawPayload = canvas || { nodes: [], edges: [], stats: {}, views: OPPORTUNITY_CANVAS_VIEW_FALLBACK };
+        state.opportunityCanvas.raw = rawPayload;
+        const views = opportunityCanvasViews(rawPayload);
+        if (!views.some((view) => view.id === state.opportunityCanvas.view)) {
+          state.opportunityCanvas.view = views[0]?.id || "hierarchy";
+        }
+        const payload = opportunityCanvasViewPayload(rawPayload, state.opportunityCanvas.view);
+        renderOpportunityCanvasViewSwitch(rawPayload);
+        const layout = layoutOpportunityCanvas(payload);
+        state.opportunityCanvas.layout = layout;
+        const hotRoot = layout.nodeMap.get("hot-sector-root");
+        const rawHotRoot = (rawPayload.nodes || []).find((node) => node.id === "hot-sector-root");
+        state.opportunityCanvas.snapshotId = (hotRoot || rawHotRoot)?.drilldown?.snapshot_id || null;
+        state.opportunityCanvas.hoverId = null;
+        state.opportunityCanvas.nodeDragging = null;
+        state.opportunityCanvas.textCache?.clear?.();
+        viewport.style.cursor = "";
+        if (meta) {
+          const stats = payload.stats || {};
+          const analysisCount = stats.analysis ?? stats.tags ?? 0;
+          meta.textContent = `${opportunityCanvasViewLabel(rawPayload, state.opportunityCanvas.view)} · 板块 ${stats.sectors || 0} · 股票 ${stats.stocks || 0} · 分析 ${analysisCount}`;
+        }
+        bindOpportunityCanvasNodeInteractions();
+        const activeNode = layout.nodeMap.get(state.opportunityCanvas.activeId) || layout.nodeMap.get("root") || (payload.nodes || [])[0];
+        state.opportunityCanvas.activeId = activeNode?.id || "root";
+        renderOpportunityCanvasDetail(activeNode);
+        updateOpportunityCanvasSelection(state.opportunityCanvas.activeId);
+        renderOpportunityCanvasMinimap();
+        bindOpportunityCanvasControls();
+        if (state.opportunityCanvas.fitOnNextRender || !state.opportunityCanvas.fitted) {
+          state.opportunityCanvas.fitOnNextRender = false;
+          state.opportunityCanvas.fitted = true;
+          fitOpportunityCanvas();
+        } else {
+          applyOpportunityCanvasTransform();
+        }
+      }
+
       function renderOpportunities(data) {
         const opportunity = data.opportunity || {};
         const report = opportunity.latest_report || {};
@@ -620,32 +3388,56 @@
         if (meta.source) metaBits.push(`来源 ${meta.source}`);
         if (meta.config_hash) metaBits.push(`配置 ${meta.config_hash}`);
         if (report.all_degraded) metaBits.push("数据降级");
-        $("#opportunityMeta").textContent = metaBits.join(" · ");
         const items = opportunity.items || [];
-        const list = $("#opportunityList");
-        list.innerHTML = items.map((item, index) => {
-          const code = stockCodeFromItem(item);
-          return `<button class="item" type="button" data-stock="${html(code)}" data-stock-code="${html(code)}" data-stock-name="${html(item.stock_name || item.name || "")}" data-sector="${html(item.sector || item.industry || "")}">
-            <div class="item-top">
-              <p class="item-title">${index + 1}. ${html(item.stock_name || item.name || code)}</p>
-              <strong>${num(item.score)}</strong>
-            </div>
-            <p class="item-meta">${html(code)} · ${html(item.reason || item.summary || item.industry || "点击查看K线")}</p>
-          </button>`;
-        }).join("");
-        if (!items.length) {
-          empty(list, opportunity.empty_reason || "还没有机会报告。", emptyAction("start-opportunity", "启动机会挖掘"));
-        }
-        list.querySelectorAll("[data-stock]").forEach((el) => {
-          el.addEventListener("click", async () => {
-            loadKline(el.dataset.stock);
-            await openStockContext(stockTargetFromDataset(el.dataset));
+        const overviewItems = items.slice(0, 10);
+        const metaText = [...metaBits, `总览Top10`, `画布全量${items.length}条`].join(" · ");
+        document.querySelectorAll("#opportunityMeta").forEach((el) => {
+          el.textContent = metaText;
+        });
+        renderOpportunityCanvas(opportunity.canvas);
+        setupOpportunityCanvasDatePicker().catch(() => {});
+        document.querySelectorAll("#opportunityList").forEach((list) => {
+          list.innerHTML = overviewItems.map((item, index) => {
+            const code = stockCodeFromItem(item);
+            const rank = item.score_rank || item.rank || index + 1;
+            return `<button class="item" type="button" data-stock="${html(code)}" data-stock-code="${html(code)}" data-stock-name="${html(item.stock_name || item.name || "")}" data-sector="${html(item.sector || item.industry || "")}">
+              <div class="item-top">
+                <p class="item-title">${html(rank)}. ${html(item.stock_name || item.name || code)}</p>
+                <strong>${num(item.score)}</strong>
+              </div>
+              <p class="item-meta">${html(code)} · ${html(item.reason || item.summary || item.industry || "点击查看K线")}</p>
+            </button>`;
+          }).join("");
+          if (!items.length) {
+            empty(list, opportunity.empty_reason || "还没有机会报告。", emptyAction("start-opportunity", "启动机会挖掘"));
+          } else if (items.length > overviewItems.length) {
+            list.insertAdjacentHTML("beforeend", `
+              <button class="item opportunity-more-row opportunity-data-menu-btn-inline" type="button">
+                <div class="item-top">
+                  <p class="item-title">查看全部 ${html(items.length)} 条</p>
+                  <span class="pill">全部数据</span>
+                </div>
+                <p class="item-meta">总览仅显示前 10 条，画布和数据菜单保留全量。</p>
+              </button>
+            `);
+          }
+          list.querySelectorAll("[data-stock]").forEach((el) => {
+            el.addEventListener("click", async () => {
+              loadKline(el.dataset.stock, el.dataset.stockName || "");
+              await openStockContext(stockTargetFromDataset(el.dataset));
+            });
+            el.addEventListener("dblclick", (event) => {
+              event.preventDefault();
+              openStockKlineModal(el.dataset.stock, 240, { stockName: el.dataset.stockName || "" }).catch((error) => alert(error.message));
+            });
           });
-          el.addEventListener("dblclick", (event) => {
-            event.preventDefault();
-            openStockKlineModal(el.dataset.stock).catch((error) => alert(error.message));
+          list.querySelector(".opportunity-data-menu-btn-inline")?.addEventListener("click", () => {
+            document.querySelector(".opportunity-data-menu-btn")?.click();
           });
         });
+        if ($("#opportunityDataDrawer") && !$("#opportunityDataDrawer").hidden && state.opportunityData.tab === "all") {
+          renderOpportunityAllData();
+        }
 
         const quant = $("#quantModels");
         const models = opportunity.quant_models || {};
@@ -672,7 +3464,8 @@
         const requested = new URLSearchParams(location.search).get("stock");
         const firstCode = requested || stockCodeFromItem(items[0] || {});
         if (firstCode) {
-          loadKline(firstCode);
+          const firstItem = items.find((item) => stockCodeFromItem(item) === firstCode) || items[0] || {};
+          loadKline(firstCode, firstItem.stock_name || firstItem.name || "");
           if (requested) {
             openStockContext({
               type: "stock",
@@ -710,6 +3503,7 @@
       async function refreshKlineLive() {
         const code = state.currentKline?.code;
         if (!code || !isAStockTradingHours()) return;
+        const previousName = state.currentKline?.name || "";
         let data;
         try {
           data = await fetchKlineData(code, 500);
@@ -717,6 +3511,7 @@
           return; // 盘中拉取失败静默跳过，下个周期再试
         }
         if (!data.records?.length) return;
+        data.name = data.name || previousName;
         state.currentKline = data;
         const meta = $("#klineMeta");
         if (meta) meta.textContent = klineMetaText(data);
@@ -735,18 +3530,22 @@
         return payload.data || {};
       }
 
-      async function loadKline(code) {
+      async function loadKline(code, stockName = "") {
         if (!code) return;
         const chart = $("#klineChart");
         const title = $("#klineTitle");
         const meta = $("#klineMeta");
-        if (title) title.textContent = `${code} K线`;
+        const titleText = stockName && stockName !== code ? `${stockName} ${code}` : code;
+        if (title) title.textContent = `${titleText} K线`;
         if (meta) meta.textContent = "读取中...";
         const openButton = $("#openKlineModalBtn");
         if (openButton) openButton.disabled = true;
         try {
           const data = await fetchKlineData(code, 500);
+          data.name = data.name || stockName || "";
           const records = data.records || [];
+          const readyTitle = data.name && data.name !== code ? `${data.name} ${code}` : code;
+          if (title) title.textContent = `${readyTitle} K线`;
           if (meta) meta.textContent = klineMetaText(data);
           state.currentKline = data;
           if (!records.length || !window.Plotly || !chart) {
@@ -764,9 +3563,14 @@
         }
       }
 
-      async function openStockKlineModal(code, limit = 240) {
+      async function openStockKlineModal(code, limit = 240, options = {}) {
+        if (limit && typeof limit === "object") {
+          options = limit;
+          limit = Number(options.limit || 240);
+        }
         if (!code) return;
         const normalizedCode = String(code || "").trim().padStart(6, "0");
+        const stockName = options.stockName || options.name || "";
         // 先把弹窗打开给出「读取中」反馈，数据到了再渲染——行情接口慢时按钮不再"点了没反应"。
         const modal = $("#klineModal");
         if (modal) {
@@ -774,7 +3578,7 @@
           modal.hidden = false;
           modal.setAttribute("aria-hidden", "false");
           syncModalOpenState();
-          $("#klineModalTitle").textContent = `${normalizedCode} 股票K线与分析`;
+          $("#klineModalTitle").textContent = `${stockName ? `${stockName} ` : ""}${normalizedCode} 股票K线与分析`;
           $("#klineModalMeta").textContent = "K线读取中...";
           const chart = $("#klineModalChart");
           if (chart) chart.innerHTML = `<div class="stock-context-loading">K线读取中…</div>`;
@@ -791,6 +3595,7 @@
           alert(data.message || "暂无K线数据");
           return;
         }
+        data.name = data.name || stockName || "";
         state.currentKline = data;
         openKlineModal(limit);
       }
@@ -917,15 +3722,16 @@
         const stats = klineStats(records);
         const firstDate = records[0]?.date || "--";
         const lastDate = records[records.length - 1]?.date || "--";
+        const autoDrawings = buildKlineAutoDrawings(records, mode);
         return {
-          margin: mode === "modal" ? { l: 62, r: 26, t: 36, b: 42 } : { l: 44, r: 12, t: 24, b: 28 },
+          margin: mode === "modal" ? { l: 62, r: 58, t: 62, b: 42 } : { l: 44, r: 48, t: 44, b: 28 },
           paper_bgcolor: "transparent",
-          plot_bgcolor: "#ffffff",
+          plot_bgcolor: "#fbfdff",
           showlegend: true,
           legend: {
             orientation: "h",
             x: 0,
-            y: mode === "modal" ? 1.08 : 1.12,
+            y: mode === "modal" ? 1.14 : 1.18,
             font: { size: 11, color: "#344256" },
           },
           hovermode: "x unified",
@@ -946,7 +3752,7 @@
             rangeselector: mode === "modal" ? {
               x: 0,
               y: 1.16,
-              buttons: [
+            buttons: [
                 { count: 1, label: "1月", step: "month", stepmode: "backward" },
                 { count: 3, label: "3月", step: "month", stepmode: "backward" },
                 { count: 6, label: "6月", step: "month", stepmode: "backward" },
@@ -959,6 +3765,7 @@
               font: { size: 11, color: "#344256" },
             } : undefined,
           },
+          shapes: autoDrawings.shapes,
           yaxis: {
             domain: mode === "modal" ? [0.28, 1] : [0.31, 1],
             side: "right",
@@ -982,12 +3789,12 @@
             xref: "paper",
             yref: "paper",
             x: 0,
-            y: mode === "modal" ? 1.05 : 1.08,
+            y: mode === "modal" ? 1.08 : 1.1,
             showarrow: false,
             align: "left",
-            text: `${html(data.code || "")} · ${firstDate} - ${lastDate} · 高 ${stats.high} 低 ${stats.low} · 区间 ${stats.delta}%`,
+            text: `${html((data.name ? `${data.name} ` : "") + (data.code || ""))} · ${firstDate} - ${lastDate} · 高 ${stats.high} 低 ${stats.low} · 区间 ${stats.delta}%`,
             font: { size: 11, color: "#6b778a" },
-          }],
+          }, ...autoDrawings.annotations],
         };
       }
 
@@ -1011,6 +3818,7 @@
             displaylogo: false,
             responsive: true,
             scrollZoom: true,
+            modeBarButtonsToAdd: mode === "modal" ? ["drawline", "drawopenpath", "drawrect", "eraseshape"] : [],
             modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d"],
           },
         );
@@ -1220,7 +4028,10 @@
         modal.hidden = false;
         modal.setAttribute("aria-hidden", "false");
         syncModalOpenState();
-        $("#klineModalTitle").textContent = `${state.currentKline.name || ""} ${state.currentKline.code || ""} 股票K线与分析`;
+        const modalTitle = state.currentKline.name && state.currentKline.name !== state.currentKline.code
+          ? `${state.currentKline.name} ${state.currentKline.code}`
+          : (state.currentKline.code || "");
+        $("#klineModalTitle").textContent = `${modalTitle} 股票K线与分析`;
         $("#klineModalMeta").textContent = `${state.currentKline.source || "--"} · ${state.currentKline.records?.length || 0} 条 · ${klineAxisTitle(limit)}${klineQuoteText(state.currentKline)}`;
         $("#klineModalSource").textContent = state.currentKline.source || "--";
         const records = limit >= 500 ? (state.currentKline.records || []) : (state.currentKline.records || []).slice(-limit);
@@ -1545,6 +4356,7 @@
               ? "本次机会报告全部候选缺少有效历史行情数据，已隐藏诊断性 Top 榜，避免误当正常推荐。"
               : "",
             items: payload.all_degraded ? [] : (payload.items || payload.cards || []),
+            canvas: payload.canvas,
             quant_models: payload.quant_models || {},
             quant_models_note: payload.quant_models_note || "",
           },
@@ -2032,7 +4844,7 @@
             if (action === "refresh-trading-clients") refreshTradingClientsForContext(context, button);
             if (action === "opportunity") startStockOpportunity(context, button).catch((error) => alert(error.message));
             if (action === "analysis") startStockAnalysis(context, button).catch((error) => alert(error.message));
-            if (action === "kline") openStockKlineModal(context.stock?.code).catch((error) => alert(error.message));
+            if (action === "kline") openStockKlineModal(context.stock?.code, 240, { stockName: context.stock?.name || "" }).catch((error) => alert(error.message));
           });
         });
         body.querySelectorAll(".stock-trading-client").forEach((button) => {
@@ -2100,6 +4912,7 @@
         else if (tab === "panel") renderSuitePanel(payload);
         else if (tab === "ai_interpretation") renderSuiteAi(payload);
         else if (tab === "pattern_backtest") renderSuitePatternBacktest(payload);
+        else if (tab === "financials") renderSuiteFinancials();
       }
 
       function renderSuiteLoading(paneId, label) {
@@ -2168,6 +4981,7 @@
             p.classList.toggle("hidden", p.dataset.suitePane !== tab);
           });
           if (tab === "quick") return;
+          if (tab === "financials") { renderSuiteFinancials(); return; }
           if (state.suiteFetching && !state.currentSuitePayload) {
             const paneIdMap = {
               overview: "suitePaneOverview",
@@ -4114,6 +6928,16 @@
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       }
 
+      function downloadUrl(url, filename = "") {
+        const link = document.createElement("a");
+        link.href = url;
+        if (filename) link.download = filename;
+        link.rel = "noopener";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+
       function patternStatusText(status) {
         if (status.available) {
           const stale = status.staleness_days != null ? ` · ${status.staleness_days} 天前` : "";
@@ -4309,6 +7133,60 @@
         if (meta) meta.textContent = (result && result.ok) ? `${result.sample_count} 样本` : "--";
       }
 
+      // 财务三大表(item G):懒加载 /api/stock/financial-statements,默认读缓存,可联网刷新。
+      function financialTableHtml(title, periods) {
+        if (!periods || !periods.length) {
+          return `<div class="fin-block"><h4>${html(title)}</h4><p class="suite-empty-note">暂无${html(title)}数据</p></div>`;
+        }
+        const labelOrder = [];
+        const seen = new Set();
+        periods.forEach((p) => Object.keys(p.items || {}).forEach((k) => {
+          if (!seen.has(k)) { seen.add(k); labelOrder.push(k); }
+        }));
+        const thead = `<tr><th class="fin-item-col">项目</th>${periods.map((p) => `<th>${html(p.period || p.report_date || "--")}</th>`).join("")}</tr>`;
+        const body = labelOrder.map((label) => {
+          const tds = periods.map((p) => {
+            const v = (p.items || {})[label];
+            return `<td>${v == null || v === "" ? "--" : html(formatMoneyText(v, "--"))}</td>`;
+          }).join("");
+          return `<tr><td class="fin-item-col">${html(label)}</td>${tds}</tr>`;
+        }).join("");
+        return `<div class="fin-block"><h4>${html(title)}</h4><div class="fin-table-wrap"><table class="fin-table"><thead>${thead}</thead><tbody>${body}</tbody></table></div></div>`;
+      }
+
+      async function renderSuiteFinancials(forceRefresh = false) {
+        const pane = document.getElementById("suitePaneFinancials");
+        if (!pane) return;
+        const code = state.currentStockCode || state.currentSuitePayload?.stock?.code || "";
+        if (!code) { pane.innerHTML = `<div class="suite-ai-empty"><p>请先打开一只股票。</p></div>`; return; }
+        if (!forceRefresh && pane.dataset.rendered === "1" && pane.dataset.code === code) return;
+        pane.dataset.rendered = "1";
+        pane.dataset.code = code;
+        pane.innerHTML = `<div class="suite-ai-empty"><p class="suite-empty-note"><span class="spinner"></span> 读取财务三大表…</p></div>`;
+        let data;
+        try {
+          data = await fetchJson(`/api/stock/financial-statements?code=${encodeURIComponent(code)}${forceRefresh ? "&force=1" : ""}`);
+        } catch (e) {
+          pane.innerHTML = `<div class="suite-ai-empty"><p>财务数据加载失败：${html(e.message)}</p></div>`;
+          return;
+        }
+        const st = data.statements || {};
+        const defs = [["balance", "资产负债表"], ["income", "利润表"], ["cashflow", "现金流量表"]];
+        if (defs.every(([k]) => !(st[k] && st[k].length))) {
+          pane.innerHTML = `<div class="suite-ai-empty"><p>暂无财务数据 · <button class="button secondary compact" type="button" data-fin-refresh>联网获取</button></p></div>`;
+          pane.querySelector("[data-fin-refresh]")?.addEventListener("click", () => renderSuiteFinancials(true));
+          return;
+        }
+        const srcLabel = data.source === "tushare" ? "Tushare(付费)" : (data.source === "akshare" ? "东方财富(免费)" : "—");
+        const head = `
+          <div class="fin-head">
+            <span class="fin-src">来源 ${html(srcLabel)}${data.cached ? " · 缓存" : " · 实时取数"}${data.as_of ? " · " + html(String(data.as_of).slice(0, 10)) : ""} · 单位 元(亿/万)</span>
+            <button class="button secondary compact" type="button" data-fin-refresh>刷新(联网)</button>
+          </div>`;
+        pane.innerHTML = head + defs.map(([key, label]) => financialTableHtml(label, st[key] || [])).join("");
+        pane.querySelector("[data-fin-refresh]")?.addEventListener("click", () => renderSuiteFinancials(true));
+      }
+
       function renderSuitePatternBacktest() {
         const pane = document.getElementById("suitePanePatternBacktest");
         if (!pane) return;
@@ -4398,7 +7276,7 @@
             event.preventDefault();
             window.clearTimeout(state.patternClickTimer);
             const item = matches[Number(el.dataset.patternIndex)];
-            openStockKlineModal(item?.stock_code || el.dataset.stockCode).catch((error) => alert(error.message));
+            openStockKlineModal(item?.stock_code || el.dataset.stockCode, 240, { stockName: item?.stock_name || el.dataset.stockName || "" }).catch((error) => alert(error.message));
           });
         });
         if (matches[0]) plotPatternCompare(queryCurve, matches[0]);
@@ -4592,7 +7470,7 @@
             el.addEventListener("dblclick", (event) => {
               event.preventDefault();
               window.clearTimeout(state.patternClickTimer);
-              openStockKlineModal(el.dataset.stockCode).catch((error) => alert(error.message));
+              openStockKlineModal(el.dataset.stockCode, 240, { stockName: el.dataset.stockName || "" }).catch((error) => alert(error.message));
             });
           });
         });
@@ -4608,7 +7486,6 @@
 
       function renderFeatureOverview(data) {
         renderOverview(data);
-        renderOpportunities(data);
         renderReports(data);
         setupWorkbench(data);
         renderOverviewHotLists(data);
@@ -4625,29 +7502,6 @@
         updateFeatureJobPill(jobs);
         $("#featureConfigPill").textContent = `AI ${llmReady ? "已配置" : "未配置"} · TuShare ${tushareReady ? "已配置" : "未配置"}`;
         $("#featureConfigPill").className = `pill ${llmReady && tushareReady ? "ok" : "warn"}`;
-        $("#featureConfigStatus").textContent = llmReady && tushareReady ? "已配置" : "待配置";
-        $("#featureSettingsSummary").textContent = `AI ${llmReady ? "已配置" : "未配置"} · TuShare ${tushareReady ? "已配置 " + (settings.tushare?.token_masked || "") : "未配置"}`;
-
-        loadPatternStatus().catch((error) => {
-          const target = $("#featurePatternStatus");
-          if (target) {
-            target.className = "notice status error";
-            target.textContent = error.message;
-          }
-        });
-        const patternBtn = $("#featureRefreshPatternDbBtn");
-        if (patternBtn && !patternBtn.dataset.bound) {
-          patternBtn.dataset.bound = "1";
-          patternBtn.addEventListener("click", () => {
-            refreshPatternDatabase({ button: patternBtn, statusEl: $("#featurePatternStatus") });
-          });
-        }
-        setupKronosModelControls();
-        loadKronosStatus().catch((error) => {
-          $("#kronosModelMeta").textContent = "读取失败";
-          $("#kronosModelStatus").className = "notice status error";
-          $("#kronosModelStatus").textContent = error.message;
-        });
       }
 
       function providerModelRows(settings) {
@@ -5459,6 +8313,7 @@
         list_count: "上榜天数",
         first_date: "起始日",
         last_date: "结束日",
+        float_values: "流通市值",
         actions: "操作",
       };
       const CAPITAL_MONEY_KEYS = new Set([
@@ -5466,7 +8321,7 @@
         "buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount",
         "l_buy", "l_sell", "l_amount", "amount",
         "institution_buy_amount", "institution_sell_amount", "institution_net_amount", "institution_amount",
-        "buy_amount", "sell_amount",
+        "buy_amount", "sell_amount", "float_values",
       ]);
       const CAPITAL_MONEYFLOW_AMOUNT_KEYS = new Set([
         "net_amount", "main_buy_amount", "retail_buy_amount",
@@ -6515,6 +9370,7 @@
       let ccLiveTimer = null;
       let ccKeysBound = false;
       let ccLastData = null;
+      let ccActiveDate = null;   // 历史日切换:null=最近一天
 
       function ccRiskLabel(v) { if (v == null) return "未知"; if (v < 40) return "低"; if (v >= 60) return "高"; return "中"; }
       function ccOppLabel(v) { if (v >= 70) return "较好"; if (v >= 55) return "中性"; return "偏弱"; }
@@ -6565,10 +9421,18 @@
         const reportTxt = (d.as_of && d.as_of.report) ? `报告 ${html(String(d.as_of.report))}` : "无报告";
         const sidecarTxt = (d.as_of && d.as_of.sidecar) ? "信号已加载" : "信号缺失·风险未知";
         const degHint = deg.opportunity ? ' ｜ <span style="color:#cf922a">机会源降级</span>' : "";
+        const asOf = d.as_of || {};
+        const dates = Array.isArray(d.available_dates) ? d.available_dates : [];
+        const sel = asOf.date || ccActiveDate || (dates[0] || "");
+        const dateOptions = dates.length
+          ? dates.map((dt) => `<option value="${html(dt)}"${String(dt) === String(sel) ? " selected" : ""}>${html(dt)}</option>`).join("")
+          : `<option value="">最近一天</option>`;
+        const reportCount = asOf.report_count ? ` ｜ 当日报告 <b>${html(asOf.report_count)}</b> 份` : "";
         return `<div class="status">
           <h1>风险<span class="accent">·</span>机遇 <span style="font-size:13px;letter-spacing:2px;color:var(--muted);">统筹作战大屏</span></h1>
-          <div class="meta">${reportTxt} ｜ 池 <b>${(d.as_of && d.as_of.count) || 0}</b> 只 ｜ <b>${sidecarTxt}</b>${degHint}</div>
+          <div class="meta">${reportTxt} ｜ 池 <b>${(d.as_of && d.as_of.count) || 0}</b> 只 ｜ <b>${sidecarTxt}</b>${reportCount}${degHint}</div>
           <div class="sp"></div>
+          <label class="cc-date-pick" title="切换历史日期(聚合当日全部报告)">日期 <select class="cc-date-select" data-cc-date>${dateOptions}</select></label>
           <div class="btn hot" data-cc-action="recompute">↻ 重新统筹</div>
           <div class="btn" data-cc-action="fullscreen">⛶ 全屏大屏</div>
         </div>`;
@@ -6693,6 +9557,13 @@
             else if (a === "recompute") ccRecompute();
           });
         });
+        const dateSel = host.querySelector("[data-cc-date]");
+        if (dateSel) {
+          dateSel.addEventListener("change", () => {
+            ccActiveDate = dateSel.value || null;
+            loadCommandCenter().catch((e) => alert("切换日期失败: " + e.message));
+          });
+        }
         host.querySelectorAll(".acts").forEach((box) => {
           const code = box.dataset.ccCode, name = box.dataset.ccName;
           box.querySelectorAll("[data-cc-act]").forEach((btn) => {
@@ -6796,7 +9667,7 @@
           if (page !== "command_center") { clearInterval(ccLiveTimer); ccLiveTimer = null; return; }
           if (!ccIsTradingHours()) return;
           try {
-            const q = await fetchJson("/api/command-center/overview?quotes_only=1");
+            const q = await fetchJson(`/api/command-center/overview?quotes_only=1${ccActiveDate ? `&date=${encodeURIComponent(ccActiveDate)}` : ""}`);
             ccLastData = q;
             const host = $("#commandCenterRoot");
             if (host) { ccBindActions(host, q); ccDrawMatrix(q); ccDrawSectorHeat(q); }
@@ -6833,7 +9704,7 @@
         if (!host) return;
         host.classList.add("cc-screen");
         let data;
-        try { data = await fetchJson("/api/command-center/overview"); }
+        try { data = await fetchJson(`/api/command-center/overview${ccActiveDate ? `?date=${encodeURIComponent(ccActiveDate)}` : ""}`); }
         catch (e) { host.innerHTML = `<div class="cc-empty">大屏数据加载失败:${html(e.message)}</div>`; return; }
         ccLastData = data;
         renderCommandCenter(host, data);
@@ -6857,7 +9728,7 @@
             alert(error.message);
           });
         });
-        const dashboardPages = ["overview", "workbench", "reports", "features"];
+        const dashboardPages = ["overview", "workbench", "reports", "features", "opportunities"];
         if (dashboardPages.includes(page)) {
           const data = await loadDashboard();
           renderDashboardPage(data);

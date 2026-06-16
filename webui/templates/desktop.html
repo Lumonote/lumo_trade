@@ -197,6 +197,7 @@
                     <label>来源
                       <select name="source">
                         <option value="multi">多源候选</option>
+                        <option value="sector_hot">热门板块成分股</option>
                         <option value="heat">热度候选</option>
                         <option value="moneyflow_dc">东方财富资金</option>
                       </select>
@@ -243,7 +244,10 @@
               <div class="panel">
                 <div class="panel-header">
                   <h2 class="panel-title">投资机会</h2>
-                  <span id="opportunityMeta" class="panel-meta">--</span>
+                  <div class="panel-header-actions">
+                    <span id="opportunityMeta" class="panel-meta">--</span>
+                    <button class="button secondary compact opportunity-data-menu-btn" type="button">数据</button>
+                  </div>
                 </div>
                 <div id="opportunityList" class="panel-body list"></div>
               </div>
@@ -265,6 +269,28 @@
                   </div>
                   <div id="quantModels" class="panel-body list"></div>
                 </div>
+              </div>
+            </section>
+
+            <section class="panel opportunity-canvas-panel">
+              <div class="panel-header">
+                <h2 class="panel-title">投资机会画布</h2>
+                <div class="panel-header-actions">
+                  <div id="opportunityCanvasViewSwitch" class="canvas-view-switch" role="tablist" aria-label="画布关系维度"></div>
+                  <span id="opportunityCanvasMeta" class="panel-meta">--</span>
+                  <select id="opportunityCanvasDateSelect" class="canvas-date-select" title="切换到某日/某次挖掘快照"><option value="">最新(默认)</option></select>
+                  <button id="opportunityCanvasExport" class="button secondary compact" type="button" title="导出热门板块快照 Excel">导出Excel</button>
+                  <button id="opportunityCanvasZoomOut" class="button secondary compact" type="button" title="缩小">-</button>
+                  <button id="opportunityCanvasReset" class="button secondary compact" type="button" title="重置视图">重置</button>
+                  <button id="opportunityCanvasZoomIn" class="button secondary compact" type="button" title="放大">+</button>
+                  <button id="opportunityCanvasFullscreen" class="button secondary compact" type="button" title="全屏查看画布">全屏</button>
+                </div>
+              </div>
+              <div class="opportunity-canvas-shell">
+                <div id="opportunityCanvasViewport" class="opportunity-canvas-viewport" tabindex="0">
+                  <canvas id="opportunityCanvasSurface" class="opportunity-canvas-surface" aria-label="投资机会关系画布"></canvas>
+                </div>
+                <aside id="opportunityCanvasDetail" class="opportunity-canvas-detail"></aside>
               </div>
             </section>
 
@@ -311,6 +337,137 @@
               <div id="hotFlashList" class="panel-body list"></div>
             </section>
           </aside>
+        </section>
+        {% endif %}
+
+        {% if active_page == 'opportunities' %}
+        <section class="opportunity-page opportunity-page-redesign">
+          <section class="panel opportunity-command-panel">
+            <div class="panel-header">
+              <div>
+                <h2 class="panel-title">投资机会挖掘</h2>
+                <span class="panel-meta">多源候选 · 板块快照 · 全量 run 入库</span>
+              </div>
+              <button class="button secondary compact opportunity-data-menu-btn" type="button">全部/历史</button>
+            </div>
+            <form id="opportunityForm" class="panel-body opportunity-command-form">
+              <div class="form-grid opportunity-form-grid">
+                <label>候选数量
+                  <input name="limit" type="number" value="100" min="5" max="500" />
+                </label>
+                <label>并发数
+                  <input name="workers" type="number" value="10" min="1" max="32" />
+                </label>
+                <label>来源
+                  <select name="source">
+                    <option value="multi">多源候选</option>
+                    <option value="sector_hot">热门板块成分股</option>
+                    <option value="heat">热度候选</option>
+                    <option value="moneyflow_dc">东方财富资金</option>
+                  </select>
+                </label>
+                <label class="opportunity-pool-input">指定股票池
+                  <input name="stock_codes" placeholder="可选，如 600519,300750" />
+                </label>
+              </div>
+              <div class="actions opportunity-command-actions">
+                <button class="button" type="submit">启动挖掘</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="opportunity-workbench-grid">
+            <aside class="opportunity-left-rail">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">最近任务</h2>
+                  <span class="panel-meta">挖掘进度</span>
+                </div>
+                <div id="jobList" class="panel-body list compact-list"></div>
+              </div>
+
+              <div class="panel opportunity-history-entry">
+                <div class="panel-header">
+                  <h2 class="panel-title">历史与板块</h2>
+                  <span class="panel-meta">弹出查看</span>
+                </div>
+                <div class="panel-body">
+                  <p class="muted">历史挖掘、历史股票分析、历史热门板块已收进弹出窗口，支持按名称/代码/板块搜索。</p>
+                  <button class="button secondary opportunity-data-menu-btn" type="button" data-opportunity-data-tab-target="history">打开历史与板块</button>
+                </div>
+              </div>
+            </aside>
+
+            <main class="opportunity-main-column">
+              <div class="panel opportunity-primary-list">
+                <div class="panel-header">
+                  <h2 class="panel-title">最新机会 Top10</h2>
+                  <div class="panel-header-actions">
+                    <span id="opportunityMeta" class="panel-meta">--</span>
+                    <button class="button secondary compact opportunity-data-menu-btn" type="button">全部数据</button>
+                  </div>
+                </div>
+                <div id="opportunityList" class="panel-body list"></div>
+              </div>
+
+              <div class="panel opportunity-kline-panel">
+                <div class="panel-header">
+                  <h2 id="klineTitle" class="panel-title">K线</h2>
+                  <div class="panel-header-actions">
+                    <span id="klineMeta" class="panel-meta">选择股票查看</span>
+                    <button id="openKlineModalBtn" class="button secondary compact" type="button" disabled>大图</button>
+                  </div>
+                </div>
+                <div id="klineChart" class="panel-body chart trading-kline-preview" role="button" tabindex="0" title="大图K线"></div>
+              </div>
+            </main>
+          </section>
+
+          <section class="opportunity-analysis-grid">
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">量化模型</h2>
+                <span class="panel-meta">机会挖掘摘要</span>
+              </div>
+              <div id="quantModels" class="panel-body list"></div>
+            </div>
+          </section>
+
+          <section class="panel opportunity-canvas-panel opportunity-page-canvas">
+            <div class="panel-header">
+              <h2 class="panel-title">投资机会画布</h2>
+              <div class="panel-header-actions">
+                <div id="opportunityCanvasViewSwitch" class="canvas-view-switch" role="tablist" aria-label="画布关系维度"></div>
+                <span id="opportunityCanvasMeta" class="panel-meta">--</span>
+                <select id="opportunityCanvasDateSelect" class="canvas-date-select" title="切换到某日/某次挖掘快照"><option value="">最新(默认)</option></select>
+                <button id="opportunityCanvasExport" class="button secondary compact" type="button" title="导出热门板块快照 Excel">导出Excel</button>
+                <button id="opportunityCanvasZoomOut" class="button secondary compact" type="button" title="缩小">-</button>
+                <button id="opportunityCanvasReset" class="button secondary compact" type="button" title="重置视图">重置</button>
+                <button id="opportunityCanvasZoomIn" class="button secondary compact" type="button" title="放大">+</button>
+                <button id="opportunityCanvasFullscreen" class="button secondary compact" type="button" title="全屏查看画布">全屏</button>
+              </div>
+            </div>
+            <div class="opportunity-canvas-shell">
+              <div id="opportunityCanvasViewport" class="opportunity-canvas-viewport" tabindex="0">
+                <canvas id="opportunityCanvasSurface" class="opportunity-canvas-surface" aria-label="投资机会关系画布"></canvas>
+              </div>
+              <aside id="opportunityCanvasDetail" class="opportunity-canvas-detail"></aside>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <h2 id="jobDetailTitle" class="panel-title">任务日志</h2>
+                <span id="jobDetailMeta" class="panel-meta">选择或启动任务</span>
+              </div>
+              <div id="jobDetailActions" class="job-result-row"></div>
+            </div>
+            <div class="panel-body">
+              <div id="jobDetailSummary" class="notice status info">启动任务后这里会实时展示进度、日志和结果。</div>
+              <div id="jobLogStream" class="job-log-stream"></div>
+            </div>
+          </section>
         </section>
         {% endif %}
 
@@ -529,14 +686,7 @@
 
         <section class="feature-main-grid">
           <div class="feature-main-stack">
-            <section class="grid two">
-              <div class="panel">
-                <div class="panel-header">
-                  <h2 class="panel-title">指数与板块</h2>
-                  <span class="panel-meta">市场概览</span>
-                </div>
-                <div id="indexList" class="panel-body list"></div>
-              </div>
+            <section class="grid">
               <div class="panel">
                 <div class="panel-header">
                   <h2 class="panel-title">实时异动</h2>
@@ -566,35 +716,6 @@
             <section class="grid two">
               <div class="panel">
                 <div class="panel-header">
-                  <h2 class="panel-title">投资机会</h2>
-                  <span id="opportunityMeta" class="panel-meta">--</span>
-                </div>
-                <div id="opportunityList" class="panel-body list"></div>
-              </div>
-              <div class="grid">
-                <div class="panel">
-                  <div class="panel-header">
-                    <h2 id="klineTitle" class="panel-title">K线</h2>
-                    <div class="panel-header-actions">
-                      <span id="klineMeta" class="panel-meta">选择股票查看</span>
-                      <button id="openKlineModalBtn" class="button secondary compact" type="button" disabled>大图</button>
-                    </div>
-                  </div>
-                  <div id="klineChart" class="panel-body chart trading-kline-preview" role="button" tabindex="0" title="大图K线"></div>
-                </div>
-                <div class="panel">
-                  <div class="panel-header">
-                    <h2 class="panel-title">量化模型</h2>
-                    <span class="panel-meta">机会挖掘摘要</span>
-                  </div>
-                  <div id="quantModels" class="panel-body list"></div>
-                </div>
-              </div>
-            </section>
-
-            <section class="grid two">
-              <div class="panel">
-                <div class="panel-header">
                   <h2 class="panel-title">🔥 东方财富热榜</h2>
                   <span id="ovHotEastmoneyMeta" class="panel-meta">主力净流入</span>
                 </div>
@@ -609,14 +730,7 @@
               </div>
             </section>
 
-            <section class="grid two">
-              <div class="panel">
-                <div class="panel-header">
-                  <h2 class="panel-title">模块健康</h2>
-                  <span class="panel-meta">导入检查</span>
-                </div>
-                <div id="moduleList" class="panel-body list"></div>
-              </div>
+            <section class="grid">
               <div class="panel">
                 <div class="panel-header">
                   <h2 class="panel-title">板块动量</h2>
@@ -626,91 +740,6 @@
               </div>
             </section>
           </div>
-
-          <aside class="feature-side-stack">
-            <div class="panel">
-              <div class="panel-header">
-                <h2 class="panel-title">机会挖掘</h2>
-                <span class="panel-meta">后台任务</span>
-              </div>
-              <form id="opportunityForm" class="panel-body">
-                <div class="form-grid">
-                  <label>候选数量
-                    <input name="limit" type="number" value="100" min="5" max="500" />
-                  </label>
-                  <label>并发数
-                    <input name="workers" type="number" value="10" min="1" max="32" />
-                  </label>
-                  <label>来源
-                    <select name="source">
-                      <option value="multi">多源候选</option>
-                      <option value="heat">热度候选</option>
-                      <option value="moneyflow_dc">东方财富资金</option>
-                    </select>
-                  </label>
-                  <label>指定股票池
-                    <input name="stock_codes" placeholder="可选，如 600519,300750" />
-                  </label>
-                </div>
-                <div class="actions">
-                  <button class="button" type="submit">启动机会挖掘</button>
-                </div>
-              </form>
-            </div>
-
-            <div class="panel">
-              <div class="panel-header">
-                <h2 class="panel-title">图形选股</h2>
-                <span id="featurePatternMeta" class="panel-meta">读取中</span>
-              </div>
-              <div class="panel-body">
-                <div id="featurePatternStatus" class="notice">正在读取指纹库状态...</div>
-                <div class="actions">
-                  <button id="featureRefreshPatternDbBtn" class="button secondary" type="button">刷新指纹库</button>
-                  <a class="button secondary" href="/desktop/patterns">打开图形选股</a>
-                </div>
-              </div>
-            </div>
-
-            <div class="panel">
-              <div class="panel-header">
-                <h2 class="panel-title">后台配置</h2>
-                <span id="featureConfigStatus" class="panel-meta">读取中</span>
-              </div>
-              <div class="panel-body">
-                <div id="featureSettingsSummary" class="notice">正在读取配置状态...</div>
-                <div class="actions">
-                  <a class="button secondary" href="/desktop/settings">配置 AI / TuShare</a>
-                </div>
-              </div>
-            </div>
-
-            <div class="panel">
-              <div class="panel-header">
-                <h2 class="panel-title">Kronos 模型状态</h2>
-                <span id="kronosModelMeta" class="panel-meta">读取中</span>
-              </div>
-              <div class="panel-body">
-                <div id="kronosModelStatus" class="notice">正在读取模型状态...</div>
-                <div class="form-grid" style="margin-top: 12px;">
-                  <label>模型
-                    <select id="kronosModelSelect"></select>
-                  </label>
-                  <label>设备
-                    <select id="kronosDeviceSelect">
-                      <option value="auto">auto</option>
-                      <option value="cpu">cpu</option>
-                      <option value="mps">mps</option>
-                      <option value="cuda">cuda</option>
-                    </select>
-                  </label>
-                </div>
-                <div class="actions">
-                  <button id="loadKronosModelBtn" class="button" type="button">载入 Kronos 模型</button>
-                </div>
-              </div>
-            </div>
-          </aside>
         </section>
         {% endif %}
 
@@ -896,6 +925,16 @@
 
     <!-- 实时热点条：底部常驻滚动条。实时热点 / 实时异动 / 自选行情 / 热门板块 / 金十快讯，
          悬停暂停并看详情、点击看个股、★一键自选。所有交互均在本条上完成。 -->
+    <aside id="marketCornerTicker" class="market-corner-ticker" aria-label="指数与板块播报" hidden>
+      <div class="market-corner-head">
+        <strong>指数与板块</strong>
+        <span id="marketCornerTime">--</span>
+      </div>
+      <div class="market-corner-viewport">
+        <div id="marketCornerTrack" class="market-corner-track"></div>
+      </div>
+    </aside>
+
     <div class="notify-bar" id="notifyBar" aria-label="实时热点条">
       <div class="notify-bar-head">
         <button class="notify-cat" data-notify-cat="hot" type="button" title="实时热点·人气热股">热点</button>
@@ -1006,6 +1045,7 @@
             <button data-suite-tab="institutional_holdings" class="suite-tab" type="button">机构持仓</button>
             <button data-suite-tab="panel"               class="suite-tab" type="button">多空评审团</button>
             <button data-suite-tab="ai_interpretation"   class="suite-tab" type="button">AI 解读</button>
+            <button data-suite-tab="financials"          class="suite-tab" type="button">财务三大表</button>
             <button data-suite-tab="pattern_backtest"    class="suite-tab" type="button">形态回测</button>
           </nav>
           <div class="stock-suite-panels" id="stockSuitePanels">
@@ -1027,6 +1067,7 @@
             <div class="suite-pane hidden" data-suite-pane="institutional_holdings" id="suitePaneHoldings"></div>
             <div class="suite-pane hidden" data-suite-pane="panel" id="suitePanePanel"></div>
             <div class="suite-pane hidden" data-suite-pane="ai_interpretation" id="suitePaneAi"></div>
+            <div class="suite-pane hidden" data-suite-pane="financials" id="suitePaneFinancials"></div>
             <div class="suite-pane hidden" data-suite-pane="pattern_backtest" id="suitePanePatternBacktest"></div>
           </div>
         </div>
@@ -1136,6 +1177,29 @@
         </div>
         <div class="drawer-body">
           <div id="taskDrawerList" class="list"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="opportunityDataDrawer" class="drawer-backdrop" aria-hidden="true" hidden>
+      <div class="drawer-shell opportunity-data-drawer" role="dialog" aria-modal="true" aria-label="机会数据">
+        <div class="drawer-header">
+          <h2>机会数据</h2>
+          <button class="button secondary compact" type="button" data-drawer-close="opportunityDataDrawer">关闭</button>
+        </div>
+        <div class="drawer-body">
+          <div class="opportunity-data-toolbar" role="tablist" aria-label="机会数据视图">
+            <button class="canvas-view-tab active" type="button" data-opportunity-data-tab="all">最新全部</button>
+            <button class="canvas-view-tab" type="button" data-opportunity-data-tab="history">历史股票分析</button>
+            <button class="canvas-view-tab" type="button" data-opportunity-data-tab="sectors">历史热门板块</button>
+            <button class="canvas-view-tab" type="button" data-opportunity-data-tab="pattern">形态回测</button>
+          </div>
+          <div class="opportunity-data-search">
+            <input id="opportunityDataSearch" type="search" placeholder="搜索名称 / 代码 / 板块…" autocomplete="off" />
+            <span id="opportunityDataSearchHint" class="opportunity-data-search-hint"></span>
+          </div>
+          <div id="opportunityDataSummary" class="opportunity-data-summary"></div>
+          <div id="opportunityDataBody" class="list opportunity-data-list"></div>
         </div>
       </div>
     </div>

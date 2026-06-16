@@ -47,6 +47,9 @@ def _items():
     return [
         {"code": "000001", "name": "平安银行", "total_score": 82.1, "rating": "A",
          "degraded": False, "source": "heat", "change_pct": 2.1,
+         "source_detail": "热门行业 半导体 第1 · 成分第3",
+         "sector": "半导体", "sector_code": "BK1001",
+         "sector_rank": 1, "sector_stock_rank": 3,
          "scores": {"quantitative": 55, "sector": 70},
          "signals": {"chase": 12, "rsi": 48.2, "sell_signals": 0}},
         {"code": "300750", "name": "宁德时代", "total_score": 76.0, "rating": "B",
@@ -79,6 +82,11 @@ def test_save_run_roundtrip_with_rank_and_json(conn):
     items = repo.items_for_run(run_id)
     assert [i["code"] for i in items] == ["000001", "300750"]  # 按分数降序
     assert items[0]["item_rank"] == 1
+    assert items[0]["sector"] == "半导体"
+    assert items[0]["sector_code"] == "BK1001"
+    assert items[0]["sector_rank"] == 1
+    assert items[0]["sector_stock_rank"] == 3
+    assert items[0]["source_detail"].startswith("热门行业")
     assert items[1]["item_rank"] == 2
     assert items[1]["degraded"] == 1
     assert json.loads(items[0]["scores_json"])["sector"] == 70
@@ -118,6 +126,11 @@ def test_build_items_projection_from_discovery_results(conn):
             "stock_code": "688343",
             "name": "云天励飞",
             "source": "heat",
+            "source_detail": "热门行业 软件服务 第2 · 成分第5",
+            "sector_name": "软件服务",
+            "sector_code": "BK2002",
+            "sector_rank": 2,
+            "sector_stock_rank": 5,
             "change_pct": 5.2,
             "final_score": 79.3,
             "rating": "B",
@@ -144,6 +157,11 @@ def test_build_items_projection_from_discovery_results(conn):
     assert items[0]["code"] == "688343"
     assert items[0]["total_score"] == pytest.approx(79.3)
     assert items[0]["rating"] == "B"
+    assert items[0]["sector"] == "软件服务"
+    assert items[0]["sector_code"] == "BK2002"
+    assert items[0]["sector_rank"] == 2
+    assert items[0]["sector_stock_rank"] == 5
+    assert items[0]["source_detail"].startswith("热门行业")
     assert items[0]["signals"]["rsi"] == 47.0
     assert items[0]["signals"]["chase"] == 30
     assert items[0]["signals"]["sell_signals"] == 1
@@ -163,3 +181,18 @@ def test_runs_by_day_groups_counts(conn):
     days = repo.runs_by_day(limit=10)
     assert [d["run_date"] for d in days] == ["2026-06-10", "2026-06-09"]
     assert days[0]["run_count"] == 2
+
+
+def test_get_run_by_id_and_missing(conn):
+    from data_store import opportunity_repo as repo
+
+    rid = repo.save_run(_meta(), _items())
+    run = repo.get_run(rid)
+    assert run is not None
+    assert run["id"] == rid
+    assert run["item_count"] == 2
+    assert run["source"] == "multi"
+
+    assert repo.get_run(999999) is None
+    assert repo.get_run(None) is None
+    assert repo.get_run("not-an-int") is None

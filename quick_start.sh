@@ -373,13 +373,15 @@ echo "16. 退出"
             if [[ "$confirm" != "n" && "$confirm" != "N" ]]; then
                 read -p "请输入分析条数（默认100）: " limit
                 limit=${limit:-100}
-                echo "候选来源：1) 多源综合(默认: 热度+超跌反弹+资金流向)  2) 仅热度榜  3) 资金流向榜单"
-                read -p "请选择来源 (1/2/3): " source_choice
+                echo "候选来源：1) 多源综合(默认: 热度+热门板块+超跌反弹+资金流向)  2) 仅热度榜  3) 资金流向榜单  4) 热门板块成分股"
+                read -p "请选择来源 (1/2/3/4): " source_choice
                 source="multi"
                 if [[ "$source_choice" == "2" ]]; then
                     source="heat"
                 elif [[ "$source_choice" == "3" ]]; then
                     source="moneyflow_dc"
+                elif [[ "$source_choice" == "4" ]]; then
+                    source="sector_hot"
                 fi
                 echo "正在启动投资机会挖掘系统..."
                 $PYTHON_CMD scripts/run_opportunity_discovery.py --limit "$limit" --source "$source" --workers 10
@@ -397,13 +399,15 @@ echo "16. 退出"
             if [[ "$confirm" != "n" && "$confirm" != "N" ]]; then
                 read -p "请输入分析条数（默认100）: " limit
                 limit=${limit:-100}
-                echo "候选来源：1) 多源综合(默认: 热度+超跌反弹+资金流向)  2) 仅热度榜  3) 资金流向榜单"
-                read -p "请选择来源 (1/2/3): " source_choice
+                echo "候选来源：1) 多源综合(默认: 热度+热门板块+超跌反弹+资金流向)  2) 仅热度榜  3) 资金流向榜单  4) 热门板块成分股"
+                read -p "请选择来源 (1/2/3/4): " source_choice
                 source="multi"
                 if [[ "$source_choice" == "2" ]]; then
                     source="heat"
                 elif [[ "$source_choice" == "3" ]]; then
                     source="moneyflow_dc"
+                elif [[ "$source_choice" == "4" ]]; then
+                    source="sector_hot"
                 fi
                 echo "正在启动投资机会挖掘系统..."
                 $PYTHON_CMD scripts/run_opportunity_discovery.py --limit "$limit" --source "$source" --workers 10

@@ -29,7 +29,7 @@ def _cols(conn, table: str) -> set:
 
 
 def test_migrate_reaches_latest_version(conn):
-    assert migrate(conn) == 9  # v9: opportunity_run / opportunity_item(机会挖掘按天入库)
+    assert migrate(conn) == 12  # v12: financial_statement 财务三大表缓存表
 
 
 def test_v7_creates_all_tables(conn):
@@ -48,7 +48,18 @@ def test_v7_creates_all_tables(conn):
 
 def test_v7_idempotent(conn):
     migrate(conn)
-    assert migrate(conn) == 9  # 二次运行不报错、不重复推进
+    assert migrate(conn) == 12  # 二次运行不报错、不重复推进
+
+
+def test_opportunity_item_sector_columns(conn):
+    migrate(conn)
+    assert {
+        "source_detail",
+        "sector",
+        "sector_code",
+        "sector_rank",
+        "sector_stock_rank",
+    }.issubset(_cols(conn, "opportunity_item"))
 
 
 def test_dragon_tiger_list_columns(conn):

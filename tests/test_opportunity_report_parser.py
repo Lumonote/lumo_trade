@@ -1,4 +1,5 @@
 import importlib
+import sqlite3
 import sys
 
 
@@ -12,6 +13,12 @@ def _load_webui_core(tmp_path, monkeypatch):
     sys.modules.pop("webui.core", None)
     module = importlib.import_module("webui.core")
     return module
+
+
+def _patch_store_conn(monkeypatch, conn):
+    from data_store import hot_sector_repo, opportunity_repo
+    monkeypatch.setattr(hot_sector_repo, "get_conn", lambda: conn)
+    monkeypatch.setattr(opportunity_repo, "get_conn", lambda: conn)
 
 
 def test_latest_opportunity_report_parser_handles_generated_html_table(tmp_path, monkeypatch):
@@ -91,6 +98,26 @@ def test_extract_all_detail_sections_returns_ordered_label_value(tmp_path, monke
     assert by_label["概览"].startswith("评级S")
     # value must be trimmed of the trailing section separator
     assert not by_label["板块"].endswith("；")
+
+
+def test_extract_all_detail_sections_folds_embedded_markers(tmp_path, monkeypatch):
+    """新闻/动态正文里内嵌的 【…】 不能变成顶层字段(否则污染画布与 Excel 列)。"""
+    module = _load_webui_core(tmp_path, monkeypatch)
+
+    detail = (
+        "【概览】评级A，建议：可关注；"
+        "【最新动态】公司公告 【股商异动】今日涨停，主力净流入1.6亿；"
+        "【消息】评级:中性，利好1/利空0，58分"
+    )
+    sections = module._extract_all_detail_sections(detail)
+
+    labels = [section["label"] for section in sections]
+    assert labels == ["概览", "最新动态", "消息"]
+    # embedded 【股商异动】 stays inside 最新动态's value, not a separate field
+    assert "股商异动" not in labels
+    by_label = {section["label"]: section["value"] for section in sections}
+    assert "股商异动" in by_label["最新动态"]
+    assert "主力净流入1.6亿" in by_label["最新动态"]
 
 
 def test_parse_opportunity_report_items_include_full_fields(tmp_path, monkeypatch):
@@ -232,6 +259,202 @@ def test_parse_opportunity_report_extracts_run_meta(tmp_path, monkeypatch):
 
     latest = module._load_latest_opportunities()
     assert latest["latest_report"]["run_meta"]["source"] == "multi"
+    canvas = latest["canvas"]
+    assert canvas["levels"] == ["报告", "板块", "股票", "分析内容"]
+    assert any(view["id"] == "business_tag" for view in canvas["views"])
+    assert canvas["stats"]["sectors"] == 1
+    assert canvas["stats"]["stocks"] == 1
+    assert {"root", "sector-1", "stock-1-688111"} <= {node["id"] for node in canvas["nodes"]}
+    stock_node = next(node for node in canvas["nodes"] if node["id"] == "stock-1-688111")
+    analysis_labels = [section["label"] for section in stock_node["analysis"]]
+    # 概览/涨幅 were previously dropped by the [:10] cap; the canvas now surfaces
+    # every 【…】 section in full (no truncation).
+    assert analysis_labels[:3] == ["概览", "入选原因", "涨幅"]
+    assert {"概览", "涨幅", "最新动态", "高级"} <= set(analysis_labels)
+    assert len(analysis_labels) == 12
+
+
+def test_opportunity_canvas_uses_full_run_sorted_and_hot_sector_memberships(tmp_path, monkeypatch):
+    module = _load_webui_core(tmp_path, monkeypatch)
+    from data_store.schema import migrate
+    from data_store import hot_sector_repo, opportunity_repo
+
+    conn = sqlite3.connect(tmp_path / "kronos_test.sqlite", isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    migrate(conn)
+    _patch_store_conn(monkeypatch, conn)
+
+    results_dir = tmp_path / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    report = _write_rich_report(results_dir, "opportunity_top10_20260614_101500.md")
+    opportunity_repo.save_run(
+        {
+            "run_at": "2026-06-14T10:15:00",
+            "run_date": "2026-06-14",
+            "source": "multi",
+            "candidate_limit": 100,
+            "mode": "market_scan",
+            "report_file": report.name,
+        },
+        [
+            {"code": "600001", "name": "高分股", "total_score": 91.2, "rating": "S", "source": "heat"},
+            {"code": "688111", "name": "金山办公", "total_score": 87.08, "rating": "S", "source": "multi"},
+            {"code": "000001", "name": "平安银行", "total_score": 73.5, "rating": "B", "source": "moneyflow"},
+        ],
+    )
+    hot_sector_repo.save_snapshot(
+        boards=[
+            {"code": "BK1001", "name": "软件服务", "type": "行业", "rank": 1, "main_net_inflow": 1.2e8},
+            {"code": "BK2001", "name": "人工智能", "type": "概念", "rank": 2, "main_net_inflow": 8.8e7},
+        ],
+        stocks=[
+            {"sector_code": "BK1001", "code": "688111", "name": "金山办公", "sector_stock_rank": 3, "main_net_inflow": 3e7},
+            {"sector_code": "BK2001", "code": "688111", "name": "金山办公", "sector_stock_rank": 8, "main_net_inflow": 1.1e7},
+            {"sector_code": "BK1001", "code": "600001", "name": "高分股", "sector_stock_rank": 1, "main_net_inflow": 6e7},
+        ],
+        relations=[
+            {"board_code": "BK1001", "code": "688111", "relation_type": "dragon_tiger", "trade_date": "2026-06-14", "amount": 5e7},
+        ],
+        meta={"source": "sector_hot", "board_limit": 10},
+    )
+
+    payload = module._load_latest_opportunities()
+
+    assert [item["code"] for item in payload["items"]] == ["600001", "688111", "000001"]
+    assert payload["stats"]["total"] == 3
+    canvas = payload["canvas"]
+    assert any(view["id"] == "score_rank" for view in canvas["views"])
+    stock_node = next(node for node in canvas["nodes"] if node.get("stock_code") == "688111" and node["type"] == "stock")
+    assert stock_node["score_rank"] == 2
+    assert stock_node["sector_rank"] == 2
+    assert stock_node["sector_peer_count"] == 2
+    assert stock_node["hot_sector_count"] == 2
+    assert "软件服务 板块#1 / 成分股#3" in stock_node["hot_sector_rank_summary"]
+    assert stock_node["lhb_hit"] is True
+    assert {"from": stock_node["id"], "to": "hot-board-BK1001", "relation": "stock_hot_board"} in canvas["edges"]
+
+    conn.close()
+
+
+def test_export_opportunity_canvas_excel_without_hot_sector_snapshot(tmp_path, monkeypatch):
+    module = _load_webui_core(tmp_path, monkeypatch)
+    from data_store.schema import migrate
+    from data_store import opportunity_repo
+
+    conn = sqlite3.connect(tmp_path / "kronos_test.sqlite", isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    migrate(conn)
+    _patch_store_conn(monkeypatch, conn)
+
+    results_dir = tmp_path / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    report = _write_rich_report(results_dir, "opportunity_top10_20260614_111500.md")
+    opportunity_repo.save_run(
+        {
+            "run_at": "2026-06-14T11:15:00",
+            "run_date": "2026-06-14",
+            "source": "multi",
+            "candidate_limit": 100,
+            "mode": "market_scan",
+            "report_file": report.name,
+        },
+        [
+            {"code": "688111", "name": "金山办公", "total_score": 87.08, "rating": "S", "source": "multi"},
+            {"code": "000001", "name": "平安银行", "total_score": 73.5, "rating": "B", "source": "moneyflow"},
+        ],
+    )
+
+    # Suite enrichment recomputes per-stock via STOCK_SUITE_SERVICE.get_suite, which would
+    # hit the network. Stub it: full suite for 688111, degraded for anything else — so the
+    # export exercises both the enriched and the baseline-fallback paths deterministically.
+    def _fake_get_suite(code, name="", force_refresh=False):
+        if code != "688111":
+            return {"success": False, "error": "offline", "stock": {"code": code}}
+        return {
+            "success": True,
+            "overview": {
+                "radar": {"main_force_phase": {"score": 72, "label": "强势主导"},
+                          "control_degree": {"score": 68, "label": "中控"}},
+                "key_signals": [{"label": "仓位上限", "value": "60%"},
+                                {"label": "大盘周期", "value": "震荡期"}],
+                "scenario_probability": {"bullish": 60, "bearish": 13, "sideways": 27},
+            },
+            "risk_control": {
+                "available": True,
+                "execution_plan": {
+                    "stop_loss": {"price": 28.5, "drop_pct": 7.5, "basis": "ATR(20)×1.5 下沿"},
+                    "risk_reward": {"ratio": "1:2.6", "expected_return_pct": 19.5},
+                },
+                "scaled_entry": [{"label": "现价建仓", "price": 30.8, "position_pct": 10}],
+                "tiered_take_profit": [{"label": "第一止盈(前高)", "price": 36.8, "sell_pct": 30}],
+                "deep_signals": [{"text": "最大回撤：当前 -8.5%"},
+                                 {"text": "波动率(60日年化) 42.3%"},
+                                 {"text": "夏普比率(60日年化) 1.35"}],
+            },
+            "quant_matrix": {"data_status": "fresh", "current_posture": "震荡偏多",
+                             "signals_matrix": [{"model": "海龟交易", "period": "daily", "signal": 1}]},
+            "chip_control": {"data_status": "fresh", "control_degree": 68, "control_label": "中控",
+                             "concentration_90": 12.0},
+            "main_force_deep": {"dragon_tiger": {"quant_seat_appearances": 2, "net_inst_buy_30d": 5e7},
+                                "hsgt": {"latest": {"hold_ratio": 3.5}}},
+            "institutional_holdings": {"top10_floatholders": {"concentration": 42.0},
+                                       "holder_number": {"latest_num": 32000}},
+        }
+
+    monkeypatch.setattr(module.STOCK_SUITE_SERVICE, "get_suite", _fake_get_suite)
+
+    out = module.export_opportunity_canvas_excel()
+
+    assert out["file"].startswith("opportunity_canvas_")
+    import openpyxl
+    wb = openpyxl.load_workbook(out["path"], read_only=True)
+    assert {"报告信息", "股票排名", "股票全量明细", "板块汇总", "热门板块关联",
+            "分析内容", "画布节点", "画布关系"} <= set(wb.sheetnames)
+    # 6 张新 sheet 一定存在
+    assert {"投资速览", "评分雷达", "风控执行计划", "量化模型矩阵", "筹码与机构",
+            "术语表与图例"} <= set(wb.sheetnames)
+    rank_header = list(wb["股票排名"].iter_rows(values_only=True))[0]
+    assert rank_header[:4] == ("全量排名", "报告排名", "代码", "名称")
+    # 细化列:涨幅拆分 + 评分分项 + 关键信号 + 来源细节 + 降级标记(即使本行无值也保留表头)
+    for col in ("当日涨幅", "3日涨幅", "5日涨幅", "板块分", "技术分", "量化分",
+                "追高风险", "RSI", "卖出信号", "量化总分", "来源细节", "是否降级"):
+        assert col in rank_header
+    rows = list(wb["股票排名"].iter_rows(values_only=True))
+    assert rows[1][2] == "688111"
+    # 全量明细:每个 【…】 字段单独成列 + 量化模型 + 分析摘要
+    detail_header = list(wb["股票全量明细"].iter_rows(values_only=True))[0]
+    for col in ("量化模型", "概览", "涨幅", "技术", "基本面", "高级", "历史重复入选", "分析摘要"):
+        assert col in detail_header
+    # 空的热门板块关联表也应带列头,而非 0x0
+    assert list(wb["热门板块关联"].iter_rows(values_only=True))[0][0] == "代码"
+
+    # 投资速览:688111 复算成功 → 带白话列与风控数值
+    ov_header = list(wb["投资速览"].iter_rows(values_only=True))[0]
+    for col in ("建议操作", "现价", "止损价", "第一目标价", "盈亏比", "夏普"):
+        assert col in ov_header
+    ov_rows = list(wb["投资速览"].iter_rows(values_only=True))[1:]
+    ov_by_code = {r[ov_header.index("代码")]: r for r in ov_rows}
+    assert "688111" in ov_by_code
+    enriched = ov_by_code["688111"]
+    assert enriched[ov_header.index("现价")] == 30.8
+    assert enriched[ov_header.index("止损价")] == 28.5
+    assert enriched[ov_header.index("盈亏比")] == "1:2.6"
+    assert enriched[ov_header.index("建议操作")] in ("买入", "观望", "回避")
+
+    # 报告信息:折算覆盖率字段
+    info_header = list(wb["报告信息"].iter_rows(values_only=True))[0]
+    for col in ("复算成功数", "复算失败数", "复算覆盖率"):
+        assert col in info_header
+    info_row = list(wb["报告信息"].iter_rows(values_only=True))[1]
+    assert info_row[info_header.index("复算成功数")] >= 1
+
+    # 术语表非空且含关键术语
+    glossary = list(wb["术语表与图例"].iter_rows(values_only=True))
+    terms = {r[0] for r in glossary[1:]}
+    assert {"建议操作", "夏普比率", "盈亏比"} <= terms
+
+    wb.close()
+    conn.close()
 
 
 def test_stock_dashboard_route_survives_existing_report(tmp_path, monkeypatch):

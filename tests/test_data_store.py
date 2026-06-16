@@ -36,9 +36,13 @@ def test_get_conn_creates_db_and_applies_schema(tmp_db):
         "jgdy_detail",
         "fund_hold_detail",
         "sync_log",
+        "hot_sector_snapshot",
+        "hot_sector_board",
+        "hot_sector_stock",
+        "hot_sector_relation",
     }.issubset(tables)
     version = c.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert version >= 6
+    assert version >= 11
 
 
 def test_migrate_is_idempotent(tmp_db):

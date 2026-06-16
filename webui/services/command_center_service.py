@@ -42,10 +42,23 @@ class CommandCenterService:
             out[row.get("code")] = sig
         return out
 
-    def overview(self, *, quotes_only=False):
+    def _merge_sidecars(self, paths):
+        """Merge per-report signals sidecars(当日多份报告聚合)。先到先得。"""
+        merged = {}
+        for path in paths or []:
+            for code, sig in self._load_sidecar(path).items():
+                if code not in merged:
+                    merged[code] = sig
+        return merged
+
+    def overview(self, *, quotes_only=False, report=None, available_dates=None):
         degraded = {}
-        report, d = self._safe(self._load_report, {"items": [], "report_path": None})
-        degraded["opportunity"] = d or not report.get("items")
+        if report is None:
+            report, d = self._safe(self._load_report, {"items": [], "report_path": None})
+            degraded["opportunity"] = d or not report.get("items")
+        else:
+            report = report or {"items": [], "report_path": None}
+            degraded["opportunity"] = not report.get("items")
         menv, d = self._safe(self._market_env, {})
         degraded["market_env"] = d
         hold, d = self._safe(self._holdings,
@@ -56,7 +69,12 @@ class CommandCenterService:
 
         market = eng.score_market_risk(menv)
         held_codes = {p.get("ts_code") for p in hold.get("positions", [])}
-        sidecar = self._load_sidecar(report.get("report_path"))
+        # 当日可能聚合多份报告:合并各自 signals sidecar
+        paths = report.get("report_paths")
+        if not paths:
+            rp = report.get("report_path")
+            paths = [rp] if rp else []
+        sidecar = self._merge_sidecars(paths)
 
         matrix = []
         for item in report.get("items", []):
@@ -79,11 +97,15 @@ class CommandCenterService:
         }
         return {
             "as_of": {"report": report.get("file"), "count": len(matrix),
-                      "sidecar": bool(sidecar)},
+                      "sidecar": bool(sidecar),
+                      "date": report.get("date"),
+                      "report_count": report.get("report_count",
+                                                 len(paths) if paths else (1 if report.get("items") else 0))},
             "indices": indices,
             "market_env": menv,
             "matrix": matrix,
             "portfolio": portfolio,
             "rankings": {"capital": cap.get("rows", [])},
+            "available_dates": list(available_dates or []),
             "degraded": degraded,
         }

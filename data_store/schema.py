@@ -365,12 +365,113 @@ _MIGRATIONS: List[Tuple[int, str]] = [
           rating       TEXT,
           degraded     INTEGER NOT NULL DEFAULT 0,  -- 数据缺失降级(quant 无历史数据等)
           source       TEXT,                        -- 候选来源 heat/oversold/moneyflow/...
+          source_detail TEXT,                       -- 候选来源细节,如热门板块/成分股排名
+          sector       TEXT,                        -- 中文板块/行业名称
+          sector_code  TEXT,                        -- 东财板块代码(BK...)
+          sector_rank  INTEGER,                     -- 热门板块排名
+          sector_stock_rank INTEGER,                -- 板块内成分股排名
           change_pct   REAL,
           scores_json  TEXT,                        -- 七维分项
           signals_json TEXT,                        -- chase/rsi/涨幅/卖出信号等风险信号
           PRIMARY KEY (run_id, code)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_opp_item_code ON opportunity_item(code, run_id);
+        """,
+    ),
+    (
+        10,
+        # 热门板块全量快照:记录 Top 热门板块、板块下全部成分股排名/资金字段,
+        # 以及与龙虎榜等外部事实表的关联关系,供桌面无限画布钻取与 Excel 导出。
+        """
+        CREATE TABLE IF NOT EXISTS hot_sector_snapshot (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at     TEXT NOT NULL,
+          trade_date     TEXT,
+          source         TEXT,
+          board_limit    INTEGER,
+          board_count    INTEGER,
+          stock_count    INTEGER,
+          relation_count INTEGER,
+          extra_json     TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_hss_created ON hot_sector_snapshot(created_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS hot_sector_board (
+          snapshot_id       INTEGER NOT NULL REFERENCES hot_sector_snapshot(id) ON DELETE CASCADE,
+          board_code        TEXT NOT NULL,
+          board_name        TEXT,
+          board_type        TEXT,
+          board_rank        INTEGER,
+          change_pct        REAL,
+          main_net_inflow   REAL,
+          raw_json          TEXT,
+          PRIMARY KEY (snapshot_id, board_code)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS hot_sector_stock (
+          snapshot_id            INTEGER NOT NULL REFERENCES hot_sector_snapshot(id) ON DELETE CASCADE,
+          board_code             TEXT NOT NULL,
+          code                   TEXT NOT NULL,
+          name                   TEXT,
+          stock_rank             INTEGER,
+          candidate_rank         INTEGER,
+          price                  REAL,
+          change_pct             REAL,
+          main_net_inflow        REAL,
+          main_net_inflow_text   TEXT,
+          lhb_trade_date         TEXT,
+          lhb_buy_amount         REAL,
+          lhb_sell_amount        REAL,
+          lhb_net_amount         REAL,
+          lhb_reason             TEXT,
+          raw_json               TEXT,
+          PRIMARY KEY (snapshot_id, board_code, code)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_hss_stock_code ON hot_sector_stock(code, snapshot_id);
+        CREATE INDEX IF NOT EXISTS idx_hss_stock_board ON hot_sector_stock(snapshot_id, board_code, stock_rank);
+
+        CREATE TABLE IF NOT EXISTS hot_sector_relation (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          snapshot_id    INTEGER NOT NULL REFERENCES hot_sector_snapshot(id) ON DELETE CASCADE,
+          board_code     TEXT,
+          code           TEXT NOT NULL,
+          relation_type  TEXT NOT NULL,
+          related_table  TEXT,
+          related_key    TEXT,
+          trade_date     TEXT,
+          amount         REAL,
+          detail_json    TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_hsr_snapshot_code ON hot_sector_relation(snapshot_id, code);
+        CREATE INDEX IF NOT EXISTS idx_hsr_type ON hot_sector_relation(relation_type, trade_date);
+        """,
+    ),
+    (
+        11,
+        # 机会挖掘 run 明细补充板块维度,让历史页/画布不再只能从 Markdown 或
+        # 最新热门板块快照反推中文板块和板块内排名。
+        "",
+    ),
+    (
+        12,
+        # 财务三大表(资产负债表/利润表/现金流量表)按期缓存。财报低频更新,
+        # 默认读缓存,缺失/强制刷新才联网(免费 akshare 优先,付费 Tushare 兜底)。
+        # 每个 (code, statement_type, report_date) 一行,行项目以 JSON 存 items_json。
+        """
+        CREATE TABLE IF NOT EXISTS financial_statement (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          code           TEXT NOT NULL,
+          ts_code        TEXT,
+          statement_type TEXT NOT NULL,           -- balance | income | cashflow
+          report_date    TEXT NOT NULL,           -- 报告期 YYYYMMDD / YYYY-MM-DD
+          period         TEXT,                     -- 报告期说明(年报/中报/季报)
+          source         TEXT,                     -- akshare | tushare
+          currency       TEXT,
+          items_json     TEXT,                     -- {字段:数值} 行项目
+          created_at     TEXT,
+          UNIQUE(code, statement_type, report_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_fs_code_type ON financial_statement(code, statement_type, report_date DESC);
         """,
     ),
 ]
@@ -407,6 +508,14 @@ def _migrate_v8_raw_json(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "dragon_tiger_list", "raw_json", "raw_json TEXT")
 
 
+def _migrate_v11_opportunity_item_sector(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, "opportunity_item", "source_detail", "source_detail TEXT")
+    _add_column_if_missing(conn, "opportunity_item", "sector", "sector TEXT")
+    _add_column_if_missing(conn, "opportunity_item", "sector_code", "sector_code TEXT")
+    _add_column_if_missing(conn, "opportunity_item", "sector_rank", "sector_rank INTEGER")
+    _add_column_if_missing(conn, "opportunity_item", "sector_stock_rank", "sector_stock_rank INTEGER")
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply pending migrations. Returns the final version.
 
@@ -421,6 +530,8 @@ def migrate(conn: sqlite3.Connection) -> int:
             continue
         if version == 8:
             _migrate_v8_raw_json(conn)
+        elif version == 11:
+            _migrate_v11_opportunity_item_sector(conn)
         elif sql.strip():
             conn.executescript(sql)
         conn.execute(

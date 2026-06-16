@@ -50,7 +50,7 @@ def normalize_stock_codes(raw_codes: Any) -> list[str]:
 
 
 class AnalysisJobRequestParser:
-    allowed_opportunity_sources = {'multi', 'heat', 'moneyflow_dc'}
+    allowed_opportunity_sources = {'multi', 'heat', 'moneyflow_dc', 'sector_hot'}
     allowed_batch_types = {'comprehensive', 'fundamental', 'sentiment'}
     opportunity_cli_defaults = {
         'limit': 100,
@@ -61,7 +61,7 @@ class AnalysisJobRequestParser:
     def opportunity_params(self, payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
         source = str(payload.get('source') or self.opportunity_cli_defaults['source']).strip()
         if source not in self.allowed_opportunity_sources:
-            return None, 'Unsupported source, use multi / heat / moneyflow_dc'
+            return None, 'Unsupported source, use multi / heat / moneyflow_dc / sector_hot'
 
         return {
             'limit': safe_int(payload.get('limit'), self.opportunity_cli_defaults['limit'], minimum=5, maximum=500),

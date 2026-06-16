@@ -20,6 +20,7 @@ import urllib.parse
 import warnings
 import datetime
 import logging
+from collections import defaultdict
 from html import unescape
 from pathlib import Path
 
@@ -139,15 +140,83 @@ def _cc_holdings():
     return {"account": account, "positions": positions, "max_drawdown": mdd}
 
 
-def _command_center_report():
-    """Latest opportunity report parsed to items + its on-disk path(供 signals sidecar)。"""
-    reports = _latest_primary_opportunity_reports(limit=1)
+def _primary_report_date(path):
+    """Extract YYYY-MM-DD from a primary opportunity report filename, or None."""
+    m = re.match(r"^opportunity_top10_(\d{8})_\d{6}\.md$", Path(path).name)
+    if not m:
+        return None
+    d = m.group(1)
+    return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+
+
+def _command_center_available_dates(limit=60):
+    """Distinct days(newest-first)that have primary opportunity reports,用于大屏选日。"""
+    seen = []
+    for path in _latest_primary_opportunity_reports(limit=200):
+        d = _primary_report_date(path)
+        if d and d not in seen:
+            seen.append(d)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def _command_center_report(date=None):
+    """Aggregate ALL of a day's primary opportunity reports into one item set.
+
+    显示「当日全部相关内容」:同日多份报告的 items 按 code 去重(保留最高综合分),
+    并透传当日全部报告路径供 signals sidecar 合并。``date`` 为空 → 最近一天。
+    """
+    reports = _latest_primary_opportunity_reports(limit=200)
     if not reports:
-        return {"items": [], "market_env": "", "file": None, "report_path": None}
-    path = reports[0]
-    parsed = _parse_opportunity_report(path)
-    parsed["report_path"] = str(path)
-    return parsed
+        return {"items": [], "market_env": "", "file": None, "report_path": None,
+                "report_paths": [], "date": None, "report_count": 0}
+    target = str(date or "").strip()[:10]
+    if not target:
+        target = _primary_report_date(reports[0])
+    day_reports = [p for p in reports if _primary_report_date(p) == target]
+    if not day_reports:  # 指定日无报告 → 回退最近一天
+        target = _primary_report_date(reports[0])
+        day_reports = [p for p in reports if _primary_report_date(p) == target]
+
+    merged = {}
+    market_env = ""
+    newest_file = None
+    paths = []
+    for path in day_reports:  # day_reports 已是新→旧
+        try:
+            parsed = _parse_opportunity_report(path)
+        except Exception as exc:
+            logger.debug(f"大屏聚合解析报告失败 {path}: {exc}")
+            continue
+        paths.append(str(path))
+        if newest_file is None:
+            newest_file = parsed.get("file")
+            market_env = parsed.get("market_env") or ""
+        for item in parsed.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            code = _stock_code_key(item.get("code") or item.get("stock_code"))
+            if not code:
+                continue
+            score = _safe_float(item.get("score"), 0.0) or 0.0
+            prev = merged.get(code)
+            if prev is None or score > (_safe_float(prev.get("score"), 0.0) or 0.0):
+                merged[code] = item
+    items = sorted(
+        merged.values(),
+        key=lambda i: _safe_float(i.get("score"), 0.0) or 0.0,
+        reverse=True,
+    )
+    return {
+        "items": items,
+        "market_env": market_env,
+        "file": newest_file,
+        "report_path": paths[0] if paths else None,
+        "report_paths": paths,
+        "date": target,
+        "report_count": len(paths),
+    }
 
 
 COMMAND_CENTER_SERVICE = CommandCenterService(
@@ -159,9 +228,18 @@ COMMAND_CENTER_SERVICE = CommandCenterService(
 )
 
 
-def command_center_overview(quotes_only=False):
-    """Whole-screen payload for the 风险·机遇 大屏(见 CommandCenterService.overview)。"""
-    return COMMAND_CENTER_SERVICE.overview(quotes_only=bool(quotes_only))
+def command_center_overview(date=None, quotes_only=False):
+    """Whole-screen payload for the 风险·机遇 大屏(见 CommandCenterService.overview)。
+
+    ``date`` 指定历史日(YYYY-MM-DD),聚合该日全部报告;为空取最近一天。
+    """
+    report = _command_center_report(date)
+    available = _command_center_available_dates()
+    return COMMAND_CENTER_SERVICE.overview(
+        quotes_only=bool(quotes_only),
+        report=report,
+        available_dates=available,
+    )
 
 
 def start_command_center_recompute():
@@ -856,6 +934,24 @@ def _normalize_stock_codes(raw_codes):
     return normalize_stock_codes(raw_codes)
 
 
+def _stock_code_key(value):
+    codes = normalize_stock_codes([value])
+    return codes[0] if codes else str(value or '').strip()
+
+
+def _json_obj(value, default=None):
+    if default is None:
+        default = {}
+    if value in (None, ''):
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _json_safe(value):
     if isinstance(value, dict):
         return {str(k): _json_safe(v) for k, v in value.items()}
@@ -947,19 +1043,34 @@ def _extract_detail_section(detail, title):
     return _strip_markup(match.group(1)).strip('；; ') if match else ''
 
 
+# 报告 详细分析 单元格中合法的顶层 【…】 区块标签（其余 【…】 视为正文内嵌）。
+_KNOWN_DETAIL_LABELS = {
+    '概览', '涨幅', '板块', '量化', '技术', '基本面', '情绪资金', '消息',
+    '关键加减分', '入选原因', '最新动态', '高级', '历史重复入选', '风险提示',
+}
+
+
 def _extract_all_detail_sections(detail):
     """Extract every 【label】value section from a packed 详细分析 cell, in order.
 
     Standard reports pack all rich fields (涨幅/板块/量化/技术/基本面/情绪资金/消息/
     关键加减分/入选原因/最新动态/高级…) into one table cell separated by 【】 markers.
-    Returns an ordered list of {'label', 'value'} so the UI can render same-style cards.
+    News/dynamics text frequently embeds its own 【…】 markers (e.g. 【股商异动】 or a
+    quoted headline); those are NOT top-level fields, so any 【label】 outside the known
+    section set is folded back into the preceding section's value rather than becoming a
+    spurious field/column. Returns an ordered list of {'label', 'value'}.
     """
     sections = []
     for label, value in re.findall(r'【([^】]+)】([^【]+)', detail or ''):
         clean_value = _strip_markup(value).strip('；; ')
         clean_label = _strip_markup(label)
-        if clean_label and clean_value:
+        if not clean_label or not clean_value:
+            continue
+        if clean_label in _KNOWN_DETAIL_LABELS or not sections:
             sections.append({'label': clean_label, 'value': clean_value})
+        else:
+            prev = sections[-1]
+            prev['value'] = f"{prev['value']} 【{clean_label}】{clean_value}".strip()
     return sections
 
 
@@ -1116,25 +1227,1341 @@ def load_opportunity_report_cards(file):
     if not target.is_file():
         return None
     parsed = _parse_opportunity_report(target)
+    hot_sector = _load_hot_sector_snapshot_summary()
+    run_payload = _load_opportunity_run_payload(parsed['file'])
+    items = _merge_opportunity_items(parsed['items'], (run_payload or {}).get('items'))
+    latest_report = {
+        'file': parsed['file'],
+        'url': parsed['url'],
+        'updated_at': parsed['updated_at'],
+        'run_meta': parsed.get('run_meta') or {},
+        'degraded_count': parsed.get('degraded_count', 0),
+        'all_degraded': parsed.get('all_degraded', False),
+    }
+    if run_payload:
+        latest_report.update({
+            'run_id': (run_payload.get('run') or {}).get('id'),
+            'run_item_count': len(run_payload.get('items') or []),
+        })
     return {
         'file': parsed['file'],
         'url': parsed['url'],
         'updated_at': parsed['updated_at'],
         'market_env': parsed['market_env'],
-        'count': len(parsed['items']),
-        'latest_report': {
-            'file': parsed['file'],
-            'url': parsed['url'],
-            'updated_at': parsed['updated_at'],
-            'run_meta': parsed.get('run_meta') or {},
-            'degraded_count': parsed.get('degraded_count', 0),
-            'all_degraded': parsed.get('all_degraded', False),
-        },
+        'count': len(items),
+        'latest_report': latest_report,
         'degraded_count': parsed.get('degraded_count', 0),
         'all_degraded': parsed.get('all_degraded', False),
-        'items': parsed['items'],
-        'cards': parsed['items'],
+        'items': items,
+        'cards': items,
+        'canvas': _build_opportunity_canvas(items, latest_report, parsed['market_env'], hot_sector),
+        'hot_sector': hot_sector,
     }
+
+
+def _opportunity_tag_sections(item):
+    """Extract label/value sections for the desktop opportunity canvas.
+
+    Returns every 【…】 section parsed from the report (概览/涨幅/板块/量化/技术/
+    基本面/情绪资金/消息/关键加减分/入选原因/最新动态/高级/历史重复入选…) so the
+    canvas detail panel and the Excel export show the full, fine-grained content.
+    Previously this was capped at 10 sections, which silently dropped 涨幅/概览/
+    历史重复入选.
+    """
+    preferred = [
+        '概览', '入选原因', '涨幅', '板块', '量化', '技术', '基本面',
+        '情绪资金', '消息', '关键加减分', '最新动态', '高级', '历史重复入选',
+    ]
+    fields = item.get('fields') if isinstance(item, dict) else []
+    by_label = {}
+    if isinstance(fields, list):
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            label = str(field.get('label') or '').strip()
+            value = _strip_markup(field.get('value') or '')
+            if label and value and label not in by_label:
+                by_label[label] = value
+
+    fallback_pairs = [
+        ('入选原因', item.get('reason') or item.get('summary')),
+        ('板块', item.get('sector') or item.get('industry')),
+        ('量化', item.get('quant')),
+        ('技术', item.get('technical')),
+        ('情绪资金', item.get('sentiment')),
+        ('关键加减分', item.get('risk')),
+    ]
+    for label, value in fallback_pairs:
+        value = _strip_markup(value or '')
+        if value and label not in by_label:
+            by_label[label] = value
+
+    sections = []
+    for label in preferred:
+        value = by_label.get(label)
+        if value:
+            sections.append({
+                'label': label,
+                'value': value,
+                'summary': _truncate_text(value, 96),
+            })
+    for label, value in by_label.items():
+        if label not in preferred and value:
+            sections.append({
+                'label': label,
+                'value': value,
+                'summary': _truncate_text(value, 96),
+            })
+    # Keep every parsed section (a generous safety cap guards against pathological
+    # input). Do NOT truncate to 10 — that used to drop 涨幅/概览/历史重复入选.
+    return sections[:40]
+
+
+def _opportunity_canvas_views():
+    return [
+        {'id': 'hierarchy', 'label': '层级', 'description': '报告 → 板块 → 股票 → 分析内容'},
+        {'id': 'score_rank', 'label': '排名', 'description': '全部股票按综合评分降序'},
+        {'id': 'sector', 'label': '板块', 'description': '按板块聚合股票关系'},
+        {'id': 'business_tag', 'label': '标签', 'description': '按概念 / 板块 / 股票等业务标签组织关系'},
+        {'id': 'hot_sector', 'label': '热门', 'description': '前十大热门板块全量关系'},
+        {'id': 'funds', 'label': '资金', 'description': '按主力净流入维度聚合'},
+        {'id': 'dragon_tiger', 'label': '龙虎榜', 'description': '热门板块与龙虎榜命中关系'},
+    ]
+
+
+def _empty_opportunity_canvas(reason='暂无机会挖掘报告'):
+    return {
+        'title': '投资机会分析',
+        'subtitle': reason,
+        'levels': ['报告', '板块', '股票', '分析内容'],
+        'views': _opportunity_canvas_views(),
+        'nodes': [{
+            'id': 'root',
+            'type': 'root',
+            'level': 0,
+            'title': '投资机会分析',
+            'subtitle': reason,
+            'detail': reason,
+            'tags': [],
+        }],
+        'edges': [],
+        'stats': {
+            'sectors': 0,
+            'stocks': 0,
+            'tags': 0,
+            'analysis': 0,
+        },
+    }
+
+
+def _load_hot_sector_snapshot_summary(snapshot_id=None):
+    try:
+        from data_store import hot_sector_repo
+        snapshot = hot_sector_repo.get_snapshot(snapshot_id)
+        if not snapshot:
+            return None
+        boards = hot_sector_repo.boards_for_snapshot(snapshot['id'])
+        return {
+            'snapshot': snapshot,
+            'boards': boards,
+            'stats': {
+                'boards': len(boards),
+                'stocks': int(snapshot.get('stock_count') or 0),
+                'relations': int(snapshot.get('relation_count') or 0),
+            },
+        }
+    except Exception as exc:
+        logger.debug(f"加载热门板块快照失败: {exc}")
+        return None
+
+
+def list_hot_sector_snapshots(limit=50):
+    """Historical hot-sector snapshots for the opportunity discovery page."""
+    try:
+        from data_store import hot_sector_repo
+        limit = _safe_int(limit, 50, minimum=1, maximum=200) or 50
+        return hot_sector_repo.list_snapshots(limit=limit)
+    except Exception as exc:
+        logger.debug(f"加载热门板块历史快照失败: {exc}")
+        return []
+
+
+def hot_sector_stocks_payload(snapshot_id=None, board_code=None, limit=200, offset=0):
+    try:
+        from data_store import hot_sector_repo
+        snapshot = hot_sector_repo.get_snapshot(snapshot_id)
+        if not snapshot:
+            return {'snapshot': None, 'stocks': [], 'relations': [], 'has_more': False}
+        sid = int(snapshot['id'])
+        limit = _safe_int(limit, 200, minimum=1, maximum=1000) or 200
+        offset = _safe_int(offset, 0, minimum=0, maximum=1000000) or 0
+        rows = hot_sector_repo.stocks_for_snapshot(
+            sid,
+            board_code=board_code,
+            limit=limit + 1,
+            offset=offset,
+        )
+        has_more = len(rows) > limit
+        stocks = rows[:limit]
+        relations = hot_sector_repo.relations_for_snapshot(
+            sid,
+            board_code=board_code,
+            limit=1000,
+        )
+        return {
+            'snapshot': snapshot,
+            'stocks': stocks,
+            'relations': relations,
+            'has_more': has_more,
+            'next_offset': offset + len(stocks),
+        }
+    except Exception as exc:
+        return {'snapshot': None, 'stocks': [], 'relations': [], 'has_more': False, 'error': str(exc)}
+
+
+def export_hot_sector_snapshot(snapshot_id=None):
+    from data_store import hot_sector_repo
+    snapshot = hot_sector_repo.get_snapshot(snapshot_id)
+    if not snapshot:
+        return None
+    sid = int(snapshot['id'])
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    path = RESULTS_DIR / f"hot_sector_snapshot_{sid}_{timestamp}.xlsx"
+    out = hot_sector_repo.export_snapshot_excel(sid, path)
+    return {
+        'file': out.name,
+        'path': str(out),
+        'url': _report_url(out),
+        'snapshot_id': sid,
+    }
+
+
+def _load_opportunity_run_payload(report_file=None, run_id=None):
+    """Load full scored stocks from the structured opportunity run store.
+
+    ``run_id`` 优先(画布按日切换按 run 精确取);否则按 ``report_file`` 匹配;
+    都没有则取最近一次 run。
+    """
+    try:
+        from data_store import opportunity_repo
+        run = None
+        if run_id is not None and hasattr(opportunity_repo, 'get_run'):
+            run = opportunity_repo.get_run(run_id)
+        if not run and report_file and hasattr(opportunity_repo, 'run_for_report_file'):
+            run = opportunity_repo.run_for_report_file(report_file)
+        if not run and report_file:
+            for candidate in opportunity_repo.list_runs(limit=80):
+                if Path(str(candidate.get('report_file') or '')).name == Path(str(report_file)).name:
+                    run = candidate
+                    break
+        if not run and not report_file and run_id is None:
+            run = opportunity_repo.latest_run()
+        if not run:
+            return None
+        rows = opportunity_repo.items_for_run(int(run['id']))
+        return {
+            'run': run,
+            'items': [_opportunity_item_from_run_row(row) for row in rows],
+        }
+    except Exception as exc:
+        logger.debug(f"加载机会挖掘全量 run 明细失败: {exc}")
+        return None
+
+
+def _hot_sector_snapshot_for_date(date=None):
+    """Pick the hot-sector snapshot best matching ``date`` (YYYY-MM-DD).
+
+    精确匹配该日 ``trade_date``(无则 ``created_at`` 当日);否则回退到 ``<= date``
+    最近一条;``date`` 为空时取最新快照。返回 ``_load_hot_sector_snapshot_summary``
+    结构或 None。
+    """
+    try:
+        from data_store import hot_sector_repo
+        snapshots = hot_sector_repo.list_snapshots(limit=200) or []
+    except Exception as exc:
+        logger.debug(f"列出热门板块快照失败: {exc}")
+        return None
+    if not snapshots:
+        return None
+
+    def _eff_date(snap):
+        td = str(snap.get('trade_date') or '').strip()
+        if td:
+            return td[:10]
+        return str(snap.get('created_at') or '')[:10]
+
+    target = str(date or '').strip()[:10]
+    if not target:
+        return _load_hot_sector_snapshot_summary(snapshots[0].get('id'))
+
+    # list_snapshots 已按 created_at DESC 排序;先找精确日,再找 <= target 最近一条
+    exact = next((s for s in snapshots if _eff_date(s) == target), None)
+    if exact:
+        return _load_hot_sector_snapshot_summary(exact.get('id'))
+    earlier = [s for s in snapshots if _eff_date(s) and _eff_date(s) <= target]
+    if earlier:
+        chosen = max(earlier, key=_eff_date)
+        return _load_hot_sector_snapshot_summary(chosen.get('id'))
+    return None
+
+
+def opportunity_canvas_payload(run_id=None, date=None):
+    """Build a canvas payload for a SPECIFIC run/day (画布按日切换)。
+
+    优先 ``run_id``,否则 ``date`` 当日最新 run,都没有则最近一次 run。
+    返回 ``{canvas, run, hot_sector, date, degraded_count}``;无对应 run 返回 None
+    (路由据此回 404)。
+    """
+    try:
+        from data_store import opportunity_repo
+    except Exception as exc:
+        logger.debug(f"opportunity_repo 不可用: {exc}")
+        return None
+
+    run = None
+    if run_id is not None:
+        run = opportunity_repo.get_run(run_id) if hasattr(opportunity_repo, 'get_run') else None
+    elif date:
+        runs = opportunity_repo.list_runs(run_date=str(date)[:10], limit=1)
+        run = runs[0] if runs else None
+    else:
+        run = opportunity_repo.latest_run()
+    if not run:
+        return None
+
+    rid = int(run['id'])
+    run_payload = _load_opportunity_run_payload(run_id=rid)
+    run_items = (run_payload or {}).get('items') or []
+
+    # 报告文件存在则解析(取 market_env + 富文本分节);否则降级为最小 meta
+    report_name = Path(str(run.get('report_file') or '')).name
+    parsed = None
+    if report_name and PRIMARY_OPPORTUNITY_REPORT_RE.match(report_name):
+        report_path = RESULTS_DIR / report_name
+        if report_path.is_file():
+            try:
+                parsed = _parse_opportunity_report(report_path)
+            except Exception as exc:
+                logger.warning(f"按日画布解析报告失败: {exc}")
+                parsed = None
+
+    market_env = parsed.get('market_env') if parsed else ''
+    parsed_items = parsed.get('items') if parsed else []
+    items = _merge_opportunity_items(parsed_items, run_items)
+
+    run_date = str(run.get('run_date') or run.get('run_at') or '')[:10]
+    latest_report = {
+        'file': report_name or (parsed or {}).get('file') or '',
+        'url': _report_url(RESULTS_DIR / report_name) if report_name else None,
+        'updated_at': (parsed or {}).get('updated_at') or run.get('run_at') or '--',
+        'run_id': rid,
+        'run_at': run.get('run_at'),
+        'run_item_count': len(run_items),
+    }
+    # 热门板块快照:优先 run 记录的 snapshot_id,否则按日匹配
+    run_extra = _json_obj(run.get('extra_json'), {})
+    hot_sector = None
+    snap_id = run_extra.get('hot_sector_snapshot_id')
+    if snap_id:
+        hot_sector = _load_hot_sector_snapshot_summary(snap_id)
+    if not hot_sector:
+        hot_sector = _hot_sector_snapshot_for_date(run_date)
+
+    degraded_count = sum(1 for it in items if isinstance(it, dict) and it.get('degraded'))
+    canvas = _build_opportunity_canvas(items, latest_report, market_env, hot_sector)
+    return {
+        'canvas': canvas,
+        'run': {
+            'id': rid,
+            'run_at': run.get('run_at'),
+            'run_date': run_date,
+            'source': run.get('source'),
+            'mode': run.get('mode'),
+            'item_count': run.get('item_count') if run.get('item_count') is not None else len(run_items),
+            'report_file': report_name,
+        },
+        'hot_sector': hot_sector,
+        'date': run_date,
+        'degraded_count': degraded_count,
+    }
+
+
+def stock_financial_statements(code, force_refresh=False):
+    """个股财务三大表:默认读缓存(财报低频更新,不频繁联网);缺失/强制刷新才取数并落库。
+
+    返回 {code, statements:{balance,income,cashflow}, source, as_of, cached, error?}。
+    """
+    code = str(code or "").strip()
+    if not code:
+        return {"code": "", "statements": {"balance": [], "income": [], "cashflow": []},
+                "source": None, "as_of": None, "cached": False, "error": "缺少股票代码"}
+    try:
+        from data_store import financial_statements_repo as repo
+    except Exception as exc:
+        logger.debug(f"financial_statements_repo 不可用: {exc}")
+        repo = None
+
+    def _from_cache():
+        if not repo:
+            return None
+        statements = {stype: repo.statements_for(code, stype, limit=8)
+                      for stype in ("balance", "income", "cashflow")}
+        if not any(statements.values()):
+            return None
+        all_rows = [r for stype in statements for r in statements[stype]]
+        as_of = max((r.get("created_at") or "" for r in all_rows), default="") or None
+        source = next((r.get("source") for r in all_rows if r.get("source")), None)
+        return {"code": code, "statements": statements, "source": source,
+                "as_of": as_of, "cached": True}
+
+    if not force_refresh:
+        cached = _from_cache()
+        if cached:
+            return cached
+
+    fetched = None
+    try:
+        from analysis import financial_statements_provider as provider
+        fetched = provider.fetch_three_statements(code)
+    except Exception as exc:
+        logger.warning(f"财务三大表取数失败 {code}: {exc}")
+
+    if fetched and repo:
+        ts_code = None
+        try:
+            from data_store import tushare_client
+            ts_code = tushare_client.to_ts_code(code)
+        except Exception:
+            ts_code = None
+        for stype in ("balance", "income", "cashflow"):
+            try:
+                repo.save_statements(code, stype, fetched.get(stype) or [],
+                                     source=fetched.get("source"), ts_code=ts_code)
+            except Exception as exc:
+                logger.debug(f"财务报表落库失败 {code}/{stype}: {exc}")
+        cached = _from_cache()
+        if cached:
+            cached["cached"] = False  # 本次为新取数
+            return cached
+    if fetched:
+        return {"code": code,
+                "statements": {s: fetched.get(s, []) for s in ("balance", "income", "cashflow")},
+                "source": fetched.get("source"), "as_of": None, "cached": False}
+    return {"code": code, "statements": {"balance": [], "income": [], "cashflow": []},
+            "source": None, "as_of": None, "cached": False, "error": "暂无财务数据"}
+
+
+def _format_score_parts(scores):
+    labels = {
+        'sector': '板块',
+        'technical': '技术',
+        'quantitative': '量化',
+        'fundamental': '基本面',
+        'sentiment': '情绪',
+        'news': '消息',
+        'event': '事件',
+        'moneyflow': '资金',
+    }
+    parts = []
+    if isinstance(scores, dict):
+        for key, value in scores.items():
+            n = _safe_float(value, None)
+            label = labels.get(str(key), str(key))
+            parts.append(f"{label}:{n:.1f}" if n is not None else f"{label}:{value}")
+    return '，'.join(parts)
+
+
+def _format_signal_parts(signals):
+    labels = {
+        'chase': '追高风险',
+        'rsi': 'RSI',
+        'day_change': '当日涨幅',
+        'change_3d': '3日涨幅',
+        'change_5d': '5日涨幅',
+        'sell_signals': '卖出信号',
+        'quant_score': '量化分',
+    }
+    parts = []
+    if isinstance(signals, dict):
+        for key in ['chase', 'rsi', 'day_change', 'change_3d', 'change_5d', 'sell_signals', 'quant_score']:
+            if key not in signals or signals.get(key) in (None, ''):
+                continue
+            n = _safe_float(signals.get(key), None)
+            label = labels.get(key, key)
+            parts.append(f"{label}:{n:.1f}" if n is not None else f"{label}:{signals.get(key)}")
+        exclusions = signals.get('exclusions')
+        if isinstance(exclusions, list) and exclusions:
+            parts.append(f"过滤标记:{'、'.join(str(item) for item in exclusions[:5])}")
+    return '，'.join(parts)
+
+
+def _opportunity_item_from_run_row(row):
+    row = dict(row or {})
+    scores = _json_obj(row.get('scores_json'), {})
+    signals = _json_obj(row.get('signals_json'), {})
+    code = _stock_code_key(row.get('code'))
+    score = _safe_float(row.get('total_score'), 0.0) or 0.0
+    fields = []
+    score_parts = _format_score_parts(scores)
+    signal_parts = _format_signal_parts(signals)
+    if score_parts:
+        fields.append({'label': '评分分项', 'value': score_parts})
+    if signal_parts:
+        fields.append({'label': '风险信号', 'value': signal_parts})
+    if row.get('source'):
+        fields.append({'label': '候选来源', 'value': str(row.get('source'))})
+    if row.get('source_detail'):
+        fields.append({'label': '来源细节', 'value': str(row.get('source_detail'))})
+    if row.get('sector'):
+        fields.append({'label': '板块', 'value': str(row.get('sector'))})
+    sector_rank = _safe_int(row.get('sector_rank'), None, minimum=1)
+    sector_stock_rank = _safe_int(row.get('sector_stock_rank'), None, minimum=1)
+    if sector_rank or sector_stock_rank:
+        fields.append({
+            'label': '板块排名',
+            'value': f"板块#{sector_rank or '--'} · 成分股#{sector_stock_rank or '--'}",
+        })
+    if row.get('change_pct') not in (None, ''):
+        fields.append({'label': '涨幅', 'value': f"{_safe_float(row.get('change_pct'), 0.0):.2f}%"})
+    rank = _safe_int(row.get('item_rank'), None, minimum=1)
+    sector_name = row.get('sector') or ''
+    return {
+        'rank': rank,
+        'report_rank': rank,
+        'code': code,
+        'stock_code': code,
+        'name': row.get('name') or code,
+        'stock_name': row.get('name') or code,
+        'score': score,
+        'rating': row.get('rating') or '',
+        'recommendation': '',
+        'sector': sector_name,
+        'industry': sector_name,
+        'technical': '',
+        'quant': score_parts,
+        'sentiment': '',
+        'risk': signal_parts,
+        'reason': row.get('source_detail') or f"全量机会挖掘第 {rank or '--'} 名，综合评分 {score:.2f}。",
+        'summary': row.get('source_detail') or f"全量机会挖掘第 {rank or '--'} 名，综合评分 {score:.2f}。",
+        'quant_models': [],
+        'fields': fields,
+        'score_breakdown': scores if isinstance(scores, dict) else {},
+        'signals': signals if isinstance(signals, dict) else {},
+        'source': row.get('source') or '',
+        'source_detail': row.get('source_detail') or '',
+        'sector_code': row.get('sector_code') or '',
+        'sector_rank': sector_rank,
+        'sector_stock_rank': sector_stock_rank,
+        'change_pct': _safe_float(row.get('change_pct'), None),
+        'degraded': bool(row.get('degraded')),
+        'has_local_kline': False,
+        'from_run_store': True,
+    }
+
+
+def _merge_opportunity_items(parsed_items, run_items):
+    """Use full run rows as the source of truth, preserving parsed rich sections."""
+    parsed_by_code = {
+        _stock_code_key(item.get('stock_code') or item.get('code')): item
+        for item in (parsed_items or [])
+        if isinstance(item, dict)
+    }
+    if not run_items:
+        return sorted(
+            list(parsed_items or []),
+            key=lambda item: _safe_float(item.get('score'), 0.0) or 0.0,
+            reverse=True,
+        )
+    merged = []
+    for item in run_items:
+        if not isinstance(item, dict):
+            continue
+        code = _stock_code_key(item.get('stock_code') or item.get('code'))
+        parsed = dict(parsed_by_code.get(code) or {})
+        base_fields = [dict(field) for field in parsed.get('fields') or [] if isinstance(field, dict)]
+        existing_labels = {field.get('label') for field in base_fields}
+        for field in item.get('fields') or []:
+            if isinstance(field, dict) and field.get('label') not in existing_labels:
+                base_fields.append(dict(field))
+                existing_labels.add(field.get('label'))
+        merged_item = {
+            **parsed,
+            **item,
+            'sector': parsed.get('sector') or parsed.get('industry') or item.get('sector') or '',
+            'industry': parsed.get('industry') or parsed.get('sector') or item.get('industry') or '',
+            'technical': parsed.get('technical') or item.get('technical') or '',
+            'sentiment': parsed.get('sentiment') or item.get('sentiment') or '',
+            'recommendation': parsed.get('recommendation') or item.get('recommendation') or '',
+            'quant_models': parsed.get('quant_models') or item.get('quant_models') or [],
+            'fields': base_fields,
+            'reason': parsed.get('reason') or item.get('reason') or '',
+            'summary': parsed.get('summary') or item.get('summary') or '',
+        }
+        merged.append(merged_item)
+    return sorted(
+        merged,
+        key=lambda item: _safe_float(item.get('score'), 0.0) or 0.0,
+        reverse=True,
+    )
+
+
+def _hot_sector_stock_membership_index(hot_sector):
+    snapshot = (hot_sector or {}).get('snapshot') or {}
+    sid = snapshot.get('id')
+    if not sid:
+        return {}
+    try:
+        from data_store import hot_sector_repo
+        boards = {
+            str(board.get('board_code') or ''): board
+            for board in ((hot_sector or {}).get('boards') or hot_sector_repo.boards_for_snapshot(int(sid)))
+            if board.get('board_code')
+        }
+        relation_rows = hot_sector_repo.relations_for_snapshot(int(sid), limit=100000)
+        relations_by_pair = defaultdict(list)
+        for rel in relation_rows:
+            key = (_stock_code_key(rel.get('code')), str(rel.get('board_code') or ''))
+            relations_by_pair[key].append(rel)
+        by_code = defaultdict(list)
+        for row in hot_sector_repo.stocks_for_snapshot(int(sid), limit=100000):
+            code = _stock_code_key(row.get('code'))
+            board_code = str(row.get('board_code') or '')
+            if not code or not board_code:
+                continue
+            board = boards.get(board_code) or {}
+            rels = relations_by_pair.get((code, board_code), [])
+            lhb_hit = bool(row.get('lhb_trade_date')) or any(
+                str(rel.get('relation_type') or '').lower() in {'dragon_tiger', 'lhb'}
+                for rel in rels
+            )
+            by_code[code].append({
+                'snapshot_id': int(sid),
+                'board_code': board_code,
+                'board_name': board.get('board_name') or board_code,
+                'board_type': board.get('board_type') or '',
+                'board_rank': _safe_int(board.get('board_rank'), None, minimum=1),
+                'stock_rank': _safe_int(row.get('stock_rank'), None, minimum=1),
+                'candidate_rank': _safe_int(row.get('candidate_rank'), None, minimum=1),
+                'main_net_inflow': _safe_float(row.get('main_net_inflow'), None),
+                'main_net_inflow_text': row.get('main_net_inflow_text') or '',
+                'change_pct': _safe_float(row.get('change_pct'), None),
+                'lhb_trade_date': row.get('lhb_trade_date') or '',
+                'lhb_buy_amount': _safe_float(row.get('lhb_buy_amount'), None),
+                'lhb_sell_amount': _safe_float(row.get('lhb_sell_amount'), None),
+                'lhb_net_amount': _safe_float(row.get('lhb_net_amount'), None),
+                'lhb_reason': row.get('lhb_reason') or '',
+                'lhb_hit': lhb_hit,
+                'relation_count': len(rels),
+                'relation_types': sorted({
+                    str(rel.get('relation_type') or '')
+                    for rel in rels
+                    if rel.get('relation_type')
+                }),
+            })
+        for rows in by_code.values():
+            rows.sort(key=lambda item: (
+                item.get('board_rank') or 9999,
+                item.get('stock_rank') or 9999,
+                item.get('board_name') or '',
+            ))
+        return dict(by_code)
+    except Exception as exc:
+        logger.debug(f"加载热门板块成分股关联失败: {exc}")
+        return {}
+
+
+def _prepare_opportunity_canvas_items(items, hot_sector=None):
+    """Normalize, rank and enrich opportunity items before canvas construction."""
+    membership_index = _hot_sector_stock_membership_index(hot_sector)
+    prepared = []
+    for raw in sorted(
+        [item for item in (items or []) if isinstance(item, dict)],
+        key=lambda item: _safe_float(item.get('score'), 0.0) or 0.0,
+        reverse=True,
+    ):
+        item = dict(raw)
+        code = _stock_code_key(item.get('stock_code') or item.get('code'))
+        memberships = [dict(row) for row in membership_index.get(code, [])]
+        sector = (item.get('sector') or item.get('industry') or '').strip()
+        if not sector and memberships:
+            sector = memberships[0].get('board_name') or ''
+        if not sector:
+            sector = str(item.get('source') or '未识别板块').strip() or '未识别板块'
+        item.update({
+            'code': code,
+            'stock_code': code,
+            'sector': sector,
+            'industry': item.get('industry') or sector,
+            'hot_sector_memberships': memberships,
+            'hot_sector_count': len(memberships),
+            'hot_sector_rank_summary': '；'.join(
+                f"{m.get('board_name') or m.get('board_code')} 板块#{m.get('board_rank') or '--'} / 成分股#{m.get('stock_rank') or '--'}"
+                for m in memberships[:4]
+            ),
+            'lhb_hit': any(m.get('lhb_hit') for m in memberships),
+            'lhb_relation_count': sum(int(m.get('relation_count') or 0) for m in memberships),
+        })
+        prepared.append(item)
+
+    for rank, item in enumerate(prepared, start=1):
+        item['score_rank'] = rank
+        item.setdefault('report_rank', item.get('rank') or rank)
+
+    by_sector = defaultdict(list)
+    for item in prepared:
+        by_sector[item.get('sector') or '未识别板块'].append(item)
+    for sector_items in by_sector.values():
+        sector_items.sort(key=lambda item: _safe_float(item.get('score'), 0.0) or 0.0, reverse=True)
+        for rank, item in enumerate(sector_items, start=1):
+            item['sector_rank'] = rank
+            item['sector_peer_count'] = len(sector_items)
+    return prepared
+
+
+def _excel_scalar(value):
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.isoformat()
+    return value
+
+
+# 评分分项 / 风险信号 字段的中文列名（与 _format_score_parts/_format_signal_parts 对齐）
+_SCORE_PART_COLUMNS = {
+    'sector': '板块分',
+    'technical': '技术分',
+    'quantitative': '量化分',
+    'fundamental': '基本面分',
+    'sentiment': '情绪分',
+    'news': '消息分',
+    'event': '事件分',
+    'events': '事件分',
+    'moneyflow': '资金分',
+    'momentum': '动量分',
+    'volume_health': '量能分',
+    'liquidity': '流动性分',
+    'dragon_tiger': '龙虎榜分',
+}
+# 去重后的评分分项列顺序（event/events 同名只保留一列）。
+_SCORE_PART_COLUMN_ORDER = list(dict.fromkeys(_SCORE_PART_COLUMNS.values()))
+_SIGNAL_COLUMNS = {
+    'chase': '追高风险',
+    'rsi': 'RSI',
+    'day_change': '当日涨幅%',
+    'change_3d': '3日涨幅%',
+    'change_5d': '5日涨幅%',
+    'sell_signals': '卖出信号',
+    'quant_score': '量化总分',
+}
+# 全量明细表中完整文本字段的列顺序（与报告 【…】 区块一致）。
+OPPORTUNITY_DETAIL_FIELD_ORDER = [
+    '概览', '入选原因', '涨幅', '板块', '量化', '技术', '基本面',
+    '情绪资金', '消息', '关键加减分', '最新动态', '高级', '历史重复入选',
+]
+
+
+def _write_excel_sheet(writer, sheet_name, rows, columns=None, style=None):
+    """Write rows (list of dicts) to a worksheet without crashing on empty data.
+
+    pandas 3.0 removed ``DataFrame.applymap``; this uses ``DataFrame.map`` (added in
+    pandas 2.1, and the project pins ``pandas>=2.2.3``) to JSON-serialise non-scalar
+    cells. When ``columns`` is given it becomes the exact leading schema: requested
+    columns always appear (missing ones are added empty) so every export has a stable
+    column set, and any extra keys are appended after them so nothing is silently
+    dropped. An empty sheet still writes its header row. When ``style`` (a declarative
+    spec from ``opportunity_excel``) is given, ``_style_worksheet`` renders it.
+    """
+    df = pd.DataFrame(rows or [])
+    if columns:
+        extras = [c for c in df.columns if c not in columns]
+        df = df.reindex(columns=list(columns) + extras)
+    if not df.empty:
+        df = df.map(_excel_scalar)
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
+    if style:
+        _style_worksheet(writer.sheets[sheet_name], style)
+
+
+# 着色调色板（CN 习惯：红涨绿跌；评分蓝深→灰浅；风险越危险越橙红；建议买入红/观望黄/回避灰）。
+_XL_FILLS = {
+    'red': 'FFF4CCCC', 'green': 'FFD9EAD3', 'yellow': 'FFFFF2CC', 'gray': 'FFEFEFEF',
+    'orange': 'FFFCE5CD', 'deep_blue': 'FFC9DAF8', 'blue': 'FFD0E2F3', 'light_blue': 'FFE8F0FB',
+}
+
+
+def _xl_num(value):
+    """Coerce a cell value to float for threshold colouring, else None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _xl_rule_color(rule, value):
+    """Map a declarative color rule + cell value to a palette key (or None)."""
+    kind = rule.get('kind')
+    if kind == 'updown':
+        v = _xl_num(value)
+        if v is None or v == 0:
+            return None
+        return 'red' if v > 0 else 'green'
+    if kind == 'score':
+        v = _xl_num(value)
+        if v is None:
+            return None
+        if v >= 85:
+            return 'deep_blue'
+        if v >= 78:
+            return 'blue'
+        if v >= 70:
+            return 'light_blue'
+        return 'gray'
+    if kind == 'action':
+        s = str(value or '')
+        if s in ('买入', '分批建仓'):
+            return 'red'
+        if s in ('观望', '分批止盈'):
+            return 'yellow'
+        if s == '卖出':
+            return 'green'
+        if s in ('回避', '止损', '数据不足'):
+            return 'gray'
+        return None
+    if kind == 'risk':
+        v = _xl_num(value)
+        if v is None:
+            return None
+        if rule.get('metric') == 'drawdown':
+            if v <= -20:
+                return 'red'
+            if v <= -15:
+                return 'orange'
+        return None
+    return None
+
+
+def _style_worksheet(ws, style_spec):
+    """Apply a declarative style spec (header/freeze/number-format/colour/width) in place."""
+    if not style_spec:
+        return
+    from openpyxl.styles import PatternFill, Font
+    from openpyxl.utils import get_column_letter
+
+    max_row = ws.max_row or 1
+    header = [c.value for c in ws[1]] if max_row >= 1 else []
+    col_index = {name: i + 1 for i, name in enumerate(header)}
+
+    if style_spec.get('header_bold'):
+        head_fill = PatternFill('solid', fgColor='FFF2F2F2')
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+            cell.fill = head_fill
+
+    if style_spec.get('freeze_panes'):
+        ws.freeze_panes = style_spec['freeze_panes']
+
+    for col in style_spec.get('percent_columns', []):
+        idx = col_index.get(col)
+        if idx:
+            for row in range(2, max_row + 1):
+                ws.cell(row=row, column=idx).number_format = '0.0"%"'
+    for col in style_spec.get('price_columns', []):
+        idx = col_index.get(col)
+        if idx:
+            for row in range(2, max_row + 1):
+                ws.cell(row=row, column=idx).number_format = '#,##0.00'
+
+    fill_cache = {}
+    for rule in style_spec.get('color_rules', []):
+        idx = col_index.get(rule.get('column'))
+        if not idx:
+            continue
+        for row in range(2, max_row + 1):
+            cell = ws.cell(row=row, column=idx)
+            key = _xl_rule_color(rule, cell.value)
+            if not key:
+                continue
+            fill = fill_cache.get(key)
+            if fill is None:
+                fill = fill_cache[key] = PatternFill('solid', fgColor=_XL_FILLS[key])
+            cell.fill = fill
+
+    # 列宽按内容估算并设上限（中文按 ~2 宽计）。
+    for i, name in enumerate(header, start=1):
+        width = len(str(name or '')) + 2
+        for row in range(2, min(max_row, 200) + 1):
+            val = ws.cell(row=row, column=i).value
+            if val is not None:
+                cells = sum(2 if ord(ch) > 127 else 1 for ch in str(val))
+                width = max(width, cells + 1)
+        ws.column_dimensions[get_column_letter(i)].width = min(width, 42)
+
+
+
+def _parse_change_breakdown(text):
+    """从「当日:-2.91%，3日:+13.71%，5日:+4.24%」文本解析结构化涨幅。"""
+    out = {}
+    for cn, key in (('当日', '当日涨幅'), ('3日', '3日涨幅'), ('5日', '5日涨幅')):
+        match = re.search(rf'{cn}\s*[:：]\s*([+-]?\d+(?:\.\d+)?%?)', text or '')
+        if match:
+            out[key] = match.group(1)
+    return out
+
+
+def _stock_change_columns(node, analysis_map):
+    """优先用 run-store 数值信号，缺失时回退到 涨幅 文本解析。"""
+    signals = node.get('signals') if isinstance(node.get('signals'), dict) else {}
+    parsed = _parse_change_breakdown(analysis_map.get('涨幅', ''))
+
+    def pick(signal_key, parsed_key):
+        value = signals.get(signal_key)
+        if value not in (None, ''):
+            return value
+        return parsed.get(parsed_key)
+
+    return {
+        '当日涨幅': pick('day_change', '当日涨幅'),
+        '3日涨幅': pick('change_3d', '3日涨幅'),
+        '5日涨幅': pick('change_5d', '5日涨幅'),
+    }
+
+
+def _expand_labeled_dict(raw, label_map):
+    """把 {'sector': 53, ...} 展开成 {'板块分': 53, ...}（保留未知键的原名）。"""
+    out = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            out[label_map.get(str(key), str(key))] = value
+    return out
+
+
+def export_opportunity_canvas_excel():
+    """Export the current opportunity canvas even when no hot-sector snapshot exists."""
+    opportunity = _load_latest_opportunities()
+    canvas = opportunity.get('canvas') or _empty_opportunity_canvas()
+    latest_report = opportunity.get('latest_report') or {}
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    path = RESULTS_DIR / f"opportunity_canvas_{timestamp}.xlsx"
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    node_rows = []
+    stock_rows = []
+    stock_detail_rows = []
+    analysis_rows = []
+    membership_rows = []
+    for node in canvas.get('nodes') or []:
+        node_rows.append({
+            'id': node.get('id'),
+            'type': node.get('type'),
+            'title': node.get('title'),
+            'subtitle': node.get('subtitle'),
+            'stock_code': node.get('stock_code'),
+            'stock_name': node.get('stock_name'),
+            'sector': node.get('sector'),
+            'score': node.get('score'),
+            'score_rank': node.get('score_rank'),
+            'sector_rank': node.get('sector_rank'),
+            'board_code': node.get('board_code'),
+            'board_rank': node.get('board_rank'),
+            'detail': node.get('detail'),
+            'tags': '、'.join(str(tag) for tag in node.get('tags') or []),
+        })
+        if node.get('type') == 'stock':
+            analysis_map = {
+                str(sec.get('label')): sec.get('value')
+                for sec in node.get('analysis') or []
+                if isinstance(sec, dict) and sec.get('label')
+            }
+            change_cols = _stock_change_columns(node, analysis_map)
+            score_cols = _expand_labeled_dict(node.get('score_breakdown'), _SCORE_PART_COLUMNS)
+            signal_cols = _expand_labeled_dict(node.get('signals'), _SIGNAL_COLUMNS)
+            key_signal_cols = {k: signal_cols.get(k) for k in ('追高风险', 'RSI', '卖出信号', '量化总分')}
+            base_cols = {
+                '全量排名': node.get('score_rank') or node.get('report_rank'),
+                '报告排名': node.get('report_rank'),
+                '代码': node.get('stock_code'),
+                '名称': node.get('stock_name'),
+                '所属板块': node.get('sector'),
+                '板块内排名': node.get('sector_rank'),
+                '板块候选数': node.get('sector_peer_count'),
+                '综合评分': node.get('score'),
+                '评级': node.get('rating'),
+                '候选来源': node.get('source'),
+                '来源细节': node.get('source_detail'),
+            }
+            hot_cols = {
+                '相关热门板块数': node.get('hot_sector_count'),
+                '热门板块排名摘要': node.get('hot_sector_rank_summary'),
+                '龙虎榜命中': '是' if node.get('lhb_hit') else '否',
+                '龙虎榜关系数': node.get('lhb_relation_count'),
+                '是否降级': '是' if node.get('degraded') else '否',
+            }
+            # 排名表:基础 + 涨幅 + 评分分项 + 关键信号 + 热门板块
+            stock_rows.append({**base_cols, **change_cols, **score_cols, **key_signal_cols, **hot_cols})
+            # 全量明细表:排名表所有列 + 量化模型 + 每个分析字段完整文本 + 分析摘要
+            detail_row = {**base_cols, **change_cols, **score_cols, **key_signal_cols, **hot_cols}
+            detail_row['量化模型'] = '、'.join(str(m) for m in node.get('quant_models') or [])
+            for label in OPPORTUNITY_DETAIL_FIELD_ORDER:
+                if label in analysis_map:
+                    detail_row[label] = analysis_map[label]
+            for label, value in analysis_map.items():
+                if label not in detail_row:
+                    detail_row[label] = value
+            detail_row['分析摘要'] = node.get('detail')
+            stock_detail_rows.append(detail_row)
+            for section in node.get('analysis') or []:
+                analysis_rows.append({
+                    '代码': node.get('stock_code'),
+                    '名称': node.get('stock_name'),
+                    '全量排名': node.get('score_rank') or node.get('report_rank'),
+                    '字段': section.get('label'),
+                    '内容': section.get('value'),
+                })
+            for membership in node.get('hot_sector_memberships') or []:
+                membership_rows.append({
+                    '代码': node.get('stock_code'),
+                    '名称': node.get('stock_name'),
+                    '热门板块代码': membership.get('board_code'),
+                    '热门板块名称': membership.get('board_name'),
+                    '板块排名': membership.get('board_rank'),
+                    '成分股排名': membership.get('stock_rank'),
+                    '主力净流入': membership.get('main_net_inflow'),
+                    '主力净流入文本': membership.get('main_net_inflow_text'),
+                    '涨跌幅': membership.get('change_pct'),
+                    '龙虎榜命中': '是' if membership.get('lhb_hit') else '否',
+                    '龙虎榜日期': membership.get('lhb_trade_date'),
+                    '龙虎榜买入额': membership.get('lhb_buy_amount'),
+                    '龙虎榜净额': membership.get('lhb_net_amount'),
+                    '龙虎榜原因': membership.get('lhb_reason'),
+                    '关联关系数': membership.get('relation_count'),
+                    '关系类型': '、'.join(membership.get('relation_types') or []),
+                })
+
+    edge_rows = [
+        {
+            'from': edge.get('from'),
+            'to': edge.get('to'),
+            'relation': edge.get('relation') or '',
+        }
+        for edge in canvas.get('edges') or []
+    ]
+    sector_rows = [
+        {
+            'id': node.get('id'),
+            '名称': node.get('title'),
+            '类型': node.get('type'),
+            '股票数': node.get('count') or node.get('stock_count'),
+            '最高评分': node.get('top_score'),
+            '板块排名': node.get('board_rank'),
+            '主力净流入': node.get('main_net_inflow'),
+            '龙虎榜关系': node.get('relation_count'),
+        }
+        for node in canvas.get('nodes') or []
+        if node.get('type') in {'sector', 'hot_board', 'hot_sector'}
+    ]
+
+    # 按需复算：对每只入选股票调用个股分析同款引擎（5 分钟 LRU），逐股 best-effort。
+    # 复算失败/超预算/超上限均回退报告文本基线，不让导出崩溃（spec §2/§7）。
+    from webui import opportunity_excel
+    try:
+        suite_limit = int(os.environ.get('KRONOS_OPP_EXCEL_SUITE_LIMIT', '30'))
+    except (TypeError, ValueError):
+        suite_limit = 30
+    suite_sheets, suite_coverage = opportunity_excel.build_suite_sheets(
+        canvas,
+        suite_fetcher=lambda code: STOCK_SUITE_SERVICE.get_suite(code or ''),
+        suite_limit=suite_limit,
+    )
+
+    run_meta = latest_report.get('run_meta') if isinstance(latest_report.get('run_meta'), dict) else {}
+    total_suite = max(suite_coverage.get('total_stocks', 0), 1)
+    report_rows = [{
+        '报告文件': latest_report.get('file'),
+        '报告URL': latest_report.get('url'),
+        '更新时间': latest_report.get('updated_at'),
+        '市场环境': opportunity.get('market_env'),
+        '股票数': len(stock_rows),
+        '板块数': (canvas.get('stats') or {}).get('sectors'),
+        '分析节点数': (canvas.get('stats') or {}).get('analysis'),
+        '降级股票数': sum(1 for row in stock_detail_rows if row.get('是否降级') == '是'),
+        '龙虎榜命中数': sum(1 for row in stock_detail_rows if row.get('龙虎榜命中') == '是'),
+        '热门板块关联数': len(membership_rows),
+        '复算成功数': suite_coverage.get('succeeded'),
+        '复算失败数': suite_coverage.get('failed'),
+        '超预算跳过数': suite_coverage.get('skipped_over_budget'),
+        '超上限跳过数': suite_coverage.get('skipped_over_limit'),
+        '复算覆盖率': f"{suite_coverage.get('succeeded', 0) / total_suite * 100:.0f}%",
+        '规则版本': run_meta.get('ruleset_version'),
+        '配置哈希': run_meta.get('config_hash'),
+        'run_id': latest_report.get('run_id'),
+        'run_item_count': latest_report.get('run_item_count'),
+        '导出时间': timestamp,
+    }]
+
+    # 排名/明细两张表共用的列顺序:基础 → 涨幅 → 评分分项 → 关键信号 → 热门板块
+    stock_rank_columns = (
+        ['全量排名', '报告排名', '代码', '名称', '所属板块', '板块内排名', '板块候选数',
+         '综合评分', '评级', '候选来源', '来源细节', '当日涨幅', '3日涨幅', '5日涨幅']
+        + _SCORE_PART_COLUMN_ORDER
+        + ['追高风险', 'RSI', '卖出信号', '量化总分',
+           '相关热门板块数', '热门板块排名摘要', '龙虎榜命中', '龙虎榜关系数', '是否降级']
+    )
+    stock_detail_columns = stock_rank_columns + ['量化模型'] + OPPORTUNITY_DETAIL_FIELD_ORDER + ['分析摘要']
+
+    # 写入顺序即阅读动线（spec §4）：投资速览 → 报告信息(+覆盖率) → 雷达/风控/量化/筹码
+    # → 原有排名/明细/分析/板块/热门/画布 → 术语表与图例。新增 6 张 sheet 自带样式规格。
+    suite_by_name = {s['name']: s for s in suite_sheets}
+
+    def _write_suite(name):
+        spec = suite_by_name.get(name)
+        if spec:
+            _write_excel_sheet(writer, name, spec['rows'], columns=spec['columns'],
+                               style=spec.get('style'))
+
+    with pd.ExcelWriter(path, engine='openpyxl') as writer:
+        _write_suite('投资速览')
+        _write_excel_sheet(writer, '报告信息', report_rows)
+        _write_suite('评分雷达')
+        _write_suite('风控执行计划')
+        _write_suite('量化模型矩阵')
+        _write_suite('筹码与机构')
+        _write_excel_sheet(writer, '股票排名', stock_rows, columns=stock_rank_columns)
+        _write_excel_sheet(writer, '股票全量明细', stock_detail_rows, columns=stock_detail_columns)
+        _write_excel_sheet(writer, '分析内容', analysis_rows)
+        _write_excel_sheet(writer, '板块汇总', sector_rows)
+        _write_excel_sheet(writer, '热门板块关联', membership_rows, columns=[
+            '代码', '名称', '热门板块代码', '热门板块名称', '板块排名', '成分股排名',
+            '主力净流入', '主力净流入文本', '涨跌幅', '龙虎榜命中', '龙虎榜日期',
+            '龙虎榜买入额', '龙虎榜净额', '龙虎榜原因', '关联关系数', '关系类型',
+        ])
+        _write_excel_sheet(writer, '画布节点', node_rows)
+        _write_excel_sheet(writer, '画布关系', edge_rows)
+        _write_suite('术语表与图例')
+
+    return {
+        'file': path.name,
+        'path': str(path),
+        'url': _report_url(path),
+    }
+
+
+def _build_opportunity_canvas(items, latest_report=None, market_env='', hot_sector=None):
+    """Build a report -> sector -> stock -> tag graph for the desktop canvas."""
+    items = _prepare_opportunity_canvas_items(items, hot_sector)
+    if not items:
+        canvas = _empty_opportunity_canvas('暂无可展示的投资机会分析内容')
+        if hot_sector:
+            _append_hot_sector_canvas_nodes(canvas, hot_sector)
+        return canvas
+
+    nodes = [{
+        'id': 'root',
+        'type': 'root',
+        'level': 0,
+        'title': '投资机会分析',
+        'subtitle': (latest_report or {}).get('file') or '最新报告',
+        'detail': market_env or '已解析最新机会挖掘报告',
+        'tags': ['报告', f"{len(items)}只股票"],
+    }]
+    edges = []
+    sector_map = {}
+    sector_stats = {}
+
+    for item in items:
+        sector = (item.get('sector') or item.get('industry') or '未识别板块').strip()
+        stat = sector_stats.setdefault(sector, {'count': 0, 'top_score': 0.0})
+        stat['count'] += 1
+        stat['top_score'] = max(stat['top_score'], _safe_float(item.get('score'), 0.0) or 0.0)
+
+    sorted_sectors = sorted(
+        sector_stats.items(),
+        key=lambda kv: (-kv[1]['top_score'], kv[0]),
+    )
+    for sector_index, (sector, stat) in enumerate(sorted_sectors, start=1):
+        sector_id = f"sector-{sector_index}"
+        sector_map[sector] = sector_id
+        nodes.append({
+            'id': sector_id,
+            'type': 'sector',
+            'level': 1,
+            'title': sector,
+            'subtitle': f"{stat['count']}只股票 · 最高{stat['top_score']:.2f}",
+            'detail': f"{sector}板块共入选{stat['count']}只股票，最高评分{stat['top_score']:.2f}。",
+            'tags': ['板块', f"Top{sector_index}"],
+            'sector': sector,
+            'count': stat['count'],
+            'top_score': round(stat['top_score'], 2),
+        })
+        edges.append({'from': 'root', 'to': sector_id})
+
+    tag_count = 0
+    stock_hot_edges = []
+    for stock_index, item in enumerate(items, start=1):
+        code = item.get('stock_code') or item.get('code') or ''
+        name = item.get('stock_name') or item.get('name') or code or '股票'
+        sector = (item.get('sector') or item.get('industry') or '未识别板块').strip()
+        sector_id = sector_map.get(sector)
+        stock_id = f"stock-{stock_index}-{code or stock_index}"
+        score = _safe_float(item.get('score'), 0.0) or 0.0
+        sections = _opportunity_tag_sections(item)
+        report_rank = _safe_int(item.get('report_rank') or item.get('rank'), stock_index, minimum=1) or stock_index
+        score_rank = _safe_int(item.get('score_rank'), stock_index, minimum=1) or stock_index
+        sector_rank = _safe_int(item.get('sector_rank'), None, minimum=1)
+        sector_peer_count = _safe_int(item.get('sector_peer_count'), None, minimum=1)
+        memberships = item.get('hot_sector_memberships') or []
+        hot_sector_tags = []
+        if memberships:
+            first_membership = memberships[0]
+            hot_sector_tags.append(
+                f"{first_membership.get('board_name') or first_membership.get('board_code')}#{first_membership.get('stock_rank') or '--'}"
+            )
+        if item.get('lhb_hit'):
+            hot_sector_tags.append('龙虎榜')
+        nodes.append({
+            'id': stock_id,
+            'type': 'stock',
+            'level': 2,
+            'title': f"{name} {code}".strip(),
+            'subtitle': f"全量#{score_rank} · 板块#{sector_rank or '--'} · {item.get('rating') or '评分'} · {score:.2f}",
+            'detail': item.get('reason') or item.get('summary') or item.get('recommendation') or '',
+            'tags': ([item.get('rating') or '评分', f"{score:.1f}", f"全量#{score_rank}"] + hot_sector_tags)[:5],
+            'stock_code': code,
+            'stock_name': name,
+            'sector': sector,
+            'score': round(score, 2),
+            'rating': item.get('rating') or '',
+            'report_rank': report_rank,
+            'score_rank': score_rank,
+            'sector_rank': sector_rank,
+            'sector_peer_count': sector_peer_count,
+            'source': item.get('source') or '',
+            'source_detail': item.get('source_detail') or '',
+            'degraded': bool(item.get('degraded')),
+            'quant_models': item.get('quant_models') or [],
+            'change_pct': item.get('change_pct'),
+            'score_breakdown': item.get('score_breakdown') or {},
+            'signals': item.get('signals') or {},
+            'hot_sector_memberships': memberships,
+            'hot_sector_count': len(memberships),
+            'hot_sector_rank_summary': item.get('hot_sector_rank_summary') or '',
+            'lhb_hit': bool(item.get('lhb_hit')),
+            'lhb_relation_count': int(item.get('lhb_relation_count') or 0),
+            'analysis': sections,
+        })
+        if sector_id:
+            edges.append({'from': sector_id, 'to': stock_id})
+        for membership in memberships[:10]:
+            board_code = membership.get('board_code')
+            if board_code:
+                stock_hot_edges.append({
+                    'from': stock_id,
+                    'to': f"hot-board-{board_code}",
+                    'relation': 'stock_hot_board',
+                })
+
+        for tag_index, section in enumerate(sections[:8], start=1):
+            tag_count += 1
+            tag_id = f"tag-{stock_index}-{tag_index}"
+            nodes.append({
+                'id': tag_id,
+                'type': 'tag',
+                'level': 3,
+                'title': section['label'],
+                'subtitle': section['summary'],
+                'detail': section['value'],
+                'tags': ['分析内容'],
+                'stock_code': code,
+                'stock_name': name,
+                'sector': sector,
+                'label': section['label'],
+            })
+            edges.append({'from': stock_id, 'to': tag_id})
+
+    canvas = {
+        'title': '投资机会分析',
+        'subtitle': (latest_report or {}).get('file') or '最新报告',
+        'levels': ['报告', '板块', '股票', '分析内容'],
+        'views': _opportunity_canvas_views(),
+        'nodes': nodes,
+        'edges': edges,
+        'stats': {
+            'sectors': len(sorted_sectors),
+            'stocks': len(items),
+            'tags': tag_count,
+            'analysis': tag_count,
+        },
+    }
+    if hot_sector:
+        _append_hot_sector_canvas_nodes(canvas, hot_sector)
+        existing_ids = {node.get('id') for node in canvas.get('nodes') or []}
+        for edge in stock_hot_edges:
+            if edge['from'] in existing_ids and edge['to'] in existing_ids:
+                canvas['edges'].append(edge)
+        canvas['stats']['stock_hot_board_edges'] = len([
+            edge for edge in stock_hot_edges
+            if edge['from'] in existing_ids and edge['to'] in existing_ids
+        ])
+    return canvas
+
+
+def _append_hot_sector_canvas_nodes(canvas, hot_sector):
+    snapshot = (hot_sector or {}).get('snapshot') or {}
+    boards = (hot_sector or {}).get('boards') or []
+    if not snapshot:
+        return canvas
+    root_id = 'hot-sector-root'
+    canvas.setdefault('nodes', []).append({
+        'id': root_id,
+        'type': 'hot_sector',
+        'level': 1,
+        'title': '热门板块全量',
+        'subtitle': f"快照 {snapshot.get('id')} · {snapshot.get('stock_count') or 0}只成分股",
+        'detail': '记录前十大热门板块下全部成分股排名、主力净流入和龙虎榜关联。',
+        'tags': ['全量快照', f"{snapshot.get('relation_count') or 0}条关系"],
+        'stock_count': int(snapshot.get('stock_count') or 0),
+        'relation_count': int(snapshot.get('relation_count') or 0),
+        'snapshot_id': snapshot.get('id'),
+        'created_at': snapshot.get('created_at'),
+        'drilldown': {
+            'type': 'hot_sector_snapshot',
+            'snapshot_id': snapshot.get('id'),
+        },
+    })
+    canvas.setdefault('edges', []).append({'from': 'root', 'to': root_id})
+    for index, board in enumerate(boards[:10], start=1):
+        board_id = f"hot-board-{board.get('board_code') or index}"
+        stock_count = int(board.get('stock_count') or 0)
+        rel_count = int(board.get('relation_count') or 0)
+        canvas['nodes'].append({
+            'id': board_id,
+            'type': 'hot_board',
+            'level': 2,
+            'title': board.get('board_name') or board.get('board_code') or '热门板块',
+            'subtitle': f"#{board.get('board_rank') or index} · {stock_count}只 · 涨跌{board.get('change_pct') or 0}%",
+            'detail': f"主力净流入 {board.get('main_net_inflow') or '—'}；龙虎榜关联 {rel_count} 条。",
+            'tags': [board.get('board_type') or '板块', f"{stock_count}只"],
+            'board_code': board.get('board_code'),
+            'board_rank': board.get('board_rank') or index,
+            'board_type': board.get('board_type'),
+            'stock_count': stock_count,
+            'relation_count': rel_count,
+            'main_net_inflow': board.get('main_net_inflow'),
+            'change_pct': board.get('change_pct'),
+            'snapshot_id': snapshot.get('id'),
+            'drilldown': {
+                'type': 'hot_sector_stocks',
+                'snapshot_id': snapshot.get('id'),
+                'board_code': board.get('board_code'),
+            },
+        })
+        canvas['edges'].append({'from': root_id, 'to': board_id})
+    stats = canvas.setdefault('stats', {})
+    stats['hot_sector_boards'] = len(boards)
+    stats['hot_sector_stocks'] = int(snapshot.get('stock_count') or 0)
+    stats['hot_sector_relations'] = int(snapshot.get('relation_count') or 0)
+    return canvas
 
 
 def _build_quant_model_summary(items):
@@ -1582,12 +3009,30 @@ def _stock_context_payload(stock_code, stock_name=''):
 
 
 def _load_latest_opportunities():
+    run_payload = _load_opportunity_run_payload()
+    run = (run_payload or {}).get('run') or {}
+    run_extra = _json_obj(run.get('extra_json'), {}) if run else {}
+    run_hot_sector_id = run_extra.get('hot_sector_snapshot_id')
+    hot_sector = _load_hot_sector_snapshot_summary(run_hot_sector_id) if run_hot_sector_id else None
+    if not hot_sector:
+        hot_sector = _load_hot_sector_snapshot_summary()
     reports = _latest_primary_opportunity_reports(limit=1)
-    if not reports:
+    if run_payload:
+        run_report = Path(str((run_payload.get('run') or {}).get('report_file') or '')).name
+        if run_report and PRIMARY_OPPORTUNITY_REPORT_RE.match(run_report):
+            run_report_path = RESULTS_DIR / run_report
+            if run_report_path.is_file():
+                reports = [run_report_path]
+    if not reports and not run_payload:
+        canvas = _empty_opportunity_canvas('暂无机会挖掘报告')
+        if hot_sector:
+            _append_hot_sector_canvas_nodes(canvas, hot_sector)
         return {
             'latest_report': None,
             'market_env': '暂无机会挖掘报告',
             'items': [],
+            'canvas': canvas,
+            'hot_sector': hot_sector,
             'quant_models': [],
             'stats': {
                 'total': 0,
@@ -1597,30 +3042,53 @@ def _load_latest_opportunities():
             },
         }
 
-    try:
-        parsed = _parse_opportunity_report(reports[0])
-    except Exception as exc:
-        logger.warning(f"解析机会报告失败: {exc}")
-        return {
-            'latest_report': {
-                'file': reports[0].name,
-                'url': _report_url(reports[0]),
-                'updated_at': _format_datetime(reports[0].stat().st_mtime),
-            },
-            'market_env': '机会报告解析失败，已降级为空视图',
+    parsed = None
+    if reports:
+        try:
+            parsed = _parse_opportunity_report(reports[0])
+        except Exception as exc:
+            logger.warning(f"解析机会报告失败: {exc}")
+            if not run_payload:
+                canvas = _empty_opportunity_canvas('机会报告解析失败')
+                if hot_sector:
+                    _append_hot_sector_canvas_nodes(canvas, hot_sector)
+                return {
+                    'latest_report': {
+                        'file': reports[0].name,
+                        'url': _report_url(reports[0]),
+                        'updated_at': _format_datetime(reports[0].stat().st_mtime),
+                    },
+                    'market_env': '机会报告解析失败，已降级为空视图',
+                    'items': [],
+                    'canvas': canvas,
+                    'hot_sector': hot_sector,
+                    'quant_models': [],
+                    'stats': {
+                        'total': 0,
+                        'strong_count': 0,
+                        'average_score': 0,
+                        'top_score': 0,
+                    },
+                }
+    if parsed is None:
+        run = (run_payload or {}).get('run') or {}
+        parsed = {
+            'file': Path(str(run.get('report_file') or '')).name or '',
+            'url': _report_url(RESULTS_DIR / Path(str(run.get('report_file') or '')).name) if run.get('report_file') else None,
+            'updated_at': run.get('run_at') or '--',
+            'market_env': '已加载最新全量机会挖掘 run 明细',
+            'run_meta': {},
+            'degraded_count': 0,
+            'all_degraded': False,
             'items': [],
-            'quant_models': [],
-            'stats': {
-                'total': 0,
-                'strong_count': 0,
-                'average_score': 0,
-                'top_score': 0,
-            },
         }
     all_degraded = bool(parsed.get('all_degraded'))
     raw_items = parsed['items']
-    if all_degraded:
+    if all_degraded and not run_payload:
         raw_count = len(raw_items)
+        canvas = _empty_opportunity_canvas('最新机会报告全部候选数据降级')
+        if hot_sector:
+            _append_hot_sector_canvas_nodes(canvas, hot_sector)
         return {
             'latest_report': {
                 'file': parsed['file'],
@@ -1633,6 +3101,8 @@ def _load_latest_opportunities():
             'market_env': f"最新机会报告数据降级({raw_count}/{raw_count})，量化和技术评分不可用，请重新运行机会挖掘。",
             'empty_reason': "最新机会报告全部候选缺少有效历史行情数据，已隐藏诊断性 Top 榜，避免误当正常推荐。",
             'items': [],
+            'canvas': canvas,
+            'hot_sector': hot_sector,
             'quant_models': [],
             'quant_models_note': '',
             'stats': {
@@ -1643,9 +3113,28 @@ def _load_latest_opportunities():
             },
         }
 
-    items = raw_items
-    scores = [item['score'] for item in items]
-    strong_count = len([item for item in items if item['score'] >= 80])
+    items = _merge_opportunity_items(raw_items, (run_payload or {}).get('items'))
+    run = (run_payload or {}).get('run') or {}
+    run_meta = dict(parsed.get('run_meta') or {})
+    for key in ['run_at', 'source', 'candidate_limit', 'ruleset_version', 'config_hash', 'mode']:
+        if run.get(key) and key not in run_meta:
+            run_meta[key] = run.get(key)
+    latest_report = {
+        'file': parsed['file'],
+        'url': parsed['url'],
+        'updated_at': parsed['updated_at'],
+        'run_meta': run_meta,
+        'degraded_count': parsed.get('degraded_count', 0),
+        'all_degraded': False,
+    }
+    if run:
+        latest_report.update({
+            'run_id': run.get('id'),
+            'run_item_count': len((run_payload or {}).get('items') or []),
+            'run_at': run.get('run_at'),
+        })
+    scores = [_safe_float(item.get('score'), 0.0) or 0.0 for item in items]
+    strong_count = len([score for score in scores if score >= 80])
     quant_models = _build_quant_model_summary(items)
     quant_models_note = ''
     if not quant_models:
@@ -1653,17 +3142,12 @@ def _load_latest_opportunities():
         if fallback:
             quant_models, quant_models_note = fallback
     return {
-        'latest_report': {
-            'file': parsed['file'],
-            'url': parsed['url'],
-            'updated_at': parsed['updated_at'],
-            'run_meta': parsed.get('run_meta') or {},
-            'degraded_count': parsed.get('degraded_count', 0),
-            'all_degraded': False,
-        },
+        'latest_report': latest_report,
         'market_env': parsed['market_env'],
         'empty_reason': '',
         'items': items,
+        'canvas': _build_opportunity_canvas(items, latest_report, parsed['market_env'], hot_sector),
+        'hot_sector': hot_sector,
         'quant_models': quant_models,
         'quant_models_note': quant_models_note,
         'stats': {
@@ -1955,6 +3439,7 @@ def _run_opportunity_job(job_id, params):
         'multi': '多源综合',
         'heat': '仅热度榜',
         'moneyflow_dc': '资金流向榜单',
+        'sector_hot': '热门板块成分股',
     }.get(source, source)
     mode = 'specified_pool' if stock_codes else 'market_scan'
     mode_label = '指定股票池' if stock_codes else '全市场扫描'
@@ -2431,6 +3916,113 @@ def validate_db_snapshot(path):
     return DB_BACKUP_SERVICE.validate_db(path)
 
 
+def _opportunity_pattern_backtest(params, log_cb=None, fetch_klines=None):
+    """对某次机会挖掘 run 的 Top-N 股票做「形态自回测」:用每只票最近 window_days
+    的形态在自身历史里扫描相似片段,统计前向 5/10/20 日胜率与平均收益 → 形态评分。
+    """
+    from analysis.pattern_backtest import scan_series, parse_close_series, _summarise_horizon
+    from data_store import opportunity_repo
+
+    run_id = params.get('run_id')
+    date = params.get('date')
+    top_n = _safe_int(params.get('top_n'), 20, minimum=1, maximum=50) or 20
+    window_days = _safe_int(params.get('window_days'), 30, minimum=5, maximum=120) or 30
+    horizons = [5, 10, 20]
+
+    if run_id is not None:
+        run = opportunity_repo.get_run(run_id)
+    elif date:
+        runs = opportunity_repo.list_runs(run_date=str(date)[:10], limit=1)
+        run = runs[0] if runs else None
+    else:
+        run = opportunity_repo.latest_run()
+    if not run:
+        return {'ok': False, 'error': '无可回测的机会挖掘 run'}
+    items = [i for i in opportunity_repo.items_for_run(int(run['id'])) if i.get('code')][:top_n]
+    if not items:
+        return {'ok': False, 'error': '该 run 无入库股票明细'}
+
+    if fetch_klines is None:
+        try:
+            from scripts.build_pattern_fingerprints import fetch_recent_klines as fetch_klines
+        except Exception as exc:  # noqa: BLE001
+            return {'ok': False, 'error': f'K线取数模块不可用: {exc}'}
+
+    def _sina(code):
+        digits = ''.join(ch for ch in str(code or '') if ch.isdigit())
+        return ('sh' if digits.startswith('6') else 'sz') + digits
+
+    rows = []
+    scanned = 0
+    need = window_days + max(horizons) + 2
+    for idx, it in enumerate(items, 1):
+        code = str(it.get('code'))
+        name = it.get('name') or code
+        if log_cb:
+            log_cb(f"[{idx}/{len(items)}] 形态回测 {name} {code}")
+        try:
+            _name, klines = fetch_klines(_sina(code), 250)
+            closes = parse_close_series(klines)
+            if len(closes) < need:
+                rows.append({'code': code, 'name': name, 'rating': it.get('rating'),
+                             'total_score': it.get('total_score'), 'pattern_score': None,
+                             'win_rate': None, 'avg_return': None, 'sample_count': 0,
+                             'note': '历史数据不足'})
+                continue
+            query = closes[-window_days:]
+            samples = scan_series(closes, query, window_days=window_days, horizons=horizons)
+            scanned += 1
+            per_h = {}
+            for h in horizons:
+                rets = [s['returns'][h] for s in samples if h in s.get('returns', {})]
+                per_h[str(h)] = _summarise_horizon(h, rets)
+            primary = per_h.get('10') or per_h.get(str(horizons[0]))
+            count = primary['count'] if primary else 0
+            wr = primary['win_rate'] if (primary and count) else None
+            ar = primary['avg_return'] if (primary and count) else None
+            rows.append({
+                'code': code, 'name': name, 'rating': it.get('rating'),
+                'total_score': it.get('total_score'),
+                'pattern_score': round(wr * 100, 1) if wr is not None else None,
+                'win_rate': wr, 'avg_return': ar, 'sample_count': count,
+                'horizons': per_h,
+            })
+        except Exception as exc:  # noqa: BLE001 — 单票失败不影响整体
+            rows.append({'code': code, 'name': name, 'pattern_score': None,
+                         'win_rate': None, 'avg_return': None, 'sample_count': 0,
+                         'note': str(exc)[:80]})
+    rows.sort(key=lambda r: (r.get('pattern_score') is None, -(r.get('pattern_score') or 0)))
+    return {
+        'ok': True, 'rows': rows, 'horizons': horizons,
+        'window_days': window_days, 'scanned': scanned, 'total': len(items),
+        'run': {'id': run['id'], 'run_at': run.get('run_at'),
+                'date': str(run.get('run_date') or run.get('run_at') or '')[:10]},
+    }
+
+
+def _run_opportunity_pattern_backtest_job(job_id, params):
+    _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
+    _append_job_log(job_id, '开始机会挖掘形态回测')
+    try:
+        result = _opportunity_pattern_backtest(params, log_cb=lambda m: _append_job_log(job_id, m))
+        if not result.get('ok'):
+            raise RuntimeError(result.get('error') or '回测失败')
+        _append_job_log(job_id, f"形态回测完成: 扫描 {result.get('scanned', 0)}/{result.get('total', 0)} 只")
+        _update_job(job_id, status='finished',
+                    finished_at=datetime.datetime.now().isoformat(), result=result)
+    except Exception as exc:
+        _append_job_log(job_id, f'机会形态回测失败: {exc}')
+        _update_job(job_id, status='failed',
+                    finished_at=datetime.datetime.now().isoformat(), error=str(exc))
+
+
+def start_opportunity_pattern_backtest(run_id=None, date=None, top_n=20):
+    """启动机会挖掘形态回测后台 job,返回 job 快照。"""
+    params = {'run_id': run_id, 'date': date, 'top_n': top_n}
+    job = JOB_SERVICE.start('opportunity_pattern_backtest', params, _run_opportunity_pattern_backtest_job)
+    return {'success': True, 'job_id': job['id'], 'job': _get_job_snapshot(job['id'])}
+
+
 def _run_pattern_backtest_job(job_id, params):
     _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
     _append_job_log(job_id, '开始同类图形回测')
@@ -2487,6 +4079,10 @@ DESKTOP_PAGES = {
         'title': '分析工作台',
         'subtitle': '机会挖掘、批量分析、任务日志与结果复盘',
     },
+    'opportunities': {
+        'title': '投资机会挖掘',
+        'subtitle': '历史机会挖掘、全量股票分析、画布关系与热门板块快照',
+    },
     'patterns': {
         'title': '形态搜股',
         'subtitle': '手绘曲线或载入个股形态检索相似股票',
@@ -2506,7 +4102,6 @@ DESKTOP_PAGES = {
 }
 
 DESKTOP_PAGE_ALIASES = {
-    'opportunities': 'workbench',
     'overview': 'features',  # 「总览」「功能总览」已合并为 features 单页
 }
 

@@ -59,7 +59,12 @@ def save_run(meta: Dict[str, Any], items: List[Dict[str, Any]]) -> int:
             run_id, code, item.get("name"), rank,
             _num(item.get("total_score")), item.get("rating"),
             1 if item.get("degraded") else 0,
-            item.get("source"), _num(item.get("change_pct")),
+            item.get("source"), item.get("source_detail"),
+            item.get("sector") or item.get("industry") or item.get("sector_name"),
+            item.get("sector_code"),
+            _num(item.get("sector_rank")),
+            _num(item.get("sector_stock_rank")),
+            _num(item.get("change_pct")),
             _json_or_none(item.get("scores")),
             _json_or_none(item.get("signals")),
         ))
@@ -67,8 +72,9 @@ def save_run(meta: Dict[str, Any], items: List[Dict[str, Any]]) -> int:
         """
         INSERT INTO opportunity_item(
           run_id, code, name, item_rank, total_score, rating,
-          degraded, source, change_pct, scores_json, signals_json)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?)
+          degraded, source, source_detail, sector, sector_code,
+          sector_rank, sector_stock_rank, change_pct, scores_json, signals_json)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(run_id, code) DO NOTHING
         """,
         rows,
@@ -91,6 +97,7 @@ def build_items(filter_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         scores = sr.get("scores") or {}
         quant = det.get("quantitative") or {}
         tech = det.get("technical") or {}
+        sector = det.get("sector") or {}
         pc = det.get("price_changes") or {}
         mom = det.get("momentum") or {}
         chase = (((sr.get("advanced_analysis") or {}).get("overall_score") or {})
@@ -108,6 +115,16 @@ def build_items(filter_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "rating": stock.get("rating") or sr.get("rating"),
             "degraded": degraded,
             "source": stock.get("source"),
+            "source_detail": stock.get("source_detail"),
+            "sector": (
+                stock.get("sector")
+                or stock.get("sector_name")
+                or sector.get("sector_name")
+                or sector.get("name")
+            ),
+            "sector_code": stock.get("sector_code") or sector.get("sector_code"),
+            "sector_rank": _num(stock.get("sector_rank")),
+            "sector_stock_rank": _num(stock.get("sector_stock_rank")),
             "change_pct": _num(stock.get("change_pct")),
             "scores": scores,
             "signals": {
@@ -144,6 +161,44 @@ def list_runs(run_date: Optional[str] = None, limit: int = 50) -> List[Dict[str,
 def latest_run() -> Optional[Dict[str, Any]]:
     runs = list_runs(limit=1)
     return runs[0] if runs else None
+
+
+def run_for_report_file(report_file: str) -> Optional[Dict[str, Any]]:
+    """Return the newest run that produced a specific dashboard report file."""
+    name = str(report_file or "").strip()
+    if not name:
+        return None
+    row = get_conn().execute(
+        """
+        SELECT r.*, (SELECT COUNT(*) FROM opportunity_item i WHERE i.run_id = r.id) AS item_count
+        FROM opportunity_run r
+        WHERE r.report_file = ?
+        ORDER BY r.run_at DESC, r.id DESC
+        LIMIT 1
+        """,
+        (name,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_run(run_id: int) -> Optional[Dict[str, Any]]:
+    """Return a single run by id (含 item_count),不存在返回 None。"""
+    if run_id is None:
+        return None
+    try:
+        rid = int(run_id)
+    except (TypeError, ValueError):
+        return None
+    row = get_conn().execute(
+        """
+        SELECT r.*, (SELECT COUNT(*) FROM opportunity_item i WHERE i.run_id = r.id) AS item_count
+        FROM opportunity_run r
+        WHERE r.id = ?
+        LIMIT 1
+        """,
+        (rid,),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def items_for_run(run_id: int) -> List[Dict[str, Any]]:

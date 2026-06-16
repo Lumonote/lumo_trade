@@ -199,11 +199,13 @@ def _safe_child_path(root: Path, relative_path: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def _file_response(path: Path | None, cache_immutable: bool = False) -> Response:
+def _file_response(path: Path | None, cache_immutable: bool = False, attachment: bool = False) -> Response:
     if path is None:
         return _text_response("Not Found", status_code=404)
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     headers: dict[str, str] = {"Content-Type": content_type}
+    if attachment:
+        headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
     if cache_immutable:
         # 带 ?v=<版本> 的静态资源按内容版本强缓存：版本不变即永久命中(不再下载/重解析)，
         # 版本变化(文件 mtime 改变)即换 URL 自动失效。仅作用于显式带版本号的请求，
@@ -369,7 +371,7 @@ def analysis_report(request: Request, subpath=None) -> Response:
     directory = webui_core.REPORT_DIRS.get(root_key)
     if not directory or not filename:
         return _text_response("Not Found", status_code=404)
-    return _file_response(_safe_child_path(directory, filename))
+    return _file_response(_safe_child_path(directory, filename), attachment=filename.lower().endswith((".xlsx", ".xls")))
 
 
 @_native_get("/api/data-files")
@@ -527,12 +529,21 @@ def post_stock_analysis_suite_ai(request: Request, stock_code=None) -> Response:
     try:
         # 异步启动：立即返回 status:running，由前端轮询 GET 同一路由获取结果。
         # DeepSeek 推理模型耗时 ~100s，WKWebView 会在 ~60s 掐断同步 fetch（用户看到 Load failed）。
-        payload = webui_core.STOCK_SUITE_SERVICE.start_ai_interpretation(
-            code,
-            name=name,
-            model_full_key=model_full_key,
-            force_refresh=force_refresh,
-        )
+        service = webui_core.STOCK_SUITE_SERVICE
+        if hasattr(service, "start_ai_interpretation"):
+            payload = service.start_ai_interpretation(
+                code,
+                name=name,
+                model_full_key=model_full_key,
+                force_refresh=force_refresh,
+            )
+        else:
+            payload = service.trigger_ai_interpretation(
+                code,
+                name=name,
+                model_full_key=model_full_key,
+                force_refresh=force_refresh,
+            )
     except ValueError as exc:
         return _json_response({"success": False, "error": str(exc)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
@@ -683,12 +694,30 @@ def opportunity_report_cards(request: Request) -> Response:
     return _json_response(payload)
 
 
+@_native_get("/api/opportunity-canvas")
+def opportunity_canvas(request: Request) -> Response:
+    """投资机会画布按日切换:?run_id=N 优先,否则 ?date=YYYY-MM-DD 当日最新 run。"""
+    run_id_raw = (_query_value(request, "run_id") or "").strip()
+    date = (_query_value(request, "date") or "").strip()
+    run_id = None
+    if run_id_raw:
+        try:
+            run_id = int(run_id_raw)
+        except (TypeError, ValueError):
+            run_id = None
+    payload = webui_core.opportunity_canvas_payload(run_id=run_id, date=date or None)
+    if payload is None:
+        return _json_response({"error": "该日无挖掘记录"}, status_code=404)
+    return _json_response(payload)
+
+
 # ----------------------------- 风险·机遇 作战大屏 command center -----------------------------
 
 @_native_get("/api/command-center/overview")
 def command_center_overview(request: Request) -> Response:
     quotes_only = str(_query_value(request, "quotes_only", "") or "").lower() in {"1", "true", "yes"}
-    return _json_response(webui_core.command_center_overview(quotes_only=quotes_only))
+    date = (_query_value(request, "date") or "").strip() or None
+    return _json_response(webui_core.command_center_overview(date=date, quotes_only=quotes_only))
 
 
 @_native_post("/api/command-center/recompute")
@@ -896,6 +925,16 @@ def pattern_search_backtest(request: Request) -> Response:
     return _json_response({"job_id": job["id"], "status": "queued", "job": webui_core._get_job_snapshot(job["id"])})
 
 
+@_native_post("/api/opportunity/pattern-backtest")
+def opportunity_pattern_backtest(request: Request) -> Response:
+    """机会挖掘形态回测:对某次 run 的 Top-N 股票做形态自回测打分(后台 job)。"""
+    body = _request_json(request) or {}
+    run_id = body.get("run_id")
+    date = (str(body.get("date") or "").strip() or None)
+    top_n = body.get("top_n") or 20
+    return _json_response(webui_core.start_opportunity_pattern_backtest(run_id=run_id, date=date, top_n=top_n))
+
+
 @_native_post("/api/pattern-search/save")
 def pattern_search_save(request: Request) -> Response:
     result, status_code = webui_core.PATTERN_SEARCH_SERVICE.save_pattern(_request_json(request))
@@ -979,6 +1018,74 @@ def opportunity_run_items(request: Request, run_id=None) -> Response:
         return _json_response({"items": opportunity_repo.items_for_run(rid)})
     except Exception as exc:  # noqa: BLE001
         return _json_response({"items": [], "error": str(exc)}, status_code=500)
+
+
+@_native_get("/api/hot-sector-snapshot")
+def hot_sector_snapshot(request: Request) -> Response:
+    """最新热门板块全量快照摘要（板块级，不展开全部成分股）。"""
+    sid = webui_core._safe_int(_query_value(request, "snapshot_id"), None, minimum=1)
+    payload = webui_core._load_hot_sector_snapshot_summary(sid)
+    if not payload:
+        return _json_response({"snapshot": None, "boards": [], "stats": {"boards": 0, "stocks": 0, "relations": 0}})
+    return _json_response(payload)
+
+
+@_native_get("/api/hot-sector-snapshots")
+def hot_sector_snapshots(request: Request) -> Response:
+    """历史热门板块快照列表（不展开成分股）。"""
+    limit = webui_core._safe_int(_query_value(request, "limit"), 50, minimum=1, maximum=200) or 50
+    return _json_response({"snapshots": webui_core.list_hot_sector_snapshots(limit)})
+
+
+@_native_get("/api/hot-sector-snapshot/:snapshot_id/stocks")
+def hot_sector_snapshot_stocks(request: Request, snapshot_id=None) -> Response:
+    """热门板块成分股分页钻取（?board_code=BKxxxx&limit=200&offset=0）。"""
+    sid = webui_core._safe_int(_path_param(request, "snapshot_id", snapshot_id), None, minimum=1)
+    if not sid:
+        return _json_response({"stocks": [], "relations": [], "error": "invalid snapshot_id"}, status_code=400)
+    payload = webui_core.hot_sector_stocks_payload(
+        sid,
+        board_code=str(_query_value(request, "board_code") or "").strip() or None,
+        limit=_query_value(request, "limit", 200),
+        offset=_query_value(request, "offset", 0),
+    )
+    return _json_response(payload)
+
+
+@_native_post("/api/hot-sector-snapshot/:snapshot_id/export")
+def hot_sector_snapshot_export(request: Request, snapshot_id=None) -> Response:
+    """导出热门板块快照为多 sheet Excel，并返回 analysis-reports 下载 URL。"""
+    sid = webui_core._safe_int(_path_param(request, "snapshot_id", snapshot_id), None, minimum=1)
+    if not sid:
+        return _json_response({"error": "invalid snapshot_id"}, status_code=400)
+    try:
+        payload = webui_core.export_hot_sector_snapshot(sid)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"error": str(exc)}, status_code=500)
+    if not payload:
+        return _json_response({"error": "snapshot not found"}, status_code=404)
+    return _json_response({"success": True, **payload})
+
+
+@_native_post("/api/opportunity-canvas/export")
+def opportunity_canvas_export(request: Request) -> Response:
+    """导出当前投资机会画布为多 sheet Excel；没有热门板块快照也可用。"""
+    try:
+        payload = webui_core.export_opportunity_canvas_excel()
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"error": str(exc)}, status_code=500)
+    return _json_response({"success": True, **payload})
+
+
+@_native_get("/api/stock/financial-statements")
+def stock_financial_statements(request: Request) -> Response:
+    """个股财务三大表(默认读缓存,?force=1 强制联网刷新)。"""
+    code = (_query_value(request, "code") or "").strip()
+    if not code:
+        return _json_response({"error": "缺少股票代码"}, status_code=400)
+    force = str(_query_value(request, "force", "") or "").lower() in {"1", "true", "yes"}
+    return _json_response(webui_core.stock_financial_statements(code, force_refresh=force))
+
 
 
 @_native_post("/api/settings/auto-follow")

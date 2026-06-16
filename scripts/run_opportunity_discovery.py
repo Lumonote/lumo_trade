@@ -11,9 +11,10 @@ import argparse
 import logging
 import json
 import threading
+import urllib.parse
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 import time
 import requests
 from requests.adapters import HTTPAdapter  # 【优化1】连接池管理
@@ -87,6 +88,7 @@ class OpportunityDiscovery:
         self.global_hot_news = []
         self.sector_hot_news = []
         self.max_workers = max_workers
+        self.latest_hot_sector_snapshot_id = None
         # 单只股票分析超时（秒），防止慢API或Playwright卡死导致整体挂起
         self.per_stock_timeout = int(os.environ.get('KRONOS_STOCK_TIMEOUT', '60'))
 
@@ -249,6 +251,277 @@ class OpportunityDiscovery:
 
         logger.info(f"✓ 获取资金流向榜单成功，日期: {selected_date}，共{len(results)}只股票")
         return results
+
+    @staticmethod
+    def _safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
+        try:
+            if value in (None, '', '—', '-', 'N/A'):
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _exchange_from_code(code: str) -> str:
+        code = str(code or '')
+        if code.startswith(('6', '9')):
+            return 'SH'
+        if code.startswith(('0', '2', '3')):
+            return 'SZ'
+        if code.startswith(('4', '8')):
+            return 'BJ'
+        return 'UNKNOWN'
+
+    @staticmethod
+    def _money_text(value: Any) -> str:
+        number = OpportunityDiscovery._safe_float(value, None)
+        if number is None:
+            return '—'
+        if abs(number) >= 100000000:
+            return f"{number / 100000000:.2f}亿"
+        if abs(number) >= 10000:
+            return f"{number / 10000:.1f}万"
+        return f"{number:.0f}"
+
+    def _latest_lhb_by_codes(self, codes: List[str]) -> Dict[str, Dict]:
+        """Return latest dragon-tiger aggregate by bare stock code, best-effort."""
+        clean_codes = []
+        seen = set()
+        for code in codes or []:
+            c = str(code or '').strip()[:6]
+            if len(c) == 6 and c.isdigit() and c not in seen:
+                clean_codes.append(c)
+                seen.add(c)
+        if not clean_codes:
+            return {}
+
+        try:
+            from data_store.connection import get_conn
+            conn = get_conn()
+        except Exception:
+            return {}
+
+        out: Dict[str, Dict] = {}
+        chunk_size = 450
+        for start in range(0, len(clean_codes), chunk_size):
+            chunk = clean_codes[start:start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            try:
+                rows = conn.execute(
+                    f"""
+                    WITH base AS (
+                      SELECT substr(ts_code, 1, 6) AS code, *
+                      FROM dragon_tiger_list
+                      WHERE substr(ts_code, 1, 6) IN ({placeholders})
+                    ),
+                    latest AS (
+                      SELECT code, MAX(trade_date) AS trade_date
+                      FROM base
+                      GROUP BY code
+                    )
+                    SELECT b.code,
+                           b.trade_date,
+                           MAX(b.name) AS name,
+                           SUM(b.l_buy) AS l_buy,
+                           SUM(b.l_sell) AS l_sell,
+                           SUM(b.net_amount) AS net_amount,
+                           GROUP_CONCAT(b.reason, ' / ') AS reason
+                    FROM base b
+                    JOIN latest l ON l.code = b.code AND l.trade_date = b.trade_date
+                    GROUP BY b.code, b.trade_date
+                    """,
+                    tuple(chunk),
+                ).fetchall()
+            except Exception:
+                continue
+            for row in rows:
+                data = dict(row)
+                out[str(data.get('code') or '')] = data
+        return out
+
+    def _eastmoney_clist(self, fs: str, fid: str = 'f3', limit: int = 10, fields: str = 'f12,f14,f2,f3,f62') -> List[Dict]:
+        """东方财富 clist 轻量抓取；用于热门板块与成分股候选。"""
+        params = {
+            'pn': '1',
+            'pz': str(max(1, int(limit))),
+            'po': '1',
+            'np': '1',
+            'fltt': '2',
+            'invt': '2',
+            'fid': fid,
+            'fs': fs,
+            'fields': fields,
+        }
+        url = 'https://push2.eastmoney.com/api/qt/clist/get?' + urllib.parse.urlencode(params)
+        headers = {
+            'User-Agent': (
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+            ),
+            'Accept': 'application/json,text/plain,*/*',
+            'Referer': 'https://quote.eastmoney.com/',
+        }
+        resp = self.session.get(url, headers=headers, timeout=8)
+        resp.raise_for_status()
+        payload = resp.json()
+        rows = ((payload or {}).get('data') or {}).get('diff') or []
+        if isinstance(rows, dict):
+            rows = list(rows.values())
+        return [row for row in rows if isinstance(row, dict)]
+
+    def _fetch_hot_sector_stocks(self, limit: int = 100, board_limit: int = 10) -> List[Dict]:
+        """按前十大热门板块的成分股构造候选池。
+
+        板块来自东财行业 + 概念榜，按当日涨跌幅排序取 Top10；成分股按板块内涨跌幅排序。
+        该候选源用于捕捉「板块先动、个股扩散」机会，和热股/资金流互补。
+        """
+        limit = max(1, int(limit or 100))
+        board_limit = max(1, min(10, int(board_limit or 10)))
+        constituent_limit = int(os.environ.get('KRONOS_HOT_SECTOR_CONSTITUENT_LIMIT', '1000') or 1000)
+        constituent_limit = max(20, min(2000, constituent_limit))
+        try:
+            board_rows = []
+            for fs, board_type in (('m:90+t:2', '行业'), ('m:90+t:3', '概念')):
+                try:
+                    for row in self._eastmoney_clist(fs, fid='f3', limit=board_limit, fields='f12,f14,f3,f62'):
+                        code = str(row.get('f12') or '').strip()
+                        name = str(row.get('f14') or '').strip()
+                        if not code or not name:
+                            continue
+                        board_rows.append({
+                            'code': code,
+                            'name': name,
+                            'type': board_type,
+                            'change_pct': self._safe_float(row.get('f3'), 0.0) or 0.0,
+                            'main_net_inflow': self._safe_float(row.get('f62'), None),
+                            'raw': row,
+                        })
+                except Exception as e:
+                    logger.debug(f"热门{board_type}板块抓取失败: {e}")
+
+            dedup_boards = {}
+            for row in board_rows:
+                dedup_boards.setdefault(row['code'], row)
+            hot_boards = sorted(
+                dedup_boards.values(),
+                key=lambda r: (float(r.get('change_pct') or 0), float(r.get('main_net_inflow') or 0)),
+                reverse=True,
+            )[:board_limit]
+            if not hot_boards:
+                logger.warning("热门板块成分股候选获取失败：未取得热门板块榜单")
+                return []
+
+            all_stocks: List[Dict] = []
+            seen_codes = set()
+            for board_rank, board in enumerate(hot_boards, start=1):
+                board['rank'] = board_rank
+                board_code = board['code']
+                board_name = board['name']
+                try:
+                    constituents = self._eastmoney_clist(
+                        f'b:{board_code}',
+                        fid='f3',
+                        limit=constituent_limit,
+                        fields='f12,f14,f2,f3,f62,f66,f72,f100',
+                    )
+                except Exception as e:
+                    logger.debug(f"热门板块 {board_name}({board_code}) 成分股抓取失败: {e}")
+                    continue
+
+                for stock_rank, row in enumerate(constituents, start=1):
+                    code = str(row.get('f12') or '').strip()
+                    name = str(row.get('f14') or '').strip()
+                    dedup_key = (board_code, code)
+                    if not code or not name or dedup_key in seen_codes:
+                        continue
+                    seen_codes.add(dedup_key)
+                    main_net = self._safe_float(row.get('f62'), None)
+                    all_stocks.append({
+                        'code': code,
+                        'name': name,
+                        'exchange': self._exchange_from_code(code),
+                        'price': self._safe_float(row.get('f2'), 0.0) or 0.0,
+                        'change_pct': self._safe_float(row.get('f3'), 0.0) or 0.0,
+                        'source': 'sector_hot',
+                        'source_detail': f"热门{board.get('type', '板块')} {board_name} 第{board_rank} · 成分第{stock_rank}",
+                        'sector_code': board_code,
+                        'sector_name': board_name,
+                        'sector_rank': board_rank,
+                        'sector_stock_rank': stock_rank,
+                        'sector_change_pct': round(float(board.get('change_pct') or 0.0), 2),
+                        'rank': len(all_stocks) + 1,
+                        'popularity_score': max(0, 110 - board_rank * 5 - stock_rank),
+                        'main_net_inflow': main_net,
+                        'main_net_inflow_text': self._money_text(main_net),
+                        'raw': row,
+                    })
+
+            lhb_map = self._latest_lhb_by_codes([s.get('code') for s in all_stocks])
+            relations: List[Dict] = []
+            for stock in all_stocks:
+                lhb = lhb_map.get(str(stock.get('code') or ''))
+                if not lhb:
+                    continue
+                stock.update({
+                    'lhb_trade_date': lhb.get('trade_date'),
+                    'lhb_buy_amount': self._safe_float(lhb.get('l_buy'), None),
+                    'lhb_sell_amount': self._safe_float(lhb.get('l_sell'), None),
+                    'lhb_net_amount': self._safe_float(lhb.get('net_amount'), None),
+                    'lhb_reason': lhb.get('reason'),
+                })
+                relations.append({
+                    'board_code': stock.get('sector_code'),
+                    'code': stock.get('code'),
+                    'relation_type': 'dragon_tiger',
+                    'related_table': 'dragon_tiger_list',
+                    'related_key': f"{lhb.get('trade_date')}:{stock.get('code')}",
+                    'trade_date': lhb.get('trade_date'),
+                    'amount': lhb.get('net_amount'),
+                    'detail': lhb,
+                })
+
+            candidates = []
+            seen_candidate_codes = set()
+            for stock in all_stocks:
+                code = stock.get('code')
+                if not code or code in seen_candidate_codes:
+                    continue
+                seen_candidate_codes.add(code)
+                stock['candidate_rank'] = len(candidates) + 1
+                candidates.append(stock)
+                if len(candidates) >= limit:
+                    break
+
+            try:
+                from data_store import hot_sector_repo
+                snapshot_id = hot_sector_repo.save_snapshot(
+                    hot_boards,
+                    all_stocks,
+                    relations,
+                    meta={
+                        'source': 'sector_hot',
+                        'trade_date': datetime.now().strftime('%Y-%m-%d'),
+                        'board_limit': board_limit,
+                        'candidate_limit': limit,
+                        'constituent_limit': constituent_limit,
+                    },
+                )
+                self.latest_hot_sector_snapshot_id = snapshot_id
+                logger.info(
+                    f"✓ 热门板块快照已入库: snapshot_id={snapshot_id}, "
+                    f"stocks={len(all_stocks)}, lhb_relations={len(relations)}"
+                )
+            except Exception as e:
+                logger.warning(f"热门板块快照入库失败(不影响评分): {e}")
+
+            logger.info(
+                f"✓ 热门板块成分股候选完成：Top{len(hot_boards)}板块，"
+                f"记录{len(all_stocks)}只股票，候选{len(candidates)}只"
+            )
+            return candidates
+        except Exception as e:
+            logger.warning(f"热门板块成分股候选获取失败: {e}")
+            return []
 
     def _trim_deep_heat_rank_candidates(self, stocks: List[Dict], limit: int) -> List[Dict]:
         if not stocks:
@@ -789,11 +1062,18 @@ class OpportunityDiscovery:
                     logger.warning("资金流向榜单获取失败，回退使用热度榜")
                     logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
                     hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
+            elif source == 'sector_hot':
+                logger.info(f"\n步骤1: 正在根据前十大热门板块成分股挖掘 TOP {limit}...")
+                hot_stocks = self._fetch_hot_sector_stocks(limit=limit, board_limit=10)
+                if not hot_stocks:
+                    logger.warning("热门板块成分股获取失败，回退使用热度榜")
+                    logger.info(f"\n步骤1: 正在获取热门股票 TOP {limit}...")
+                    hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
             elif source == 'multi':
-                # 多源融合: 热股100 + 超跌反弹 + 资金流向
+                # 多源融合: 热股100 + 热门板块成分股 + 超跌反弹 + 资金流向 + 低位放量
                 logger.info(f"\n步骤1: 多源融合选股模式")
 
-                logger.info(f"  [1/4] 获取热门股票 TOP {limit}...")
+                logger.info(f"  [1/5] 获取热门股票 TOP {limit}...")
                 hot_stocks = self.hot_stocks_fetcher.get_hot_stocks(limit=limit, force_refresh=True)
                 if not hot_stocks:
                     hot_stocks = []
@@ -805,7 +1085,7 @@ class OpportunityDiscovery:
                 if len(hot_stocks) < limit:
                     deficit = limit - len(hot_stocks)
                     topup_limit = max(deficit * 2, deficit + 30)
-                    logger.info(f"  [1.5/4] 热股不足{limit}只，补充资金流向候选 TOP {topup_limit}...")
+                    logger.info(f"  [1.5/5] 热股不足{limit}只，补充资金流向候选 TOP {topup_limit}...")
                     moneyflow_candidates = self._fetch_moneyflow_dc_stocks(limit=topup_limit)
                     seen_hot_codes = set(str(s.get('code') or '') for s in hot_stocks if s.get('code'))
                     added = 0
@@ -820,21 +1100,25 @@ class OpportunityDiscovery:
                             break
                     logger.info(f"  ✓ 资金流向补充新增: {added}只（当前热股候选: {len(hot_stocks)}只）")
 
-                logger.info(f"  [2/4] 筛选超跌反弹候选...")
+                logger.info(f"  [2/5] 获取前十大热门板块成分股候选...")
+                sector_hot = self._fetch_hot_sector_stocks(limit=max(40, min(120, limit)), board_limit=10)
+                logger.info(f"  ✓ 热门板块成分股: {len(sector_hot)}只")
+
+                logger.info(f"  [3/5] 筛选超跌反弹候选...")
                 oversold = self._fetch_oversold_rebound_stocks(limit=30)
                 logger.info(f"  ✓ 超跌反弹: {len(oversold)}只")
 
-                logger.info(f"  [3/4] 获取个股资金流向...")
+                logger.info(f"  [4/5] 获取个股资金流向...")
                 dragon = self._fetch_capital_flow_stocks(limit=40)
                 logger.info(f"  ✓ 资金流向: {len(dragon)}只")
 
-                logger.info(f"  [4/4] 扫描低位放量待突破候选...")
+                logger.info(f"  [5/5] 扫描低位放量待突破候选...")
                 breakout = self._fetch_low_position_breakout_stocks(limit=30)
                 logger.info(f"  ✓ 低位放量: {len(breakout)}只")
 
                 # 去重合并（以code为准，热股优先保留）
                 seen_codes = set(s['code'] for s in hot_stocks)
-                for s in oversold + dragon + breakout:
+                for s in sector_hot + oversold + dragon + breakout:
                     if s['code'] not in seen_codes:
                         hot_stocks.append(s)
                         seen_codes.add(s['code'])
@@ -867,6 +1151,17 @@ class OpportunityDiscovery:
                     seen_codes.add(code)
             hot_stocks = merged[:limit]
 
+        if (
+            not test_codes
+            and source in ('heat', 'moneyflow_dc')
+            and not getattr(self, 'latest_hot_sector_snapshot_id', None)
+        ):
+            try:
+                logger.info("同步热门板块全量快照，用于桌面板块页和每日挖掘数据库...")
+                self._fetch_hot_sector_stocks(limit=max(30, min(100, limit)), board_limit=10)
+            except Exception as e:
+                logger.warning(f"同步热门板块快照失败(不影响本次候选评分): {e}")
+
         hot_stocks = self._trim_deep_heat_rank_candidates(hot_stocks, limit)
         hot_stocks = self._filter_st_candidates(hot_stocks, "候选清洗")
 
@@ -874,7 +1169,7 @@ class OpportunityDiscovery:
             logger.error("✗ 候选股票获取失败，程序终止")
             return ""
 
-        if source not in ('moneyflow_dc', 'multi'):
+        if source not in ('moneyflow_dc', 'multi', 'sector_hot'):
             # 检查是否使用了 fallback 数据（静态备用数据，非实时热股）
             fallback_count = sum(1 for s in hot_stocks if s.get('source') == 'fallback')
             if fallback_count > 0:
@@ -1349,6 +1644,9 @@ class OpportunityDiscovery:
             'config_hash': self._scoring_config_hash(),
             'candidates': len(hot_stocks),
             'analyzed': len(scored_stocks),
+            'extra': {
+                'hot_sector_snapshot_id': getattr(self, 'latest_hot_sector_snapshot_id', None),
+            },
         }
 
         report_path = self.report_generator.generate_report(
@@ -1542,7 +1840,7 @@ class OpportunityDiscovery:
                 sector_name = hot_stock.get('sector_name')
                 sector_info = {}
                 if sector_name:
-                    sector_info = {'name': sector_name}
+                    sector_info = {'name': sector_name, 'sector_code': hot_stock.get('sector_code')}
                     # 尝试从缓存获取板块情绪
                     sector_sentiment = cache.get_sector(sector_name)
                     if sector_sentiment:
@@ -1575,6 +1873,10 @@ class OpportunityDiscovery:
                 'change_pct': hot_stock.get('change_pct', 0),
                 'source': hot_stock.get('source', 'heat'),
                 'source_detail': hot_stock.get('source_detail', ''),
+                'sector_name': hot_stock.get('sector_name', ''),
+                'sector_code': hot_stock.get('sector_code', ''),
+                'sector_rank': hot_stock.get('sector_rank'),
+                'sector_stock_rank': hot_stock.get('sector_stock_rank'),
                 'scoring_result': scoring_result
             }
 
@@ -1592,6 +1894,10 @@ class OpportunityDiscovery:
             'change_pct': hot_stock.get('change_pct', 0),
             'source': hot_stock.get('source', 'heat'),
             'source_detail': hot_stock.get('source_detail', ''),
+            'sector_name': hot_stock.get('sector_name', ''),
+            'sector_code': hot_stock.get('sector_code', ''),
+            'sector_rank': hot_stock.get('sector_rank'),
+            'sector_stock_rank': hot_stock.get('sector_stock_rank'),
             'scoring_result': {
                 'total_score': 0,
                 'rating': 'C',
@@ -2011,7 +2317,7 @@ class OpportunityDiscovery:
 def main():
     parser = argparse.ArgumentParser(description='投资机会挖掘系统')
     parser.add_argument('--limit', type=int, default=100, help='获取热门股票的数量（默认100）')
-    parser.add_argument('--source', type=str, default='multi', choices=['heat', 'moneyflow_dc', 'multi'], help='候选来源：multi(多源融合,默认) / heat(热度榜) / moneyflow_dc(资金流向榜单)')
+    parser.add_argument('--source', type=str, default='multi', choices=['heat', 'moneyflow_dc', 'sector_hot', 'multi'], help='候选来源：multi(多源融合,默认) / heat(热度榜) / moneyflow_dc(资金流向榜单) / sector_hot(热门板块成分股)')
     parser.add_argument('--workers', type=int, default=10, help='并发处理线程数（默认10）')
     parser.add_argument('--test-codes', type=str, help='指定测试股票代码，逗号分隔')
     parser.add_argument('--enable-auto-optimize', action='store_true', help='运行结束后按回测结果改写评分配置（默认关闭，避免跨次分数漂移）')
