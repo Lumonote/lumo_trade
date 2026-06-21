@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Kronos 行情台</title>
+    <title>Lumo Trade 行情台</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -155,7 +155,7 @@
   </head>
   <body>
     <header>
-      <span class="title">◈ Kronos 行情台</span>
+      <span class="title">Lumo Trade 行情台</span>
       <button class="icn" id="refresh" title="刷新行情">⟳ 刷新</button>
       <button class="icn" id="console" title="打开控制台">⤢ 控制台</button>
       <span class="clock" id="updated"></span>
@@ -301,12 +301,16 @@
               const sub = b.leader_name
                 ? "领涨 " + esc(b.leader_name)
                 : (b.main_net_inflow_text && b.main_net_inflow_text !== "0" ? "主力 " + esc(b.main_net_inflow_text) : "板块");
-              return `<div class="row" style="cursor:default">
+              const route = b.code
+                ? `/desktop/workbench?board=${encodeURIComponent(b.code)}&board_name=${encodeURIComponent(b.name || "")}`
+                : `/desktop/workbench?board_name=${encodeURIComponent(b.name || "")}`;
+              return `<button class="row" data-route="${route}">
                 <span class="nm"><b>${esc(b.name)}</b><i>${sub}</i></span>
                 <span class="pc ${changeClass(b.change_pct)}">${fmtPct(b.change_pct)}</span>
-              </div>`;
+              </button>`;
             })
             .join("");
+        bindRows(bbox);
 
         // 异动：盘口实时异动（火箭发射/快速反弹/大笔买入/封涨停板等，行内显示板块，仅交易时段更新）
         const cbox = $("#changes");

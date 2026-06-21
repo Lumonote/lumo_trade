@@ -14,6 +14,8 @@ import json
 import math
 import random
 import re
+import shutil
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -75,6 +77,7 @@ from webui.services.notification_events import NotificationEventService
 from webui.services.scoring_health_service import ScoringHealthService
 from webui.services.db_backup_service import DbBackupService
 from webui.services.command_center_service import CommandCenterService
+from data_store import opportunity_repo
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +228,10 @@ COMMAND_CENTER_SERVICE = CommandCenterService(
     market_env=_cc_market_env,
     holdings=_cc_holdings,
     quotes=WATCHLIST_SERVICE.quotes,
+    hot_membership=lambda date=None: _hot_sector_stock_membership_index(
+        _hot_sector_snapshot_for_date(date)),
+    news_index=lambda positions: _holdings_news_index(positions, _load_market_intelligence()),
+    hot_news=lambda date=None: opportunity_repo.latest_hot_news(date, limit=10),
 )
 
 
@@ -939,6 +946,67 @@ def _stock_code_key(value):
     return codes[0] if codes else str(value or '').strip()
 
 
+def _holdings_news_index(positions, intelligence=None):
+    """逐只持仓扫描市场情报,返回 ``{code6: [{platform, title}, ...]}``(每只去重+封顶)。
+
+    名称/代码匹配只在此处做(纯函数 ``score_holdings_relevance`` 不做模糊匹配)。
+    名称子串匹配加最小长度门限(≥3)以压假阳性,代码命中始终可信;``platform``
+    名须与 ``risk_opportunity_engine.NEWS_PLATFORM_WEIGHTS`` 的键一致。
+    """
+    intelligence = intelligence if intelligence is not None else _load_market_intelligence()
+    cap = 5
+
+    def _matches(code6, name, text):
+        if not text:
+            return False
+        if code6 and code6 in text:
+            return True
+        return bool(name) and len(name) >= 3 and name in text
+
+    jinshi = intelligence.get('jinshi') or []
+    hot_stocks = (intelligence.get('eastmoney') or {}).get('hot_stocks') or []
+    em_news = intelligence.get('eastmoney_news') or []
+    sina_news = intelligence.get('sina_news') or []
+    ths_news = intelligence.get('ths_news') or []
+    flash_sources = (
+        ('东财快讯', em_news),
+        ('新浪快讯', sina_news),
+        ('同花顺快讯', ths_news),
+    )
+
+    rows = {}
+    for pos in positions or []:
+        code6 = _stock_code_key(pos.get('ts_code') or pos.get('code'))
+        name = str(pos.get('name') or pos.get('stock_name') or '').strip()
+        hits = []
+        seen = set()
+
+        def add(platform, title):
+            title = str(title or '').strip()
+            key = (platform, title)
+            if title and key not in seen and len(hits) < cap:
+                seen.add(key)
+                hits.append({'platform': platform, 'title': title})
+
+        for it in jinshi:
+            text = f"{it.get('title') or ''} {it.get('source') or ''}"
+            if _matches(code6, name, text):
+                add('金十快讯', it.get('title'))
+        for it in hot_stocks:
+            row_code = str(it.get('code') or '').zfill(6)
+            if (code6 and row_code == code6) or (name and name == str(it.get('name') or '')):
+                add('东财人气热度', f"{name or code6} 资金热度")
+        for platform, source in flash_sources:
+            for it in source:
+                if _matches(code6, name, str(it.get('title') or '')):
+                    add(platform, it.get('title'))
+
+        if hits:
+            rows[code6] = hits
+    return rows
+
+
+
 def _json_obj(value, default=None):
     if default is None:
         default = {}
@@ -1020,6 +1088,55 @@ def _report_url(path):
         except ValueError:
             continue
     return None
+
+
+def reveal_in_file_manager(path) -> bool:
+    """在系统文件管理器(Finder/资源管理器)里定位已导出的文件,best-effort。
+
+    打包 App 的 WKWebView 不会触发 ``Content-Disposition: attachment`` 下载,而主窗口
+    导航到本机后端的 http 源(127.0.0.1:7070)之后又拿不到 Tauri IPC —— 浏览器侧任何
+    下载方式(``<a download>``/隐藏 iframe/``location.href``)都静默失效,这正是「点击
+    导出 Excel 无反应」的真因。导出文件本身已写到结果目录,故改由本机后端直接把它在
+    文件管理器里选中:既绕过 WKWebView 的下载限制,也不依赖 Tauri IPC,dev 与打包态
+    行为一致。
+
+    安全护栏:只允许定位由我们自己生成、位于 :data:`REPORT_DIRS` 之内的文件,避免本
+    函数沦为任意文件打开器。返回是否成功唤起文件管理器。
+    """
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except (TypeError, ValueError, OSError):
+        return False
+    if not resolved.is_file():
+        return False
+
+    within_allowed = False
+    for directory in REPORT_DIRS.values():
+        try:
+            resolved.relative_to(Path(directory).resolve())
+            within_allowed = True
+            break
+        except (ValueError, OSError):
+            continue
+    if not within_allowed:
+        return False
+
+    if sys.platform == "darwin":
+        cmd = ["/usr/bin/open", "-R", str(resolved)]
+    elif sys.platform.startswith("win"):
+        # explorer 选中单个文件:/select 后必须紧跟逗号且不留空格。
+        cmd = ["explorer", f"/select,{resolved}"]
+    else:  # Linux/其它:xdg-open 不支持选中单个文件,退而打开所在目录。
+        opener = shutil.which("xdg-open")
+        if not opener:
+            return False
+        cmd = [opener, str(resolved.parent)]
+
+    try:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def _strip_markup(value):
@@ -1402,7 +1519,7 @@ def hot_sector_stocks_payload(snapshot_id=None, board_code=None, limit=200, offs
             offset=offset,
         )
         has_more = len(rows) > limit
-        stocks = rows[:limit]
+        stocks = _overlay_board_realtime(rows[:limit], board_code)
         relations = hot_sector_repo.relations_for_snapshot(
             sid,
             board_code=board_code,
@@ -1425,9 +1542,32 @@ def export_hot_sector_snapshot(snapshot_id=None):
     if not snapshot:
         return None
     sid = int(snapshot['id'])
+
+    # 逐股评分:关联到该快照的最近一次挖掘 run,按代码映射成 {code: opportunity_item}。
+    scores = {}
+    try:
+        from data_store import opportunity_repo
+        run = opportunity_repo.run_for_hot_sector_snapshot(sid)
+        if run:
+            for item in opportunity_repo.items_for_run(int(run['id'])):
+                code = str(item.get('code') or '')
+                if code:
+                    scores[code] = item
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"关联机会评分失败(导出降级为无评分): {exc}")
+
+    # 实时报价:回填快照里为空的 现价/涨跌幅/主力净流入(东财→腾讯→Tushare 多源)。
+    quotes = {}
+    try:
+        from webui.services import star_orbit_service
+        codes = [str(s.get('code') or '') for s in hot_sector_repo.stocks_for_snapshot(sid, limit=100000)]
+        quotes = star_orbit_service._quote_overlay([c for c in codes if c]) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"实时报价回填失败(导出降级为快照原值): {exc}")
+
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     path = RESULTS_DIR / f"hot_sector_snapshot_{sid}_{timestamp}.xlsx"
-    out = hot_sector_repo.export_snapshot_excel(sid, path)
+    out = hot_sector_repo.export_snapshot_excel(sid, path, scores=scores, quotes=quotes)
     return {
         'file': out.name,
         'path': str(out),
@@ -1652,6 +1792,9 @@ def stock_financial_statements(code, force_refresh=False):
 
 
 def _format_score_parts(scores):
+    # 评分分项 EN→CN(与 kronos_desktop_app.js 维度字典 / _SCORE_PART_COLUMNS 对齐),
+    # 覆盖全部分项,避免 momentum/volume_health/liquidity/events/dragon_tiger 等裸键
+    # 直接以英文显示在「个股机会」快速信息里(用户看不懂)。
     labels = {
         'sector': '板块',
         'technical': '技术',
@@ -1660,7 +1803,12 @@ def _format_score_parts(scores):
         'sentiment': '情绪',
         'news': '消息',
         'event': '事件',
+        'events': '事件',
         'moneyflow': '资金',
+        'momentum': '动量',
+        'volume_health': '量能',
+        'liquidity': '流动性',
+        'dragon_tiger': '龙虎榜',
     }
     parts = []
     if isinstance(scores, dict):
@@ -1709,7 +1857,8 @@ def _opportunity_item_from_run_row(row):
     if signal_parts:
         fields.append({'label': '风险信号', 'value': signal_parts})
     if row.get('source'):
-        fields.append({'label': '候选来源', 'value': str(row.get('source'))})
+        _src = str(row.get('source'))
+        fields.append({'label': '候选来源', 'value': _CANVAS_SOURCE_LABELS.get(_src, _src)})
     if row.get('source_detail'):
         fields.append({'label': '来源细节', 'value': str(row.get('source_detail'))})
     if row.get('sector'):
@@ -1870,6 +2019,129 @@ def _hot_sector_stock_membership_index(hot_sector):
         return {}
 
 
+def fetch_board_constituents(board_code, limit=60):
+    """东财板块成分股实时快照(clist ``fs=b:BKxxxx``)。
+
+    仅对东财 ``BK`` 板块码有效;非 BK(如 Tushare ``.DC`` 兜底码)直接返回 ``[]``,
+    由调用方降级 —— 不硬拼 ``fs``。返回 fetch_eastmoney_clist 原始行
+    (``code/name/price/change_pct/main_net_inflow/main_net_inflow_text/...``)。
+    本机/网络被掐时会抛错或返回空,由调用方兜底。
+    """
+    code = str(board_code or '').strip().upper()
+    if not code.startswith('BK'):
+        return []
+    return MARKET_INTELLIGENCE_SERVICE.fetch_eastmoney_clist(
+        fs=f'b:{code}', fid='f3', limit=int(limit or 60))
+
+
+def board_stocks_payload(code, name='', limit=60):
+    """板块成分股弹窗 payload(行情台/画布板块芯片 → 成分股列表)。
+
+    拉取失败/空/非东财来源 → ``degraded=True`` + ``note``,``stocks=[]``,不报错。
+    """
+    code = str(code or '').strip()
+    name = str(name or '').strip()
+    stocks = []
+    try:
+        rows = fetch_board_constituents(code, limit=limit) if code else []
+    except Exception as exc:
+        logger.debug(f"拉取板块成分股失败 {code}: {exc}")
+        rows = []
+    for s in rows:
+        stocks.append({
+            'code': s.get('code'),
+            'name': s.get('name'),
+            'price': s.get('price'),
+            'change_pct': s.get('change_pct'),
+            'main_net_inflow': s.get('main_net_inflow'),
+            'main_net_inflow_text': s.get('main_net_inflow_text') or '',
+        })
+    degraded = not stocks
+    if not stocks:
+        if code and not code.upper().startswith('BK'):
+            note = '该板块非东财来源,暂无实时成分股,请用外链查看。'
+        else:
+            note = '东财成分股暂不可用(网络/限流),请用外链查看或稍后重试。'
+    else:
+        note = ''
+    return {
+        'board': {'code': code, 'name': name},
+        'stocks': stocks,
+        'count': len(stocks),
+        'degraded': degraded,
+        'note': note,
+    }
+
+
+def _overlay_board_realtime(stocks, board_code=None):
+    """读时叠加实时报价(价/涨跌/主力净流入),修复快照内成分股字段为空。
+
+    数据源走 :func:`star_orbit_service._quote_overlay` —— 东财 ``ulist.np``(全字段,
+    绕系统代理)→ 腾讯 ``qt.gtimg.cn``(仅价/涨跌)→ Tushare ``moneyflow_dc`` 多源兜底,
+    按 6 位代码匹配。相比旧实现走 ``push2`` 的 ``clist``(本机/限流时常 http000 全空),
+    这条链本机即便 push2 被掐也可达。只填补缺失/为空字段,不覆盖快照已记录的非空值;
+    拉取失败/无匹配 → 原样返回(降级)。``board_code`` 仅用于日志。
+    """
+    if not stocks:
+        return stocks
+    codes = [c for c in (_stock_code_key((s if isinstance(s, dict) else dict(s)).get('code'))
+                         for s in stocks) if c]
+    if not codes:
+        return stocks
+    try:
+        from webui.services import star_orbit_service
+        quotes = star_orbit_service._quote_overlay(codes)
+    except Exception as exc:
+        logger.debug(f"成分股实时叠加失败 {board_code}: {exc}")
+        quotes = {}
+    out = []
+    for s in stocks:
+        row = s if isinstance(s, dict) else dict(s)
+        quote = quotes.get(_stock_code_key(row.get('code'))) if quotes else None
+        if quote:
+            if row.get('change_pct') in (None, 0, 0.0) and quote.get('change_pct') is not None:
+                row['change_pct'] = quote['change_pct']
+            if row.get('price') in (None, 0, 0.0) and quote.get('price') is not None:
+                row['price'] = quote['price']
+            if row.get('main_net_inflow') in (None, 0, 0.0) and quote.get('main_net_inflow') is not None:
+                row['main_net_inflow'] = quote['main_net_inflow']
+        # 主力净流入有数值时清掉快照里的占位符文案('—'/'--'),交给前端按数值统一格式化
+        # ——否则 ``text || format(number)`` 中真truthy的 '—' 会盖掉刚叠加上的数值。
+        if row.get('main_net_inflow') not in (None, 0, 0.0):
+            if str(row.get('main_net_inflow_text') or '').strip() in ('', '—', '--'):
+                row['main_net_inflow_text'] = ''
+        out.append(row)
+    return out
+
+
+# 选股来源(screening source)的中文标签。这些是「为什么这只股票进入候选池」的来源标记,
+# 不是真正的行业/板块名称;当个股缺少 sector/industry 又没有热门板块归属时,画布过去会
+# 直接把英文 source key(如 capital_flow_in)当板块名展示。改为映射成可读中文,未知来源
+# 统一归到「未识别板块」,避免内部键名泄漏到 UI。
+_CANVAS_SOURCE_LABELS = {
+    'capital_flow_in': '资金流入候选',
+    'capital_flow_out': '资金流出候选',
+    'dragon_tiger': '龙虎榜候选',
+    'oversold_rebound': '超跌反弹候选',
+    'heat': '热门股候选',
+    'moneyflow_dc': '资金流候选',
+    'eastmoney_enhanced': '东财候选',
+    'tonghuashun': '同花顺候选',
+}
+
+
+def _canvas_sector_fallback(source):
+    """Map an internal screening-source key to a readable Chinese label.
+
+    Unknown / empty sources collapse to '未识别板块' so raw English keys never
+    surface as board names on the canvas.
+    """
+    key = str(source or '').strip()
+    if not key:
+        return '未识别板块'
+    return _CANVAS_SOURCE_LABELS.get(key, '未识别板块')
+
+
 def _prepare_opportunity_canvas_items(items, hot_sector=None):
     """Normalize, rank and enrich opportunity items before canvas construction."""
     membership_index = _hot_sector_stock_membership_index(hot_sector)
@@ -1886,7 +2158,7 @@ def _prepare_opportunity_canvas_items(items, hot_sector=None):
         if not sector and memberships:
             sector = memberships[0].get('board_name') or ''
         if not sector:
-            sector = str(item.get('source') or '未识别板块').strip() or '未识别板块'
+            sector = _canvas_sector_fallback(item.get('source'))
         item.update({
             'code': code,
             'stock_code': code,
@@ -2584,10 +2856,14 @@ def _build_quant_model_summary(items):
                 'examples': [],
             })
             entry['count'] += 1
-            if len(entry['examples']) < 4:
+            code = item.get('code') or item.get('stock_code') or ''
+            # 收录全部触发该模型且有代码的个股(供桌面端「点击模型→相关个股」弹窗定位)；上限放宽避免大报告被截断。
+            if code and len(entry['examples']) < 80:
                 entry['examples'].append({
-                    'code': item.get('code') or item.get('stock_code') or '',
+                    'code': code,
                     'name': item.get('name') or item.get('stock_name') or '',
+                    'score': item.get('score'),
+                    'sector': item.get('sector') or item.get('industry') or '',
                 })
     return sorted(summary.values(), key=lambda item: item['count'], reverse=True)
 
@@ -2657,6 +2933,42 @@ def _stock_external_links(stock_code, stock_name=''):
     }
 
 
+def _fetch_tencent_quote_on_demand(api_code):
+    """按需拉取单只股票的腾讯实时行情(qt.gtimg.cn)。
+
+    个股分析等场景的目标股票通常不在固定监控集(ALL_REAL_CODES)里,real_data_cache
+    必然未命中,导致行情(价格/涨幅)显示「--」。这里复用大盘行情同款的 gtimg 接口与
+    _parse_tencent_quote_line 解析,对任意 A 股代码即时取价。
+
+    返回与 real_data_cache 同构的 dict(约定: 'change' 字段存的是涨跌幅%),失败返回 None。
+    """
+    if not api_code:
+        return None
+    try:
+        content = request_text(
+            f"http://qt.gtimg.cn/q={api_code}",
+            headers={'User-Agent': 'Mozilla/5.0'},
+            timeout=5,
+            encoding='gbk',
+            errors='ignore',
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"按需实时行情拉取失败 {api_code}: {exc}")
+        return None
+    for line in (content or '').strip().split(';'):
+        _code, quote = _parse_tencent_quote_line(line)
+        if quote and quote.get('available'):
+            return {
+                'name': quote.get('name'),
+                'price': quote.get('price'),
+                'change': quote.get('change_pct'),  # real_data_cache 约定: change 存涨跌幅%
+                'volume': quote.get('volume'),
+                'source': 'tencent',
+                'updated_at': quote.get('updated_at'),
+            }
+    return None
+
+
 def _latest_stock_quote(stock_code):
     code = str(stock_code or '').strip().zfill(6)
     api_code = f'{_market_symbol_for_code(code)["lower"]}{code}'
@@ -2677,6 +2989,9 @@ def _latest_stock_quote(stock_code):
                 'volume': stock.get('volume'),
                 'source': 'market_monitor',
             }
+    if not quote:
+        # 不在固定监控集 → 缓存未命中,按需直接取腾讯实时行情
+        quote = _fetch_tencent_quote_on_demand(api_code) or {}
     if not quote:
         return None
     return {
@@ -2939,11 +3254,13 @@ def _stock_context_payload(stock_code, stock_name=''):
         ),
         None,
     )
+    # 行情按需取一次复用(缓存未命中会触发一次网络请求,避免名称兜底与 quote 字段各拉一次)
+    latest_quote = _latest_stock_quote(code)
     resolved_name = (
         stock_name
         or (opportunity_match or {}).get('stock_name')
         or (opportunity_match or {}).get('name')
-        or (_latest_stock_quote(code) or {}).get('name')
+        or (latest_quote or {}).get('name')
         or ''
     )
     sector = (
@@ -2991,7 +3308,7 @@ def _stock_context_payload(stock_code, stock_name=''):
             'symbol': _xueqiu_symbol(code),
             'market': _market_symbol_for_code(code),
         },
-        'quote': _latest_stock_quote(code),
+        'quote': latest_quote,
         'opportunity': opportunity_match,
         'opportunity_report': opportunity.get('latest_report'),
         'analysis_results': _load_stock_batch_results(code),
@@ -3171,6 +3488,8 @@ def _real_sector_rows(intelligence):
         rows.append({
             'name': name,                       # 中文板块名，如「半导体」
             'key': board.get('code'),           # 东财板块代码 BK....
+            'code': board.get('code'),
+            'board_code': board.get('code'),
             'avg_change': change,
             'monitored_count': 0,
             'main_net_inflow_text': board.get('main_net_inflow_text'),
@@ -4077,15 +4396,15 @@ DESKTOP_PAGES = {
     },
     'workbench': {
         'title': '分析工作台',
-        'subtitle': '机会挖掘、批量分析、任务日志与结果复盘',
-    },
-    'opportunities': {
-        'title': '投资机会挖掘',
-        'subtitle': '历史机会挖掘、全量股票分析、画布关系与热门板块快照',
+        'subtitle': '机会挖掘、批量分析、画布关系、任务日志与历史复盘',
     },
     'patterns': {
         'title': '形态搜股',
         'subtitle': '手绘曲线或载入个股形态检索相似股票',
+    },
+    'star_orbit': {
+        'title': '星轨图谱',
+        'subtitle': '物理AI/AI产业链同心轨道图:概念板块→A股个股,可增删板块与股票',
     },
     'reports': {
         'title': '报告与健康',
@@ -4103,6 +4422,7 @@ DESKTOP_PAGES = {
 
 DESKTOP_PAGE_ALIASES = {
     'overview': 'features',  # 「总览」「功能总览」已合并为 features 单页
+    'opportunities': 'workbench',  # 「投资机会挖掘」已并入「分析工作台」
 }
 
 

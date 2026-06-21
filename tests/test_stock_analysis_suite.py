@@ -162,6 +162,138 @@ def test_compute_risk_control_insufficient_data():
     assert "数据不足" in rc["reason"]
 
 
+import re
+
+
+def _rally_ohlcv(n: int = 130) -> pd.DataFrame:
+    """持续上涨创新高的暴涨股：从 ~30 一路涨到 ~200，仅有小幅回调。
+
+    用于复现 #1（回撤反转）与 #2（创新高股上行空间被算成 0%）。
+    """
+    rng = np.random.default_rng(7)
+    base = np.linspace(30.0, 200.0, n)
+    close = base + rng.normal(0, 0.6, n)  # 叠加小幅噪声，真实回撤仅几个百分点
+    return pd.DataFrame({
+        "timestamps": pd.date_range("2026-01-01", periods=n, freq="D"),
+        "open": close * 0.995, "high": close * 1.02,
+        "low": close * 0.98, "close": close,
+        "volume": rng.integers(1e6, 5e6, n).astype(float),
+        "amount": close * rng.integers(1e6, 5e6, n).astype(float),
+    })
+
+
+def _dd_value(deep_signals, label):
+    for s in deep_signals:
+        if label in s.get("text", "") and "回撤" in s.get("text", ""):
+            m = re.search(r"(-?\d+\.?\d*)%", s["text"])
+            if m:
+                return float(m.group(1))
+    return None
+
+
+def test_windowed_max_drawdown_not_inverted_for_rally():
+    """持续创新高的暴涨股，60/120 日最大回撤应接近 0，而不是把涨幅当跌幅报成 -85%。"""
+    suite = StockAnalysisSuite()
+    suite._load_ohlcv = lambda code: _rally_ohlcv(130)  # type: ignore[attr-defined]
+    rc = suite.compute_risk_control("000001")
+    dd60 = _dd_value(rc["deep_signals"], "60日")
+    dd120 = _dd_value(rc["deep_signals"], "120日")
+    assert dd60 is not None and dd120 is not None
+    # 真实回撤=峰值后的最大跌幅；单边上涨只有小回调，绝不应≈-85%
+    assert dd60 > -10.0, f"60日回撤被反转: {dd60}%"
+    assert dd120 > -10.0, f"120日回撤被反转: {dd120}%"
+
+
+def test_expected_return_positive_at_new_high():
+    """创新高股票不应因『目标=近60日高点』而显示 0% 上行空间 / 盈亏比 1:0.0。"""
+    suite = StockAnalysisSuite()
+    df = _rally_ohlcv(130)
+    current = float(df["close"].to_numpy()[-1])
+    suite._load_ohlcv = lambda code: df  # type: ignore[attr-defined]
+    rc = suite.compute_risk_control("000001")
+    plan = rc["execution_plan"]
+    assert plan["risk_reward"]["expected_return_pct"] > 0.0, "新高股上行空间被算成 0%"
+    ratio = float(plan["risk_reward"]["ratio"].split(":")[1])
+    assert ratio > 0.0, f"盈亏比被算成 {plan['risk_reward']['ratio']}"
+    # 第一止盈位应高于现价（不能等于现价）
+    assert rc["tiered_take_profit"][0]["price"] > current, "第一止盈位 = 现价"
+
+
+def test_main_force_label_low_score_not_distribution():
+    """低分(主要由高波动→低控盘驱动)不应断言『主力撤离』(出货)，仅描述控盘弱。"""
+    suite = StockAnalysisSuite()
+    assert "撤离" not in suite._label_main_force(20)
+    assert suite._label_main_force(20) == "主力控盘弱"
+    # 其它档位语义不变
+    assert suite._label_main_force(75) == "强势主导"
+    assert suite._label_main_force(55) == "中等偏强"
+    assert suite._label_main_force(35) == "弱势承接"
+
+
+def test_chip_label_renamed_to_distribution_width():
+    """『集中度』实为成本分布宽度(可>100%)，标签须改名以免被误读成『极度分散=出货』。"""
+    suite = StockAnalysisSuite()
+    rows = suite._build_key_signals({"chip": {"details": {"concentration_90": 104.33}}}, {})
+    labels = {r["label"] for r in rows}
+    assert "筹码分布宽度" in labels
+    assert "筹码集中度" not in labels
+
+
+def test_performance_section_has_prosperity_blocks():
+    suite = StockAnalysisSuite()
+    radar = suite._compute_radar({
+        "fundamental": {
+            "pe": 25.0, "roe": 16.0, "pe_industry_rank": 30.0,
+            "net_profit_yoy": 40.0, "revenue_yoy": 30.0, "gross_margin": 22.0,
+            "gross_margin_prev": 20.0, "industry_rank_pct": 75.0,
+        },
+        "sector": {"change_pct": 2.5, "moneyflow_net": 4.0e8},
+    })
+    perf = radar["performance"]
+    assert "industry_prosperity" in perf and "business_prosperity" in perf
+    assert perf["industry_prosperity"]["score"] is not None
+    assert perf["business_prosperity"]["score"] is not None
+    assert any(r["label"] == "营收YoY" for r in perf["business_prosperity"]["rows"])
+
+
+def test_performance_prosperity_degrades_without_data():
+    suite = StockAnalysisSuite()
+    radar = suite._compute_radar({})   # 空 inputs
+    perf = radar["performance"]
+    # 既有 performance 仍降级 _missing，且不报错
+    assert perf.get("data_status") in ("unavailable", None) or "score" in perf
+
+
+def test_related_news_section_empty_is_unavailable(monkeypatch):
+    suite = StockAnalysisSuite()
+    from data_store import stock_related_news_repo
+    monkeypatch.setattr(stock_related_news_repo, "latest_for_code",
+                        lambda code: {"items": [], "fetched_at": None})
+    sec = suite._collect_related_news("601702")
+    assert sec["data_status"] == "unavailable"
+    assert sec["tiers"] == {}
+
+
+def test_related_news_section_groups_by_tier(monkeypatch):
+    suite = StockAnalysisSuite()
+    from data_store import stock_related_news_repo
+    monkeypatch.setattr(stock_related_news_repo, "latest_for_code", lambda code: {
+        "items": [
+            {"tier": "direct", "title": "A", "url": "u1", "source": "金十",
+             "published_at": "2026-06-20", "relation_reason": "命中", "sentiment": "pos"},
+            {"tier": "board", "title": "B", "url": "u2", "source": "东财",
+             "published_at": "2026-06-20", "relation_reason": "板块", "sentiment": None},
+        ],
+        "fetched_at": "2026-06-20T11:00:00",
+    })
+    sec = suite._collect_related_news("601702")
+    assert sec["data_status"] in ("fresh", "stale")
+    assert [n["title"] for n in sec["tiers"]["direct"]] == ["A"]
+    assert [n["title"] for n in sec["tiers"]["board"]] == ["B"]
+
+
+
+
 from pathlib import Path
 
 def test_collect_cached_reports_finds_latest(tmp_path):

@@ -4,6 +4,7 @@ No I/O. Inputs are plain dicts assembled by command_center_service; outputs are
 plain dicts the frontend renders. Thresholds are module-level tunable constants
 (mirrors the project's scoring-param tuning culture).
 """
+import re
 
 OPP_BANDS = {"high": 70.0, "mid": 55.0}
 RISK_BANDS = {"low": 40.0, "high": 60.0}
@@ -218,6 +219,7 @@ def build_target(item, signals, sector_crowding, market_backdrop, *, held):
         "code": item.get("code") or item.get("stock_code"),
         "name": item.get("name") or item.get("stock_name"),
         "sector": item.get("sector"),
+        "sector_code": item.get("sector_code") or item.get("board_code"),
         "opp": float(item.get("score") or 0),
         "rating": item.get("rating"),
         "risk": round(combined, 1) if combined is not None else None,
@@ -230,3 +232,120 @@ def build_target(item, signals, sector_crowding, market_backdrop, *, held):
         "held_overlay": action["held_overlay"],
         "reason": _reason_line(item, stock, action),
     }
+
+
+# ── 持仓 · 热点关联(holdings ⇄ 热门板块 / 热点资讯)──────────────────────
+# 模块级可调常量(沿用本项目评分参数可调文化)。权重默认偏向板块:结构化的板块
+# 归属比资讯子串匹配更可靠。用户已知会调权重。
+HOLD_REL_WEIGHTS = {"sector": 0.6, "news": 0.4}
+HOLD_REL_RANK_DECAY = 8.0          # 命中板块每降 1 名,基准分衰减
+HOLD_REL_RANK_FLOOR = 20.0         # 命中板块的基准分下限
+HOLD_REL_RANK_UNKNOWN = 55.0       # board_rank 缺失时的基准分
+HOLD_REL_STOCK_TOP_BONUS = 12.0    # 板块内成分股 #1 的加分
+HOLD_REL_STOCK_DECAY = 2.0         # 成分股每降 1 名,加分衰减
+HOLD_REL_LHB_BONUS = 8.0           # 任一命中板块上榜龙虎
+HOLD_REL_MULTI_BOARD_BONUS = 5.0   # 命中 ≥2 个热门板块
+HOLD_REL_BOARDS_CAP = 3            # 每只持仓展示的命中板块上限
+HOLD_REL_NEWS_CAP = 3              # 每只持仓展示的命中资讯上限
+# 资讯平台权重:按「去重后的不同平台」计权,避免单平台多条例行快讯把分刷满。
+# 平台名须与 webui.core._holdings_news_index 产出的 platform 一致。
+NEWS_PLATFORM_WEIGHTS = {
+    "东财人气热度": 45.0,
+    "金十快讯": 40.0,
+    "东财快讯": 35.0,
+    "新浪快讯": 35.0,
+    "同花顺快讯": 35.0,
+}
+NEWS_PLATFORM_DEFAULT_WEIGHT = 20.0
+
+
+def _hold_rel_code6(value):
+    """Leading 6-digit run of a ts_code — matches webui._stock_code_key, which the
+    membership/news indices are keyed by, so the join lines up (no reinvented key)."""
+    m = re.search(r"\d{6}", str(value or ""))
+    return m.group(0) if m else str(value or "").strip()
+
+
+def _hold_sector_relevance(boards):
+    """0–100 板块关联,以 board_rank 最小(最热)的命中板块为基准。"""
+    if not boards:
+        return 0.0
+    hottest = boards[0]                       # 调用方已按 board_rank 升序
+    rank = hottest.get("board_rank")
+    if rank is None:
+        base = HOLD_REL_RANK_UNKNOWN
+    else:
+        base = max(HOLD_REL_RANK_FLOOR,
+                   min(100.0, 100.0 - (float(rank) - 1.0) * HOLD_REL_RANK_DECAY))
+    srank = hottest.get("stock_rank")
+    if srank is not None:
+        base += max(0.0, min(HOLD_REL_STOCK_TOP_BONUS,
+                             HOLD_REL_STOCK_TOP_BONUS - (float(srank) - 1.0) * HOLD_REL_STOCK_DECAY))
+    if any(b.get("lhb_hit") for b in boards):
+        base += HOLD_REL_LHB_BONUS
+    if len(boards) >= 2:
+        base += HOLD_REL_MULTI_BOARD_BONUS
+    return max(0.0, min(100.0, base))
+
+
+def _hold_news_relevance(news):
+    """0–100 资讯关联,按去重后的不同平台权重求和(同平台多条不重复计权)。"""
+    platforms = {str(n.get("platform") or "") for n in (news or [])}
+    total = sum(NEWS_PLATFORM_WEIGHTS.get(p, NEWS_PLATFORM_DEFAULT_WEIGHT)
+                for p in platforms if p)
+    return max(0.0, min(100.0, total))
+
+
+def score_holdings_relevance(positions, membership_index, news_index, *,
+                             sector_weight=None, news_weight=None):
+    """Score each holding's relevance to current 热门板块 / 热点资讯.
+
+    Pure: consumes plain dicts only — no I/O, no fuzzy name matching (matching is
+    done upstream in webui.core._holdings_news_index). Rows are returned sorted by
+    ``relevance`` desc, then ``market_value`` desc.
+
+    - ``positions``        : ``[{ts_code, name, market_value, float_pnl_rate, ...}]``
+    - ``membership_index`` : ``{code6: [membership, ...]}`` (见 ``_hot_sector_stock_membership_index``)
+    - ``news_index``       : ``{code6: [{platform, title}, ...]}``
+    """
+    sw = HOLD_REL_WEIGHTS["sector"] if sector_weight is None else float(sector_weight)
+    nw = HOLD_REL_WEIGHTS["news"] if news_weight is None else float(news_weight)
+    membership_index = membership_index or {}
+    news_index = news_index or {}
+    rows = []
+    for pos in positions or []:
+        code = _hold_rel_code6(pos.get("ts_code") or pos.get("code"))
+        # 防御性按 board_rank/stock_rank 升序,确保 boards[0] 为最热(即便上游未排序)。
+        boards_all = sorted(
+            (b for b in (membership_index.get(code) or []) if isinstance(b, dict)),
+            key=lambda b: (b.get("board_rank") or 9999, b.get("stock_rank") or 9999))
+        news_all = [n for n in (news_index.get(code) or []) if isinstance(n, dict)]
+        sector_rel = _hold_sector_relevance(boards_all)
+        news_rel = _hold_news_relevance(news_all)
+        boards = [{
+            "snapshot_id": b.get("snapshot_id"),
+            "name": b.get("board_name") or b.get("board_code"),
+            "board_code": b.get("board_code"),
+            "board_rank": b.get("board_rank"),
+            "stock_rank": b.get("stock_rank"),
+            "main_net_inflow": b.get("main_net_inflow"),
+            "main_net_inflow_text": b.get("main_net_inflow_text") or "",
+            "change_pct": b.get("change_pct"),
+            "lhb_hit": bool(b.get("lhb_hit")),
+        } for b in boards_all[:HOLD_REL_BOARDS_CAP]]
+        news = [{"platform": n.get("platform"), "title": n.get("title")}
+                for n in news_all[:HOLD_REL_NEWS_CAP]]
+        rows.append({
+            "code": code,
+            "name": pos.get("name") or pos.get("stock_name") or "",
+            "market_value": _num(pos, "market_value") or 0.0,
+            "float_pnl_rate": _num(pos, "float_pnl_rate"),
+            "relevance": round(sw * sector_rel + nw * news_rel),
+            "sector_relevance": round(sector_rel),
+            "news_relevance": round(news_rel),
+            "boards": boards,
+            "news": news,
+            "status": "踩中" if (boards or news) else "脱离",
+        })
+    rows.sort(key=lambda r: (r["relevance"], r["market_value"]), reverse=True)
+    return rows

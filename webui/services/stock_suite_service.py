@@ -84,6 +84,21 @@ def _resolve_boards(code: str) -> tuple[str, ...]:
         return ()
 
 
+def star_orbit_repo_rings_for(boards, star_orbit_repo) -> list:
+    """从星轨图谱里找出包含这些板块的概念环。失败返回 []。"""
+    try:
+        names = {b.get("name") for b in (boards or []) if b.get("name")}
+        m = star_orbit_repo.get_map() or {}
+        out = []
+        for ring in m.get("rings", []):
+            concepts = [b.get("board_name") for b in ring.get("boards", [])]
+            if names & set(concepts):
+                out.append({"ring": ring.get("name"), "concepts": concepts})
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
 
 class StockSuiteService:
     def __init__(self, orchestrator: Optional[StockAnalysisSuite] = None) -> None:
@@ -98,6 +113,9 @@ class StockSuiteService:
         # 那会触发全局 jobLocked() 把机会挖掘/批量分析按钮锁死整整 100s。状态仅存内存、按代码覆盖。
         self._ai_jobs: Dict[str, Dict[str, Any]] = {}
         self._ai_lock = threading.Lock()
+        # 关联热点新闻异步刷新任务表（按代码，仅内存）。读路径零联网，刷新走后台线程。
+        self._related_jobs: Dict[str, Dict[str, Any]] = {}
+        self._related_lock = threading.Lock()
 
     def _validate_code(self, code: str) -> str:
         cleaned = (code or "").strip()
@@ -215,6 +233,87 @@ class StockSuiteService:
             if not job:
                 return {"success": True, "status": "idle"}
             return dict(job)
+
+    def _run_related_news_job(self, code: str) -> int:
+        """同步执行一次抓取并落盘，返回写入条数。默认 collector 在此接线。"""
+        from analysis.stock_context import resolve_relations
+        from analysis.stock_relation_news import collect_related_news
+        from analysis import sector_api
+        from analysis.sector_hot_news_collector import SectorNewsCollector
+        from analysis.news_sentiment_collector import NewsSentimentCollector
+        from data_store import opportunity_repo, star_orbit_repo, stock_related_news_repo
+
+        def _stock_news(c):
+            col = NewsSentimentCollector(c)
+            news = col.get_latest_news(limit=8) or []
+            ann = col.get_latest_announcements(limit=4) or []
+            return list(news) + list(ann)
+
+        sector_col = SectorNewsCollector()
+
+        def _sector_news(names):
+            return sector_col.get_top_news_by_sectors(
+                list(names), per_sector_limit=4, total_limit=8) or []
+
+        def _hot_news(boards):
+            rows = opportunity_repo.latest_hot_news() or []
+            kw = [b for b in boards]
+            matched = [r for r in rows
+                       if not kw or any(k and k in (r.get("title") or "") for k in kw)]
+            return matched or rows[:6]
+
+        def _orbit_news(rings):
+            return []  # 星轨事件源首版留空（环映射已在 relations 中体现，后续增量接入）
+
+        relations = resolve_relations(
+            code,
+            boards_fn=lambda c: [{"name": n} for n in sector_api.get_stock_boards(c)],
+            peers_fn=lambda c: [],   # 同行/产业链：首版留空，后续接 industry_comparison/merger
+            rings_fn=lambda boards: star_orbit_repo_rings_for(boards, star_orbit_repo),
+            sector_fn=sector_api.get_sector_sentiment,
+        )
+        items = collect_related_news(
+            code, relations,
+            stock_news_fn=_stock_news, sector_news_fn=_sector_news,
+            hot_news_fn=_hot_news, orbit_news_fn=_orbit_news,
+        )
+        fetched_at = _dt.datetime.now().isoformat(timespec="seconds")
+        n = stock_related_news_repo.replace_for_code(code, items, fetched_at)
+        self._suite.invalidate(code)
+        return n
+
+    def refresh_related_news(self, code: str, force_refresh: bool = False) -> Dict[str, Any]:
+        """启动后台抓取关联新闻，立即返回 running；结果由 get_related_news_status 轮询。"""
+        code = self._validate_code(code)
+        with self._related_lock:
+            ex = self._related_jobs.get(code)
+            if ex and ex.get("status") == "running" and not force_refresh:
+                return {"success": True, "status": "running", "started_at": ex.get("started_at")}
+            started_at = _dt.datetime.now().isoformat(timespec="seconds")
+            self._related_jobs[code] = {"status": "running", "started_at": started_at}
+
+        def _worker():
+            try:
+                n = self._run_related_news_job(code)
+                res = {"status": "ready", "written": n,
+                       "generated_at": _dt.datetime.now().isoformat(timespec="seconds")}
+            except Exception as exc:  # noqa: BLE001
+                res = {"status": "failed", "error": str(exc),
+                       "generated_at": _dt.datetime.now().isoformat(timespec="seconds")}
+            with self._related_lock:
+                prev = self._related_jobs.get(code) or {}
+                res.setdefault("started_at", prev.get("started_at"))
+                self._related_jobs[code] = res
+
+        threading.Thread(target=_worker, name=f"related-news-{code}", daemon=True).start()
+        return {"success": True, "status": "running", "started_at": started_at}
+
+    def get_related_news_status(self, code: str) -> Dict[str, Any]:
+        """轮询接口：返回关联新闻刷新任务状态（idle/running/ready/failed）。"""
+        code = self._validate_code(code)
+        with self._related_lock:
+            job = self._related_jobs.get(code)
+            return dict(job) if job else {"success": True, "status": "idle"}
 
 
     def trigger_panel_overlay(

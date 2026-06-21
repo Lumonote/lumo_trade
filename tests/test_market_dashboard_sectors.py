@@ -21,6 +21,8 @@ def test_sectors_use_real_industry_boards(monkeypatch):
     assert [s["name"] for s in sectors] == ["半导体", "证券"]
     assert sectors[0]["avg_change"] == 3.21
     assert sectors[0]["key"] == "BK1036"
+    assert sectors[0]["code"] == "BK1036"
+    assert sectors[0]["board_code"] == "BK1036"
     assert sectors[0]["main_net_inflow_text"] == "12.34亿"
     # 不再出现合成英文板块名
     assert "AGI" not in {s["name"] for s in sectors}

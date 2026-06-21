@@ -339,8 +339,16 @@ class OpportunityDiscovery:
                 out[str(data.get('code') or '')] = data
         return out
 
-    def _eastmoney_clist(self, fs: str, fid: str = 'f3', limit: int = 10, fields: str = 'f12,f14,f2,f3,f62') -> List[Dict]:
-        """东方财富 clist 轻量抓取；用于热门板块与成分股候选。"""
+    def _eastmoney_clist(self, fs: str, fid: str = 'f3', limit: int = 10,
+                         fields: str = 'f12,f14,f2,f3,f62', attempts: int = 3) -> List[Dict]:
+        """东方财富 clist 轻量抓取；用于热门板块与成分股候选。
+
+        push2.eastmoney 是境内接口，偶发性 RemoteDisconnected/代理失败：系统代理
+        (如 Clash) 通常只用于访问境外站点，转发该域名时常被对端直接断连。单次请求
+        失败会让热门板块榜单为空，使 ``_fetch_hot_sector_stocks`` 提前返回、跳过板块
+        快照入库——桌面「机会数据 · 板块池」因此长期无数据。这里按「默认路由 ↔ 直连
+        绕过代理」交替重试，覆盖「代理坏 / 直连坏」两种网络环境，任一路通即可入库。
+        """
         params = {
             'pn': '1',
             'pz': str(max(1, int(limit))),
@@ -361,16 +369,78 @@ class OpportunityDiscovery:
             'Accept': 'application/json,text/plain,*/*',
             'Referer': 'https://quote.eastmoney.com/',
         }
-        resp = self.session.get(url, headers=headers, timeout=8)
-        resp.raise_for_status()
-        payload = resp.json()
-        rows = ((payload or {}).get('data') or {}).get('diff') or []
-        if isinstance(rows, dict):
-            rows = list(rows.values())
-        return [row for row in rows if isinstance(row, dict)]
+        attempts = max(1, int(attempts))
+        last_error: Optional[Exception] = None
+        for attempt in range(attempts):
+            # 偶数次走 session 默认路由（尊重用户代理配置），奇数次强制直连绕过代理。
+            proxies = {'http': None, 'https': None} if attempt % 2 else None
+            try:
+                resp = self.session.get(url, headers=headers, timeout=8, proxies=proxies)
+                resp.raise_for_status()
+                payload = resp.json()
+                rows = ((payload or {}).get('data') or {}).get('diff') or []
+                if isinstance(rows, dict):
+                    rows = list(rows.values())
+                return [row for row in rows if isinstance(row, dict)]
+            except Exception as e:  # noqa: BLE001 - 网络瞬时错误统一重试，最后一次再抛给调用方
+                last_error = e
+                if attempt + 1 < attempts:
+                    time.sleep(0.5 * (attempt + 1))
+        raise last_error if last_error else RuntimeError('eastmoney clist request failed')
 
     def _fetch_hot_sector_stocks(self, limit: int = 100, board_limit: int = 10) -> List[Dict]:
-        """按前十大热门板块的成分股构造候选池。
+        """热门板块成分股候选 + 板块全量快照入库（含 Tushare 兜底）。
+
+        先走东财 push2（实时、含个股价/涨幅/主力净额，数据最丰富）；若因系统代理拦断/
+        限流等未能入库板块快照，则回退 Tushare（moneyflow_ind_dc 板块热度 + dc_member
+        关联股票池）兜底，确保桌面「机会数据 · 板块池」始终有数据。东财候选优先、Tushare
+        补充去重。
+        """
+        prev_snapshot_id = self.latest_hot_sector_snapshot_id
+        candidates = self._fetch_hot_sector_stocks_eastmoney(limit=limit, board_limit=board_limit)
+        if self.latest_hot_sector_snapshot_id == prev_snapshot_id:
+            # 东财未能入库新的板块快照（代理拦断/限流/接口异常）→ 用 Tushare 兜底
+            ts_candidates = self._fetch_hot_sector_stocks_tushare(limit=limit, board_limit=board_limit)
+            if ts_candidates:
+                if candidates:
+                    seen = {str(s.get('code') or '') for s in candidates}
+                    candidates.extend(s for s in ts_candidates if str(s.get('code') or '') not in seen)
+                else:
+                    candidates = ts_candidates
+        return candidates
+
+    @staticmethod
+    def _select_hot_boards(boards: List[Dict], board_limit: int) -> List[Dict]:
+        """从行业/概念板块中「以概念为主」挑选 Top N（默认概念占 70% 席位）。
+
+        概念板块（题材/热点）是投机机会的主驱动，故优先占多数名额；行业板块仅补足剩余。
+        某一类不足时由另一类回填，保证返回 board_limit 个（前提是候选总数足够）。挑选完成
+        后按当日涨跌幅（再主力净额）降序排序，使 board_rank 仍反映强弱。
+
+        概念占比可经环境变量 ``KRONOS_HOT_SECTOR_CONCEPT_RATIO`` 调整（0~1，默认 0.7）。
+        """
+        board_limit = max(1, int(board_limit or 10))
+        try:
+            ratio = float(os.environ.get('KRONOS_HOT_SECTOR_CONCEPT_RATIO', '0.7') or 0.7)
+        except (TypeError, ValueError):
+            ratio = 0.7
+        ratio = min(1.0, max(0.0, ratio))
+
+        def _key(b):
+            return (float(b.get('change_pct') or 0), float(b.get('main_net_inflow') or 0))
+
+        concept = sorted((b for b in boards if str(b.get('type') or '') == '概念'), key=_key, reverse=True)
+        industry = sorted((b for b in boards if str(b.get('type') or '') != '概念'), key=_key, reverse=True)
+        concept_quota = min(len(concept), max(1, int(round(board_limit * ratio))))
+
+        selected = concept[:concept_quota]
+        selected += industry[:board_limit - len(selected)]
+        if len(selected) < board_limit:  # 行业已尽，用配额之外的剩余概念回填
+            selected += concept[concept_quota:concept_quota + (board_limit - len(selected))]
+        return sorted(selected, key=_key, reverse=True)[:board_limit]
+
+    def _fetch_hot_sector_stocks_eastmoney(self, limit: int = 100, board_limit: int = 10) -> List[Dict]:
+        """按前十大热门板块的成分股构造候选池（东财 push2 实时来源）。
 
         板块来自东财行业 + 概念榜，按当日涨跌幅排序取 Top10；成分股按板块内涨跌幅排序。
         该候选源用于捕捉「板块先动、个股扩散」机会，和热股/资金流互补。
@@ -402,11 +472,7 @@ class OpportunityDiscovery:
             dedup_boards = {}
             for row in board_rows:
                 dedup_boards.setdefault(row['code'], row)
-            hot_boards = sorted(
-                dedup_boards.values(),
-                key=lambda r: (float(r.get('change_pct') or 0), float(r.get('main_net_inflow') or 0)),
-                reverse=True,
-            )[:board_limit]
+            hot_boards = self._select_hot_boards(list(dedup_boards.values()), board_limit)
             if not hot_boards:
                 logger.warning("热门板块成分股候选获取失败：未取得热门板块榜单")
                 return []
@@ -423,6 +489,7 @@ class OpportunityDiscovery:
                         fid='f3',
                         limit=constituent_limit,
                         fields='f12,f14,f2,f3,f62,f66,f72,f100',
+                        attempts=2,  # 成分股按板块循环调用，少重试一次以限制整体耗时
                     )
                 except Exception as e:
                     logger.debug(f"热门板块 {board_name}({board_code}) 成分股抓取失败: {e}")
@@ -522,6 +589,210 @@ class OpportunityDiscovery:
         except Exception as e:
             logger.warning(f"热门板块成分股候选获取失败: {e}")
             return []
+
+    @staticmethod
+    def _row_to_native(row) -> Dict[str, Any]:
+        """pandas 行 → 纯 Python 标量 dict，便于 raw_json 序列化(numpy 类型无法直接写)。"""
+        out: Dict[str, Any] = {}
+        for key, value in dict(row).items():
+            out[str(key)] = value.item() if hasattr(value, 'item') else value
+        return out
+
+    def _fetch_hot_sector_stocks_tushare(self, limit: int = 100, board_limit: int = 10) -> List[Dict]:
+        """Tushare 板块热度 + 关联股票池兜底来源。
+
+        东财 push2 接口偶被系统代理拦断/限流导致板块榜为空时，改用 Tushare 的
+        ``moneyflow_ind_dc``(板块资金流向榜 → 板块热度/名次/主力净额) 与
+        ``dc_member``(板块成分 → 关联股票池) 构造与东财同形的
+        ``(hot_boards, all_stocks, relations)`` 并入库，保证「板块池」始终有数据。
+
+        说明：Tushare 为日频 EOD 数据(成分股无实时价/涨幅，记 None/0)，故仅作兜底；板块
+        代码统一去掉 ``.DC`` 后缀与东财 ``BKxxxx`` 对齐，使板块池能跨来源聚合同一板块。
+        """
+        try:
+            import tushare as ts
+        except ImportError:
+            logger.warning("Tushare 未安装，无法用作板块兜底来源")
+            return []
+        try:
+            import pandas as pd
+        except ImportError:
+            pd = None
+        token = self._load_tushare_token()
+        if not token:
+            logger.warning("Tushare Token 未配置，无法用作板块兜底来源")
+            return []
+        try:
+            pro = ts.pro_api(token)
+        except Exception as e:
+            logger.warning(f"初始化 Tushare 失败: {e}")
+            return []
+
+        limit = max(1, int(limit or 100))
+        board_limit = max(1, min(10, int(board_limit or 10)))
+        constituent_limit = int(os.environ.get('KRONOS_HOT_SECTOR_CONSTITUENT_LIMIT', '1000') or 1000)
+        constituent_limit = max(20, min(2000, constituent_limit))
+
+        # 1) 逐日回溯最近一个有板块资金榜数据的交易日(该接口可能延迟，trade_cal 亦可能滞后)。
+        board_df = None
+        trade_date = None
+        base_dt = datetime.now()
+        for i in range(14):
+            day = (base_dt - timedelta(days=i)).strftime('%Y%m%d')
+            try:
+                df = pro.moneyflow_ind_dc(trade_date=day)
+            except Exception as e:
+                logger.debug(f"moneyflow_ind_dc {day} 失败: {e}")
+                continue
+            if df is not None and not df.empty:
+                board_df = df
+                trade_date = day
+                break
+        if board_df is None or board_df.empty:
+            logger.warning("Tushare 板块资金榜(moneyflow_ind_dc)无数据，板块快照兜底失败")
+            return []
+
+        # 2) 取行业+概念板块，「以概念为主」按配额选 Top N（与东财路径同口径）。
+        #    moneyflow_ind_dc 的 rank 字段按 content_type 各自计数，混排后不可比，故弃用。
+        if 'content_type' in board_df.columns:
+            board_df = board_df[board_df['content_type'].isin(['行业', '概念'])].copy()
+        if pd is not None:
+            board_df['_chg'] = pd.to_numeric(board_df.get('pct_change'), errors='coerce').fillna(-9e9)
+            board_df['_net'] = pd.to_numeric(board_df.get('net_amount'), errors='coerce').fillna(-9e9)
+            board_df = board_df.sort_values(['_chg', '_net'], ascending=False)
+        all_board_rows: List[Dict] = []
+        for _, row in board_df.iterrows():
+            rd = self._row_to_native(row)
+            raw_code = str(rd.get('ts_code') or '').strip()
+            code = raw_code.split('.')[0].strip()  # BK1200.DC -> BK1200，与东财对齐
+            name = str(rd.get('name') or '').strip()
+            if not code or not name:
+                continue
+            all_board_rows.append({
+                'code': code,
+                'name': name,
+                'type': str(rd.get('content_type') or '板块'),
+                'change_pct': self._safe_float(rd.get('pct_change'), 0.0) or 0.0,
+                'main_net_inflow': self._safe_float(rd.get('net_amount'), None),
+                '_ts_code': raw_code,
+                'raw': rd,
+            })
+        hot_boards: List[Dict] = self._select_hot_boards(all_board_rows, board_limit)
+        if not hot_boards:
+            logger.warning("Tushare 未取得热门板块榜单(行业/概念)，板块快照兜底失败")
+            return []
+
+        # 3) 每个板块取成分股(关联股票池)；dc_member 批量调用受 8000 行截断，故按板块单查。
+        all_stocks: List[Dict] = []
+        seen_codes = set()
+        for board_rank, board in enumerate(hot_boards, start=1):
+            board['rank'] = board_rank
+            try:
+                members = pro.dc_member(trade_date=trade_date, ts_code=board['_ts_code'])
+            except Exception as e:
+                logger.debug(f"dc_member {board['name']}({board['_ts_code']}) 失败: {e}")
+                continue
+            if members is None or members.empty:
+                continue
+            for stock_rank, (_, mrow) in enumerate(members.iterrows(), start=1):
+                if stock_rank > constituent_limit:
+                    break
+                md = self._row_to_native(mrow)
+                code = str(md.get('con_code') or '').split('.')[0].strip()
+                name = str(md.get('name') or '').strip()
+                dedup_key = (board['code'], code)
+                if not code or not name or dedup_key in seen_codes:
+                    continue
+                seen_codes.add(dedup_key)
+                all_stocks.append({
+                    'code': code,
+                    'name': name,
+                    'exchange': self._exchange_from_code(code),
+                    'price': 0.0,
+                    'change_pct': 0.0,
+                    'source': 'sector_hot_tushare',
+                    'source_detail': f"Tushare {board.get('type', '板块')} {board['name']} 第{board_rank} · 成分第{stock_rank}",
+                    'sector_code': board['code'],
+                    'sector_name': board['name'],
+                    'sector_rank': board_rank,
+                    'sector_stock_rank': stock_rank,
+                    'sector_change_pct': round(float(board.get('change_pct') or 0.0), 2),
+                    'rank': len(all_stocks) + 1,
+                    'popularity_score': max(0, 110 - board_rank * 5 - stock_rank),
+                    'main_net_inflow': None,
+                    'main_net_inflow_text': self._money_text(None),
+                    'raw': md,
+                })
+
+        for board in hot_boards:
+            board.pop('_ts_code', None)
+
+        # 4) 龙虎榜关系(复用本地库，与东财路径一致)。
+        lhb_map = self._latest_lhb_by_codes([s.get('code') for s in all_stocks])
+        relations: List[Dict] = []
+        for stock in all_stocks:
+            lhb = lhb_map.get(str(stock.get('code') or ''))
+            if not lhb:
+                continue
+            stock.update({
+                'lhb_trade_date': lhb.get('trade_date'),
+                'lhb_buy_amount': self._safe_float(lhb.get('l_buy'), None),
+                'lhb_sell_amount': self._safe_float(lhb.get('l_sell'), None),
+                'lhb_net_amount': self._safe_float(lhb.get('net_amount'), None),
+                'lhb_reason': lhb.get('reason'),
+            })
+            relations.append({
+                'board_code': stock.get('sector_code'),
+                'code': stock.get('code'),
+                'relation_type': 'dragon_tiger',
+                'related_table': 'dragon_tiger_list',
+                'related_key': f"{lhb.get('trade_date')}:{stock.get('code')}",
+                'trade_date': lhb.get('trade_date'),
+                'amount': lhb.get('net_amount'),
+                'detail': lhb,
+            })
+
+        # 5) 入库板块全量快照(来源标记 sector_hot_tushare)。
+        try:
+            from data_store import hot_sector_repo
+            snapshot_id = hot_sector_repo.save_snapshot(
+                hot_boards,
+                all_stocks,
+                relations,
+                meta={
+                    'source': 'sector_hot_tushare',
+                    'trade_date': trade_date,
+                    'board_limit': board_limit,
+                    'candidate_limit': limit,
+                    'constituent_limit': constituent_limit,
+                },
+            )
+            self.latest_hot_sector_snapshot_id = snapshot_id
+            logger.info(
+                f"✓ 热门板块快照已入库(Tushare 兜底): snapshot_id={snapshot_id}, "
+                f"trade_date={trade_date}, boards={len(hot_boards)}, "
+                f"stocks={len(all_stocks)}, lhb_relations={len(relations)}"
+            )
+        except Exception as e:
+            logger.warning(f"Tushare 板块快照入库失败(不影响评分): {e}")
+
+        # 6) 去重生成候选(与东财路径一致)。
+        candidates: List[Dict] = []
+        seen_candidate_codes = set()
+        for stock in all_stocks:
+            code = stock.get('code')
+            if not code or code in seen_candidate_codes:
+                continue
+            seen_candidate_codes.add(code)
+            stock['candidate_rank'] = len(candidates) + 1
+            candidates.append(stock)
+            if len(candidates) >= limit:
+                break
+        logger.info(
+            f"✓ Tushare 热门板块成分股候选完成：Top{len(hot_boards)}板块，"
+            f"记录{len(all_stocks)}只股票，候选{len(candidates)}只"
+        )
+        return candidates
 
     def _trim_deep_heat_rank_candidates(self, stocks: List[Dict], limit: int) -> List[Dict]:
         if not stocks:
@@ -1165,6 +1436,40 @@ class OpportunityDiscovery:
         hot_stocks = self._trim_deep_heat_rank_candidates(hot_stocks, limit)
         hot_stocks = self._filter_st_candidates(hot_stocks, "候选清洗")
 
+        # 用户要求:热点板块「有几只成分股就分析几只」——把当前快照的全部成分股并入评分池
+        # (去重、同样过滤 ST),使每只成分股都拿到评分并入库,导出热点快照 Excel 时可直接
+        # 关联评分(见 webui.core.export_hot_sector_snapshot)。仅在已建快照且非指定测试码时生效;
+        # 放在 trim/清洗之后,避免被候选裁剪重新削回 limit。
+        if not test_codes and getattr(self, 'latest_hot_sector_snapshot_id', None):
+            try:
+                from data_store import hot_sector_repo
+                constituents = hot_sector_repo.stocks_for_snapshot(
+                    self.latest_hot_sector_snapshot_id, limit=100000)
+                seen_codes = set(str(s.get('code') or '') for s in hot_stocks)
+                extra = []
+                for c in constituents:
+                    code = str(c.get('code') or '')
+                    if not code or code in seen_codes:
+                        continue
+                    seen_codes.add(code)
+                    extra.append({
+                        'code': code,
+                        'name': c.get('name') or '',
+                        'price': c.get('price') or 0,
+                        'change_pct': c.get('change_pct') or 0,
+                        'source': 'sector_hot_constituent',
+                        'source_detail': f"热门板块成分股 {c.get('board_code') or ''}".strip(),
+                    })
+                extra = self._filter_st_candidates(extra, "成分股清洗")
+                if extra:
+                    hot_stocks.extend(extra)
+                    logger.info(
+                        f"  ↑ 并入热点板块全部成分股评分池: +{len(extra)}只 "
+                        f"(共{len(hot_stocks)}只待评分)"
+                    )
+            except Exception as e:
+                logger.warning(f"并入热点板块成分股失败(不影响其余候选评分): {e}")
+
         if not hot_stocks:
             logger.error("✗ 候选股票获取失败，程序终止")
             return ""
@@ -1684,7 +1989,9 @@ class OpportunityDiscovery:
                 'html_report_file': os.path.basename(report_path) if report_path else None,
                 'duration_sec': round(duration, 1),
             })
-            run_id = opportunity_repo.save_run(run_meta, opportunity_repo.build_items(filter_results))
+            run_id = opportunity_repo.save_run(
+                run_meta, opportunity_repo.build_items(filter_results),
+                hot_news=self.global_hot_news)
             logger.info(f"✓ 挖掘结果已入库: run_id={run_id} ({run_meta['run_at'][:10]})")
         except Exception as db_e:
             logger.warning(f"挖掘结果入库失败(不影响主流程): {db_e}")

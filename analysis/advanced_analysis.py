@@ -989,20 +989,16 @@ class CapitalFlowAnalyzer:
 
             score = 50.0
 
-            # Tushare/东方财富数据单位是元, 阈值用万元级别判断
+            # 资金口径:各来源均已折算为元(见下)
             main_net = order_analysis.get('main_net_inflow', 0)
-            data_source = order_analysis.get('data_source', 'synthetic')
 
-            # 真实数据(market_flow_daily/tushare/eastmoney, 单位元)阈值: 5000万=大幅, 1000万=中等
-            if data_source != 'synthetic':
-                thresh_high = 50000000   # 5000万
-                thresh_low = 10000000    # 1000万
-                def _fmt(v): return f"{abs(v)/100000000:.2f}亿" if abs(v) >= 100000000 else f"{abs(v)/10000:.0f}万"
-            else:
-                # 合成数据保留原有阈值(成交额比例,量级较小)
-                thresh_high = 5000
-                thresh_low = 1000
-                def _fmt(v): return f"{abs(v)/10000:.1f}万"
+            # 资金口径统一为「元」:market_flow_daily ×1e4 / tushare ×1e3 / 东财 / 合成估算
+            # (合成 = 成交额×系数,本就是元级)均已折算为元,故阈值与文案对所有来源统一,
+            # 避免「大幅净流入60.7万」这类阈值与单位错配(合成旧阈值 5000 远低于元级数值,
+            # 几乎必判大幅,而文案 ÷1e4 又显示成小额「万」)。阈值: 5000万=大幅, 1000万=中等。
+            thresh_high = 50000000   # 5000万
+            thresh_low = 10000000    # 1000万
+            def _fmt(v): return f"{abs(v)/100000000:.2f}亿" if abs(v) >= 100000000 else f"{abs(v)/10000:.0f}万"
 
             if main_net > thresh_high:
                 score += 25

@@ -18,6 +18,7 @@ from analysis.investor_sentiment import InvestorSentimentAnalyzer
 from analysis.llm_service import LLMAnalyzer
 from analysis.technical_analysis import QuantitativeModels, TechnicalAnalysis
 from analysis.analysis_overlay import build_overlay, merge_overlay
+from analysis.limit_up_patterns import RECENT_DAYS, backtest_all, bars_from_dataframe, detect_all
 from data_store import kv_repo
 
 
@@ -114,6 +115,61 @@ def compute_performance_score(
     else:
         growth_score = 50.0 + yoy_growth_pct
     return int(round(pe_score * 0.35 + roe_score * 0.35 + growth_score * 0.30))
+
+
+def compute_industry_prosperity_score(
+    sector_chg_pct: "float | None",
+    sector_moneyflow_net: "float | None",
+    pe_industry_percentile: "float | None",
+    rank_in_industry_pct: "float | None",
+) -> "int | None":
+    """行业景气度 0-100；全 None 返回 None。
+    板块涨跌 0.30 + 板块资金 0.30 + PE便宜度 0.20 + 行业排名 0.20。"""
+    if all(v is None for v in (sector_chg_pct, sector_moneyflow_net,
+                               pe_industry_percentile, rank_in_industry_pct)):
+        return None
+    chg_score = max(0.0, min(100.0, 50.0 + (sector_chg_pct or 0.0) * 5.0))
+    # 资金：±3 亿映射到 ±50 分，封顶
+    mf = (sector_moneyflow_net or 0.0) / 3.0e8
+    mf_score = max(0.0, min(100.0, 50.0 + mf * 50.0))
+    pe_score = (100.0 - pe_industry_percentile) if pe_industry_percentile is not None else 50.0
+    rank_score = rank_in_industry_pct if rank_in_industry_pct is not None else 50.0
+    score = chg_score * 0.30 + mf_score * 0.30 + pe_score * 0.20 + rank_score * 0.20
+    return int(round(max(0.0, min(100.0, score))))
+
+
+def compute_business_prosperity_score(
+    revenue_yoy_pct: "float | None",
+    profit_yoy_pct: "float | None",
+    gross_margin_trend: "float | None",
+    roe_pct: "float | None",
+) -> "int | None":
+    """个股业务景气度 0-100；全 None 返回 None。
+    营收YoY 0.30 + 净利YoY 0.35 + 毛利率趋势 0.15 + ROE 0.20。"""
+    if all(v is None for v in (revenue_yoy_pct, profit_yoy_pct,
+                               gross_margin_trend, roe_pct)):
+        return None
+
+    def _yoy(v):  # -50%→0, 0%→50, +50%→100
+        if v is None:
+            return 50.0
+        return max(0.0, min(100.0, 50.0 + v))
+
+    rev_score = _yoy(revenue_yoy_pct)
+    profit_score = _yoy(profit_yoy_pct)
+    # 毛利率趋势：±5pct 映射 ±50
+    gm = gross_margin_trend
+    gm_score = 50.0 if gm is None else max(0.0, min(100.0, 50.0 + gm * 10.0))
+    if roe_pct is None:
+        roe_score = 50.0
+    elif roe_pct >= 15:
+        roe_score = 100.0
+    elif roe_pct <= 0:
+        roe_score = 0.0
+    else:
+        roe_score = roe_pct / 15.0 * 100.0
+    score = rev_score * 0.30 + profit_score * 0.35 + gm_score * 0.15 + roe_score * 0.20
+    return int(round(max(0.0, min(100.0, score))))
 
 
 def _unavailable_section(reason: str) -> dict:
@@ -295,11 +351,13 @@ class StockAnalysisSuite:
         institutional_holdings = self._collect_institutional_holdings(code)
         chip_control = self._collect_chip_control(code, chip=inputs.get("chip"))
         quant_matrix = self._collect_quant_matrix(code, models=inputs.get("models"))
+        limit_up_screening = self._collect_limit_up_patterns(code, inputs)
         panel = self._collect_panel(code, inputs, {
             "main_force_deep": main_force_deep,
             "institutional_holdings": institutional_holdings,
             "chip_control": chip_control,
             "quant_matrix": quant_matrix,
+            "limit_up_screening": limit_up_screening,
             "overview": overview,
         })
         return {
@@ -316,15 +374,61 @@ class StockAnalysisSuite:
             "stub_tabs": [
                 "market_cycle", "main_force_phase", "volume_price_game",
                 "chip_structure", "performance", "probability", "limit_up_screening",
+                "related_news",
             ],
             "warnings": warnings_,
             "main_force_deep": main_force_deep,
             "institutional_holdings": institutional_holdings,
             "chip_control": chip_control,
             "quant_matrix": quant_matrix,
+            "limit_up_screening": limit_up_screening,
+            "related_news": self._collect_related_news(code),
             "panel": panel,
             "analysis_overlay": self._collect_analysis_overlay(code),
         }
+
+    def _collect_limit_up_patterns(self, code: str, inputs: dict | None) -> dict:
+        """Rule-based strong limit-up pattern section for the stock suite."""
+        inputs = inputs or {}
+        df = inputs.get("ohlcv")
+        if df is None or getattr(df, "empty", True):
+            return {
+                **_unavailable_section(inputs.get("ohlcv_error") or "OHLCV 数据不足，无法识别涨停强势形态"),
+                "matches": [],
+                "pattern_stats": {},
+                "summary": {"detected_count": 0, "best": None},
+            }
+        try:
+            bars = bars_from_dataframe(df)
+            matches = inputs.get("lp_matches")
+            if matches is None:
+                matches = detect_all(bars, code=code, recent_days=RECENT_DAYS)
+            stats = backtest_all(bars, code=code)
+            best = None
+            for match in matches:
+                horizons = (stats.get(match.get("pattern")) or {}).get("horizons") or {}
+                for horizon, row in horizons.items():
+                    win_rate = row.get("win_rate")
+                    count = row.get("count") or 0
+                    if win_rate is None or count <= 0:
+                        continue
+                    if best is None or win_rate > best["win_rate"]:
+                        best = {"name": match.get("name"), "win_rate": win_rate, "horizon": horizon}
+            return {
+                "data_status": "fresh",
+                "last_updated": _dt.datetime.now().isoformat(timespec="seconds"),
+                "reason": None,
+                "matches": matches,
+                "pattern_stats": stats,
+                "summary": {"detected_count": len(matches), "best": best},
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                **_unavailable_section(f"涨停强势形态识别失败：{exc}"),
+                "matches": [],
+                "pattern_stats": {},
+                "summary": {"detected_count": 0, "best": None},
+            }
 
     def _collect_panel(self, code: str, inputs: dict | None, sections: dict) -> dict:
         """多空评审团：60 persona 规则裁决 + 16 指标 + 共识/大分歧（spec §0/§11 Phase 1）。
@@ -418,6 +522,30 @@ class StockAnalysisSuite:
                     out["fund_holds"] = r.data
         return out
 
+    def _collect_related_news(self, code: str) -> dict:
+        from analysis.stock_relation_news import RELATION_TIERS
+        from data_store import stock_related_news_repo
+        try:
+            snap = stock_related_news_repo.latest_for_code(code)
+        except Exception as exc:  # noqa: BLE001 — 表缺失/DB 异常不应拖垮整页
+            return {"data_status": "unavailable", "last_updated": None,
+                    "reason": f"关联新闻读取失败：{exc}", "tiers": {}}
+        if not snap.get("fetched_at"):
+            return {"data_status": "unavailable", "last_updated": None,
+                    "reason": "未抓取，点击「刷新关联新闻」", "tiers": {}}
+        try:
+            age = (_dt.datetime.now()
+                   - _dt.datetime.fromisoformat(snap["fetched_at"])).total_seconds()
+        except Exception:  # noqa: BLE001
+            age = 0
+        status = "fresh" if age < 6 * 3600 else "stale"
+        tiers: dict = {}
+        for it in snap["items"]:
+            tiers.setdefault(it.get("tier"), []).append(it)
+        return {"data_status": status, "last_updated": snap["fetched_at"],
+                "reason": None, "tiers": tiers,
+                "tier_order": list(RELATION_TIERS)}
+
     def _collect_chip_control(self, ts_code: str, chip: dict | None = None) -> dict:
         """筹码控盘度：透传 ChipAnalyzer 的控盘度/集中度（已计算，spec §0.1），
         官方 cyq 分布留待 M2。chip 为 ChipAnalyzer.analyze 输出；为 None 时降级。"""
@@ -474,7 +602,9 @@ class StockAnalysisSuite:
         hold = int(models.get("hold_signal_count", 0))
         total = buy + sell + hold
         signals_matrix = [
-            {"model": m.get("model"), "period": "daily", "signal": m.get("signal"),
+            {"model": m.get("name_cn") or m.get("model"),
+             "model_key": m.get("model"),
+             "period": "daily", "signal": m.get("signal"),
              "confidence": None}
             for m in (models.get("per_model") or [])
         ]
@@ -599,6 +729,8 @@ class StockAnalysisSuite:
                     "score": score,
                     "label": self._label_perf(score),
                     "reason": reason,
+                    "industry_prosperity": self._build_industry_prosperity(inputs),
+                    "business_prosperity": self._build_business_prosperity(fundam),
                 }
         except (KeyError, TypeError, ValueError):
             radar["performance"] = _missing()
@@ -638,6 +770,12 @@ class StockAnalysisSuite:
                 out["models"] = self._run_quant_models(code, df)
             except Exception as exc:  # noqa: BLE001
                 out["models_error"] = str(exc)
+            try:
+                bars = bars_from_dataframe(df)
+                out["lp_matches"] = detect_all(bars, code=code, recent_days=RECENT_DAYS)
+            except Exception as exc:  # noqa: BLE001
+                out["lp_matches"] = []
+                out["lp_error"] = str(exc)
         try:
             regime, ratio = self._classify_market_regime()
             out["market_regime"] = regime
@@ -655,9 +793,24 @@ class StockAnalysisSuite:
                 "roe": fi.get("roe"),
                 "pe_industry_rank": ic.get("pe_rank"),
                 "net_profit_yoy": fr.get("net_profit_yoy"),
+                "revenue_yoy": fr.get("revenue_yoy"),
+                "gross_margin": fr.get("gross_margin"),
+                "gross_margin_prev": fr.get("gross_margin_prev"),
+                "industry_rank_pct": ic.get("industry_rank"),
             }
         except Exception as exc:  # noqa: BLE001
             out["fundamental_error"] = str(exc)
+        try:
+            from analysis.sector_api import get_sector_sentiment
+            sec = get_sector_sentiment(code) or {}
+            out["sector"] = {
+                "change_pct": sec.get("change_pct") or sec.get("avg_change_pct"),
+                "moneyflow_net": sec.get("moneyflow_net") or sec.get("main_net_inflow"),
+                "sentiment_score": sec.get("sentiment_score"),
+                "sector_name": sec.get("sector_name"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            out["sector_error"] = str(exc)
         self._augment_fundamental_from_local(code, out)
         return out
 
@@ -701,12 +854,27 @@ class StockAnalysisSuite:
         if inputs is None:
             inputs = self._collect_inputs(code)
         radar = self._compute_radar(inputs)
-        return {
+        overview = {
             "radar": radar,
             "key_signals": self._build_key_signals(inputs, radar),
             "deep_signals": self._build_deep_signals(inputs),
             "scenario_probability": self._build_scenario_probability(inputs),
         }
+        overview["strong_patterns"] = self._build_strong_patterns_summary(inputs)
+        return overview
+
+    def _build_strong_patterns_summary(self, inputs: Dict[str, Any]) -> dict:
+        matches = inputs.get("lp_matches") or []
+        items = []
+        for match in matches[:5]:
+            items.append({
+                "name": match.get("name"),
+                "strength": match.get("strength"),
+                "tone": match.get("tone"),
+                "days_ago": match.get("days_ago"),
+                "best_win_rate": None,
+            })
+        return {"items": items, "detected_count": len(matches)}
 
     def build_llm_payload(
         self, code: str, name: str, suite_data: Dict[str, Any],
@@ -785,15 +953,53 @@ class StockAnalysisSuite:
         result.append({"label": "仓位上限", "value": f"{position_cap}%", "tone": "warn"})
         mf_label = (radar.get("main_force_phase") or {}).get("label", "—")
         result.append({"label": "主力阶段", "value": mf_label, "tone": "info"})
-        conf = ((inputs.get("sentiment") or {}).get("confidence_label")) or "—"
+        # 可信度 / 量能质量 / 筹码集中度:历史上只读 inputs["sentiment"]/["quality"],而
+        # _collect_inputs 从不填充这两个键 → 综合总览这三项恒为「—」(空)。改为优先读这两个
+        # 键(未来管线若填充则采用),否则从已采集的 inputs/radar 实时派生,真无数据才回落「—」。
+        sentiment = inputs.get("sentiment") or {}
+        conf = sentiment.get("confidence_label") or self._data_confidence_label(inputs)
         result.append({"label": "可信度", "value": conf, "tone": "neutral"})
         quality = inputs.get("quality") or {}
-        result.append({"label": "量能质量", "value": quality.get("volume_label", "—"), "tone": "info"})
-        result.append({"label": "筹码集中度", "value": quality.get("chip_label", "—"), "tone": "neutral"})
+        vp_label = (radar.get("volume_price_game") or {}).get("label")
+        vol_label = quality.get("volume_label") or (vp_label if vp_label and vp_label != "未知" else "—")
+        result.append({"label": "量能质量", "value": vol_label, "tone": "info"})
+        chip_label = quality.get("chip_label") or self._chip_concentration_label(inputs)
+        # 该指标实为 90% 成本分布宽度((p95-p5)/mid)，可 >100%，越小越集中。
+        # 旧标签「筹码集中度」会让 >100% 被误读成「极度分散=出货」。
+        result.append({"label": "筹码分布宽度", "value": chip_label, "tone": "neutral"})
         tech = self._build_technical_trend_signal(inputs)
         if tech:
             result.append(tech)
         return result
+
+    @staticmethod
+    def _data_confidence_label(inputs: Dict[str, Any]) -> str:
+        """可信度:关键数据源到位程度(chip/capital_flow/models/fundamental 成功几项)。"""
+        n = sum(1 for k in ("chip", "capital_flow", "models", "fundamental") if inputs.get(k))
+        if n >= 4:
+            return "高"
+        if n >= 2:
+            return "中"
+        if n >= 1:
+            return "低"
+        return "—"
+
+    @staticmethod
+    def _chip_concentration_label(inputs: Dict[str, Any]) -> str:
+        """筹码集中度:由 90% 成本集中度派生(越小越集中)。无数据回落「—」。"""
+        try:
+            c = float(((inputs.get("chip") or {}).get("details") or {}).get("concentration_90"))
+        except (TypeError, ValueError):
+            return "—"
+        if c <= 0:
+            return "—"
+        if c < 10:
+            return f"高度集中({c:.0f}%)"
+        if c < 20:
+            return f"较集中({c:.0f}%)"
+        if c < 30:
+            return f"适中({c:.0f}%)"
+        return f"分散({c:.0f}%)"
 
     @staticmethod
     def _last_indicator_value(series: Any) -> Optional[float]:
@@ -954,6 +1160,9 @@ class StockAnalysisSuite:
     def _run_quant_models(self, code: str, df: pd.DataFrame) -> Dict[str, int]:
         models = QuantitativeModels(df)
         models.run_all_models()
+        # 模型中文名来自 technical_analysis 各模型定义的 models_performance['中文名称']
+        # (30 个模型全部定义),作为权威来源透传,避免在前端/Excel 各自维护一份英文→中文映射。
+        perf = getattr(models, "models_performance", {}) or {}
         buy = sell = hold = 0
         per_model: list = []
         for _name, signal_series in (models.signals or {}).items():
@@ -973,7 +1182,12 @@ class StockAnalysisSuite:
                 sell += 1
             else:
                 hold += 1
-            per_model.append({"model": str(_name), "signal": last_val})
+            name_cn = (perf.get(_name) or {}).get("中文名称")
+            per_model.append({
+                "model": str(_name),
+                "name_cn": str(name_cn) if name_cn else None,
+                "signal": last_val,
+            })
         return {
             "buy_signal_count": buy,
             "sell_signal_count": sell,
@@ -1015,7 +1229,10 @@ class StockAnalysisSuite:
         stop_price = round(current - atr * 1.5, 2)
         drop_pct = round((current - stop_price) / current * 100, 1) if current else 0.0
         recent_high = float(max(close[-60:])) if len(close) >= 60 else float(max(close))
-        expected_return_pct = round((recent_high - current) / current * 100, 1) if current else 0.0
+        # 上行目标：取「近 60 日高点」与「现价 + 1.5×ATR 顺势投影」的较大者。
+        # 仅用近高点会让创新高的强势股目标=现价→期望收益 0%/盈亏比 1:0.0，系统性错杀突破股。
+        upside_target = round(max(recent_high, current + atr * 1.5), 2)
+        expected_return_pct = round((upside_target - current) / current * 100, 1) if current else 0.0
         rr_ratio = round(expected_return_pct / max(0.1, drop_pct), 1)
 
         scaled = [
@@ -1026,7 +1243,7 @@ class StockAnalysisSuite:
             {"label": "极限加仓",   "price": round(current - atr * 1.25, 2), "position_pct": 15},
         ]
         take_profit = [
-            {"label": "第一止盈(前高)", "price": round(recent_high, 2),     "sell_pct": 30},
+            {"label": "第一止盈(目标位)", "price": upside_target,           "sell_pct": 30},
             {"label": "第二止盈(+15%)", "price": round(current * 1.15, 2),  "sell_pct": 30},
             {"label": "第三止盈(+30%)", "price": round(current * 1.30, 2),  "sell_pct": 25},
             {"label": "终极止盈(+50%)", "price": round(current * 1.50, 2),  "sell_pct": 15},
@@ -1055,9 +1272,12 @@ class StockAnalysisSuite:
         })
         for window, label in ((60, "60日"), (120, "120日")):
             if len(close) >= window:
-                wclose = close[-window:]
-                wpeak = float(max(wclose))
-                wdd = round((float(min(wclose)) - wpeak) / wpeak * 100, 1) if wpeak > 0 else 0.0
+                wclose = np.asarray(close[-window:], dtype=float)
+                # 真实最大回撤：峰值之后的最大跌幅（运行峰值 → 后续低点）。
+                # 不能用 (min-max)/max，否则单边上涨(min 在前、max 在后)会被算成巨幅"回撤"。
+                running_peak = np.maximum.accumulate(wclose)
+                dd_series = np.where(running_peak > 0, (wclose - running_peak) / running_peak, 0.0)
+                wdd = round(float(dd_series.min()) * 100, 1) if len(dd_series) else 0.0
                 signals.append({
                     "text": f"{label}最大回撤 {wdd}%",
                     "tone": "warn" if wdd < -15 else "info",
@@ -1082,7 +1302,9 @@ class StockAnalysisSuite:
         if score >= 70: return "强势主导"
         if score >= 50: return "中等偏强"
         if score >= 30: return "弱势承接"
-        return "主力撤离"
+        # 低分多由高波动/高换手压低 control_degree 所致，并非必然在出货。
+        # 仅描述「控盘薄弱」，不断言「主力撤离」(派发)，避免下游误读成逃顶。
+        return "主力控盘弱"
 
     @staticmethod
     def _label_regime(regime: str) -> str:
@@ -1106,6 +1328,66 @@ class StockAnalysisSuite:
         if score >= 50: return "基本面稳健"
         if score >= 30: return "基本面承压"
         return "基本面恶化"
+
+    @staticmethod
+    def _label_prosperity(score: "int | None") -> str:
+        if score is None:
+            return "—"
+        if score >= 70: return "高景气"
+        if score >= 55: return "回暖"
+        if score >= 40: return "平淡"
+        return "退潮"
+
+    def _build_industry_prosperity(self, inputs: dict) -> dict:
+        from analysis.stock_context import _safe_float
+        fundam = inputs.get("fundamental") or {}
+        sector = inputs.get("sector") or {}
+        chg = _safe_float(sector.get("change_pct"))
+        mf = _safe_float(sector.get("moneyflow_net"))
+        pe_pct = _safe_float(fundam.get("pe_industry_rank"))
+        rank = _safe_float(fundam.get("industry_rank_pct"))
+        score = compute_industry_prosperity_score(chg, mf, pe_pct, rank)
+        if score is None:
+            return _unavailable_section("行业景气度：无板块/行业数据")
+        return {
+            "score": score,
+            "label": self._label_prosperity(score),
+            "data_status": "fresh",
+            "reason": None,
+            "rows": [
+                {"label": "板块涨跌", "value": f"{chg}%" if chg is not None else "—", "tone": "info"},
+                {"label": "板块资金净流入", "value": f"{mf/1e8:.2f}亿" if mf is not None else "—",
+                 "tone": "danger" if (mf is not None and mf < 0) else "info"},
+                {"label": "PE行业分位", "value": f"{pe_pct:.0f}%" if pe_pct is not None else "—", "tone": "neutral"},
+                {"label": "行业内排名分位", "value": f"{rank:.0f}%" if rank is not None else "—", "tone": "neutral"},
+            ],
+        }
+
+    def _build_business_prosperity(self, fundam: dict) -> dict:
+        from analysis.stock_context import _safe_float
+        rev = _safe_float(fundam.get("revenue_yoy"))
+        prof = _safe_float(fundam.get("net_profit_yoy"))
+        gm = _safe_float(fundam.get("gross_margin"))
+        gm_prev = _safe_float(fundam.get("gross_margin_prev"))
+        gm_trend = (gm - gm_prev) if (gm is not None and gm_prev is not None) else None
+        roe = _safe_float(fundam.get("roe"))
+        score = compute_business_prosperity_score(rev, prof, gm_trend, roe)
+        if score is None:
+            return _unavailable_section("业务景气度：无财报数据")
+        return {
+            "score": score,
+            "label": self._label_prosperity(score),
+            "data_status": "fresh",
+            "reason": None,
+            "rows": [
+                {"label": "营收YoY", "value": f"{rev}%" if rev is not None else "—",
+                 "tone": "danger" if (rev is not None and rev < 0) else "info"},
+                {"label": "净利YoY", "value": f"{prof}%" if prof is not None else "—",
+                 "tone": "danger" if (prof is not None and prof < 0) else "info"},
+                {"label": "毛利率", "value": f"{gm}%" if gm is not None else "—", "tone": "neutral"},
+                {"label": "ROE", "value": f"{roe}%" if roe is not None else "—", "tone": "neutral"},
+            ],
+        }
 
     @staticmethod
     def _label_control(control_degree: float) -> str:

@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{{ page_title }} - Kronos Ultra</title>
+    <title>{{ page_title }} - Lumo Trade</title>
     <script async src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
-    <link rel="stylesheet" href="/static/kronos_desktop.css" />
+    <link rel="stylesheet" href="/static/kronos_desktop.css?v={{ asset_v('kronos_desktop.css') }}" />
   </head>
 	  <body data-page="{{ active_page }}">
 	    <div class="app-shell" id="appShell">
       <aside class="sidebar">
         <div class="brand">
-          <h1 class="brand-title">Kronos Ultra</h1>
+          <h1 class="brand-title">Lumo Trade</h1>
           <p class="brand-note">智能投研控制台</p>
         </div>
         <nav class="nav" aria-label="桌面导航">
@@ -105,6 +105,14 @@
               </div>
             </div>
             <div class="capital-table-wrap" id="capitalTable"></div>
+          </div>
+
+          <div class="panel" id="capitalAnalyzePanel" hidden>
+            <div class="panel-header">
+              <h2 class="panel-title">分析结果</h2>
+              <span class="panel-meta" id="capitalAnalyzeMeta">机会挖掘评分</span>
+            </div>
+            <div class="panel-body" id="capitalAnalyzeResult"></div>
           </div>
 
           <div class="capital-window-grid">
@@ -310,9 +318,42 @@
                 <div id="hotConceptList" class="panel-body list"></div>
               </div>
             </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2 id="jobDetailTitle" class="panel-title">任务日志</h2>
+                  <span id="jobDetailMeta" class="panel-meta">选择或启动任务</span>
+                </div>
+                <div id="jobDetailActions" class="job-result-row"></div>
+              </div>
+              <div class="panel-body">
+                <div id="jobDetailSummary" class="notice status info">启动任务后这里会实时展示进度、日志和结果。</div>
+                <div id="jobLogStream" class="job-log-stream"></div>
+              </div>
+            </section>
           </div>
 
           <aside class="workbench-side">
+            <section class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">最近任务</h2>
+                <span class="panel-meta">挖掘进度</span>
+              </div>
+              <div id="jobList" class="panel-body list compact-list"></div>
+            </section>
+
+            <section class="panel opportunity-history-entry">
+              <div class="panel-header">
+                <h2 class="panel-title">历史与板块</h2>
+                <span class="panel-meta">弹出查看</span>
+              </div>
+              <div class="panel-body">
+                <p class="muted">历史挖掘、历史股票分析、历史热门板块已收进弹出窗口，支持按名称/代码/板块搜索。</p>
+                <button class="button secondary opportunity-data-menu-btn" type="button" data-opportunity-data-tab-target="history">打开历史与板块</button>
+              </div>
+            </section>
+
             <section class="panel">
               <div class="panel-header">
                 <h2 class="panel-title">🚀 涨幅 · 涨停榜</h2>
@@ -340,137 +381,6 @@
         </section>
         {% endif %}
 
-        {% if active_page == 'opportunities' %}
-        <section class="opportunity-page opportunity-page-redesign">
-          <section class="panel opportunity-command-panel">
-            <div class="panel-header">
-              <div>
-                <h2 class="panel-title">投资机会挖掘</h2>
-                <span class="panel-meta">多源候选 · 板块快照 · 全量 run 入库</span>
-              </div>
-              <button class="button secondary compact opportunity-data-menu-btn" type="button">全部/历史</button>
-            </div>
-            <form id="opportunityForm" class="panel-body opportunity-command-form">
-              <div class="form-grid opportunity-form-grid">
-                <label>候选数量
-                  <input name="limit" type="number" value="100" min="5" max="500" />
-                </label>
-                <label>并发数
-                  <input name="workers" type="number" value="10" min="1" max="32" />
-                </label>
-                <label>来源
-                  <select name="source">
-                    <option value="multi">多源候选</option>
-                    <option value="sector_hot">热门板块成分股</option>
-                    <option value="heat">热度候选</option>
-                    <option value="moneyflow_dc">东方财富资金</option>
-                  </select>
-                </label>
-                <label class="opportunity-pool-input">指定股票池
-                  <input name="stock_codes" placeholder="可选，如 600519,300750" />
-                </label>
-              </div>
-              <div class="actions opportunity-command-actions">
-                <button class="button" type="submit">启动挖掘</button>
-              </div>
-            </form>
-          </section>
-
-          <section class="opportunity-workbench-grid">
-            <aside class="opportunity-left-rail">
-              <div class="panel">
-                <div class="panel-header">
-                  <h2 class="panel-title">最近任务</h2>
-                  <span class="panel-meta">挖掘进度</span>
-                </div>
-                <div id="jobList" class="panel-body list compact-list"></div>
-              </div>
-
-              <div class="panel opportunity-history-entry">
-                <div class="panel-header">
-                  <h2 class="panel-title">历史与板块</h2>
-                  <span class="panel-meta">弹出查看</span>
-                </div>
-                <div class="panel-body">
-                  <p class="muted">历史挖掘、历史股票分析、历史热门板块已收进弹出窗口，支持按名称/代码/板块搜索。</p>
-                  <button class="button secondary opportunity-data-menu-btn" type="button" data-opportunity-data-tab-target="history">打开历史与板块</button>
-                </div>
-              </div>
-            </aside>
-
-            <main class="opportunity-main-column">
-              <div class="panel opportunity-primary-list">
-                <div class="panel-header">
-                  <h2 class="panel-title">最新机会 Top10</h2>
-                  <div class="panel-header-actions">
-                    <span id="opportunityMeta" class="panel-meta">--</span>
-                    <button class="button secondary compact opportunity-data-menu-btn" type="button">全部数据</button>
-                  </div>
-                </div>
-                <div id="opportunityList" class="panel-body list"></div>
-              </div>
-
-              <div class="panel opportunity-kline-panel">
-                <div class="panel-header">
-                  <h2 id="klineTitle" class="panel-title">K线</h2>
-                  <div class="panel-header-actions">
-                    <span id="klineMeta" class="panel-meta">选择股票查看</span>
-                    <button id="openKlineModalBtn" class="button secondary compact" type="button" disabled>大图</button>
-                  </div>
-                </div>
-                <div id="klineChart" class="panel-body chart trading-kline-preview" role="button" tabindex="0" title="大图K线"></div>
-              </div>
-            </main>
-          </section>
-
-          <section class="opportunity-analysis-grid">
-            <div class="panel">
-              <div class="panel-header">
-                <h2 class="panel-title">量化模型</h2>
-                <span class="panel-meta">机会挖掘摘要</span>
-              </div>
-              <div id="quantModels" class="panel-body list"></div>
-            </div>
-          </section>
-
-          <section class="panel opportunity-canvas-panel opportunity-page-canvas">
-            <div class="panel-header">
-              <h2 class="panel-title">投资机会画布</h2>
-              <div class="panel-header-actions">
-                <div id="opportunityCanvasViewSwitch" class="canvas-view-switch" role="tablist" aria-label="画布关系维度"></div>
-                <span id="opportunityCanvasMeta" class="panel-meta">--</span>
-                <select id="opportunityCanvasDateSelect" class="canvas-date-select" title="切换到某日/某次挖掘快照"><option value="">最新(默认)</option></select>
-                <button id="opportunityCanvasExport" class="button secondary compact" type="button" title="导出热门板块快照 Excel">导出Excel</button>
-                <button id="opportunityCanvasZoomOut" class="button secondary compact" type="button" title="缩小">-</button>
-                <button id="opportunityCanvasReset" class="button secondary compact" type="button" title="重置视图">重置</button>
-                <button id="opportunityCanvasZoomIn" class="button secondary compact" type="button" title="放大">+</button>
-                <button id="opportunityCanvasFullscreen" class="button secondary compact" type="button" title="全屏查看画布">全屏</button>
-              </div>
-            </div>
-            <div class="opportunity-canvas-shell">
-              <div id="opportunityCanvasViewport" class="opportunity-canvas-viewport" tabindex="0">
-                <canvas id="opportunityCanvasSurface" class="opportunity-canvas-surface" aria-label="投资机会关系画布"></canvas>
-              </div>
-              <aside id="opportunityCanvasDetail" class="opportunity-canvas-detail"></aside>
-            </div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2 id="jobDetailTitle" class="panel-title">任务日志</h2>
-                <span id="jobDetailMeta" class="panel-meta">选择或启动任务</span>
-              </div>
-              <div id="jobDetailActions" class="job-result-row"></div>
-            </div>
-            <div class="panel-body">
-              <div id="jobDetailSummary" class="notice status info">启动任务后这里会实时展示进度、日志和结果。</div>
-              <div id="jobLogStream" class="job-log-stream"></div>
-            </div>
-          </section>
-        </section>
-        {% endif %}
-
         {% if active_page == 'watchlist' %}
         <section class="grid">
           <div class="panel">
@@ -487,6 +397,7 @@
                 <button id="watchlistAddBtn" class="button" type="button">添加自选</button>
               </div>
               <div id="watchlistAddSuggest" class="list watchlist-suggest"></div>
+              <div id="watchlistSummary" class="watchlist-summary"></div>
               <div id="watchlistTable" class="list"></div>
               <p class="watchlist-tip muted">提示：底部「实时热点条」与个股分析弹窗中的 ★ 也可一键加自选；行情每 60 秒自动刷新。</p>
             </div>
@@ -600,6 +511,62 @@
             <div id="savedPatternList" class="panel-body list"></div>
           </div>
         </section>
+        {% endif %}
+
+        {% if active_page == 'star_orbit' %}
+        <section class="orbit-layout">
+          <div class="orbit-toolbar">
+            <div><span id="orbitMeta" class="panel-meta">星轨读取中…</span></div>
+            <div class="actions">
+              <button id="orbitViewToggle" class="button secondary" type="button" title="星轨/列表切换">列表视图</button>
+              <button id="orbitAddRingBtn" class="button secondary" type="button">+ 轨道环</button>
+              <button id="orbitAddBoardBtn" class="button" type="button">+ 板块/概念</button>
+              <button id="orbitResetBtn" class="button secondary" type="button" title="清空并重灌默认 物理AI/AI产业链 映射">恢复默认</button>
+              <button id="orbitRefreshBtn" class="button secondary" type="button">刷新</button>
+            </div>
+          </div>
+          <div class="orbit-main">
+            <div class="orbit-stage panel">
+              <div id="orbitSvgWrap" class="orbit-svg-wrap">
+                <p class="muted" style="padding:24px;">正在构建星轨…</p>
+              </div>
+              <div id="orbitLegend" class="orbit-legend"></div>
+            </div>
+            <aside class="orbit-side panel">
+              <div class="panel-header">
+                <h2 class="panel-title" id="orbitSideTitle">板块详情</h2>
+                <span id="orbitSideMeta" class="panel-meta"></span>
+              </div>
+              <div id="orbitSideBody" class="panel-body">
+                <p class="muted">点击星轨上的板块节点：查看实时成分股、钉选/删除个股。<br/>外环越往外＝越接近应用/终端层。节点颜色随板块当日涨跌。</p>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <div id="orbitBoardDialog" class="orbit-dialog hidden" role="dialog" aria-modal="true">
+          <div class="orbit-dialog-card panel">
+            <div class="panel-header">
+              <h2 class="panel-title">添加板块 / 概念</h2>
+              <button id="orbitBoardDialogClose" class="button secondary" type="button">关闭</button>
+            </div>
+            <div class="panel-body">
+              <div class="form-grid">
+                <label>归属轨道环
+                  <select id="orbitBoardRingSelect"></select>
+                </label>
+                <label>搜索东财板块（关键词或 BK 码）
+                  <input id="orbitBoardSearchInput" placeholder="如 机器人 / 算力 / BK1127" autocomplete="off" />
+                </label>
+              </div>
+              <div class="actions">
+                <button id="orbitBoardSearchBtn" class="button secondary" type="button">搜索</button>
+                <span class="muted" style="align-self:center;">从真实东财概念+行业板块中选，保证 BK 码可取数。</span>
+              </div>
+              <div id="orbitBoardSearchResults" class="list" style="margin-top:12px; max-height:320px; overflow:auto;"></div>
+            </div>
+          </div>
+        </div>
         {% endif %}
 
         {% if active_page == 'reports' %}
@@ -877,7 +844,7 @@
             </div>
             <div class="panel-body about-prose">
               <p class="about-lead">本软件仅为数据工具，不构成投资建议，股市有风险，投资需谨慎。</p>
-              <p>本软件（Kronos Ultra，下称"本软件"）提供的所有行情数据、技术指标、量化评分、形态检索、AI 解读及预测结果，均基于公开历史数据与算法模型自动生成，<strong>仅供研究与学习参考，不构成任何证券买卖建议、投资咨询或投资依据</strong>。</p>
+              <p>本软件（Lumo Trade，下称"本软件"）提供的所有行情数据、技术指标、量化评分、形态检索、AI 解读及预测结果，均基于公开历史数据与算法模型自动生成，<strong>仅供研究与学习参考，不构成任何证券买卖建议、投资咨询或投资依据</strong>。</p>
               <p>市场有风险，投资需谨慎。任何依据本软件信息做出的投资决策及由此产生的盈亏与后果，均由使用者自行承担，本软件及其开发者不承担任何责任。</p>
               <p>本软件并非持牌金融机构，不提供证券投资咨询服务，亦不代客理财或承诺任何收益。历史回测与模型表现不代表未来收益。</p>
             </div>
@@ -1047,6 +1014,7 @@
             <button data-suite-tab="ai_interpretation"   class="suite-tab" type="button">AI 解读</button>
             <button data-suite-tab="financials"          class="suite-tab" type="button">财务三大表</button>
             <button data-suite-tab="pattern_backtest"    class="suite-tab" type="button">形态回测</button>
+            <button data-suite-tab="related_news"        class="suite-tab" type="button">关联热点</button>
           </nav>
           <div class="stock-suite-panels" id="stockSuitePanels">
             <div class="suite-pane" data-suite-pane="quick">
@@ -1069,7 +1037,38 @@
             <div class="suite-pane hidden" data-suite-pane="ai_interpretation" id="suitePaneAi"></div>
             <div class="suite-pane hidden" data-suite-pane="financials" id="suitePaneFinancials"></div>
             <div class="suite-pane hidden" data-suite-pane="pattern_backtest" id="suitePanePatternBacktest"></div>
+            <div class="suite-pane hidden" data-suite-pane="related_news" id="suitePaneRelatedNews"></div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="boardDrillModal" class="modal-backdrop" aria-hidden="true" hidden>
+      <div class="modal-shell modal-large" role="dialog" aria-modal="true" aria-labelledby="boardDrillTitle">
+        <div class="modal-header">
+          <div>
+            <h2 id="boardDrillTitle">板块成分股</h2>
+            <p id="boardDrillMeta">--</p>
+          </div>
+          <button id="closeBoardDrillBtn" class="button secondary compact" type="button">关闭</button>
+        </div>
+        <div class="modal-body" id="boardDrillBody" style="overflow:auto;padding:1rem;">
+          <div class="stock-context-loading">正在读取板块成分股...</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="quantModelDrillModal" class="modal-backdrop" aria-hidden="true" hidden>
+      <div class="modal-shell modal-large" role="dialog" aria-modal="true" aria-labelledby="quantModelDrillTitle">
+        <div class="modal-header">
+          <div>
+            <h2 id="quantModelDrillTitle">量化模型</h2>
+            <p id="quantModelDrillMeta">--</p>
+          </div>
+          <button id="closeQuantModelDrillBtn" class="button secondary compact" type="button">关闭</button>
+        </div>
+        <div class="modal-body" id="quantModelDrillBody" style="overflow:auto;padding:1rem;">
+          <div class="stock-context-loading">正在读取相关个股...</div>
         </div>
       </div>
     </div>
@@ -1190,6 +1189,8 @@
         <div class="drawer-body">
           <div class="opportunity-data-toolbar" role="tablist" aria-label="机会数据视图">
             <button class="canvas-view-tab active" type="button" data-opportunity-data-tab="all">最新全部</button>
+            <button class="canvas-view-tab" type="button" data-opportunity-data-tab="stockpool">股票池</button>
+            <button class="canvas-view-tab" type="button" data-opportunity-data-tab="sectorpool">板块池</button>
             <button class="canvas-view-tab" type="button" data-opportunity-data-tab="history">历史股票分析</button>
             <button class="canvas-view-tab" type="button" data-opportunity-data-tab="sectors">历史热门板块</button>
             <button class="canvas-view-tab" type="button" data-opportunity-data-tab="pattern">形态回测</button>

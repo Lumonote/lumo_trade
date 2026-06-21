@@ -139,8 +139,9 @@ class MarketIntelligenceService:
         self._industry_lock = threading.Lock()
         self._maybe_refresh_industry_map()  # 进程启动即后台预热，首个 load 多半已就绪
 
-    def _request_json(self, url: str, headers: dict[str, str] | None = None, timeout: int = 5) -> Any:
-        return request_json(url, headers=headers, timeout=timeout, retries=3)
+    def _request_json(self, url: str, headers: dict[str, str] | None = None, timeout: int = 5,
+                      trust_env: bool = True) -> Any:
+        return request_json(url, headers=headers, timeout=timeout, retries=3, trust_env=trust_env)
 
     def fetch_jinshi_flash(self, limit: int = 12) -> list[dict[str, Any]]:
         """Fetch Jinshi flash headlines for homepage macro tape."""
@@ -314,6 +315,7 @@ class MarketIntelligenceService:
                 'Referer': 'https://quote.eastmoney.com/',
             },
             timeout=4,
+            trust_env=False,  # push2.eastmoney 是境内接口,系统代理(Clash)转发常被对端断连→直连
         )
         rows = ((payload or {}).get('data') or {}).get('diff') or []
         items = []
@@ -524,16 +526,23 @@ class MarketIntelligenceService:
 
         push2.eastmoney 的 clist 板块榜在本机/部分网络被掐时的回退源。
         board_type：'hy'=行业板块，'gn'=概念板块。返回 name｜涨跌幅｜主力净流入｜领涨股。
+
+        注意：腾讯 getRank 仅 ``sort_type=price`` 返回数据（``zdf``/``zljlr`` 实测空），
+        而 price 排序对板块是固定的申万行业序（食品饮料/电力设备/…），与「热点」无关，
+        会让回退后的「热点板块」看起来永远是同一批旧数据。故这里多取一些再按当日涨跌幅
+        客户端降序排序，取 Top ``limit``，使回退源也反映真实领涨板块。
         """
+        fetch_count = max(limit, 50)  # 多取(行业约31/概念更多)以便客户端按涨幅重排
         url = (
             'https://proxy.finance.qq.com/cgi/cgi-bin/rank/pt/getRank'
-            f'?board_type={board_type}&sort_type=price&direct=down&offset=0&count={max(limit, 1)}'
+            f'?board_type={board_type}&sort_type=price&direct=down&offset=0&count={fetch_count}'
         )
         payload = self._request_json(
             url,
             headers={'User-Agent': _UA, 'Accept': 'application/json,text/plain,*/*',
                      'Referer': 'https://gu.qq.com/'},
             timeout=5,
+            trust_env=False,  # 境内接口,直连绕过系统代理
         )
         rows = ((payload or {}).get('data') or {}).get('rank_list') or []
         items: list[dict[str, Any]] = []
@@ -555,9 +564,8 @@ class MarketIntelligenceService:
                 'leader_change_pct': round(_safe_float((leader or {}).get('zdf'), 0.0) or 0.0, 2),
                 'source': 'tencent',
             })
-            if len(items) >= limit:
-                break
-        return items
+        items.sort(key=lambda b: b['change_pct'], reverse=True)  # 真·领涨榜
+        return items[:limit]
 
     @staticmethod
     def _today() -> str:

@@ -465,6 +465,24 @@ class TradingClientService:
     def _applescript_string(self, value):
         return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"') + '"'
 
+    def _friendly_keyboard_error(self, message, client):
+        raw = str(message or '').strip()
+        lowered = raw.lower()
+        is_macos_permission = (
+            '1002' in raw or
+            'not allowed to send keystrokes' in lowered or
+            '不允许发送按键' in raw or
+            'system events' in lowered
+        )
+        if is_macos_permission:
+            app = client.get('display_name') or client.get('name') or '交易软件'
+            return (
+                f'{app} 已打开，但 macOS 未允许 Kronos 自动发送按键，暂时无法直达代码/板块。'
+                '请到「系统设置 > 隐私与安全性 > 辅助功能」中允许当前启动 Kronos 的应用'
+                '（如 Terminal、iTerm、Trae、VS Code 或 Python），然后重试。'
+            )
+        return raw or '键盘自动化失败'
+
     def _send_keyboard_jump(self, client, query, delay_ms):
         if not query:
             return False, '缺少可跳转的代码或名称'
@@ -483,6 +501,7 @@ class TradingClientService:
                 f'tell application {app_target} to activate',
                 f'delay {delay_seconds:.2f}',
                 'tell application "System Events"',
+                'keystroke "a" using command down',
                 f'keystroke {self._applescript_string(query)}',
                 'key code 36',
                 'end tell',
@@ -494,13 +513,14 @@ class TradingClientService:
             if completed.returncode == 0:
                 return True, '已通过客户端快捷输入跳转'
             message = (completed.stderr or completed.stdout or '').strip()
-            return False, message or '系统未允许键盘自动化'
+            return False, self._friendly_keyboard_error(message or '系统未允许键盘自动化', client)
 
         if system == 'windows':
             ps_query = str(query).replace("'", "''")
             command = (
                 f"Start-Sleep -Milliseconds {int(delay_seconds * 1000)}; "
                 "Add-Type -AssemblyName System.Windows.Forms; "
+                "[System.Windows.Forms.SendKeys]::SendWait('^a'); "
                 f"[System.Windows.Forms.SendKeys]::SendWait('{ps_query}{{ENTER}}')"
             )
             completed = subprocess.run(
@@ -517,6 +537,7 @@ class TradingClientService:
             xdotool = shutil.which('xdotool')
             if not xdotool:
                 return False, '未安装 xdotool，已尝试启动客户端'
+            subprocess.run([xdotool, 'key', 'ctrl+a'], capture_output=True, timeout=2)
             completed = subprocess.run(
                 [xdotool, 'type', '--delay', '20', str(query)],
                 capture_output=True,

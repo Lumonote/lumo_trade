@@ -1,7 +1,7 @@
 [package]
 name = "kronos-ultra"
 version = "1.1.6"
-description = "Kronos Ultra desktop shell"
+description = "Lumo Trade desktop shell"
 authors = ["Kronos"]
 edition = "2021"
 

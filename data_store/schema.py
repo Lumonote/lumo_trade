@@ -474,6 +474,108 @@ _MIGRATIONS: List[Tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_fs_code_type ON financial_statement(code, statement_type, report_date DESC);
         """,
     ),
+    (
+        13,
+        # 星轨图谱(物理AI/AI产业链 同心轨道图)。完全数据驱动、用户可增删:
+        # ring=轨道环(层),board=环上的板块/概念(真实东财 BK 码),
+        # stock=用户钉选到某板块的个股(可选;未钉选则运行时实时拉东财成分股)。
+        # 删环级联删其下 board,删 board 级联删其下 pinned stock。
+        """
+        CREATE TABLE IF NOT EXISTS star_orbit_ring (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          name        TEXT NOT NULL,                 -- 轨道环名称(如「算力底座」)
+          subtitle    TEXT,                          -- 副标题/说明
+          color       TEXT,                          -- 主题色(前端渲染用,可空)
+          sort_order  INTEGER NOT NULL DEFAULT 0,    -- 由内向外的环序
+          created_at  TEXT
+        );
+        CREATE TABLE IF NOT EXISTS star_orbit_board (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          ring_id     INTEGER NOT NULL REFERENCES star_orbit_ring(id) ON DELETE CASCADE,
+          board_code  TEXT NOT NULL,                 -- 东财板块码(BKxxxx)或自定义码
+          board_name  TEXT NOT NULL,
+          board_type  TEXT,                          -- concept | industry | custom
+          note        TEXT,
+          sort_order  INTEGER NOT NULL DEFAULT 0,
+          created_at  TEXT,
+          UNIQUE(ring_id, board_code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_orbit_board_ring ON star_orbit_board(ring_id, sort_order);
+        CREATE TABLE IF NOT EXISTS star_orbit_stock (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          board_id    INTEGER NOT NULL REFERENCES star_orbit_board(id) ON DELETE CASCADE,
+          stock_code  TEXT NOT NULL,
+          stock_name  TEXT,
+          note        TEXT,
+          sort_order  INTEGER NOT NULL DEFAULT 0,
+          created_at  TEXT,
+          UNIQUE(board_id, stock_code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_orbit_stock_board ON star_orbit_stock(board_id, sort_order);
+        """,
+    ),
+    (
+        14,
+        # 星轨图谱板块成分股「关联关系」缓存。点击板块钻取时东财 push2 实时成分股
+        # 接口高频会被代理/限流掐断,membership(板块→个股归属)本身又是低频不变的,
+        # 故把成功取到的成分清单按板块快照入库:东财可达时刷新缓存并叠加实时价;
+        # 限流时回退 Tushare(dc_member)兜底,再不行回退本表上次缓存的关联关系。
+        # 只缓存归属(代码/名称/序),不缓存实时价/涨幅/主力净额(易过期,降级时记空)。
+        """
+        CREATE TABLE IF NOT EXISTS star_orbit_board_member (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          board_code  TEXT NOT NULL,                 -- 东财板块码(BKxxxx)
+          stock_code  TEXT NOT NULL,                 -- 6 位个股代码
+          stock_name  TEXT,
+          sort_order  INTEGER NOT NULL DEFAULT 0,    -- 缓存当时的排序(东财按主力净流入)
+          source      TEXT,                          -- eastmoney | tushare
+          updated_at  TEXT,                          -- 该板块成分快照的刷新时间(ISO)
+          UNIQUE(board_code, stock_code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_orbit_member_board ON star_orbit_board_member(board_code, sort_order);
+        """,
+    ),
+    (
+        15,
+        # 机会挖掘每次 run 的「前十条热点新闻」按天落盘,供风险·机遇大屏右栏按所选
+        # 日期读取(撮合矩阵旁的东财热点面板)。结构来自 run_opportunity_discovery
+        # 的 self.global_hot_news:{title, url, source, publish_time, heat(0-100)}。
+        # news_rank 为落库时按 heat 降序的名次(1..N);删 run 级联清空热点行。
+        """
+        CREATE TABLE IF NOT EXISTS opportunity_hot_news (
+          run_id       INTEGER NOT NULL REFERENCES opportunity_run(id) ON DELETE CASCADE,
+          news_rank    INTEGER NOT NULL,
+          title        TEXT NOT NULL,
+          url          TEXT,
+          source       TEXT,
+          publish_time TEXT,
+          heat         REAL,
+          PRIMARY KEY (run_id, news_rank)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_opp_hotnews_run ON opportunity_hot_news(run_id);
+        """,
+    ),
+    (
+        16,
+        """
+        CREATE TABLE IF NOT EXISTS stock_related_news (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          code         TEXT NOT NULL,
+          tier         TEXT NOT NULL,
+          title        TEXT NOT NULL,
+          url          TEXT,
+          source       TEXT,
+          published_at TEXT,
+          relation_reason TEXT,
+          sentiment    TEXT,
+          content_hash TEXT NOT NULL,
+          fetched_at   TEXT NOT NULL,
+          UNIQUE(code, content_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_srn_code_fetched
+          ON stock_related_news(code, fetched_at);
+        """,
+    ),
 ]
 
 

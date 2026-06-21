@@ -11,12 +11,18 @@ from analysis import risk_opportunity_engine as eng
 
 
 class CommandCenterService:
-    def __init__(self, *, load_report, capital_rankings, market_env, holdings, quotes):
+    def __init__(self, *, load_report, capital_rankings, market_env, holdings, quotes,
+                 hot_membership=None, news_index=None, hot_news=None):
         self._load_report = load_report
         self._capital_rankings = capital_rankings
         self._market_env = market_env
         self._holdings = holdings
         self._quotes = quotes
+        # 持仓·热点关联两源(纯注入)。缺省为空源 → 面板仍列出持仓但全「脱离」,不崩。
+        self._hot_membership = hot_membership or (lambda *a, **k: {})
+        self._news_index = news_index or (lambda *a, **k: {})
+        # 东财热点新闻源(纯注入)。缺省空源 → 撮合矩阵右栏显示占位文案,不崩。
+        self._hot_news = hot_news or (lambda *a, **k: [])
 
     def _safe(self, fn, default):
         try:
@@ -89,6 +95,18 @@ class CommandCenterService:
             hold.get("account", {}), hold.get("positions", []),
             max_drawdown=hold.get("max_drawdown", 0.0))
 
+        # 持仓 · 热点关联(逐源独立降级:某源抛错只置该面板 degraded,不影响其余)。
+        positions = hold.get("positions", [])
+        membership, dms = self._safe(lambda: self._hot_membership(report.get("date")), {})
+        degraded["hot_sector"] = dms
+        news_idx, dnw = self._safe(lambda: self._news_index(positions), {})
+        degraded["news"] = dnw
+        holdings_relevance = eng.score_holdings_relevance(positions, membership, news_idx)
+
+        # 东财热点新闻(撮合矩阵右栏):按报告日期读当日落盘的前十热点;独立降级。
+        hot_news, dhn = self._safe(lambda: self._hot_news(report.get("date")), [])
+        degraded["hot_news"] = dhn
+
         indices = {
             "market_risk": round(eng.market_risk_index(
                 market["risk"], menv.get("sentiment")), 0),
@@ -105,6 +123,8 @@ class CommandCenterService:
             "market_env": menv,
             "matrix": matrix,
             "portfolio": portfolio,
+            "holdings_relevance": holdings_relevance,
+            "hot_news": hot_news,
             "rankings": {"capital": cap.get("rows", [])},
             "available_dates": list(available_dates or []),
             "degraded": degraded,

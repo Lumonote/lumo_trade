@@ -13,6 +13,7 @@ import os
 import re
 import tempfile
 import threading
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,7 @@ class WatchlistService:
     def __init__(self, store_path: Path):
         self.store_path = Path(store_path)
         self._lock = threading.RLock()
+        self._sector_cache: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # 持久化
@@ -154,6 +156,144 @@ class WatchlistService:
         norm = normalize_code(code)
         with self._lock:
             return any(it["code"] == norm for it in self._read())
+
+    # ------------------------------------------------------------------
+    # 行业 / 汇总
+    # ------------------------------------------------------------------
+    def _sector_info(self, code: str) -> dict[str, Any]:
+        cached = self._sector_cache.get(code)
+        if cached is not None:
+            return cached
+        info: dict[str, Any] = {"sector": "", "boards": []}
+        try:
+            from analysis.sector_api import get_stock_boards, get_stock_sector_info
+            raw = get_stock_sector_info(code) or {}
+            sector = str(raw.get("sector_name") or raw.get("industry") or "").strip()
+            boards = [
+                str(item).strip()
+                for item in (get_stock_boards(code, limit=6) or [])
+                if str(item).strip()
+            ]
+            info = {"sector": sector, "boards": boards}
+        except Exception:  # noqa: BLE001 - 行业数据失败不阻断自选行情
+            info = {"sector": "", "boards": []}
+        self._sector_cache[code] = info
+        return info
+
+    def _summary(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        quoted = [it for it in items if _safe_float(it.get("change_pct")) is not None]
+        changes = [_safe_float(it.get("change_pct"), 0.0) or 0.0 for it in quoted]
+        up = [it for it in quoted if (_safe_float(it.get("change_pct"), 0.0) or 0.0) > 0]
+        down = [it for it in quoted if (_safe_float(it.get("change_pct"), 0.0) or 0.0) < 0]
+        flat = len(quoted) - len(up) - len(down)
+        avg_change = round(sum(changes) / len(changes), 2) if changes else None
+        sorted_changes = sorted(changes)
+        if sorted_changes:
+            mid = len(sorted_changes) // 2
+            median_change = (
+                round(sorted_changes[mid], 2)
+                if len(sorted_changes) % 2
+                else round((sorted_changes[mid - 1] + sorted_changes[mid]) / 2, 2)
+            )
+        else:
+            median_change = None
+
+        best = max(quoted, key=lambda it: _safe_float(it.get("change_pct"), -999.0) or -999.0, default=None)
+        worst = min(quoted, key=lambda it: _safe_float(it.get("change_pct"), 999.0) or 999.0, default=None)
+        inflows = [
+            _safe_float(it.get("main_net_inflow"))
+            for it in items
+            if _safe_float(it.get("main_net_inflow")) is not None
+        ]
+        net_inflow = round(sum(inflows), 2) if inflows else None
+
+        by_sector: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for it in items:
+            sector = str(it.get("sector") or "未识别板块").strip() or "未识别板块"
+            by_sector[sector].append(it)
+        sectors = []
+        for sector, rows in by_sector.items():
+            sector_changes = [
+                _safe_float(row.get("change_pct"))
+                for row in rows
+                if _safe_float(row.get("change_pct")) is not None
+            ]
+            sector_inflows = [
+                _safe_float(row.get("main_net_inflow"))
+                for row in rows
+                if _safe_float(row.get("main_net_inflow")) is not None
+            ]
+            leader = max(
+                rows,
+                key=lambda row: _safe_float(row.get("change_pct"), -999.0) or -999.0,
+                default=None,
+            )
+            sectors.append({
+                "name": sector,
+                "count": len(rows),
+                "avg_change_pct": round(sum(sector_changes) / len(sector_changes), 2) if sector_changes else None,
+                "main_net_inflow": round(sum(sector_inflows), 2) if sector_inflows else None,
+                "leader": {
+                    "code": leader.get("code"),
+                    "name": leader.get("name"),
+                    "change_pct": leader.get("change_pct"),
+                } if leader else None,
+                "stocks": [
+                    {"code": row.get("code"), "name": row.get("name"), "change_pct": row.get("change_pct")}
+                    for row in rows[:8]
+                ],
+            })
+        sectors.sort(key=lambda row: (row["count"], row["avg_change_pct"] if row["avg_change_pct"] is not None else -999), reverse=True)
+
+        total = len(items)
+        quoted_count = len(quoted)
+        up_ratio = round(len(up) / quoted_count, 4) if quoted_count else None
+        top_sector = sectors[0] if sectors else None
+        concentration = round((top_sector["count"] / total), 4) if top_sector and total else 0.0
+        if avg_change is None:
+            tone = "暂无行情"
+        elif avg_change >= 1 and (up_ratio or 0) >= 0.6:
+            tone = "偏强"
+        elif avg_change <= -1 and (up_ratio or 0) <= 0.4:
+            tone = "偏弱"
+        else:
+            tone = "震荡"
+
+        highlights = []
+        if best:
+            highlights.append(f"最强 {best.get('name') or best.get('code')} {best.get('change_pct'):+.2f}%")
+        if worst:
+            highlights.append(f"最弱 {worst.get('name') or worst.get('code')} {worst.get('change_pct'):+.2f}%")
+        if top_sector:
+            highlights.append(f"最大板块 {top_sector['name']} {top_sector['count']} 只")
+        if net_inflow is not None:
+            highlights.append(f"主力净流入合计 {net_inflow:+.0f}")
+
+        return {
+            "sector_summary": {
+                "total_sectors": len(sectors),
+                "top_sectors": sectors[:8],
+                "top_sector": top_sector,
+                "concentration": concentration,
+                "concentration_label": "集中" if concentration >= 0.45 and total >= 3 else "分散",
+                "unknown_count": len(by_sector.get("未识别板块", [])),
+            },
+            "return_summary": {
+                "total": total,
+                "quoted_count": quoted_count,
+                "avg_change_pct": avg_change,
+                "median_change_pct": median_change,
+                "up_count": len(up),
+                "down_count": len(down),
+                "flat_count": flat,
+                "up_ratio": up_ratio,
+                "best": best,
+                "worst": worst,
+                "main_net_inflow": net_inflow,
+                "tone": tone,
+                "highlights": highlights,
+            },
+        }
 
     # ------------------------------------------------------------------
     # 实时行情
@@ -246,6 +386,7 @@ class WatchlistService:
         merged: list[dict[str, Any]] = []
         for it in items:
             quote = quote_map.get(it["code"], {})
+            sector_info = self._sector_info(it["code"])
             merged.append({
                 "code": it["code"],
                 "name": it["name"] or quote.get("name") or it["code"],
@@ -254,10 +395,14 @@ class WatchlistService:
                 "change_pct": quote.get("change_pct"),
                 "change_amount": quote.get("change_amount"),
                 "main_net_inflow": quote.get("main_net_inflow"),
+                "sector": sector_info.get("sector") or "",
+                "boards": sector_info.get("boards") or [],
             })
+        summary = self._summary(merged)
         return {
             "items": merged,
             "count": len(merged),
             "quoted": bool(quote_map),
+            "summary": summary,
             "updated_at": _now(),
         }

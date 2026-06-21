@@ -9,6 +9,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from analysis.limit_up_patterns import bars_from_records, detect_kline_patterns
 from webui.services.analysis_jobs import normalize_stock_codes, safe_int
 from webui.services.http_client import request_json
 
@@ -263,6 +264,25 @@ class StockKlineService:
             'applied': applied,
         }
 
+    def _pattern_payload(self, records: list[dict[str, Any]], code: str, name: str = "") -> list[dict[str, Any]]:
+        try:
+            bars = bars_from_records(records)
+            matches = detect_kline_patterns(bars, code=code, name=name)
+        except Exception:  # noqa: BLE001
+            return []
+        return [{
+            "pattern": match.get("pattern"),
+            "name": match.get("name"),
+            "date": match.get("trigger_date"),
+            "anchor_date": match.get("anchor_date"),
+            "mark_dates": match.get("mark_dates") or [],
+            "strength": match.get("strength"),
+            "tone": match.get("tone"),
+            "rationale": match.get("rationale"),
+            "days_ago": match.get("days_ago"),
+            "direction": match.get("direction"),
+        } for match in matches[:12]]
+
     def get_payload(
         self,
         stock_code: str,
@@ -285,13 +305,15 @@ class StockKlineService:
 
         if sina_records:
             quote_block = self._overlay_realtime(sina_records, code)
+            name = (quote_block or {}).get('name') or ''
             return {
                 'code': code,
-                'name': (quote_block or {}).get('name') or '',
+                'name': name,
                 'period': normalized_period,
                 'source': 'sina',
                 'available': True,
                 'records': sina_records,
+                'patterns': self._pattern_payload(sina_records, code, name),
                 'quote': quote_block,
                 'quoted': bool(quote_block),
                 'quote_updated_at': quote_block['updated_at'] if quote_block else None,
@@ -300,13 +322,15 @@ class StockKlineService:
         local_records, local_source = self.load_local_kline(code, normalized_period, normalized_limit)
         if local_records:
             quote_block = self._overlay_realtime(local_records, code)
+            name = (quote_block or {}).get('name') or ''
             return {
                 'code': code,
-                'name': (quote_block or {}).get('name') or '',
+                'name': name,
                 'period': normalized_period,
                 'source': f'local:{local_source}',
                 'available': True,
                 'records': local_records,
+                'patterns': self._pattern_payload(local_records, code, name),
                 'quote': quote_block,
                 'quoted': bool(quote_block),
                 'quote_updated_at': quote_block['updated_at'] if quote_block else None,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Kronos Ultra desktop app icons.
+"""Generate Lumo Trade desktop app icons.
 
 The script is intentionally dependency-light: it only needs numpy and Python's
 standard library. macOS `.icns` output uses the system `iconutil` when present.
@@ -348,7 +348,7 @@ def generate_assets(project_root: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate Kronos Ultra app icon assets.")
+    parser = argparse.ArgumentParser(description="Generate Lumo Trade app icon assets.")
     parser.add_argument(
         "--project-root",
         type=Path,

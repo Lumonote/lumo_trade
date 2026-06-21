@@ -29,7 +29,7 @@ def _cols(conn, table: str) -> set:
 
 
 def test_migrate_reaches_latest_version(conn):
-    assert migrate(conn) == 12  # v12: financial_statement 财务三大表缓存表
+    assert migrate(conn) == 16  # v16: stock_related_news 个股关联热点新闻缓存
 
 
 def test_v7_creates_all_tables(conn):
@@ -48,7 +48,7 @@ def test_v7_creates_all_tables(conn):
 
 def test_v7_idempotent(conn):
     migrate(conn)
-    assert migrate(conn) == 12  # 二次运行不报错、不重复推进
+    assert migrate(conn) == 16  # 二次运行不报错、不重复推进
 
 
 def test_opportunity_item_sector_columns(conn):

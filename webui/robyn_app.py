@@ -23,6 +23,8 @@ if __package__ in (None, ""):
 
 from webui import core as webui_core
 from webui.services.model_runtime import load_model_payload, loaded_model_info, run_prediction_payload
+from webui.services import star_orbit_service
+from data_store import star_orbit_repo
 
 
 def _robyn_config() -> Config:
@@ -563,6 +565,33 @@ def get_stock_analysis_suite_ai(request: Request, stock_code=None) -> Response:
     return _json_response(payload)
 
 
+@_native_post("/api/stock-analysis-suite/:stock_code/related-news/refresh")
+def post_stock_analysis_suite_related_news_refresh(request: Request, stock_code=None) -> Response:
+    code = _path_param(request, "stock_code", stock_code)
+    body = _request_json(request) or {}
+    force_refresh = bool(body.get("force_refresh", False))
+    try:
+        payload = webui_core.STOCK_SUITE_SERVICE.refresh_related_news(
+            code, force_refresh=force_refresh)
+    except ValueError as exc:
+        return _json_response({"success": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"success": False, "error": str(exc)}, status_code=500)
+    return _json_response(payload)
+
+
+@_native_get("/api/stock-analysis-suite/:stock_code/related-news/status")
+def get_stock_analysis_suite_related_news_status(request: Request, stock_code=None) -> Response:
+    code = _path_param(request, "stock_code", stock_code)
+    try:
+        payload = webui_core.STOCK_SUITE_SERVICE.get_related_news_status(code)
+    except ValueError as exc:
+        return _json_response({"success": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"success": False, "error": str(exc)}, status_code=500)
+    return _json_response(payload)
+
+
 @_native_post("/api/stock-analysis-suite/:stock_code/panel-overlay")
 def post_stock_analysis_suite_panel_overlay(request: Request, stock_code=None) -> Response:
     code = _path_param(request, "stock_code", stock_code)
@@ -976,6 +1005,129 @@ def market_hotspots(request: Request) -> Response:
     return _json_response(webui_core.MARKET_INTELLIGENCE_SERVICE.load())
 
 
+@_native_get("/api/market/board-stocks")
+def market_board_stocks(request: Request) -> Response:
+    """板块成分股（东财 ``fs=b:BKxxxx``）——行情台/画布板块芯片 → 成分股弹窗数据源。"""
+    code = _query_value(request, "code", "") or ""
+    name = _query_value(request, "name", "") or ""
+    limit = webui_core._safe_int(_query_value(request, "limit"), 60, minimum=1, maximum=200) or 60
+    return _json_response(webui_core.board_stocks_payload(code, name, limit=limit))
+
+
+# ---------------- 星轨图谱(物理AI/AI产业链 同心轨道图) ----------------
+@_native_get("/api/star-orbit")
+def star_orbit_map(request: Request) -> Response:
+    """读星轨全图 + 叠加板块实时涨跌。``?live=0`` 跳过联网只读结构。"""
+    live = str(_query_value(request, "live", "1") or "1") not in ("0", "false", "no")
+    return _json_response(star_orbit_service.get_orbit_map(live=live))
+
+
+@_native_get("/api/star-orbit/board-search")
+def star_orbit_board_search(request: Request) -> Response:
+    """按关键词搜东财真实概念+行业板块,供「添加板块」选择(保证 BK 码真实)。"""
+    kw = _query_value(request, "kw", "") or _query_value(request, "keyword", "") or ""
+    limit = webui_core._safe_int(_query_value(request, "limit"), 30, minimum=1, maximum=100) or 30
+    return _json_response({"results": star_orbit_service.search_boards(kw, limit=limit)})
+
+
+@_native_get("/api/star-orbit/board-stocks")
+def star_orbit_board_stocks(request: Request) -> Response:
+    """星轨内板块实时成分股(点击板块钻取)。"""
+    code = _query_value(request, "code", "") or ""
+    name = _query_value(request, "name", "") or ""
+    limit = webui_core._safe_int(_query_value(request, "limit"), 30, minimum=1, maximum=500) or 30
+    return _json_response(star_orbit_service.board_constituents(code, name, limit=limit))
+
+
+@_native_post("/api/star-orbit/ring")
+def star_orbit_ring_add(request: Request) -> Response:
+    body = _request_json(request)
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return _json_response({"ok": False, "error": "轨道环名称不能为空"}, status_code=400)
+    rid = star_orbit_repo.add_ring(name, body.get("subtitle") or "", body.get("color") or "")
+    return _json_response({"ok": True, "id": rid})
+
+
+@_native_post("/api/star-orbit/ring/update")
+def star_orbit_ring_update(request: Request) -> Response:
+    body = _request_json(request)
+    rid = webui_core._safe_int(body.get("id"), 0, minimum=1)
+    if not rid:
+        return _json_response({"ok": False, "error": "缺少 id"}, status_code=400)
+    star_orbit_repo.update_ring(rid, name=body.get("name"), subtitle=body.get("subtitle"),
+                                color=body.get("color"), sort_order=body.get("sort_order"))
+    return _json_response({"ok": True})
+
+
+@_native_post("/api/star-orbit/ring/delete")
+def star_orbit_ring_delete(request: Request) -> Response:
+    rid = webui_core._safe_int(_request_json(request).get("id"), 0, minimum=1)
+    if not rid:
+        return _json_response({"ok": False, "error": "缺少 id"}, status_code=400)
+    star_orbit_repo.delete_ring(rid)
+    return _json_response({"ok": True})
+
+
+@_native_post("/api/star-orbit/board")
+def star_orbit_board_add(request: Request) -> Response:
+    body = _request_json(request)
+    ring_id = webui_core._safe_int(body.get("ring_id"), 0, minimum=1)
+    code = str(body.get("board_code") or "").strip()
+    if not ring_id or not code:
+        return _json_response({"ok": False, "error": "缺少 ring_id 或 board_code"}, status_code=400)
+    bid = star_orbit_repo.add_board(ring_id, code, body.get("board_name") or code,
+                                    body.get("board_type") or "concept", body.get("note") or "")
+    return _json_response({"ok": True, "id": bid})
+
+
+@_native_post("/api/star-orbit/board/delete")
+def star_orbit_board_delete(request: Request) -> Response:
+    bid = webui_core._safe_int(_request_json(request).get("id"), 0, minimum=1)
+    if not bid:
+        return _json_response({"ok": False, "error": "缺少 id"}, status_code=400)
+    star_orbit_repo.delete_board(bid)
+    return _json_response({"ok": True})
+
+
+@_native_post("/api/star-orbit/board/move")
+def star_orbit_board_move(request: Request) -> Response:
+    body = _request_json(request)
+    bid = webui_core._safe_int(body.get("id"), 0, minimum=1)
+    ring_id = webui_core._safe_int(body.get("ring_id"), 0, minimum=1)
+    if not bid or not ring_id:
+        return _json_response({"ok": False, "error": "缺少 id 或 ring_id"}, status_code=400)
+    star_orbit_repo.move_board(bid, ring_id)
+    return _json_response({"ok": True})
+
+
+@_native_post("/api/star-orbit/stock")
+def star_orbit_stock_add(request: Request) -> Response:
+    body = _request_json(request)
+    board_id = webui_core._safe_int(body.get("board_id"), 0, minimum=1)
+    code = str(body.get("stock_code") or "").strip()
+    if not board_id or not code:
+        return _json_response({"ok": False, "error": "缺少 board_id 或 stock_code"}, status_code=400)
+    sid = star_orbit_repo.add_stock(board_id, code, body.get("stock_name") or "", body.get("note") or "")
+    return _json_response({"ok": True, "id": sid})
+
+
+@_native_post("/api/star-orbit/stock/delete")
+def star_orbit_stock_delete(request: Request) -> Response:
+    sid = webui_core._safe_int(_request_json(request).get("id"), 0, minimum=1)
+    if not sid:
+        return _json_response({"ok": False, "error": "缺少 id"}, status_code=400)
+    star_orbit_repo.delete_stock(sid)
+    return _json_response({"ok": True})
+
+
+@_native_post("/api/star-orbit/reset")
+def star_orbit_reset(request: Request) -> Response:
+    """恢复默认种子(物理AI/AI产业链 A股映射)。"""
+    star_orbit_repo.reset_to_seed()
+    return _json_response({"ok": True})
+
+
 @_native_get("/api/notifications/events")
 def notification_events(request: Request) -> Response:
     """应用内系统事件（EOD 复盘 / 机会挖掘 / 自动跟单完成），通知条「系统」分类数据源。"""
@@ -988,7 +1140,15 @@ def notification_events(request: Request) -> Response:
 def scoring_health(request: Request) -> Response:
     """评分算法健康度：最新 backtest_rebuilt_*.csv 的分档胜率 / 降级占比 / 日期范围。"""
     try:
-        return _json_response(webui_core.SCORING_HEALTH_SERVICE.health())
+        start_date = (_query_value(request, "start_date") or "").strip() or None
+        end_date = (_query_value(request, "end_date") or "").strip() or None
+        window = str(_query_value(request, "window", "") or "").strip().lower()
+        recent_month = window == "recent_month" or (not start_date and not end_date and not window)
+        return _json_response(webui_core.SCORING_HEALTH_SERVICE.health(
+            start_date=start_date,
+            end_date=end_date,
+            recent_month=recent_month,
+        ))
     except Exception as exc:  # noqa: BLE001
         return _json_response({"available": False, "message": str(exc)}, status_code=500)
 
@@ -1037,6 +1197,29 @@ def hot_sector_snapshots(request: Request) -> Response:
     return _json_response({"snapshots": webui_core.list_hot_sector_snapshots(limit)})
 
 
+@_native_get("/api/opportunity-stock-pool")
+def opportunity_stock_pool(request: Request) -> Response:
+    """跨所有 run 聚合的股票池（入选次数/首末入选/重复入选日期/最佳分等）。"""
+    try:
+        from data_store import opportunity_repo
+        limit = webui_core._safe_int(_query_value(request, "limit"), 300, minimum=1, maximum=2000) or 300
+        since = str(_query_value(request, "since") or "").strip() or None
+        return _json_response({"stocks": opportunity_repo.stock_pool(limit=limit, since_date=since)})
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"stocks": [], "error": str(exc)}, status_code=500)
+
+
+@_native_get("/api/hot-sector-pool")
+def hot_sector_pool(request: Request) -> Response:
+    """跨所有快照聚合的板块池（上榜次数/首末上榜/重复上榜日期/最佳名次等）。"""
+    try:
+        from data_store import hot_sector_repo
+        limit = webui_core._safe_int(_query_value(request, "limit"), 200, minimum=1, maximum=2000) or 200
+        return _json_response({"sectors": hot_sector_repo.sector_pool(limit=limit)})
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"sectors": [], "error": str(exc)}, status_code=500)
+
+
 @_native_get("/api/hot-sector-snapshot/:snapshot_id/stocks")
 def hot_sector_snapshot_stocks(request: Request, snapshot_id=None) -> Response:
     """热门板块成分股分页钻取（?board_code=BKxxxx&limit=200&offset=0）。"""
@@ -1064,7 +1247,10 @@ def hot_sector_snapshot_export(request: Request, snapshot_id=None) -> Response:
         return _json_response({"error": str(exc)}, status_code=500)
     if not payload:
         return _json_response({"error": "snapshot not found"}, status_code=404)
-    return _json_response({"success": True, **payload})
+    # WKWebView 不触发附件下载且 :7070 拿不到 Tauri IPC,改由本机后端在文件管理器里
+    # 定位刚导出的文件(详见 webui_core.reveal_in_file_manager)。
+    revealed = webui_core.reveal_in_file_manager(payload.get("path"))
+    return _json_response({"success": True, "revealed": revealed, **payload})
 
 
 @_native_post("/api/opportunity-canvas/export")
@@ -1074,7 +1260,8 @@ def opportunity_canvas_export(request: Request) -> Response:
         payload = webui_core.export_opportunity_canvas_excel()
     except Exception as exc:  # noqa: BLE001
         return _json_response({"error": str(exc)}, status_code=500)
-    return _json_response({"success": True, **payload})
+    revealed = webui_core.reveal_in_file_manager(payload.get("path"))
+    return _json_response({"success": True, "revealed": revealed, **payload})
 
 
 @_native_get("/api/stock/financial-statements")

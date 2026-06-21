@@ -1,7 +1,8 @@
 """评分算法健康度服务。
 
 读取 results 目录(经 webui/services/paths.py 的 results_dir() 解析,可叠加额外
-搜索目录)最新一份 ``backtest_rebuilt_*.csv``,计算:
+搜索目录)最新一份 ``backtest_rebuilt_*.csv``;若没有,回退读取
+``backtest/recommendations.csv``。计算:
 
 - S/A/B/C 分档样本数、5 日胜率、平均收益(全量 + 最近 20 个交易日两组)
 - 降级 run 占比(quant_score==0 或 score<50;降级=取数失败封顶,污染样本)
@@ -21,6 +22,7 @@ TIER_ORDER = ("S", "A", "B", "C")
 # 与报告/记忆中的置信度档位一致:S>=85, A>=78, B>=70, C<70
 TIER_THRESHOLDS = ((85.0, "S"), (78.0, "A"), (70.0, "B"))
 RECENT_DAYS = 20
+RECENT_MONTH_DAYS = 31
 B_RECENT_WINRATE_WARN = 0.45
 
 
@@ -29,6 +31,37 @@ def _tier(score: float) -> str:
         if score >= threshold:
             return name
     return "C"
+
+
+def _clean_cell(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in {"nan", "none", "null"} else text
+
+
+def _clean_code(value) -> str:
+    text = _clean_cell(value)
+    if not text:
+        return ""
+    if text.endswith(".0"):
+        text = text[:-2]
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if 1 <= len(digits) <= 6:
+        return digits.zfill(6)
+    return text
+
+
+def _annualized_from_5d_return(value) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        ret = float(value) / 100.0
+    except (TypeError, ValueError):
+        return None
+    if ret <= -1:
+        return None
+    return round((((1 + ret) ** (252 / 5)) - 1) * 100, 2)
 
 
 class ScoringHealthService:
@@ -45,13 +78,22 @@ class ScoringHealthService:
             except OSError:
                 continue
         if not candidates:
+            for directory in self._search_dirs:
+                try:
+                    path = directory / "backtest" / "recommendations.csv"
+                    if path.is_file():
+                        candidates.append(path)
+                except OSError:
+                    continue
+        if not candidates:
             return None
         return max(candidates, key=lambda p: p.stat().st_mtime)
 
-    def health(self) -> dict:
+    def health(self, start_date: str | None = None, end_date: str | None = None,
+               recent_month: bool = False) -> dict:
         path = self.latest_csv()
         if path is None:
-            return {"available": False, "message": "暂无回测数据(未找到 backtest_rebuilt_*.csv)"}
+            return {"available": False, "message": "暂无回测数据(未找到 backtest_rebuilt_*.csv 或 backtest/recommendations.csv)"}
         try:
             df = pd.read_csv(path, encoding="utf-8-sig")
         except Exception as exc:  # noqa: BLE001 — 读取失败按空态降级
@@ -73,9 +115,51 @@ class ScoringHealthService:
         df["tier"] = df["score"].apply(_tier)
         df["degraded"] = (df["quant_score"].fillna(-1) == 0) | (df["score"] < 50)
 
+        df["report_date"] = df["report_date"].astype(str)
+        df["_report_dt"] = pd.to_datetime(df["report_date"], errors="coerce")
+        all_dates = sorted(str(d) for d in df["report_date"].dropna().unique())
+        all_valid_dates = df["_report_dt"].dropna()
+        requested_start = pd.to_datetime(start_date, errors="coerce") if start_date else pd.NaT
+        requested_end = pd.to_datetime(end_date, errors="coerce") if end_date else pd.NaT
+        filter_start = requested_start if pd.notna(requested_start) else None
+        filter_end = requested_end if pd.notna(requested_end) else None
+        if recent_month and filter_start is None and filter_end is None and not all_valid_dates.empty:
+            filter_end = all_valid_dates.max()
+            filter_start = filter_end - pd.Timedelta(days=RECENT_MONTH_DAYS)
+
+        filtered_by_range = filter_start is not None or filter_end is not None
+        explicit_range = (start_date is not None or end_date is not None)
+        if filter_start is not None:
+            df = df[df["_report_dt"].notna() & (df["_report_dt"] >= filter_start)]
+        if filter_end is not None:
+            df = df[df["_report_dt"].notna() & (df["_report_dt"] <= filter_end)]
+        if df.empty:
+            return {
+                "available": False,
+                "message": "所选区间无有效回测样本",
+                "file": path.name,
+                "source": "recommendations" if path.name == "recommendations.csv" else "rebuilt",
+                "available_date_range": {
+                    "start": all_dates[0] if all_dates else None,
+                    "end": all_dates[-1] if all_dates else None,
+                    "days": len(all_dates),
+                },
+                "filter": {
+                    "start_date": filter_start.strftime("%Y-%m-%d") if filter_start is not None else "",
+                    "end_date": filter_end.strftime("%Y-%m-%d") if filter_end is not None else "",
+                    "window": "recent_month" if recent_month else "custom",
+                },
+            }
         dates = sorted(str(d) for d in df["report_date"].dropna().unique())
-        recent_dates = set(dates[-RECENT_DAYS:])
-        recent = df[df["report_date"].astype(str).isin(recent_dates)]
+        valid_dates = df["_report_dt"].dropna()
+        if filtered_by_range:
+            recent = df
+        elif not valid_dates.empty:
+            recent_start = valid_dates.max() - pd.Timedelta(days=RECENT_MONTH_DAYS)
+            recent = df[df["_report_dt"].notna() & (df["_report_dt"] >= recent_start)]
+        else:
+            recent_dates = set(dates[-RECENT_DAYS:])
+            recent = df[df["report_date"].isin(recent_dates)]
 
         def _stats(frame: pd.DataFrame) -> dict:
             evaluable = frame[frame["return_5d"].notna()]
@@ -103,16 +187,81 @@ class ScoringHealthService:
         b_recent_wr = b_recent.get("win_rate")
         degraded_count = int(df["degraded"].sum())
         recent_degraded = int(recent["degraded"].sum()) if len(recent) else 0
+
+        def _daily(frame: pd.DataFrame) -> list[dict]:
+            rows = []
+            for date, group in frame.groupby(frame["report_date"].astype(str), sort=True):
+                stats = _stats(group)
+                avg_return = stats["avg_return"]
+                rows.append({
+                    "date": date,
+                    "n": stats["n"],
+                    "evaluable": stats["evaluable"],
+                    "win_rate": stats["win_rate"],
+                    "avg_return": avg_return,
+                    "annualized_return": _annualized_from_5d_return(avg_return),
+                    "avg_score": round(float(group["score"].mean()), 2) if len(group) else None,
+                })
+            rolling_values: list[float] = []
+            for row in rows:
+                value = row.get("avg_return")
+                if value is not None:
+                    rolling_values.append(float(value))
+                if rolling_values:
+                    window = rolling_values[-RECENT_DAYS:]
+                    row["rolling_annualized_return"] = _annualized_from_5d_return(sum(window) / len(window))
+                else:
+                    row["rolling_annualized_return"] = None
+            return rows
+
+        top_rows = (
+            recent[recent["return_5d"].notna()]
+            .sort_values("return_5d", ascending=False)
+            .head(8)
+        )
+        lag_rows = (
+            recent[recent["return_5d"].notna()]
+            .sort_values("return_5d", ascending=True)
+            .head(8)
+        )
+
+        def _sample_rows(frame: pd.DataFrame) -> list[dict]:
+            out = []
+            for _, row in frame.iterrows():
+                code = _clean_code(row.get("code"))
+                name = _clean_cell(row.get("name"))
+                out.append({
+                    "date": str(row.get("report_date") or ""),
+                    "code": code,
+                    "name": name or code,
+                    "score": round(float(row.get("score")), 2) if pd.notna(row.get("score")) else None,
+                    "tier": str(row.get("tier") or ""),
+                    "return_5d": round(float(row.get("return_5d")), 4) if pd.notna(row.get("return_5d")) else None,
+                })
+            return out
+
         return {
             "available": True,
             "file": path.name,
             "path": str(path),
+            "source": "recommendations" if path.name == "recommendations.csv" else "rebuilt",
+            "available_date_range": {
+                "start": all_dates[0] if all_dates else None,
+                "end": all_dates[-1] if all_dates else None,
+                "days": len(all_dates),
+            },
             "date_range": {
                 "start": dates[0] if dates else None,
                 "end": dates[-1] if dates else None,
                 "days": len(dates),
             },
-            "recent_window_days": min(RECENT_DAYS, len(dates)),
+            "recent_window_days": int(recent["report_date"].nunique()) if len(recent) else 0,
+            "recent_window_label": "所选区间" if explicit_range else "最近1个月",
+            "filter": {
+                "start_date": filter_start.strftime("%Y-%m-%d") if filter_start is not None else "",
+                "end_date": filter_end.strftime("%Y-%m-%d") if filter_end is not None else "",
+                "window": "recent_month" if recent_month and start_date is None and end_date is None else ("custom" if filtered_by_range else "all"),
+            },
             "total_rows": int(len(df)),
             "baseline": {"full": _stats(df), "recent": _stats(recent)},
             "tiers": tiers,
@@ -122,6 +271,9 @@ class ScoringHealthService:
                 "recent_count": recent_degraded,
                 "recent_ratio": round(recent_degraded / len(recent), 4) if len(recent) else 0.0,
             },
+            "daily": _daily(df),
+            "top_recent": _sample_rows(top_rows),
+            "lag_recent": _sample_rows(lag_rows),
             "warnings": {
                 # B 级近 20 日胜率 < 45% → 退化警示(前端显示徽章)
                 "b_tier_recent_degraded": bool(b_recent_wr is not None and b_recent_wr < B_RECENT_WINRATE_WARN),

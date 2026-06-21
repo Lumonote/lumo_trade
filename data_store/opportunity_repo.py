@@ -20,11 +20,15 @@ _RUN_FIELDS = (
 )
 
 
-def save_run(meta: Dict[str, Any], items: List[Dict[str, Any]]) -> int:
+def save_run(meta: Dict[str, Any], items: List[Dict[str, Any]],
+             hot_news: Optional[List[Dict[str, Any]]] = None) -> int:
     """落库一次挖掘 run。返回 run_id。
 
     items 形如 build_items() 的输出;按 total_score 降序写入并赋 item_rank,
     同 run 内重复 code 保留先到(高分)行。
+    hot_news 形如 run_opportunity_discovery.global_hot_news 的
+    ``{title, url, source, publish_time, heat}``;非空则按 title 去重(保留 heat
+    高者)、heat 降序、截前 10 条写入 opportunity_hot_news,与 items 同事务。
     """
     meta = dict(meta or {})
     run_at = str(meta.get("run_at") or "")
@@ -79,7 +83,79 @@ def save_run(meta: Dict[str, Any], items: List[Dict[str, Any]]) -> int:
         """,
         rows,
     )
+    _save_hot_news(conn, run_id, hot_news)
     return run_id
+
+
+def _save_hot_news(conn, run_id: int, hot_news: Optional[List[Dict[str, Any]]],
+                   limit: int = 10) -> None:
+    """写入一次 run 的热点新闻:按 title 去重(保留 heat 高者)、heat 降序、限 limit。"""
+    if not hot_news:
+        return
+    by_title: Dict[str, Dict[str, Any]] = {}
+    for n in hot_news:
+        if not isinstance(n, dict):
+            continue
+        title = str(n.get("title") or "").strip()
+        if not title:
+            continue
+        heat = _num(n.get("heat"))
+        prev = by_title.get(title)
+        if prev is None or (heat or -1) > (_num(prev.get("heat")) or -1):
+            by_title[title] = n
+    ordered = sorted(by_title.values(),
+                     key=lambda n: (_num(n.get("heat")) if _num(n.get("heat")) is not None else -1),
+                     reverse=True)[:limit]
+    rows = [
+        (run_id, rank, str(n.get("title") or "").strip(), n.get("url"),
+         n.get("source"), n.get("publish_time"), _num(n.get("heat")))
+        for rank, n in enumerate(ordered, start=1)
+    ]
+    if rows:
+        conn.executemany(
+            """
+            INSERT INTO opportunity_hot_news(
+              run_id, news_rank, title, url, source, publish_time, heat)
+            VALUES(?,?,?,?,?,?,?)
+            """,
+            rows,
+        )
+
+
+def latest_hot_news(run_date: Optional[str] = None,
+                    limit: int = 10) -> List[Dict[str, Any]]:
+    """读取某天(或全局)最近一次有热点的 run 的前 limit 条热点新闻。
+
+    run_date 非空 → 该日期 run_at DESC 最近一次有热点的 run;为空 → 全局最近一次。
+    返回 ``{rank, title, url, source, publish_time, heat}``,按 heat 降序;无数据 → []。
+    """
+    conn = get_conn()
+    where = "AND r.run_date = ?" if run_date else ""
+    params: tuple = (str(run_date),) if run_date else ()
+    run_row = conn.execute(
+        f"""
+        SELECT r.id FROM opportunity_run r
+        WHERE EXISTS(SELECT 1 FROM opportunity_hot_news h WHERE h.run_id = r.id)
+        {where}
+        ORDER BY r.run_at DESC, r.id DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    if not run_row:
+        return []
+    run_id = run_row[0]
+    rows = conn.execute(
+        """
+        SELECT news_rank AS rank, title, url, source, publish_time, heat
+        FROM opportunity_hot_news
+        WHERE run_id = ?
+        ORDER BY heat DESC, news_rank ASC
+        LIMIT ?
+        """,
+        (run_id, int(limit)),
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def build_items(filter_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -207,6 +283,88 @@ def items_for_run(run_id: int) -> List[Dict[str, Any]]:
         (int(run_id),),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def run_for_hot_sector_snapshot(snapshot_id) -> Optional[Dict[str, Any]]:
+    """关联到某热门板块快照的最近一次挖掘 run(extra_json.hot_sector_snapshot_id 命中)。
+
+    供导出时把逐股评分关联回快照成分股(见 webui.core.export_hot_sector_snapshot)。
+    """
+    if snapshot_id is None:
+        return None
+    try:
+        sid = int(snapshot_id)
+    except (TypeError, ValueError):
+        return None
+    row = get_conn().execute(
+        """
+        SELECT r.*, (SELECT COUNT(*) FROM opportunity_item i WHERE i.run_id = r.id) AS item_count
+        FROM opportunity_run r
+        WHERE CAST(json_extract(r.extra_json, '$.hot_sector_snapshot_id') AS INTEGER) = ?
+        ORDER BY r.run_at DESC, r.id DESC
+        LIMIT 1
+        """,
+        (sid,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[str, Any]]:
+    """跨所有 run 聚合的「股票池」:每只曾入选股票一行,含入选次数、首次/最近入选
+    时间、重复入选的日期列表、最佳/平均评分等。
+
+    - ``selections``:该股出现过的 run 次数(PK 为 (run_id, code),每 run 至多一行)。
+    - ``distinct_days``:去重后的入选天数(衡量「重复入选」跨越多少个交易日)。
+    - ``days_csv``:去重后的入选日期(逗号分隔,升序),前端展开为重复入选时间线。
+    - 名称/评级/板块/分数等「最新值」取该股最近一次 run 的行(window rn=1)。
+    ``since_date`` 形如 ``YYYY-MM-DD``,只统计该日期(含)之后的 run。
+    """
+    where = "WHERE r.run_date >= ?" if since_date else ""
+    params: tuple = (str(since_date), int(limit)) if since_date else (int(limit),)
+    rows = get_conn().execute(
+        f"""
+        WITH joined AS (
+          SELECT i.code, i.name, i.rating, i.sector, i.sector_code,
+                 i.total_score, i.change_pct, i.degraded,
+                 r.run_at, r.run_date,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY i.code ORDER BY r.run_at DESC, r.id DESC
+                 ) AS rn
+          FROM opportunity_item i
+          JOIN opportunity_run r ON r.id = i.run_id
+          {where}
+        )
+        SELECT
+          code,
+          COUNT(*)                       AS selections,
+          COUNT(DISTINCT run_date)       AS distinct_days,
+          MIN(run_at)                    AS first_seen,
+          MAX(run_at)                    AS last_seen,
+          MAX(total_score)               AS best_score,
+          AVG(total_score)               AS avg_score,
+          AVG(change_pct)                AS avg_change_pct,
+          SUM(degraded)                  AS degraded_count,
+          GROUP_CONCAT(DISTINCT run_date) AS days_csv,
+          MAX(CASE WHEN rn=1 THEN name END)        AS name,
+          MAX(CASE WHEN rn=1 THEN rating END)      AS last_rating,
+          MAX(CASE WHEN rn=1 THEN sector END)      AS last_sector,
+          MAX(CASE WHEN rn=1 THEN sector_code END) AS last_sector_code,
+          MAX(CASE WHEN rn=1 THEN total_score END) AS last_score,
+          MAX(CASE WHEN rn=1 THEN change_pct END)  AS last_change_pct
+        FROM joined
+        GROUP BY code
+        ORDER BY selections DESC, last_seen DESC, best_score DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        d = dict(row)
+        days = [s for s in str(d.pop("days_csv", "") or "").split(",") if s]
+        d["days"] = sorted(days)
+        out.append(d)
+    return out
 
 
 def runs_by_day(limit: int = 30) -> List[Dict[str, Any]]:

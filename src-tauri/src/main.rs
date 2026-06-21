@@ -548,7 +548,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
     let open_console = MenuItemBuilder::with_id("open_console", "打开控制台").build(app)?;
     let refresh = MenuItemBuilder::with_id("refresh", "刷新行情").build(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "退出 Kronos").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "退出 Lumo Trade").build(app)?;
     let menu = MenuBuilder::new(app)
         .item(&open_console)
         .item(&refresh)
@@ -557,7 +557,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .build()?;
 
     let mut builder = TrayIconBuilder::with_id("kronos-tray")
-        .tooltip("Kronos 行情台")
+        .tooltip("Lumo Trade 行情台")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {

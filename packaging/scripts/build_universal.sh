@@ -370,7 +370,7 @@ write_dmg_install_helpers() {
     local app_name="$2"
 
     cat > "$staging/首次打开必读.txt" <<EOF
-【Kronos Ultra · 首次打开说明（macOS）】
+【Lumo Trade · 首次打开说明（macOS）】
 
 若在别的 Mac 上提示「已损坏 / 无法验证开发者 / 来自身份不明的开发者」，
 这不是软件损坏，而是 macOS Gatekeeper 的安全拦截（本应用未做 Apple 公证）。
@@ -419,8 +419,20 @@ create_macos_dmg() {
     local macos_dir="$bundle_dir/macos"
     local dmg_dir="$bundle_dir/dmg"
 
-    local app_path
-    app_path="$(find "$macos_dir" -maxdepth 1 -name '*.app' 2>/dev/null | head -1)"
+    local conf="$PROJECT_ROOT/src-tauri/tauri.conf.json"
+
+    # 优先按 tauri.conf.json 的 productName 定位 .app（权威来源，避免改名后残留旧 .app
+    # 被「find | head -1」错选）；productName 缺失或对应 .app 不存在时再回退 find。
+    local product=""
+    if [ -n "$PYTHON_CMD" ] && [ -f "$conf" ]; then
+        product="$("$PYTHON_CMD" -c "import json; print(json.load(open(r'$conf')).get('productName',''))" 2>/dev/null || echo '')"
+    fi
+    local app_path=""
+    if [ -n "$product" ] && [ -d "$macos_dir/$product.app" ]; then
+        app_path="$macos_dir/$product.app"
+    else
+        app_path="$(find "$macos_dir" -maxdepth 1 -name '*.app' 2>/dev/null | head -1)"
+    fi
     if [ -z "$app_path" ]; then
         echo -e "${RED}❌ 未找到 .app，无法生成 DMG: $macos_dir${NC}"
         return 1
@@ -432,7 +444,6 @@ create_macos_dmg() {
     codesign_macos_app "$app_path"
 
     # 版本号与 tauri.conf.json 保持一致
-    local conf="$PROJECT_ROOT/src-tauri/tauri.conf.json"
     local version="1.0.0"
     if [ -n "$PYTHON_CMD" ] && [ -f "$conf" ]; then
         version="$("$PYTHON_CMD" -c "import json; print(json.load(open(r'$conf')).get('version','1.0.0'))" 2>/dev/null || echo '1.0.0')"
@@ -509,6 +520,10 @@ build_tauri_desktop() {
     if [ "$platform_name" = "macOS" ]; then
         # macOS: 仅用 Tauri 生成 .app；DMG 改用 hdiutil 生成，
         # 规避 Tauri 自带 bundle_dmg.sh 的 Finder AppleScript（detach 卡死 / 自动化权限问题）
+        # 先清理上次构建残留的 .app/.dmg：改名(productName)后旧产物会与新产物并存，
+        # 导致后续「find *.app | head -1」取到旧名、DMG 命名/拷贝拿错。
+        rm -rf "$PROJECT_ROOT/src-tauri/target/release/bundle/macos/"*.app 2>/dev/null || true
+        rm -f "$PROJECT_ROOT/src-tauri/target/release/bundle/dmg/"*.dmg 2>/dev/null || true
         if ! npm run desktop:build -- --bundles app; then
             echo -e "${RED}❌ Tauri .app 构建失败${NC}"
             return 1

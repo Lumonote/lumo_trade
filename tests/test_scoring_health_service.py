@@ -1,5 +1,5 @@
 # tests/test_scoring_health_service.py
-"""ScoringHealthService：分档统计正确性(全量 + 近20交易日) / 降级run占比 /
+"""ScoringHealthService：分档统计正确性(全量 + 最近1个月) / 降级run占比 /
 B级退化警示 / 空态(无CSV、坏CSV)。构造临时 backtest_rebuilt_*.csv 离线验证。
 """
 from __future__ import annotations
@@ -37,6 +37,40 @@ def test_empty_dir_returns_explicit_unavailable(tmp_path):
     assert "暂无回测数据" in health["message"]
 
 
+def test_falls_back_to_backtest_recommendations_csv(tmp_path):
+    rows = [
+        {"date": "2026-06-10", "score": 90, "quant": 80, "ret": 3.0},
+        {"date": "2026-06-10", "score": 72, "quant": 60, "ret": -1.0},
+    ]
+    _write_csv(tmp_path / "backtest", "recommendations.csv", rows)
+
+    health = ScoringHealthService([tmp_path]).health()
+    assert health["available"] is True
+    assert health["file"] == "recommendations.csv"
+    assert health["source"] == "recommendations"
+    assert health["total_rows"] == 2
+    assert health["baseline"]["full"]["win_rate"] == pytest.approx(0.5)
+    assert health["daily"][0]["date"] == "2026-06-10"
+    assert health["daily"][0]["annualized_return"] is not None
+    assert health["daily"][0]["rolling_annualized_return"] is not None
+    assert health["top_recent"][0]["return_5d"] == pytest.approx(3.0)
+
+
+def test_sample_rows_clean_nan_name_and_pad_code(tmp_path):
+    path = tmp_path / "backtest" / "recommendations.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "report_date,code,name,score,quant_score,return_5d\n"
+        "2026-06-10,2183,,90,80,3.0\n",
+        encoding="utf-8",
+    )
+
+    health = ScoringHealthService([tmp_path]).health()
+
+    assert health["top_recent"][0]["code"] == "002183"
+    assert health["top_recent"][0]["name"] == "002183"
+
+
 def test_tier_stats_full_and_recent_window(tmp_path):
     rows = []
     # 30 个交易日,每天一条 B 级(score=72):前 10 天亏,后 20 天赚
@@ -65,17 +99,52 @@ def test_tier_stats_full_and_recent_window(tmp_path):
     # B 全量: 30 条,20 胜 → 2/3
     assert tiers["B"]["full"]["n"] == 30
     assert tiers["B"]["full"]["win_rate"] == pytest.approx(20 / 30, abs=1e-4)
-    # B 近20日(最后 20 个交易日,即 i=10..29): 全部 +2 → 胜率 1.0,均值 2.0
-    assert tiers["B"]["recent"]["n"] == 20
-    assert tiers["B"]["recent"]["win_rate"] == pytest.approx(1.0)
-    assert tiers["B"]["recent"]["avg_return"] == pytest.approx(2.0)
+    # B 最近1个月(按最后日期向前31天): i=2..29,20胜/28条
+    assert health["recent_window_label"] == "最近1个月"
+    assert tiers["B"]["recent"]["n"] == 28
+    assert tiers["B"]["recent"]["win_rate"] == pytest.approx(20 / 28, abs=1e-4)
+    assert tiers["B"]["recent"]["avg_return"] == pytest.approx(32 / 28, abs=1e-4)
     # C: 1 条
     assert tiers["C"]["full"]["n"] == 1
     # 降级: quant=0 一条 + score<50 同一条 → 1/33
     assert health["degraded"]["count"] == 1
     assert health["degraded"]["ratio"] == pytest.approx(1 / 33, abs=1e-4)
-    # B 近20日胜率 100% → 无退化警示
+    # B 最近1个月胜率高于阈值 → 无退化警示
     assert health["warnings"]["b_tier_recent_degraded"] is False
+
+
+def test_health_can_filter_custom_date_range(tmp_path):
+    rows = [
+        {"date": "2026-05-01", "score": 90, "quant": 80, "ret": 5.0},
+        {"date": "2026-06-01", "score": 72, "quant": 60, "ret": -2.0},
+    ]
+    _write_csv(tmp_path, "backtest_rebuilt_20260601_000000.csv", rows)
+
+    health = ScoringHealthService([tmp_path]).health(start_date="2026-06-01", end_date="2026-06-30")
+
+    assert health["available"] is True
+    assert health["total_rows"] == 1
+    assert health["date_range"]["start"] == "2026-06-01"
+    assert health["available_date_range"]["start"] == "2026-05-01"
+    assert health["recent_window_label"] == "所选区间"
+    assert health["filter"]["window"] == "custom"
+    assert _tier_map(health)["B"]["full"]["n"] == 1
+
+
+def test_health_recent_month_filter_uses_latest_available_date(tmp_path):
+    rows = [
+        {"date": "2026-04-01", "score": 90, "quant": 80, "ret": 5.0},
+        {"date": "2026-06-01", "score": 72, "quant": 60, "ret": -2.0},
+    ]
+    _write_csv(tmp_path, "backtest_rebuilt_20260601_000000.csv", rows)
+
+    health = ScoringHealthService([tmp_path]).health(recent_month=True)
+
+    assert health["available"] is True
+    assert health["total_rows"] == 1
+    assert health["date_range"]["start"] == "2026-06-01"
+    assert health["available_date_range"]["days"] == 2
+    assert health["filter"]["window"] == "recent_month"
 
 
 def test_b_tier_recent_degraded_warning(tmp_path):

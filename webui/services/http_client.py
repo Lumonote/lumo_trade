@@ -31,14 +31,20 @@ def request_text(
     encoding: str = "utf-8",
     errors: str = "strict",
     retries: int = 1,
+    trust_env: bool = True,
 ) -> str:
-    """Fetch text over HTTP with small retry support."""
+    """Fetch text over HTTP with small retry support.
+
+    ``trust_env=False`` ignores system proxy env (HTTP(S)_PROXY). Domestic
+    endpoints (eastmoney/tencent quotes) get killed when a proxy like Clash
+    forwards them, so those callers pass ``trust_env=False`` to go direct.
+    """
     last_exc: Exception | None = None
     request_headers = _request_headers(headers)
 
     for attempt in range(max(1, retries)):
         try:
-            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=trust_env) as client:
                 response = client.get(url, headers=request_headers)
                 response.raise_for_status()
                 return response.content.decode(encoding, errors=errors)
@@ -58,6 +64,7 @@ def request_json(
     timeout: int | float = 5,
     encoding: str = "utf-8",
     retries: int = 3,
+    trust_env: bool = True,
 ) -> Any:
     """Fetch and parse a JSON HTTP response."""
     return json.loads(
@@ -67,6 +74,7 @@ def request_json(
             timeout=timeout,
             encoding=encoding,
             retries=retries,
+            trust_env=trust_env,
         )
     )
 
