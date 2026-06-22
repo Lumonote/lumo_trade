@@ -136,3 +136,43 @@ def test_latest_date_and_count(conn):
     ]))
     assert repo.latest_date() == "2026-06-04"
     assert repo.count() == 2
+
+
+def test_get_stock_aggregated_keeps_market_rank(conn):
+    from data_store import dragon_tiger_list_repo as repo
+
+    repo.upsert_df(_df([
+        {"trade_date": "2026-06-03", "ts_code": "000001.SZ", "name": "甲",
+         "l_buy": 2e7, "l_sell": 1e7, "net_amount": 1e7, "reason": "r1"},
+        {"trade_date": "2026-06-04", "ts_code": "000001.SZ", "name": "甲",
+         "l_buy": 2e7, "l_sell": 1e7, "net_amount": 1e7, "reason": "r2"},
+        {"trade_date": "2026-06-04", "ts_code": "000002.SZ", "name": "乙",
+         "l_buy": 8e7, "l_sell": 1e7, "net_amount": 7e7, "reason": "r"},
+    ]))
+
+    df = repo.get_stock_aggregated("000001", end_date="2026-06-04", days=2)
+    assert len(df) == 1
+    assert df.iloc[0]["l_buy"] == pytest.approx(4e7)
+    assert df.iloc[0]["net_amount"] == pytest.approx(2e7)
+    assert df.iloc[0]["market_rank"] == 2
+    assert df.iloc[0]["list_count"] == 2
+
+
+def test_get_stock_range_aggregated_merges_reasons_in_bounds(conn):
+    from data_store import dragon_tiger_list_repo as repo
+
+    repo.upsert_df(_df([
+        {"trade_date": "2026-06-01", "ts_code": "000001.SZ", "name": "甲",
+         "l_buy": 9e7, "net_amount": 9e7, "reason": "outside"},
+        {"trade_date": "2026-06-02", "ts_code": "000001.SZ", "name": "甲",
+         "l_buy": 2e7, "net_amount": 1e7, "reason": "r1"},
+        {"trade_date": "2026-06-02", "ts_code": "000001.SZ", "name": "甲",
+         "l_buy": 3e7, "net_amount": 2e7, "reason": "r2"},
+    ]))
+
+    df = repo.get_stock_range_aggregated("000001", "2026-06-02", "2026-06-03")
+    assert len(df) == 1
+    assert df.iloc[0]["l_buy"] == pytest.approx(5e7)
+    assert df.iloc[0]["net_amount"] == pytest.approx(3e7)
+    assert df.iloc[0]["reason_count"] == 2
+    assert df.iloc[0]["first_date"] == "2026-06-02"

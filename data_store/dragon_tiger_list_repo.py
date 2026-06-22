@@ -166,6 +166,119 @@ def get_range_aggregated(start_date: str, end_date: str, top_n: int, sort_by: st
     )
 
 
+def get_stock_aggregated(ts_code: str, end_date: str | None = None, days: int = 5) -> pd.DataFrame:
+    """个股龙虎榜近 N 个有数据交易日聚合。
+
+    rank 为该股在同窗口全市场累计龙虎榜买入额榜单中的名次,不是过滤后名次。
+    """
+    core = _bare_code(ts_code)
+    as_of = str(end_date or latest_date() or "")
+    if not core or not as_of:
+        return pd.DataFrame()
+    return pd.read_sql_query(
+        """
+        WITH recent_dates AS (
+            SELECT DISTINCT trade_date FROM dragon_tiger_list
+            WHERE trade_date <= ?
+            ORDER BY trade_date DESC
+            LIMIT ?
+        ),
+        grouped AS (
+            SELECT ts_code,
+                   MAX(name)          AS name,
+                   MAX(close)         AS close,
+                   MAX(pct_change)    AS pct_change,
+                   MAX(turnover_rate) AS turnover_rate,
+                   SUM(amount)        AS amount,
+                   SUM(l_buy)         AS l_buy,
+                   SUM(l_sell)        AS l_sell,
+                   SUM(l_amount)      AS l_amount,
+                   SUM(net_amount)    AS net_amount,
+                   AVG(net_rate)      AS net_rate,
+                   AVG(amount_rate)   AS amount_rate,
+                   COUNT(DISTINCT trade_date) AS list_count,
+                   COUNT(*) AS reason_count,
+                   MIN(trade_date) AS first_date,
+                   MAX(trade_date) AS last_date,
+                   GROUP_CONCAT(reason, ' / ') AS reason,
+                   GROUP_CONCAT(raw_json, '\n') AS raw_json
+            FROM dragon_tiger_list
+            WHERE trade_date IN (SELECT trade_date FROM recent_dates)
+            GROUP BY ts_code
+        ),
+        ranked AS (
+            SELECT grouped.*,
+                   RANK() OVER (ORDER BY l_buy DESC, net_amount DESC) AS market_rank
+            FROM grouped
+        )
+        SELECT * FROM ranked
+        WHERE ts_code=? OR ts_code LIKE ?
+        """,
+        get_conn(),
+        params=(as_of, int(days), core, f"{core}.%"),
+    )
+
+
+def get_stock_range_aggregated(ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """个股龙虎榜日期区间聚合,rank 为区间全市场累计龙虎榜买入额名次。"""
+    core = _bare_code(ts_code)
+    if not core or not start_date or not end_date:
+        return pd.DataFrame()
+    return pd.read_sql_query(
+        """
+        WITH grouped AS (
+            SELECT ts_code,
+                   MAX(name)          AS name,
+                   MAX(close)         AS close,
+                   MAX(pct_change)    AS pct_change,
+                   MAX(turnover_rate) AS turnover_rate,
+                   SUM(amount)        AS amount,
+                   SUM(l_buy)         AS l_buy,
+                   SUM(l_sell)        AS l_sell,
+                   SUM(l_amount)      AS l_amount,
+                   SUM(net_amount)    AS net_amount,
+                   AVG(net_rate)      AS net_rate,
+                   AVG(amount_rate)   AS amount_rate,
+                   COUNT(DISTINCT trade_date) AS list_count,
+                   COUNT(*) AS reason_count,
+                   MIN(trade_date) AS first_date,
+                   MAX(trade_date) AS last_date,
+                   GROUP_CONCAT(reason, ' / ') AS reason,
+                   GROUP_CONCAT(raw_json, '\n') AS raw_json
+            FROM dragon_tiger_list
+            WHERE trade_date >= ? AND trade_date <= ?
+            GROUP BY ts_code
+        ),
+        ranked AS (
+            SELECT grouped.*,
+                   RANK() OVER (ORDER BY l_buy DESC, net_amount DESC) AS market_rank
+            FROM grouped
+        )
+        SELECT * FROM ranked
+        WHERE ts_code=? OR ts_code LIKE ?
+        """,
+        get_conn(),
+        params=(str(start_date), str(end_date), core, f"{core}.%"),
+    )
+
+
+def get_stock_rows(ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """个股龙虎榜原始上榜原因记录,按日期倒序返回。"""
+    core = _bare_code(ts_code)
+    if not core or not start_date or not end_date:
+        return pd.DataFrame()
+    return pd.read_sql_query(
+        f"""
+        SELECT {','.join(_FIELDS)} FROM dragon_tiger_list
+        WHERE trade_date >= ? AND trade_date <= ?
+          AND (ts_code=? OR ts_code LIKE ?)
+        ORDER BY trade_date DESC, net_amount DESC
+        """,
+        get_conn(),
+        params=(str(start_date), str(end_date), core, f"{core}.%"),
+    )
+
+
 def latest_date() -> Optional[str]:
     row = get_conn().execute("SELECT MAX(trade_date) FROM dragon_tiger_list").fetchone()
     return row[0] if row and row[0] else None
@@ -210,6 +323,10 @@ def _date_key(value) -> str:
     if len(s) == 8 and s.isdigit():
         return f"{s[:4]}-{s[4:6]}-{s[6:]}"
     return s
+
+
+def _bare_code(ts_code: str) -> str:
+    return str(ts_code or "").split(".")[0].strip()
 
 
 def _row_raw_json(row) -> str:

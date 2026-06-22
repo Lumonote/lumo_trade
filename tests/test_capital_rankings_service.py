@@ -81,6 +81,59 @@ def test_moneyflow_ranking_aggregate_has_list_count(conn):
     assert top["list_count"] == 2
 
 
+def test_stock_capital_summary_combines_moneyflow_and_dragon_tiger(conn):
+    _seed_moneyflow([
+        {"trade_date": "2026-06-03", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 1e7, "buy_elg_amount": 2e7, "buy_lg_amount": 2e7},
+        {"trade_date": "2026-06-04", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 2e7, "buy_elg_amount": 3e7, "buy_lg_amount": 3e7},
+        {"trade_date": "2026-06-04", "ts_code": "000002.SZ", "name": "乙",
+         "net_amount": 9e7, "buy_elg_amount": 8e7, "buy_lg_amount": 8e7},
+    ])
+    _seed_dragon_tiger([
+        {"trade_date": "2026-06-04", "ts_code": "000001.SZ", "name": "甲",
+         "l_buy": 5e7, "l_sell": 1e7, "net_amount": 4e7, "reason": "日涨幅偏离7%"},
+    ])
+    _seed_dragon_tiger_inst([
+        {"trade_date": "2026-06-04", "ts_code": "000001.SZ", "inst_name": "机构专用",
+         "side": "buy", "buy_amount": 2e7, "sell_amount": 0.0, "net_amount": 2e7,
+         "is_quant": 0, "quant_confidence": 0.0, "reason": "日涨幅偏离7%"},
+    ])
+
+    res = _svc().stock_capital_summary("000001", date="2026-06-04", days=2)
+
+    assert res["data_status"] == "fresh"
+    assert res["moneyflow"]["row"]["rank"] == 2
+    assert res["moneyflow"]["row"]["main_buy_amount"] == pytest.approx(1e8)
+    dt_row = res["dragon_tiger"]["row"]
+    assert dt_row["rank"] == 1
+    assert dt_row["l_buy"] == pytest.approx(5e7)
+    assert dt_row["institution_rows"][0]["inst_name"] == "机构专用"
+
+
+def test_stock_capital_summary_supports_explicit_range(conn):
+    _seed_moneyflow([
+        {"trade_date": "2026-06-01", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 8e7, "buy_elg_amount": 8e7},
+        {"trade_date": "2026-06-02", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 2e7, "buy_elg_amount": 2e7},
+        {"trade_date": "2026-06-03", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 3e7, "buy_lg_amount": 3e7},
+    ])
+
+    res = _svc().stock_capital_summary(
+        "000001",
+        start_date="2026-06-02",
+        end_date="2026-06-03",
+    )
+
+    assert res["mode"] == "range"
+    assert res["moneyflow"]["row"]["net_amount"] == pytest.approx(5e7)
+    assert res["moneyflow"]["row"]["first_date"] == "2026-06-02"
+    assert res["moneyflow"]["row"]["last_date"] == "2026-06-03"
+    assert res["moneyflow"]["row"]["list_count"] == 2
+
+
 def test_moneyflow_ranking_exposes_all_fields_and_5_30_day_windows(conn):
     rows = []
     for day in range(1, 7):

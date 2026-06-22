@@ -239,6 +239,62 @@ class CapitalRankingsService:
             df = dragon_tiger_list_repo.get_top_n(as_of, top_n) if as_of else None
         return self._envelope("dragon_tiger", mode, as_of, days, top_n, df, with_quotes)
 
+    def stock_capital_summary(
+        self,
+        ts_code: str,
+        date=None,
+        days=5,
+        start_date=None,
+        end_date=None,
+        with_quotes=False,
+    ) -> dict:
+        """个股资金榜单摘要:主力买入榜 + 龙虎榜。
+
+        默认按 date/end_date 之前最近 days 个有数据交易日聚合;传入
+        start_date/end_date 时改用显式日期区间。rank 保留全市场同窗口名次。
+        """
+        try:
+            days = max(1, min(120, int(days or 5)))
+        except (TypeError, ValueError):
+            days = 5
+        code = _bare_code(ts_code)
+        use_range = bool(start_date and end_date)
+        mode = "range" if use_range else "aggregate"
+        moneyflow = self._stock_moneyflow_section(
+            ts_code,
+            date=date,
+            days=days,
+            start_date=start_date,
+            end_date=end_date,
+            with_quotes=with_quotes,
+        )
+        dragon_tiger = self._stock_dragon_tiger_section(
+            ts_code,
+            date=date,
+            days=days,
+            start_date=start_date,
+            end_date=end_date,
+            with_quotes=with_quotes,
+        )
+        has_rows = bool(moneyflow.get("row") or dragon_tiger.get("row"))
+        latest_dates = [
+            d for d in (moneyflow.get("latest_date"), dragon_tiger.get("latest_date")) if d
+        ]
+        return {
+            "kind": "stock_capital_rankings",
+            "code": code,
+            "mode": mode,
+            "days": days,
+            "date": date,
+            "start_date": start_date,
+            "end_date": end_date,
+            "as_of": end_date or date or (max(latest_dates) if latest_dates else None),
+            "data_status": "fresh" if has_rows else "unavailable",
+            "reason": None if has_rows else "资金榜单暂无该股记录。可先在资金榜单页补偿最近交易日。",
+            "moneyflow": moneyflow,
+            "dragon_tiger": dragon_tiger,
+        }
+
     def _envelope(self, kind, mode, as_of, days, top_n, df, with_quotes, start_date=None, end_date=None) -> dict:
         rows = self._normalize(df)
         if with_quotes:
@@ -255,6 +311,96 @@ class CapitalRankingsService:
             "count": len(rows),
             "rows": rows,
             "windows": windows,
+        }
+
+    def _stock_moneyflow_section(
+        self,
+        ts_code: str,
+        *,
+        date=None,
+        days=5,
+        start_date=None,
+        end_date=None,
+        with_quotes=False,
+    ) -> dict:
+        latest = moneyflow_repo.latest_date(SNAPSHOT_TOP_N)
+        if start_date and end_date:
+            df = moneyflow_repo.get_stock_range_aggregated(
+                ts_code,
+                start_date,
+                end_date,
+                snapshot_top_n=SNAPSHOT_TOP_N,
+            )
+            section_start, section_end = start_date, end_date
+        else:
+            as_of = date or end_date or latest
+            df = (
+                moneyflow_repo.get_stock_aggregated(
+                    ts_code,
+                    end_date=as_of,
+                    days=days,
+                    snapshot_top_n=SNAPSHOT_TOP_N,
+                )
+                if as_of else None
+            )
+            section_start = None
+            section_end = as_of
+        rows = self._normalize(df)
+        if with_quotes:
+            rows = self._attach_quotes(rows)
+        row = rows[0] if rows else None
+        return {
+            "kind": "moneyflow",
+            "mode": "range" if start_date and end_date else "aggregate",
+            "days": days,
+            "start_date": section_start or (row or {}).get("first_date"),
+            "end_date": section_end or (row or {}).get("last_date"),
+            "latest_date": latest,
+            "data_status": "fresh" if row else "unavailable",
+            "reason": None if row else "该股未进入主力买入榜数据窗口",
+            "count": len(rows),
+            "row": row,
+            "rows": rows,
+        }
+
+    def _stock_dragon_tiger_section(
+        self,
+        ts_code: str,
+        *,
+        date=None,
+        days=5,
+        start_date=None,
+        end_date=None,
+        with_quotes=False,
+    ) -> dict:
+        latest = dragon_tiger_list_repo.latest_date()
+        if start_date and end_date:
+            df = dragon_tiger_list_repo.get_stock_range_aggregated(ts_code, start_date, end_date)
+            section_start, section_end = start_date, end_date
+        else:
+            as_of = date or end_date or latest
+            df = (
+                dragon_tiger_list_repo.get_stock_aggregated(ts_code, end_date=as_of, days=days)
+                if as_of else None
+            )
+            section_start = None
+            section_end = as_of
+        rows = self._normalize(df)
+        if with_quotes:
+            rows = self._attach_quotes(rows)
+        row = rows[0] if rows else None
+        return {
+            "kind": "dragon_tiger",
+            "mode": "range" if start_date and end_date else "aggregate",
+            "days": days,
+            "start_date": section_start or (row or {}).get("first_date"),
+            "end_date": section_end or (row or {}).get("last_date"),
+            "latest_date": latest,
+            "data_status": "fresh" if row else "unavailable",
+            "reason": None if row else "该股未进入龙虎榜数据窗口",
+            "count": len(rows),
+            "row": row,
+            "rows": rows,
         }
 
     def _window_rankings(self, kind, as_of, top_n, with_quotes) -> dict:
@@ -311,8 +457,9 @@ class CapitalRankingsService:
                 _num(r.get("retail_buy_amount")) if "retail_buy_amount" in cols
                 else _sum_nums(r.get("buy_md_amount"), r.get("buy_sm_amount"))
             )
+            rank_value = _num(r.get("market_rank")) if "market_rank" in cols else None
             row = {
-                "rank": i,
+                "rank": int(rank_value) if rank_value is not None else i,
                 "code": _bare_code(ts_code),
                 "ts_code": ts_code,
                 "name": _str(r.get("name")),

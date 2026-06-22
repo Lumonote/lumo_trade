@@ -42,13 +42,24 @@ def test_get_suite_returns_jsonable_dict(monkeypatch):
         "webui.services.stock_suite_service._resolve_sector",
         lambda code: ("—", ""),
     )
+    monkeypatch.setattr(
+        "webui.services.stock_suite_service._resolve_boards",
+        lambda code: (),
+    )
     fake = _FakeSuite()
     svc = StockSuiteService(orchestrator=fake)
     out = svc.get_suite("000001", name="平安银行")
     assert out["success"] is True
-    assert out["stock"] == {"code": "000001", "name": "平安银行", "sector": "—", "market": "XSHE"}
+    assert out["stock"] == {
+        "code": "000001",
+        "name": "平安银行",
+        "sector": "—",
+        "boards": [],
+        "market": "XSHE",
+    }
     assert "overview" in out
     assert out["ai_interpretation"]["trigger_endpoint"] == "/api/stock-analysis-suite/000001/ai"
+    assert "capital_rankings" in out
 
 
 def test_get_suite_for_shanghai_market():
@@ -94,6 +105,54 @@ def test_get_suite_handles_orchestrator_error():
     assert out["success"] is False
     assert "boom" in out["error"]
     assert out["stock"]["code"] == "000001"
+
+
+def test_get_capital_rankings_returns_stock_summary():
+    captured = {}
+
+    class _FakeCapital:
+        def stock_capital_summary(self, code, **kwargs):
+            captured["code"] = code
+            captured["kwargs"] = kwargs
+            return {"code": code, "data_status": "fresh"}
+
+    svc = StockSuiteService(orchestrator=_FakeSuite())
+    svc._capital_rankings = _FakeCapital()
+
+    out = svc.get_capital_rankings(
+        "000001",
+        date="2026-06-04",
+        days=10,
+        start_date="2026-06-01",
+        end_date="2026-06-04",
+    )
+
+    assert out["success"] is True
+    assert out["capital_rankings"]["code"] == "000001"
+    assert captured == {
+        "code": "000001",
+        "kwargs": {
+            "date": "2026-06-04",
+            "days": 10,
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-04",
+        },
+    }
+
+
+def test_get_suite_degrades_when_capital_rankings_fail():
+    class _FailingCapital:
+        def stock_capital_summary(self, code, **kwargs):
+            raise RuntimeError("db locked")
+
+    svc = StockSuiteService(orchestrator=_FakeSuite())
+    svc._capital_rankings = _FailingCapital()
+
+    out = svc.get_suite("000001", name="x")
+
+    assert out["success"] is True
+    assert out["capital_rankings"]["data_status"] == "unavailable"
+    assert "db locked" in out["capital_rankings"]["reason"]
 
 
 # --- 重载一致性：已审阅 overlay 在展示层 merge 进 panel（spec §7 P0-A 终检补强）---

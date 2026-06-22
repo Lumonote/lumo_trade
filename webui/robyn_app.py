@@ -509,6 +509,28 @@ def get_stock_analysis_suite(request: Request, stock_code=None) -> Response:
     return _json_response(payload)
 
 
+@_native_get("/api/stock-capital-rankings/:stock_code")
+def get_stock_analysis_suite_capital_rankings(request: Request, stock_code=None) -> Response:
+    code = _path_param(request, "stock_code", stock_code)
+    date = (_query_value(request, "date") or "").strip() or None
+    start_date = (_query_value(request, "start_date") or "").strip() or None
+    end_date = (_query_value(request, "end_date") or "").strip() or None
+    days = webui_core._safe_int(_query_value(request, "days"), 5, minimum=1, maximum=120) or 5
+    try:
+        payload = webui_core.STOCK_SUITE_SERVICE.get_capital_rankings(
+            code,
+            date=date,
+            days=days,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except ValueError as exc:
+        return _json_response({"success": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"success": False, "error": str(exc)}, status_code=500)
+    return _json_response(payload)
+
+
 @_native_get("/api/diagnostics/data-sources")
 def get_diagnostics_data_sources(request: Request) -> Response:
     """最近 24h 各数据源同步摘要（从 sync_log 读取）。"""

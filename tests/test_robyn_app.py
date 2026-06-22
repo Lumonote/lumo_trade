@@ -220,6 +220,39 @@ def test_robyn_stock_analysis_suite_get(robyn_module, monkeypatch):
     assert body["stock"]["name"] == "平安银行"
 
 
+def test_robyn_stock_analysis_suite_capital_rankings_get(robyn_module, monkeypatch):
+    from robyn.testing import TestClient
+
+    class _StubSvc:
+        def get_capital_rankings(self, code, **kwargs):
+            return {
+                "success": True,
+                "capital_rankings": {
+                    "code": code,
+                    "days": kwargs.get("days"),
+                    "start_date": kwargs.get("start_date"),
+                    "end_date": kwargs.get("end_date"),
+                },
+            }
+
+    monkeypatch.setattr(robyn_module.webui_core, "STOCK_SUITE_SERVICE", _StubSvc())
+
+    client = TestClient(robyn_module.app)
+    response = client.get(
+        "/api/stock-capital-rankings/000001"
+        "?days=20&start_date=2026-06-01&end_date=2026-06-04"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["capital_rankings"] == {
+        "code": "000001",
+        "days": 20,
+        "start_date": "2026-06-01",
+        "end_date": "2026-06-04",
+    }
+
+
 def test_robyn_stock_analysis_suite_invalid_code(robyn_module, monkeypatch):
     from robyn.testing import TestClient
 

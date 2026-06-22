@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 from analysis.analysis_overlay import merge_overlay
 from analysis.stock_analysis_suite import StockAnalysisSuite
+from webui.services.capital_rankings_service import CapitalRankingsService
 
 
 # 合法 A 股 6 位代码：深 0 / 创业 3 / 沪 6(含科创 688) / 北交所 8·4·92(920xxx 新代码段)。
@@ -116,6 +117,7 @@ class StockSuiteService:
         # 关联热点新闻异步刷新任务表（按代码，仅内存）。读路径零联网，刷新走后台线程。
         self._related_jobs: Dict[str, Dict[str, Any]] = {}
         self._related_lock = threading.Lock()
+        self._capital_rankings = CapitalRankingsService()
 
     def _validate_code(self, code: str) -> str:
         cleaned = (code or "").strip()
@@ -151,6 +153,10 @@ class StockSuiteService:
             panel = payload.get("panel")
             if isinstance(overlay, dict) and overlay.get("reviewed") and isinstance(panel, dict):
                 payload = {**payload, "panel": merge_overlay(panel, overlay)}
+            payload = {
+                **payload,
+                "capital_rankings": self._safe_capital_rankings(code),
+            }
         except Exception as exc:  # noqa: BLE001
             return {
                 "success": False,
@@ -164,6 +170,42 @@ class StockSuiteService:
             "generated_at": now,
             "cache": {"hit": False, "expires_at": None},
             **payload,
+        }
+
+    def _safe_capital_rankings(self, code: str) -> Dict[str, Any]:
+        try:
+            return self._capital_rankings.stock_capital_summary(code)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "kind": "stock_capital_rankings",
+                "code": code,
+                "mode": "aggregate",
+                "days": 5,
+                "data_status": "unavailable",
+                "reason": f"资金榜单读取失败：{exc}",
+                "moneyflow": {"data_status": "unavailable", "reason": "资金榜单读取失败"},
+                "dragon_tiger": {"data_status": "unavailable", "reason": "资金榜单读取失败"},
+            }
+
+    def get_capital_rankings(
+        self,
+        code: str,
+        *,
+        date: str | None = None,
+        days: int = 5,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> Dict[str, Any]:
+        code = self._validate_code(code)
+        return {
+            "success": True,
+            "capital_rankings": self._capital_rankings.stock_capital_summary(
+                code,
+                date=date,
+                days=days,
+                start_date=start_date,
+                end_date=end_date,
+            ),
         }
 
     def trigger_ai_interpretation(

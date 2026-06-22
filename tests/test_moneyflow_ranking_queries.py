@@ -109,3 +109,47 @@ def test_get_aggregated_isolates_sentinel_snapshot(conn):
     df = repo.get_aggregated("2026-06-04", days=5, limit=10, snapshot_top_n=0)
     assert len(df) == 1
     assert df.iloc[0]["net_amount"] == pytest.approx(5e7)
+
+
+def test_get_stock_aggregated_keeps_market_rank(conn):
+    from data_store import moneyflow_repo as repo
+
+    repo.upsert_df(_df([
+        {"trade_date": "2026-06-03", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 1e7, "buy_elg_amount": 2e7, "buy_lg_amount": 2e7},
+        {"trade_date": "2026-06-04", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 1e7, "buy_elg_amount": 2e7, "buy_lg_amount": 2e7},
+        {"trade_date": "2026-06-04", "ts_code": "000002.SZ", "name": "乙",
+         "net_amount": 9e7, "buy_elg_amount": 6e7, "buy_lg_amount": 6e7},
+    ]), top_n=0)
+
+    df = repo.get_stock_aggregated("000001", end_date="2026-06-04", days=2, snapshot_top_n=0)
+    assert len(df) == 1
+    assert df.iloc[0]["ts_code"] == "000001.SZ"
+    assert df.iloc[0]["main_buy_amount"] == pytest.approx(8e7)
+    assert df.iloc[0]["market_rank"] == 2
+    assert df.iloc[0]["list_count"] == 2
+
+
+def test_get_stock_range_aggregated_uses_explicit_bounds(conn):
+    from data_store import moneyflow_repo as repo
+
+    repo.upsert_df(_df([
+        {"trade_date": "2026-06-01", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 5e7, "buy_elg_amount": 5e7},
+        {"trade_date": "2026-06-02", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 2e7, "buy_elg_amount": 2e7},
+        {"trade_date": "2026-06-03", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 3e7, "buy_lg_amount": 3e7},
+    ]), top_n=0)
+
+    df = repo.get_stock_range_aggregated(
+        "000001",
+        "2026-06-02",
+        "2026-06-03",
+        snapshot_top_n=0,
+    )
+    assert len(df) == 1
+    assert df.iloc[0]["net_amount"] == pytest.approx(5e7)
+    assert df.iloc[0]["first_date"] == "2026-06-02"
+    assert df.iloc[0]["last_date"] == "2026-06-03"

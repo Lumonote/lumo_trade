@@ -177,6 +177,140 @@ def get_range_aggregated(
     )
 
 
+def get_stock_aggregated(
+    ts_code: str,
+    end_date: str | None = None,
+    days: int = 5,
+    snapshot_top_n: int = 0,
+) -> pd.DataFrame:
+    """个股资金榜近 N 个有数据交易日聚合。
+
+    rank 为该股在同窗口全市场累计主力买入额榜单中的名次,而不是过滤后名次。
+    """
+    core = _bare_code(ts_code)
+    as_of = str(end_date or latest_date(snapshot_top_n) or "")
+    if not core or not as_of:
+        return pd.DataFrame()
+    return pd.read_sql_query(
+        """
+        WITH recent_dates AS (
+            SELECT DISTINCT trade_date FROM moneyflow_dc
+            WHERE trade_date <= ? AND top_n = ?
+            ORDER BY trade_date DESC
+            LIMIT ?
+        ),
+        grouped AS (
+            SELECT ts_code,
+                   MAX(name)              AS name,
+                   MAX(close)             AS close,
+                   MAX(pct_change)        AS pct_change,
+                   SUM(net_amount)        AS net_amount,
+                   AVG(net_amount_rate)   AS net_amount_rate,
+                   SUM(buy_elg_amount)    AS buy_elg_amount,
+                   AVG(buy_elg_amount_rate) AS buy_elg_amount_rate,
+                   SUM(buy_lg_amount)     AS buy_lg_amount,
+                   AVG(buy_lg_amount_rate) AS buy_lg_amount_rate,
+                   SUM(buy_md_amount)     AS buy_md_amount,
+                   AVG(buy_md_amount_rate) AS buy_md_amount_rate,
+                   SUM(buy_sm_amount)     AS buy_sm_amount,
+                   AVG(buy_sm_amount_rate) AS buy_sm_amount_rate,
+                   SUM(COALESCE(buy_elg_amount, 0) + COALESCE(buy_lg_amount, 0)) AS main_buy_amount,
+                   SUM(COALESCE(buy_md_amount, 0) + COALESCE(buy_sm_amount, 0)) AS retail_buy_amount,
+                   MAX(amount_unit)       AS amount_unit,
+                   COUNT(DISTINCT trade_date) AS list_count,
+                   MIN(trade_date) AS first_date,
+                   MAX(trade_date) AS last_date,
+                   GROUP_CONCAT(raw_json, '\n') AS raw_json
+            FROM moneyflow_dc
+            WHERE top_n = ? AND trade_date IN (SELECT trade_date FROM recent_dates)
+            GROUP BY ts_code
+        ),
+        ranked AS (
+            SELECT grouped.*,
+                   RANK() OVER (ORDER BY main_buy_amount DESC, net_amount DESC) AS market_rank
+            FROM grouped
+        )
+        SELECT * FROM ranked
+        WHERE ts_code=? OR ts_code LIKE ?
+        """,
+        get_conn(),
+        params=(as_of, int(snapshot_top_n), int(days), int(snapshot_top_n), core, f"{core}.%"),
+    )
+
+
+def get_stock_range_aggregated(
+    ts_code: str,
+    start_date: str,
+    end_date: str,
+    snapshot_top_n: int = 0,
+) -> pd.DataFrame:
+    """个股资金榜日期区间聚合,rank 为区间全市场累计主力买入额名次。"""
+    core = _bare_code(ts_code)
+    if not core or not start_date or not end_date:
+        return pd.DataFrame()
+    return pd.read_sql_query(
+        """
+        WITH grouped AS (
+            SELECT ts_code,
+                   MAX(name)              AS name,
+                   MAX(close)             AS close,
+                   MAX(pct_change)        AS pct_change,
+                   SUM(net_amount)        AS net_amount,
+                   AVG(net_amount_rate)   AS net_amount_rate,
+                   SUM(buy_elg_amount)    AS buy_elg_amount,
+                   AVG(buy_elg_amount_rate) AS buy_elg_amount_rate,
+                   SUM(buy_lg_amount)     AS buy_lg_amount,
+                   AVG(buy_lg_amount_rate) AS buy_lg_amount_rate,
+                   SUM(buy_md_amount)     AS buy_md_amount,
+                   AVG(buy_md_amount_rate) AS buy_md_amount_rate,
+                   SUM(buy_sm_amount)     AS buy_sm_amount,
+                   AVG(buy_sm_amount_rate) AS buy_sm_amount_rate,
+                   SUM(COALESCE(buy_elg_amount, 0) + COALESCE(buy_lg_amount, 0)) AS main_buy_amount,
+                   SUM(COALESCE(buy_md_amount, 0) + COALESCE(buy_sm_amount, 0)) AS retail_buy_amount,
+                   MAX(amount_unit)       AS amount_unit,
+                   COUNT(DISTINCT trade_date) AS list_count,
+                   MIN(trade_date) AS first_date,
+                   MAX(trade_date) AS last_date,
+                   GROUP_CONCAT(raw_json, '\n') AS raw_json
+            FROM moneyflow_dc
+            WHERE top_n = ? AND trade_date >= ? AND trade_date <= ?
+            GROUP BY ts_code
+        ),
+        ranked AS (
+            SELECT grouped.*,
+                   RANK() OVER (ORDER BY main_buy_amount DESC, net_amount DESC) AS market_rank
+            FROM grouped
+        )
+        SELECT * FROM ranked
+        WHERE ts_code=? OR ts_code LIKE ?
+        """,
+        get_conn(),
+        params=(int(snapshot_top_n), str(start_date), str(end_date), core, f"{core}.%"),
+    )
+
+
+def get_stock_rows(
+    ts_code: str,
+    start_date: str,
+    end_date: str,
+    snapshot_top_n: int = 0,
+) -> pd.DataFrame:
+    """个股资金榜原始日记录,按日期倒序返回。"""
+    core = _bare_code(ts_code)
+    if not core or not start_date or not end_date:
+        return pd.DataFrame()
+    return pd.read_sql_query(
+        f"""
+        SELECT {','.join(_FIELDS)} FROM moneyflow_dc
+        WHERE top_n=? AND trade_date >= ? AND trade_date <= ?
+          AND (ts_code=? OR ts_code LIKE ?)
+        ORDER BY trade_date DESC
+        """,
+        get_conn(),
+        params=(int(snapshot_top_n), str(start_date), str(end_date), core, f"{core}.%"),
+    )
+
+
 def latest_date(top_n: int = None):
     if top_n is None:
         row = get_conn().execute("SELECT MAX(trade_date) FROM moneyflow_dc").fetchone()
@@ -226,6 +360,10 @@ def _date_key(value) -> str:
     if len(s) == 8 and s.isdigit():
         return f"{s[:4]}-{s[4:6]}-{s[6:]}"
     return s
+
+
+def _bare_code(ts_code: str) -> str:
+    return str(ts_code or "").split(".")[0].strip()
 
 
 def _row_raw_json(row) -> str:

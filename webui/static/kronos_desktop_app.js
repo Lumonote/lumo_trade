@@ -5398,6 +5398,7 @@
         else if (tab === "risk_control") renderSuiteRiskControl(payload);
         else if (tab === "limit_up_screening") renderSuiteLimitUpPane(payload);
         else if (tab === "main_force_deep") renderSuiteMainForceDeep(payload);
+        else if (tab === "capital_rankings") renderSuiteCapitalRankings(payload);
         else if (tab === "quant_matrix") renderSuiteQuantMatrix(payload);
         else if (tab === "chip_radar") renderSuiteChipRadar(payload);
         else if (tab === "institutional_holdings") renderSuiteHoldings(payload);
@@ -5654,6 +5655,7 @@
               risk_control: "suitePaneRiskControl",
               limit_up_screening: "suitePaneLimitUp",
               main_force_deep: "suitePaneMainForceDeep",
+              capital_rankings: "suitePaneCapitalRankings",
               quant_matrix: "suitePaneQuantMatrix",
               chip_radar: "suitePaneChipRadar",
               institutional_holdings: "suitePaneHoldings",
@@ -5676,6 +5678,7 @@
           else if (tab === "risk_control") renderSuiteRiskControl(payload);
           else if (tab === "limit_up_screening") renderSuiteLimitUpPane(payload);
           else if (tab === "main_force_deep") renderSuiteMainForceDeep(payload);
+          else if (tab === "capital_rankings") renderSuiteCapitalRankings(payload);
           else if (tab === "quant_matrix") renderSuiteQuantMatrix(payload);
           else if (tab === "chip_radar") renderSuiteChipRadar(payload);
           else if (tab === "institutional_holdings") renderSuiteHoldings(payload);
@@ -6804,6 +6807,211 @@
             yaxis: { title: "持股比 (%)" },
           }, { displayModeBar: false, responsive: true });
         }
+      }
+
+      function suiteCapitalAmountFactor(unit) {
+        const text = String(unit || "").trim().toLowerCase();
+        if (!text) return 1;
+        if (text.includes("万元") || text === "万" || text.includes("10k")) return 10000;
+        if (text.includes("亿元") || text === "亿") return 100000000;
+        return 1;
+      }
+
+      function suiteCapitalMoney(value, unit = "", useUnit = false) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return "—";
+        return suiteFormatAmount(useUnit ? n * suiteCapitalAmountFactor(unit || "万元") : n);
+      }
+
+      function suiteCapitalRate(value) {
+        const n = Number(value);
+        return Number.isFinite(n) ? `${n.toFixed(2)}%` : "—";
+      }
+
+      const SUITE_CAPITAL_MONEYFLOW_MONEY_KEYS = new Set(["net_amount", "main_buy_amount", "retail_buy_amount", "buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount"]);
+      const SUITE_CAPITAL_YUAN_MONEY_KEYS = new Set(["l_buy", "l_sell", "l_amount", "amount", "institution_buy_amount", "institution_sell_amount", "institution_net_amount", "institution_amount", "buy_amount", "sell_amount"]);
+      const SUITE_CAPITAL_RATE_KEYS = new Set(["net_amount_rate", "buy_elg_amount_rate", "buy_lg_amount_rate", "buy_md_amount_rate", "buy_sm_amount_rate", "pct_change", "turnover_rate", "net_rate", "amount_rate"]);
+
+      function suiteCapitalCell(kind, key, value, record = null, row = null) {
+        if (value == null || value === "") return "—";
+        if (kind === "moneyflow" && SUITE_CAPITAL_MONEYFLOW_MONEY_KEYS.has(key)) {
+          const unit = record?.amount_unit || record?._amount_unit || row?.amount_unit || row?.raw?.amount_unit || "万元";
+          return suiteCapitalMoney(value, unit, true);
+        }
+        if (SUITE_CAPITAL_YUAN_MONEY_KEYS.has(key)) return suiteCapitalMoney(value);
+        if (SUITE_CAPITAL_RATE_KEYS.has(key)) return suiteCapitalRate(value);
+        if (key === "side") return String(value) === "buy" ? "买入" : (String(value) === "sell" ? "卖出" : String(value));
+        if (key === "is_quant") return Number(value) === 1 ? "量化" : "—";
+        if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(2);
+        return String(value);
+      }
+
+      function suiteCapitalLabel(key) {
+        return (typeof CAPITAL_COLUMN_LABELS !== "undefined" && CAPITAL_COLUMN_LABELS[key]) || key;
+      }
+
+      function suiteCapitalMetric(label, value, tone = "neutral") {
+        return `<div class="capital-detail-metric tone-${html(tone)}"><span>${html(label)}</span><strong>${html(value)}</strong></div>`;
+      }
+
+      function suiteCapitalSummaryMetrics(kind, row) {
+        if (!row) return "";
+        const isMf = kind === "moneyflow";
+        const metrics = isMf
+          ? [
+              ["全市场名次", `#${row.rank || "—"}`, "info"],
+              ["上榜天数", `${row.list_count || 0} 天`, "neutral"],
+              ["主力买入额", suiteCapitalCell(kind, "main_buy_amount", row.main_buy_amount, null, row), "warn"],
+              ["净买入额", suiteCapitalCell(kind, "net_amount", row.net_amount, null, row), Number(row.net_amount || 0) >= 0 ? "danger" : "success"],
+              ["超大单", suiteCapitalCell(kind, "buy_elg_amount", row.buy_elg_amount, null, row), "neutral"],
+              ["大单", suiteCapitalCell(kind, "buy_lg_amount", row.buy_lg_amount, null, row), "neutral"],
+            ]
+          : [
+              ["全市场名次", `#${row.rank || "—"}`, "info"],
+              ["上榜天数", `${row.list_count || 0} 天`, "neutral"],
+              ["龙虎榜买入", suiteCapitalCell(kind, "l_buy", row.l_buy, null, row), "warn"],
+              ["龙虎榜卖出", suiteCapitalCell(kind, "l_sell", row.l_sell, null, row), "success"],
+              ["净买入额", suiteCapitalCell(kind, "net_amount", row.net_amount, null, row), Number(row.net_amount || 0) >= 0 ? "danger" : "success"],
+              ["原因数", `${row.reason_count || 0}`, "neutral"],
+            ];
+        return metrics.map(([label, value, tone]) => suiteCapitalMetric(label, value, tone)).join("");
+      }
+
+      function suiteCapitalRecordTable(kind, row) {
+        const records = Array.isArray(row?.detail_rows) ? row.detail_rows : [];
+        const cols = kind === "moneyflow"
+          ? ["trade_date", "close", "pct_change", "net_amount", "buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount", "net_amount_rate", "amount_unit"]
+          : ["trade_date", "close", "pct_change", "l_buy", "l_sell", "net_amount", "l_amount", "amount", "turnover_rate", "reason"];
+        if (!records.length) return `<p class="capital-detail-empty">暂无原始日记录</p>`;
+        return `<div class="capital-detail-raw-wrap">
+          <table class="capital-detail-table">
+            <thead><tr>${cols.map((key) => `<th>${html(suiteCapitalLabel(key))}</th>`).join("")}</tr></thead>
+            <tbody>${records.map((record) => `<tr>${cols.map((key) => `<td>${html(suiteCapitalCell(kind, key, record?.[key], record, row))}</td>`).join("")}</tr>`).join("")}</tbody>
+          </table>
+        </div>`;
+      }
+
+      function suiteCapitalInstitutionTable(row) {
+        const rows = Array.isArray(row?.institution_rows) ? row.institution_rows : [];
+        const cols = ["trade_date", "inst_name", "side", "buy_amount", "sell_amount", "net_amount", "reason", "is_quant", "quant_confidence"];
+        if (!rows.length) return `<p class="capital-detail-empty">暂无机构席位明细</p>`;
+        return `<div class="capital-detail-raw-wrap">
+          <table class="capital-detail-table capital-institution-table">
+            <thead><tr>${cols.map((key) => `<th>${html(suiteCapitalLabel(key))}</th>`).join("")}</tr></thead>
+            <tbody>${rows.map((record) => `<tr>${cols.map((key) => `<td>${html(suiteCapitalCell("dragon_tiger", key, record?.[key], record, row))}</td>`).join("")}</tr>`).join("")}</tbody>
+          </table>
+        </div>`;
+      }
+
+      function suiteCapitalSectionCard(title, section, kind) {
+        const row = section?.row || null;
+        const range = [section?.start_date || row?.first_date, section?.end_date || row?.last_date].filter(Boolean).join(" ~ ") || "—";
+        if (!row) {
+          return `<section class="suite-capital-card">
+            <div class="suite-capital-card-head">
+              <h4>${html(title)}</h4>
+              <span>${html(range)}</span>
+            </div>
+            <div class="suite-ai-empty"><p>${html(section?.reason || "暂无榜单记录")}</p></div>
+          </section>`;
+        }
+        const reason = row.reason
+          ? `<div class="capital-detail-reason"><span>${html(suiteCapitalLabel("reason"))}</span><strong>${html(row.reason)}</strong></div>`
+          : "";
+        return `<section class="suite-capital-card">
+          <div class="suite-capital-card-head">
+            <h4>${html(title)}</h4>
+            <span>${html(range)} · ${html(row.name || row.code || "")}</span>
+          </div>
+          <div class="capital-detail-metrics">${suiteCapitalSummaryMetrics(kind, row)}</div>
+          ${reason}
+          <div class="capital-detail-section">
+            <div class="capital-detail-section-title">榜单原始记录</div>
+            ${suiteCapitalRecordTable(kind, row)}
+          </div>
+          <div class="capital-detail-section">
+            <div class="capital-detail-section-title">机构席位明细</div>
+            ${suiteCapitalInstitutionTable(row)}
+          </div>
+        </section>`;
+      }
+
+      function suiteCapitalControlValues(data) {
+        return {
+          days: data?.days || 5,
+          date: data?.date || "",
+          start: data?.start_date || "",
+          end: data?.end_date || "",
+        };
+      }
+
+      function renderSuiteCapitalRankings(payload) {
+        const pane = document.getElementById("suitePaneCapitalRankings");
+        if (!pane) return;
+        pane.dataset.rendered = "1";
+        if (!payload || payload.success === false) {
+          pane.innerHTML = `<div class="suite-ai-empty"><p>${html(payload?.error || "资金榜单数据加载失败")}</p></div>`;
+          return;
+        }
+        const data = payload.capital_rankings || {};
+        const values = suiteCapitalControlValues(data);
+        const modeText = data.start_date && data.end_date ? `${data.start_date} ~ ${data.end_date} 区间` : `近 ${data.days || 5} 个有数据交易日`;
+        const status = data.data_status === "fresh" ? "已命中榜单" : "暂无命中";
+        pane.innerHTML = `
+          <div class="suite-capital-toolbar">
+            <label>截止日<input id="suiteCapitalDate" type="date" value="${html(values.date)}"></label>
+            <label>近 N 日<input id="suiteCapitalDays" type="number" min="1" max="120" value="${html(values.days)}"></label>
+            <label>开始日期<input id="suiteCapitalStartDate" type="date" value="${html(values.start)}"></label>
+            <label>结束日期<input id="suiteCapitalEndDate" type="date" value="${html(values.end)}"></label>
+            <button class="button compact" type="button" id="suiteCapitalQueryBtn">查询</button>
+            <button class="button secondary compact" type="button" id="suiteCapitalResetBtn">近5日</button>
+          </div>
+          <div class="suite-stale-banner">${html(status)} · ${html(modeText)} · 最新资金榜 ${html(data.as_of || "—")}</div>
+          <div class="suite-capital-grid">
+            ${suiteCapitalSectionCard("主力买入榜", data.moneyflow || {}, "moneyflow")}
+            ${suiteCapitalSectionCard("龙虎榜", data.dragon_tiger || {}, "dragon_tiger")}
+          </div>
+          ${data.reason ? `<p class="suite-empty-note">${html(data.reason)}</p>` : ""}
+        `;
+        bindSuiteCapitalControls();
+      }
+
+      function suiteCapitalQueryParams(reset = false) {
+        if (reset) return new URLSearchParams({ days: "5" });
+        const days = Number($("#suiteCapitalDays")?.value || 5);
+        const date = ($("#suiteCapitalDate")?.value || "").trim();
+        const start = ($("#suiteCapitalStartDate")?.value || "").trim();
+        const end = ($("#suiteCapitalEndDate")?.value || "").trim();
+        if ((start || end) && !(start && end)) throw new Error("区间搜索需要同时填写开始日期和结束日期");
+        if (start && end && start > end) throw new Error("区间开始日期不能晚于结束日期");
+        const qs = new URLSearchParams({ days: String(Number.isFinite(days) ? Math.max(1, Math.min(120, Math.round(days))) : 5) });
+        if (date) qs.set("date", date);
+        if (start && end) {
+          qs.set("start_date", start);
+          qs.set("end_date", end);
+        }
+        return qs;
+      }
+
+      function bindSuiteCapitalControls() {
+        const queryBtn = $("#suiteCapitalQueryBtn");
+        const resetBtn = $("#suiteCapitalResetBtn");
+        if (queryBtn) queryBtn.addEventListener("click", () => refreshSuiteCapitalRankings(false).catch((error) => alert(error.message)));
+        if (resetBtn) resetBtn.addEventListener("click", () => refreshSuiteCapitalRankings(true).catch((error) => alert(error.message)));
+      }
+
+      async function refreshSuiteCapitalRankings(reset = false) {
+        const code = state.currentStockCode;
+        if (!code) return;
+        const pane = document.getElementById("suitePaneCapitalRankings");
+        const qs = suiteCapitalQueryParams(reset);
+        if (pane) pane.innerHTML = `<div class="suite-ai-empty"><p class="suite-empty-note"><span class="spinner"></span> 正在读取资金榜单…</p></div>`;
+        const data = await fetchJson(`/api/stock-capital-rankings/${encodeURIComponent(code)}?${qs.toString()}`);
+        state.currentSuitePayload = {
+          ...(state.currentSuitePayload || {}),
+          capital_rankings: data.capital_rankings || {},
+        };
+        renderSuiteCapitalRankings(state.currentSuitePayload);
       }
 
       function renderSuiteQuantMatrix(payload) {

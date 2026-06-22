@@ -2544,6 +2544,60 @@ body.canvas-fullscreen-open {
 }
 .suite-kpi-label { font-size: 12px; color: var(--muted, #6b7280); }
 .suite-kpi-value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+.suite-capital-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.suite-capital-toolbar label {
+  display: grid;
+  gap: 4px;
+  min-width: 132px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.suite-capital-toolbar input {
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--ink);
+  background: #ffffff;
+}
+.suite-capital-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.suite-capital-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+.suite-capital-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.suite-capital-card-head h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+}
+.suite-capital-card-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 1100px) {
+  .suite-capital-grid { grid-template-columns: 1fr; }
+}
 .quant-seat-pill {
   display: inline-block;
   padding: 1px 8px;
