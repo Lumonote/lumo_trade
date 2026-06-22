@@ -262,6 +262,195 @@ def _generate_selection_reason(stock: Dict) -> str:
         return "综合评分达标"
 
 
+def _md_to_html_body(lines: List[str]) -> str:
+    """Convert the structured markdown report lines to well-formatted HTML body.
+
+    The report markdown uses a specific structure:
+    - ``## Heading`` → ``<h2>``
+    - ``### Heading`` → ``<h3>``
+    - ``---`` → ``<hr>``
+    - ``> text`` → ``<blockquote>``
+    - ``- **key**: value`` → ``<li>``
+    - ``1. text`` → ``<ol><li>``
+    - ``[text](url)`` → ``<a href="...">``
+    - Inline ``**bold**`` → ``<strong>``
+    - Embedded HTML tables / divs → pass through unchanged
+    - Regular text paragraphs are wrapped in ``<p>``.
+    """
+    import re as _re_md
+
+    html_parts = []
+    i = 0
+    n = len(lines)
+
+    # Block-level accumulators
+    list_buffer = []       # for - items or 1. items
+    list_type = None       # 'ul' or 'ol'
+    para_buffer = []       # for inline text lines
+    blockquote_buffer = [] # for > lines
+
+    def _flush_list():
+        nonlocal list_buffer, list_type
+        if not list_buffer:
+            return
+        tag = list_type or 'ul'
+        html_parts.append(f'<{tag}>')
+        for item in list_buffer:
+            html_parts.append(f'<li>{item}</li>')
+        html_parts.append(f'</{tag}>')
+        list_buffer = []
+        list_type = None
+
+    def _flush_para():
+        nonlocal para_buffer
+        if para_buffer:
+            text = ' '.join(para_buffer)
+            html_parts.append(f'<p>{text}</p>')
+            para_buffer = []
+
+    def _flush_blockquote():
+        nonlocal blockquote_buffer
+        if blockquote_buffer:
+            text = ' '.join(blockquote_buffer)
+            html_parts.append(f'<blockquote>{text}</blockquote>')
+            blockquote_buffer = []
+
+    def _inline(text: str) -> str:
+        """Convert inline markdown: **bold**, [text](url), `code`."""
+        t = text
+        # links [text](url)
+        t = _re_md.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" target="_blank">\1</a>', t)
+        # bold **text**
+        t = _re_md.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', t)
+        # inline code `text`
+        t = _re_md.sub(r'`([^`]+)`', r'<code>\1</code>', t)
+        return t
+
+    def _is_html_line(line: str) -> bool:
+        return bool(_re_md.match(r'^\s*<', line))
+
+    def _is_table_row(line: str) -> bool:
+        return bool(_re_md.match(r'^\s*<(tr|/tr|td|/td|th|/th|thead|/thead|tbody|/tbody|table|/table|colgroup|/colgroup|col|div)', line))
+
+    while i < n:
+        line = lines[i]
+
+        # Skip empty lines but flush buffered content
+        if not line.strip():
+            _flush_list()
+            _flush_para()
+            _flush_blockquote()
+            i += 1
+            continue
+
+        # HTML comments pass through
+        if line.strip().startswith('<!--') and line.strip().endswith('-->'):
+            _flush_list()
+            _flush_para()
+            _flush_blockquote()
+            html_parts.append(line)
+            i += 1
+            continue
+
+        # Embedded HTML (tables, divs) pass through with surrounding flushes
+        if _is_html_line(line) or _is_table_row(line):
+            _flush_list()
+            _flush_para()
+            _flush_blockquote()
+            # Collect contiguous HTML block
+            html_block = [line]
+            j = i + 1
+            while j < n:
+                next_line = lines[j]
+                if not next_line.strip():
+                    break
+                if _is_html_line(next_line) or _is_table_row(next_line) or next_line.strip().startswith('</'):
+                    html_block.append(next_line)
+                    j += 1
+                else:
+                    break
+            html_parts.append('\n'.join(html_block))
+            i = j
+            continue
+
+        stripped = line.strip()
+
+        # h3 / h2
+        if stripped.startswith('### '):
+            _flush_list()
+            _flush_para()
+            _flush_blockquote()
+            html_parts.append(f'<h3>{_inline(stripped[4:])}</h3>')
+            i += 1
+            continue
+
+        if stripped.startswith('## '):
+            _flush_list()
+            _flush_para()
+            _flush_blockquote()
+            html_parts.append(f'<h2>{_inline(stripped[3:])}</h2>')
+            i += 1
+            continue
+
+        # <hr>
+        if stripped == '---':
+            _flush_list()
+            _flush_para()
+            _flush_blockquote()
+            html_parts.append('<hr>')
+            i += 1
+            continue
+
+        # Blockquote
+        if stripped.startswith('> '):
+            _flush_list()
+            _flush_para()
+            txt = stripped[2:]
+            # Always process inline markdown (links, bold, code)
+            txt = _inline(txt)
+            blockquote_buffer.append(txt)
+            i += 1
+            continue
+
+        # Unordered list
+        if _re_md.match(r'^-\s', stripped):
+            _flush_para()
+            _flush_blockquote()
+            if list_type and list_type != 'ul':
+                _flush_list()
+            list_type = 'ul'
+            item_text = _re_md.sub(r'^-\s+', '', stripped, count=1)
+            list_buffer.append(_inline(item_text))
+            i += 1
+            continue
+
+        # Ordered list
+        if _re_md.match(r'^\d+\.\s', stripped):
+            _flush_para()
+            _flush_blockquote()
+            if list_type and list_type != 'ol':
+                _flush_list()
+            list_type = 'ol'
+            item_text = _re_md.sub(r'^\d+\.\s+', '', stripped, count=1)
+            list_buffer.append(_inline(item_text))
+            i += 1
+            continue
+
+        # Regular text
+        _flush_list()
+        _flush_blockquote()
+        txt = _inline(stripped)
+        para_buffer.append(txt)
+        i += 1
+
+    # Flush remaining
+    _flush_list()
+    _flush_para()
+    _flush_blockquote()
+
+    return '\n'.join(html_parts)
+
+
 class OpportunityReportGenerator:
     """投资机会挖掘报表生成器"""
 
@@ -1173,28 +1362,9 @@ class OpportunityReportGenerator:
         # 记录热门话题，供Markdown报表复用
         self._latest_global_hot_news = global_hot_news or []
 
-        # 生成HTML
-        html_content = self._generate_html(
-            report_title=report_title,
-            total_count=total_count,
-            passed_count=passed_count,
-            stage_stats=stage_stats,
-            funnel_data=funnel_data,
-            top_20=top_20,
-            quant_top_20=quant_top_20,
-            grouped_stocks=grouped_stocks,
-            global_hot_news=self._latest_global_hot_news,
-            sector_hot_news=sector_hot_news or [],
-            hot_news_title=hot_news_title
-        )
-
-        # 保存HTML文件
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"opportunity_discovery_{timestamp}.html"
-        filepath = os.path.join(self.output_dir, filename)
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        logger.info(f"✓ HTML报表已生成: {filepath}")
+        html_filename = f"opportunity_discovery_{timestamp}.html"
+        filepath = os.path.join(self.output_dir, html_filename)
 
         try:
             md_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2017,6 +2187,16 @@ class OpportunityReportGenerator:
             lines.append("\n---\n")
             lines.append("*免责声明：本软件仅为数据工具，不构成投资建议，股市有风险，投资需谨慎。*")
 
+            # ── 从完整Markdown生成网页版HTML（参考markdown内容重新排版）──
+            try:
+                html_body = _md_to_html_body(lines)
+                html_page = self._wrap_html_page(html_body, report_title)
+                with open(filepath, 'w', encoding='utf-8') as hf:
+                    hf.write(html_page)
+                logger.info(f"✓ HTML报表已生成(基于MD): {filepath}")
+            except Exception as _he:
+                logger.warning(f"从Markdown生成HTML失败: {_he}")
+
             with open(md_path, 'w', encoding='utf-8') as mf:
                 mf.write('\n'.join(lines))
             self.latest_top_report_path = md_path
@@ -2403,6 +2583,160 @@ class OpportunityReportGenerator:
             grouped[key] = sorted(grouped[key], key=lambda x: x.get('final_score', 0), reverse=True)
 
         return grouped
+
+    def _wrap_html_page(self, body_content: str, title: str = "投资机会挖掘报告") -> str:
+        """Wrap the markdown-converted HTML body in a full page with CSS styling."""
+        return f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <style>
+        :root {{
+            --bg: #f8fafc;
+            --card-bg: #ffffff;
+            --text: #1e293b;
+            --text-secondary: #475569;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --accent: #3b82f6;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-yellow: #f59e0b;
+            --accent-purple: #8b5cf6;
+        }}
+
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.8;
+            padding: 24px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }}
+
+        .report-container {{
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 40px 48px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.04);
+        }}
+
+        h2 {{
+            font-size: 22px;
+            color: var(--text);
+            margin: 36px 0 16px 0;
+            padding-bottom: 8px;
+            border-bottom: 2px solid var(--border);
+        }}
+
+        h3 {{
+            font-size: 18px;
+            color: var(--text-secondary);
+            margin: 24px 0 12px 0;
+        }}
+
+        hr {{
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 28px 0;
+        }}
+
+        p {{
+            margin: 8px 0;
+            color: var(--text-secondary);
+        }}
+
+        blockquote {{
+            border-left: 4px solid var(--accent);
+            padding: 8px 16px;
+            margin: 12px 0;
+            background: #f1f5f9;
+            border-radius: 0 6px 6px 0;
+            color: var(--text-muted);
+            font-size: 14px;
+        }}
+
+        ul, ol {{
+            margin: 8px 0 8px 20px;
+            color: var(--text-secondary);
+        }}
+
+        li {{
+            margin: 4px 0;
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 12px 0 20px 0;
+            font-size: 14px;
+        }}
+
+        th {{
+            background: #f1f5f9;
+            padding: 10px 12px;
+            text-align: left;
+            font-weight: 600;
+            color: var(--text);
+            border-bottom: 2px solid var(--border);
+            white-space: nowrap;
+        }}
+
+        td {{
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            vertical-align: top;
+        }}
+
+        tr:hover td {{
+            background: #f8fafc;
+        }}
+
+        a {{
+            color: var(--accent);
+            text-decoration: none;
+        }}
+        a:hover {{ text-decoration: underline; }}
+
+        strong {{ color: var(--text); }}
+
+        /* Footer disclaimer */
+        .report-container > p:last-child {{
+            margin-top: 32px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+            font-size: 13px;
+            color: var(--text-muted);
+            text-align: center;
+        }}
+
+        /* Responsive */
+        @media (max-width: 768px) {{
+            body {{ padding: 12px; }}
+            .report-container {{ padding: 20px 16px; }}
+            table {{ font-size: 12px; }}
+            th, td {{ padding: 6px 8px; }}
+        }}
+
+        /* Print */
+        @media print {{
+            body {{ background: white; padding: 0; }}
+            .report-container {{ box-shadow: none; border-radius: 0; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="report-container">
+        {body_content}
+    </div>
+</body>
+</html>'''
 
     def _generate_html(self, report_title: str, total_count: int, passed_count: int,
                       stage_stats: Dict, funnel_data: List[Dict], top_20: List[Dict], quant_top_20: List[Dict],

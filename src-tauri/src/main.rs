@@ -540,6 +540,38 @@ fn hide_popup(app: tauri::AppHandle) {
     }
 }
 
+/// 前端调用：在系统默认浏览器中打开 URL（解决 WKWebView 下 target=_blank 被拦截的问题）。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let url = if url.starts_with("http://") || url.starts_with("https://") {
+        url
+    } else {
+        return Err(format!("不支持的协议: {url}"));
+    };
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("无法打开浏览器: {e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .spawn()
+            .map_err(|e| format!("无法打开浏览器: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("无法打开浏览器: {e}"))?;
+    }
+    Ok(())
+}
+
 /// 构建托盘图标 + 右键菜单（打开控制台 / 刷新行情 / 退出）。
 #[cfg(desktop)]
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -592,7 +624,7 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![open_main, hide_popup])
+        .invoke_handler(tauri::generate_handler![open_main, hide_popup, open_url])
         .setup(|app| {
             let user_dir = user_data_dir(app);
             let backend = BackendProcess::new(start_backend(app), backend_pid_path(&user_dir));

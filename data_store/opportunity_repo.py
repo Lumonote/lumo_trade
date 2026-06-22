@@ -317,6 +317,7 @@ def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[
     - ``distinct_days``:去重后的入选天数(衡量「重复入选」跨越多少个交易日)。
     - ``days_csv``:去重后的入选日期(逗号分隔,升序),前端展开为重复入选时间线。
     - 名称/评级/板块/分数等「最新值」取该股最近一次 run 的行(window rn=1)。
+    - 资金流向取自 moneyflow_dc 最近一个交易日:主力净流入/散户流入/总流入/资金日期。
     ``since_date`` 形如 ``YYYY-MM-DD``,只统计该日期(含)之后的 run。
     """
     where = "WHERE r.run_date >= ?" if since_date else ""
@@ -333,27 +334,53 @@ def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[
           FROM opportunity_item i
           JOIN opportunity_run r ON r.id = i.run_id
           {where}
+        ),
+        latest_mf AS (
+          SELECT code,
+                 trade_date   AS flow_date,
+                 net_amount   AS main_net_inflow,
+                 buy_sm_amount AS retail_flow,
+                 COALESCE(buy_elg_amount,0) + COALESCE(buy_lg_amount,0)
+                   + COALESCE(buy_md_amount,0) + COALESCE(buy_sm_amount,0) AS total_inflow,
+                 amount_unit  AS flow_unit
+          FROM (
+            SELECT SUBSTR(mf.ts_code, 1, 6) AS code,
+                   mf.trade_date, mf.net_amount, mf.buy_sm_amount,
+                   mf.buy_elg_amount, mf.buy_lg_amount, mf.buy_md_amount,
+                   mf.amount_unit,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY SUBSTR(mf.ts_code, 1, 6) ORDER BY mf.trade_date DESC
+                   ) AS mf_rn
+            FROM moneyflow_dc mf
+            WHERE mf.top_n = 1
+          ) WHERE mf_rn = 1
         )
         SELECT
-          code,
+          j.code,
           COUNT(*)                       AS selections,
-          COUNT(DISTINCT run_date)       AS distinct_days,
-          MIN(run_at)                    AS first_seen,
-          MAX(run_at)                    AS last_seen,
-          MAX(total_score)               AS best_score,
-          AVG(total_score)               AS avg_score,
-          AVG(change_pct)                AS avg_change_pct,
-          SUM(degraded)                  AS degraded_count,
-          GROUP_CONCAT(DISTINCT run_date) AS days_csv,
-          MAX(CASE WHEN rn=1 THEN name END)        AS name,
-          MAX(CASE WHEN rn=1 THEN rating END)      AS last_rating,
-          MAX(CASE WHEN rn=1 THEN sector END)      AS last_sector,
-          MAX(CASE WHEN rn=1 THEN sector_code END) AS last_sector_code,
-          MAX(CASE WHEN rn=1 THEN total_score END) AS last_score,
-          MAX(CASE WHEN rn=1 THEN change_pct END)  AS last_change_pct
-        FROM joined
-        GROUP BY code
-        ORDER BY selections DESC, last_seen DESC, best_score DESC
+          COUNT(DISTINCT j.run_date)       AS distinct_days,
+          MIN(j.run_at)                    AS first_seen,
+          MAX(j.run_at)                    AS last_seen,
+          MAX(j.total_score)               AS best_score,
+          AVG(j.total_score)               AS avg_score,
+          AVG(j.change_pct)                AS avg_change_pct,
+          SUM(j.degraded)                  AS degraded_count,
+          GROUP_CONCAT(DISTINCT j.run_date) AS days_csv,
+          MAX(CASE WHEN j.rn=1 THEN j.name END)        AS name,
+          MAX(CASE WHEN j.rn=1 THEN j.rating END)      AS last_rating,
+          MAX(CASE WHEN j.rn=1 THEN j.sector END)      AS last_sector,
+          MAX(CASE WHEN j.rn=1 THEN j.sector_code END) AS last_sector_code,
+          MAX(CASE WHEN j.rn=1 THEN j.total_score END) AS last_score,
+          MAX(CASE WHEN j.rn=1 THEN j.change_pct END)  AS last_change_pct,
+          mf.flow_date,
+          mf.main_net_inflow,
+          mf.retail_flow,
+          mf.total_inflow,
+          mf.flow_unit
+        FROM joined j
+        LEFT JOIN latest_mf mf ON mf.code = j.code
+        GROUP BY j.code
+        ORDER BY distinct_days DESC, j.last_seen DESC, j.best_score DESC
         LIMIT ?
         """,
         params,
@@ -363,6 +390,18 @@ def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[
         d = dict(row)
         days = [s for s in str(d.pop("days_csv", "") or "").split(",") if s]
         d["days"] = sorted(days)
+        # 资金流向: Tushare moneyflow_dc 原始单位为万元,统一格式化为 +N.MM万
+        unit = str(d.get("flow_unit") or "")
+        if "万" in unit:
+            scale = 1.0
+        else:
+            scale = 0.0001  # 元 → 万
+        for key in ("main_net_inflow", "retail_flow", "total_inflow"):
+            val = d.get(key)
+            if val is not None:
+                d[f"{key}_text"] = f"{val * scale:+.2f}万"
+            else:
+                d[f"{key}_text"] = None
         out.append(d)
     return out
 

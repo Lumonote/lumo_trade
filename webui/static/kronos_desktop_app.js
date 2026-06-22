@@ -89,8 +89,8 @@
           patternResult: null,
           stockPool: null,
           sectorPool: null,
-          sortStockPool: { key: "selections", dir: "desc" },
-          sortSectorPool: { key: "appearances", dir: "desc" },
+          sortStockPool: { key: "distinct_days", dir: "desc" },
+          sortSectorPool: { key: "distinct_days", dir: "desc" },
         },
         hotSectorHistory: {
           snapshots: null,
@@ -144,6 +144,20 @@
         const n = Number(value);
         if (!Number.isFinite(n) || n === 0) return "";
         return n >= 0 ? "change-up" : "change-down";
+      }
+
+      function flowCell(text, raw, fallback = "--") {
+        // 资金流向单元格:优先使用后端已格式化的 text,否则用 raw 值格式化,正负着色。
+        if (text != null) {
+          const cls = changeClass(Number(raw));
+          return `<span class="${cls}">${html(text)}</span>`;
+        }
+        if (raw != null && Number.isFinite(Number(raw))) {
+          const n = Number(raw);
+          const cls = changeClass(n);
+          return `<span class="${cls}">${formatMoneyText(n, fallback)}</span>`;
+        }
+        return `<span class="cell-sub">${fallback}</span>`;
       }
 
       function klineChangeClass(openPrice, closePrice) {
@@ -965,7 +979,8 @@
       }
 
       // ===== 股票池 / 板块池(跨所有历史 run/快照的汇总聚合)=====
-      // 入选次数=出现过的 run/快照数;重复入选=去重交易日数 + 日期时间线;
+      // 入选次数/上榜次数=去重交易日数(同一交易日多次 run 只计 1 次);
+      // 重复入选=日期时间线(展示具体哪些天入选/上榜);
       // 首次/最近入选取边界时间;最新评级/分数取最近一次。点击行=打开个股/板块。
       function dateShort(value) {
         const s = String(value || "");
@@ -999,7 +1014,7 @@
             empty(body, "暂无股票池。先运行机会挖掘入库。");
             return;
           }
-          opportunityDataSummary(`股票池 ${stocks.length} 只 · 按入选次数排序 · 点击行打开个股分析。`);
+          opportunityDataSummary(`股票池 ${stocks.length} 只 · 按入选交易日数排序 · 点击行打开个股分析。`);
           const sortState = state.opportunityData.sortStockPool;
           const renderTable = () => {
             body.innerHTML = sortableTableHtml(stocks, {
@@ -1009,8 +1024,8 @@
               rowAttrs: (s) => `data-stock="${html(s.code || "")}" data-stock-code="${html(s.code || "")}" data-stock-name="${html(s.name || "")}" data-sector="${html(s.last_sector || "")}" data-search="${html(s.name || "")} ${html(s.code || "")} ${html(s.last_sector || "")}" role="button" tabindex="0"`,
               columns: [
                 { key: "name", label: "名称·代码", className: "col-left", cell: (s) => `<span class="cell-strong">${html(s.name || s.code || "--")}</span> <span class="cell-sub">${html(s.code || "")}</span>`, value: (s) => s.name || s.code },
-                { key: "selections", label: "入选次数", cell: (s) => `<span class="cell-strong">${html(s.selections ?? 0)}</span>`, value: (s) => s.selections },
-                { key: "repeat", label: "重复入选(交易日)", className: "col-left", sortable: false, cell: (s) => repeatDaysCell(s.days) },
+                { key: "distinct_days", label: "入选次数(天)", cell: (s) => `<span class="cell-strong">${html(s.distinct_days ?? 0)}</span>`, value: (s) => s.distinct_days },
+                { key: "days", label: "入选交易日", className: "col-left", sortable: false, cell: (s) => repeatDaysCell(s.days) },
                 { key: "first_seen", label: "首次入选", className: "col-left", cell: (s) => html(dateShort(s.first_seen)), value: (s) => s.first_seen },
                 { key: "last_seen", label: "最近入选", className: "col-left", cell: (s) => html(dateShort(s.last_seen)), value: (s) => s.last_seen },
                 { key: "last_rating", label: "最新评级", cell: (s) => html(s.last_rating || "--"), value: (s) => s.last_rating },
@@ -1019,6 +1034,9 @@
                 { key: "avg_score", label: "平均分", cell: (s) => s.avg_score != null ? num(s.avg_score, 1) : "--", value: (s) => s.avg_score },
                 { key: "last_sector", label: "板块", className: "col-left", cell: (s) => html(s.last_sector || "--"), value: (s) => s.last_sector },
                 { key: "avg_change_pct", label: "平均涨跌", cell: (s) => s.avg_change_pct != null ? `<span class="${changeClass(s.avg_change_pct)}">${num(s.avg_change_pct)}%</span>` : "--", value: (s) => s.avg_change_pct },
+                { key: "main_net_inflow", label: "主力净流入", cell: (s) => flowCell(s.main_net_inflow_text, s.main_net_inflow, "--"), value: (s) => s.main_net_inflow },
+                { key: "retail_flow", label: "散户流入", cell: (s) => flowCell(s.retail_flow_text, s.retail_flow, "--"), value: (s) => s.retail_flow },
+                { key: "total_inflow", label: "总流入", cell: (s) => flowCell(s.total_inflow_text, s.total_inflow, "--"), value: (s) => s.total_inflow },
                 { key: "degraded_count", label: "降级次数", cell: (s) => s.degraded_count ? `<span class="cell-sub">${html(s.degraded_count)}</span>` : "", value: (s) => s.degraded_count || 0 },
               ],
             });
@@ -1170,7 +1188,7 @@
             empty(body, "暂无板块池。先运行机会挖掘或热门板块扫描入库。");
             return;
           }
-          opportunityDataSummary(`板块池 ${sectors.length} 个 · 按上榜次数排序 · 点击行展开板块成分股。`);
+          opportunityDataSummary(`板块池 ${sectors.length} 个 · 按上榜交易日数排序 · 点击行展开板块成分股。`);
           const sortState = state.opportunityData.sortSectorPool;
           const renderTable = () => {
             body.innerHTML = sortableTableHtml(sectors, {
@@ -1180,8 +1198,8 @@
               rowAttrs: (b) => `class="sector-pool-row" data-board-code="${html(b.board_code || "")}" data-board-name="${html(b.board_name || b.board_code || "")}" data-snapshot-id="${html(b.last_snapshot_id || "")}" role="button" tabindex="0" data-search="${html(b.board_name || "")} ${html(b.board_code || "")} ${html(b.board_type || "")}"`,
               columns: [
                 { key: "board_name", label: "板块名", className: "col-left", cell: (b) => `<span class="cell-strong">${html(b.board_name || b.board_code || "--")}</span> <span class="cell-sub">${html(b.board_code || "")}</span>`, value: (b) => b.board_name || b.board_code },
-                { key: "appearances", label: "上榜次数", cell: (b) => `<span class="cell-strong">${html(b.appearances ?? 0)}</span>`, value: (b) => b.appearances },
-                { key: "repeat", label: "重复上榜(交易日)", className: "col-left", sortable: false, cell: (b) => repeatDaysCell(b.days) },
+                { key: "distinct_days", label: "上榜次数(天)", cell: (b) => `<span class="cell-strong">${html(b.distinct_days ?? 0)}</span>`, value: (b) => b.distinct_days },
+                { key: "days", label: "上榜交易日", className: "col-left", sortable: false, cell: (b) => repeatDaysCell(b.days) },
                 { key: "first_seen", label: "首次上榜", className: "col-left", cell: (b) => html(dateShort(b.first_seen)), value: (b) => b.first_seen },
                 { key: "last_seen", label: "最近上榜", className: "col-left", cell: (b) => html(dateShort(b.last_seen)), value: (b) => b.last_seen },
                 { key: "best_rank", label: "最佳名次", cell: (b) => b.best_rank != null ? `#${html(b.best_rank)}` : "--", value: (b) => b.best_rank },
@@ -7383,6 +7401,24 @@
           </div>`;
         const btn = document.getElementById("relatedNewsRefreshBtn");
         if (btn) btn.addEventListener("click", () => refreshRelatedNews(code));
+        // 关联热点文章点击跳转：WKWebView 下 target=_blank 会被拦截，
+        // 桌面 App 通过 Tauri invoke('open_url') → 系统浏览器；浏览器环境用 window.open 兜底。
+        pane.querySelectorAll(".news-card a").forEach((a) => {
+          a.addEventListener("click", (e) => {
+            const href = a.getAttribute("href");
+            if (!href || href === "#") return;
+            e.preventDefault();
+            try {
+              if (window.__TAURI__ && typeof window.__TAURI__.invoke === "function") {
+                window.__TAURI__.invoke("open_url", { url: href });
+              } else {
+                window.open(href, "_blank", "noopener,noreferrer");
+              }
+            } catch (_) {
+              window.open(href, "_blank", "noopener,noreferrer");
+            }
+          });
+        });
       }
 
       async function refreshRelatedNews(code) {
