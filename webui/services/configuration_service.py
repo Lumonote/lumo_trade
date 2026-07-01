@@ -281,6 +281,11 @@ class RuntimeConfigurationService:
                     "model_id": model_cfg.get("model_id", ""),
                     "description": model_cfg.get("description", ""),
                     "max_tokens": model_cfg.get("max_tokens"),
+                    "endpoint": model_cfg.get("endpoint", ""),
+                    "timeout": model_cfg.get("timeout"),
+                    "request_format": model_cfg.get("request_format", ""),
+                    "retry_enabled": model_cfg.get("retry_enabled"),
+                    "retry_times": model_cfg.get("retry_times"),
                 })
             provider_key = api_keys.get(provider_name, "")
             providers.append({
@@ -288,6 +293,7 @@ class RuntimeConfigurationService:
                 "enabled": bool(provider_cfg.get("enabled", False)),
                 "base_url": provider_cfg.get("base_url", ""),
                 "api_style": provider_cfg.get("api_style", "openai"),
+                "default_timeout": provider_cfg.get("default_timeout"),
                 "has_api_key": bool(provider_key),
                 "api_key_masked": _mask_secret(provider_key),
                 "models": models,
@@ -317,6 +323,80 @@ class RuntimeConfigurationService:
             "auto_follow": self.load_auto_follow_config(),
         }
 
+    @staticmethod
+    def _normalize_provider_config(providers: Any) -> dict[str, Any]:
+        """把前端提交的 providers 规范化为 llm_provider_config.json 结构。
+
+        整表覆盖语义:提交里不含的 provider/model 即视为删除。空值字段按缺省剔除,
+        数值字段尽量转 int。provider 名 / 模型 key / model_id 为空的条目跳过。
+        """
+        def _int_or_none(value: Any) -> int | None:
+            try:
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    return None
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        def _str(value: Any) -> str:
+            return str(value or "").strip()
+
+        normalized: dict[str, Any] = {}
+        items = providers.items() if isinstance(providers, dict) else (
+            ((p.get("name"), p) for p in providers) if isinstance(providers, list) else []
+        )
+        for provider_name, provider_cfg in items:
+            name = _str(provider_name) or _str((provider_cfg or {}).get("name"))
+            if not name or not isinstance(provider_cfg, dict):
+                continue
+            out_provider: dict[str, Any] = {
+                "enabled": bool(provider_cfg.get("enabled", False)),
+                "base_url": _str(provider_cfg.get("base_url")),
+                "api_style": _str(provider_cfg.get("api_style")) or "openai",
+            }
+            default_timeout = _int_or_none(provider_cfg.get("default_timeout"))
+            if default_timeout is not None:
+                out_provider["default_timeout"] = default_timeout
+
+            out_models: dict[str, Any] = {}
+            raw_models = provider_cfg.get("models")
+            model_items = raw_models.items() if isinstance(raw_models, dict) else (
+                ((m.get("key"), m) for m in raw_models) if isinstance(raw_models, list) else []
+            )
+            for model_key, model_cfg in model_items:
+                key = _str(model_key) or _str((model_cfg or {}).get("key"))
+                if not key or not isinstance(model_cfg, dict):
+                    continue
+                model_id = _str(model_cfg.get("model_id"))
+                if not model_id:
+                    continue
+                out_model: dict[str, Any] = {"model_id": model_id}
+                description = _str(model_cfg.get("description"))
+                if description:
+                    out_model["description"] = description
+                endpoint = _str(model_cfg.get("endpoint"))
+                if endpoint:
+                    out_model["endpoint"] = endpoint
+                request_format = _str(model_cfg.get("request_format"))
+                if request_format:
+                    out_model["request_format"] = request_format
+                max_tokens = _int_or_none(model_cfg.get("max_tokens"))
+                if max_tokens is not None:
+                    out_model["max_tokens"] = max_tokens
+                timeout = _int_or_none(model_cfg.get("timeout"))
+                if timeout is not None:
+                    out_model["timeout"] = timeout
+                retry_times = _int_or_none(model_cfg.get("retry_times"))
+                if retry_times is not None:
+                    out_model["retry_times"] = retry_times
+                if model_cfg.get("retry_enabled") is not None:
+                    out_model["retry_enabled"] = bool(model_cfg.get("retry_enabled"))
+                out_models[key] = out_model
+
+            out_provider["models"] = out_models
+            normalized[name] = out_provider
+        return {"providers": normalized}
+
     def save_llm_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         current = self.load_llm_config()
         enabled = payload.get("enabled_models", current.get("enabled_models", []))
@@ -335,6 +415,13 @@ class RuntimeConfigurationService:
             "api_keys": api_keys,
         }
         path = self._save_user_config("llm_config.json", saved)
+
+        # 可选:同时落盘 Provider 定义(地址 / 模型名称 / 描述等)。整表覆盖,
+        # 不传则保持现有行为(向后兼容“仅改 Key”)。
+        if "providers" in payload:
+            provider_payload = self._normalize_provider_config(payload.get("providers"))
+            self._save_user_config("llm_provider_config.json", provider_payload)
+
         return {"success": True, "path": str(path), "settings": self.settings_payload()}
 
     def save_tushare_settings(self, payload: dict[str, Any]) -> dict[str, Any]:

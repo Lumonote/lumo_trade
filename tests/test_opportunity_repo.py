@@ -196,3 +196,92 @@ def test_get_run_by_id_and_missing(conn):
     assert repo.get_run(999999) is None
     assert repo.get_run(None) is None
     assert repo.get_run("not-an-int") is None
+
+
+def test_stock_pool_uses_aggregate_aliases_for_ordering(conn):
+    from data_store import opportunity_repo as repo
+
+    repo.save_run(_meta(run_at="2026-06-09T10:00:00"), _items())
+    repo.save_run(_meta(run_at="2026-06-10T15:00:00"), [
+        {"code": "000001", "name": "平安银行", "total_score": 88.0, "rating": "A+",
+         "degraded": False, "sector": "银行", "change_pct": 1.5},
+        {"code": "688001", "name": "芯片测试", "total_score": 91.0, "rating": "A",
+         "degraded": False, "sector": "半导体", "change_pct": 4.0},
+    ])
+
+    stocks = repo.stock_pool(limit=10)
+
+    assert [s["code"] for s in stocks] == ["000001", "688001", "300750"]
+    assert stocks[0]["selections"] == 2
+    assert stocks[0]["distinct_days"] == 2
+    assert stocks[0]["last_seen"] == "2026-06-10T15:00:00"
+    assert stocks[0]["best_score"] == pytest.approx(88.0)
+    assert stocks[0]["last_rating"] == "A+"
+    assert stocks[0]["days"] == ["2026-06-09", "2026-06-10"]
+
+
+def test_stock_pool_reads_moneyflow_snapshot_at_top_n_0(conn):
+    """资金流向列取自全市场快照哨兵 top_n=0(而非历史误用的 top_n=1)。
+
+    回归:此前查询 WHERE top_n=1,而真实快照写在 top_n=0,导致主力净流入/
+    散户流入/总流入恒为空。"""
+    from data_store import opportunity_repo as repo
+
+    repo.save_run(_meta(run_at="2026-06-10T15:00:00"), [
+        {"code": "000001", "name": "平安银行", "total_score": 88.0, "rating": "A",
+         "degraded": False, "sector": "银行", "change_pct": 1.5},
+    ])
+    # 全市场快照(哨兵 top_n=0)与候选快照(top_n=1,应被忽略)
+    conn.execute(
+        "INSERT INTO moneyflow_dc (trade_date, ts_code, top_n, net_amount, "
+        "buy_elg_amount, buy_lg_amount, buy_md_amount, buy_sm_amount, amount_unit) "
+        "VALUES ('2026-06-10', '000001.SZ', 0, 12000, 30000, 20000, 5000, 8000, '万元')"
+    )
+    conn.execute(
+        "INSERT INTO moneyflow_dc (trade_date, ts_code, top_n, net_amount, amount_unit) "
+        "VALUES ('2026-06-10', '000001.SZ', 1, 999999, '万元')"
+    )
+
+    stocks = repo.stock_pool(limit=10)
+    row = next(s for s in stocks if s["code"] == "000001")
+    assert row["main_net_inflow"] == 12000  # 来自 top_n=0,不是 top_n=1 的 999999
+    assert row["retail_flow"] == 8000
+    assert row["total_inflow"] == 63000  # 30000+20000+5000+8000
+    assert row["main_net_inflow_text"] == "+12000.00万"  # 单位万元,scale=1
+
+
+def test_stock_pool_computes_post_selection_return(conn):
+    """入选后涨幅 = (最新收盘 - 首次入选次日开盘) / 次日开盘 * 100。"""
+    from data_store import opportunity_repo as repo
+
+    repo.save_run(_meta(run_at="2026-06-09T10:00:00"), [
+        {"code": "000001", "name": "平安银行", "total_score": 88.0, "rating": "A",
+         "degraded": False, "sector": "银行", "change_pct": 1.5},
+    ])
+    # 首次入选日 2026-06-09;次日开盘(06-10)= 10.0;最新收盘(06-12)= 11.0 → +10%
+    for ts, op, cl in [
+        ("2026-06-09 00:00:00", 9.5, 9.8),   # 入选当日,不作买入基准
+        ("2026-06-10 00:00:00", 10.0, 10.4),  # 次日开盘买入 = 10.0
+        ("2026-06-12 00:00:00", 10.8, 11.0),  # 最新收盘 = 11.0
+    ]:
+        conn.execute(
+            "INSERT INTO ohlcv (code, frequency, ts, open, close) VALUES (?, '1d', ?, ?, ?)",
+            ("000001", ts, op, cl),
+        )
+
+    stocks = repo.stock_pool(limit=10)
+    row = next(s for s in stocks if s["code"] == "000001")
+    assert row["post_select_return_pct"] == pytest.approx(10.0)
+
+
+def test_stock_pool_post_selection_return_none_without_prices(conn):
+    """无价格数据时入选后涨幅为 None(前端显示 --),不抛错。"""
+    from data_store import opportunity_repo as repo
+
+    repo.save_run(_meta(run_at="2026-06-10T15:00:00"), [
+        {"code": "000001", "name": "平安银行", "total_score": 88.0, "rating": "A",
+         "degraded": False, "sector": "银行", "change_pct": 1.5},
+    ])
+    stocks = repo.stock_pool(limit=10)
+    row = next(s for s in stocks if s["code"] == "000001")
+    assert row["post_select_return_pct"] is None

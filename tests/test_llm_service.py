@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -133,3 +134,46 @@ def test_success_first_try_does_not_retry(mock_post, _sleep):
     assert ok is True
     assert mock_post.call_count == 1
     _sleep.assert_not_called()
+
+
+def test_llm_config_prefers_provider_config_from_kronos_config_dir(tmp_path, monkeypatch):
+    """设置页写到 KRONOS_CONFIG_DIR 的 llm_provider_config.json 必须被 LLMConfig 读到,
+    否则 UI 改了 base_url / model_id,真正跑分析的链路仍读项目旧配置(路径分叉回归)。"""
+    from analysis.llm_service import LLMConfig
+
+    config_dir = tmp_path / "user_config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "llm_provider_config.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "DeepSeek官方": {
+                        "enabled": True,
+                        "api_style": "openai",
+                        "base_url": "https://api.edited.test",
+                        "models": {"DeepSeek-V4": {"model_id": "edited-id"}},
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KRONOS_CONFIG_DIR", str(config_dir))
+
+    cfg = LLMConfig()
+    assert cfg.provider_config_path == config_dir / "llm_provider_config.json"
+    assert cfg.get_providers()["DeepSeek官方"]["base_url"] == "https://api.edited.test"
+
+
+def test_llm_config_falls_back_to_project_provider_config(tmp_path, monkeypatch):
+    """KRONOS_CONFIG_DIR 下没有 provider 配置时,回退项目 config/(不应崩)。"""
+    from analysis.llm_service import LLMConfig
+
+    config_dir = tmp_path / "empty_config"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setenv("KRONOS_CONFIG_DIR", str(config_dir))
+
+    cfg = LLMConfig()
+    assert cfg.provider_config_path.name == "llm_provider_config.json"
+    assert cfg.provider_config_path.parent != config_dir

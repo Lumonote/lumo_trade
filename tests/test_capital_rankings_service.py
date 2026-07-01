@@ -1,5 +1,5 @@
 # tests/test_capital_rankings_service.py
-"""CapitalRankingsService:主力买入榜 / 龙虎榜 的单日·多日聚合查询、实时价叠加、回填。
+"""CapitalRankingsService:主力净流入榜 / 龙虎榜 的单日·多日聚合查询、实时价叠加、回填。
 
 全部用注入式 quote_provider / fetcher / dates,离线运行。
 """
@@ -49,7 +49,7 @@ def _seed_dragon_tiger_inst(rows):
     dragon_tiger_repo.upsert_rows(rows)
 
 
-# ---------- 主力买入榜 ----------
+# ---------- 主力净流入榜 ----------
 
 def test_moneyflow_ranking_single(conn):
     _seed_moneyflow([
@@ -168,6 +168,26 @@ def test_moneyflow_ranking_exposes_all_fields_and_5_30_day_windows(conn):
     assert five["detail_rows"][0]["amount_unit"] == "万元"
     assert thirty["main_buy_amount"] == pytest.approx(900.0)
     assert thirty["list_count"] == 6
+
+
+def test_moneyflow_windows_rank_by_net_inflow_not_buy_alias(conn):
+    """moneyflow_dc 的 buy_elg/buy_lg 与 net_amount 同为资金流向净额口径。
+
+    5/30 日窗口应按主力净流入 net_amount 排序；main_buy_amount 只是兼容旧前端
+    的显示别名，不能让榜单变成误导性的“买入额榜”。
+    """
+    _seed_moneyflow([
+        {"trade_date": "2026-06-02", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 100.0, "buy_elg_amount": 10000.0, "buy_lg_amount": 0.0},
+        {"trade_date": "2026-06-03", "ts_code": "000002.SZ", "name": "乙",
+         "net_amount": 200.0, "buy_elg_amount": 1.0, "buy_lg_amount": 0.0},
+        {"trade_date": "2026-06-04", "ts_code": "000003.SZ", "name": "丙",
+         "net_amount": 300.0, "buy_elg_amount": 2.0, "buy_lg_amount": 0.0},
+    ])
+
+    res = _svc().moneyflow_ranking(date="2026-06-04", top_n=10, mode="single", with_quotes=False)
+
+    assert [r["code"] for r in res["windows"]["5"]["rows"][:3]] == ["000003", "000002", "000001"]
 
 
 def test_moneyflow_ranking_default_date_uses_latest(conn):

@@ -103,8 +103,11 @@ class CommandCenterService:
         degraded["news"] = dnw
         holdings_relevance = eng.score_holdings_relevance(positions, membership, news_idx)
 
-        # 东财热点新闻(撮合矩阵右栏):按报告日期读当日落盘的前十热点;独立降级。
-        hot_news, dhn = self._safe(lambda: self._hot_news(report.get("date")), [])
+        # 东财热点新闻(撮合矩阵右栏):优先按当前报告精确读本次 run,避免回退旧热点。
+        hot_news, dhn = self._safe(
+            lambda: self._hot_news(report.get("date"), report_file=report.get("file")),
+            [],
+        )
         degraded["hot_news"] = dhn
 
         indices = {

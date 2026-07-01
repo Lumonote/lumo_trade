@@ -88,6 +88,41 @@ def test_latest_hot_news_by_date_takes_latest_run_of_day(conn):
     assert [r["title"] for r in glob] == ["afternoon"]
 
 
+def test_latest_hot_news_report_file_does_not_fallback_to_old_run(conn):
+    from data_store import opportunity_repo as repo
+
+    repo.save_run(
+        _meta(run_at="2026-06-19T09:00:00",
+              report_file="opportunity_top10_20260619_090000.md"),
+        [],
+        hot_news=[{"title": "old-hot", "heat": 80}],
+    )
+    repo.save_run(
+        _meta(run_at="2026-06-19T15:00:00",
+              report_file="opportunity_top10_20260619_150000.md"),
+        [],
+        hot_news=[],
+    )
+
+    assert repo.latest_hot_news(
+        "2026-06-19",
+        report_file="opportunity_top10_20260619_150000.md",
+    ) == []
+    # 历史默认行为仍可按「最近一次有热点」兜底,供非大屏调用保留。
+    assert [r["title"] for r in repo.latest_hot_news("2026-06-19")] == ["old-hot"]
+
+
+def test_latest_hot_news_latest_run_only_does_not_fallback(conn):
+    from data_store import opportunity_repo as repo
+
+    repo.save_run(_meta(run_at="2026-06-19T09:00:00"),
+                  [], hot_news=[{"title": "old-hot", "heat": 80}])
+    repo.save_run(_meta(run_at="2026-06-19T15:00:00"), [], hot_news=[])
+
+    assert repo.latest_hot_news("2026-06-19", latest_run_only=True) == []
+    assert [r["title"] for r in repo.latest_hot_news("2026-06-19")] == ["old-hot"]
+
+
 def test_latest_hot_news_empty_when_no_data(conn):
     from data_store import opportunity_repo as repo
 

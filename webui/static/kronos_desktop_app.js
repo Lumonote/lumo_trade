@@ -50,6 +50,7 @@
           activeId: "root",
           view: "hierarchy",
           raw: null,
+          deepScores: {},
           dragging: false,
           dragStart: null,
           layout: null,
@@ -1034,6 +1035,7 @@
                 { key: "avg_score", label: "平均分", cell: (s) => s.avg_score != null ? num(s.avg_score, 1) : "--", value: (s) => s.avg_score },
                 { key: "last_sector", label: "板块", className: "col-left", cell: (s) => html(s.last_sector || "--"), value: (s) => s.last_sector },
                 { key: "avg_change_pct", label: "平均涨跌", cell: (s) => s.avg_change_pct != null ? `<span class="${changeClass(s.avg_change_pct)}">${num(s.avg_change_pct)}%</span>` : "--", value: (s) => s.avg_change_pct },
+                { key: "post_select_return_pct", label: "入选后涨幅", cell: (s) => s.post_select_return_pct != null ? `<span class="${changeClass(s.post_select_return_pct)}">${s.post_select_return_pct >= 0 ? "+" : ""}${num(s.post_select_return_pct)}%</span>` : "--", value: (s) => s.post_select_return_pct },
                 { key: "main_net_inflow", label: "主力净流入", cell: (s) => flowCell(s.main_net_inflow_text, s.main_net_inflow, "--"), value: (s) => s.main_net_inflow },
                 { key: "retail_flow", label: "散户流入", cell: (s) => flowCell(s.retail_flow_text, s.retail_flow, "--"), value: (s) => s.retail_flow },
                 { key: "total_inflow", label: "总流入", cell: (s) => flowCell(s.total_inflow_text, s.total_inflow, "--"), value: (s) => s.total_inflow },
@@ -3281,6 +3283,130 @@
           </div>`;
       }
 
+      // 深度评分(形态回测 + 多空评审团 + 资金榜单):懒加载,按需联网现算。
+      // 只对股票节点展示;默认渲染「按钮 + 占位」,点击后调 /api/opportunity/stock-scores。
+      // 结果按节点 stock_code 缓存到 state,避免同一节点重复联网。
+      function opportunityCanvasDeepScores(node) {
+        if (!node || node.type !== "stock" || !node.stock_code) return "";
+        const cached = state.opportunityCanvas.deepScores?.[node.stock_code];
+        const inner = cached
+          ? opportunityDeepScoresHtml(cached)
+          : `<p class="item-meta">形态回测胜率 · 多空评审团(30 模型)· 资金榜单名次 —— 按需联网现算(约 5–15 秒)。</p>
+             <div class="actions canvas-detail-actions">
+               <button class="button compact" type="button" data-opp-scores-load="${html(node.stock_code)}">加载深度评分</button>
+             </div>`;
+        return `
+          <div class="canvas-detail-section opp-deep-scores">
+            <strong>深度评分</strong>
+            <div class="opp-deep-scores-body">${inner}</div>
+          </div>`;
+      }
+
+      function opportunityDeepScoresHtml(data) {
+        if (!data || data.ok === false) {
+          return `<p class="notice status error">${html(data?.error || "深度评分加载失败")}</p>`;
+        }
+        const cards = [
+          opportunityPatternScoreCard(data.pattern),
+          opportunityJuryScoreCard(data.jury),
+          opportunityCapitalScoreCard(data.capital),
+        ].join("");
+        return `<div class="opp-deep-grid">${cards}</div>`;
+      }
+
+      function opportunityDeepCard(title, body, tone = "neutral") {
+        return `<div class="opp-deep-card tone-${html(tone)}">
+          <div class="opp-deep-card-title">${html(title)}</div>
+          <div class="opp-deep-card-body">${body}</div>
+        </div>`;
+      }
+
+      function opportunityPatternScoreCard(pattern) {
+        if (!pattern || pattern.data_status === "unavailable") {
+          return opportunityDeepCard("形态回测", `<p class="item-meta">${html(pattern?.reason || "暂无数据")}</p>`);
+        }
+        const score = pattern.pattern_score;
+        const wr = pattern.win_rate;
+        const ar = pattern.avg_return;
+        const tone = score == null ? "neutral" : (score >= 55 ? "good" : (score >= 45 ? "mid" : "low"));
+        const rows = ["5", "10", "20"].map((h) => {
+          const seg = (pattern.horizons || {})[h];
+          if (!seg || !seg.count) return "";
+          return `<div class="opp-deep-fact"><span>后${h}日</span><strong class="${changeClass((seg.win_rate || 0) - 0.5)}">${(Number(seg.win_rate) * 100).toFixed(0)}%</strong></div>`;
+        }).join("");
+        const head = score != null
+          ? `<div class="opp-deep-big ${tone === "low" ? "change-down" : "change-up"}">${num(score, 0)}<span>形态分</span></div>`
+          : `<p class="item-meta">命中样本不足</p>`;
+        const sub = (wr != null)
+          ? `<p class="item-meta">10日胜率 ${(Number(wr) * 100).toFixed(0)}% · 平均 ${ar != null ? (Number(ar) * 100).toFixed(1) + "%" : "--"} · 样本 ${pattern.sample_count || 0}</p>`
+          : "";
+        return opportunityDeepCard("形态回测(自回测)", `${head}${sub}${rows ? `<div class="opp-deep-facts">${rows}</div>` : ""}`, tone);
+      }
+
+      function opportunityJuryScoreCard(jury) {
+        if (!jury || jury.data_status === "unavailable") {
+          return opportunityDeepCard("多空评审团", `<p class="item-meta">${html(jury?.reason || "暂无数据")}</p>`);
+        }
+        const game = Number(jury.game_score);
+        const tone = !Number.isFinite(game) ? "neutral" : (game >= 60 ? "good" : (game > 40 ? "mid" : "low"));
+        const head = `<div class="opp-deep-big ${game >= 50 ? "change-up" : "change-down"}">${num(game, 0)}<span>量价博弈</span></div>`;
+        const label = `<p class="item-meta">${html(jury.label || "")} · 30 模型 多 ${jury.buy_signal_count || 0} / 空 ${jury.sell_signal_count || 0} / 观望 ${jury.hold_signal_count || 0}</p>`;
+        const bars = `<div class="opp-deep-facts">
+          <div class="opp-deep-fact"><span>偏多</span><strong class="change-up">${jury.bullish ?? "--"}%</strong></div>
+          <div class="opp-deep-fact"><span>震荡</span><strong>${jury.sideways ?? "--"}%</strong></div>
+          <div class="opp-deep-fact"><span>偏空</span><strong class="change-down">${jury.bearish ?? "--"}%</strong></div>
+        </div>`;
+        return opportunityDeepCard("多空评审团(30 模型)", `${head}${label}${bars}`, tone);
+      }
+
+      function opportunityCapitalScoreCard(capital) {
+        if (!capital || capital.data_status === "unavailable") {
+          return opportunityDeepCard("资金榜单", `<p class="item-meta">${html(capital?.reason || "暂无榜单记录")}</p>`);
+        }
+        const mf = capital.moneyflow?.row || null;
+        const dt = capital.dragon_tiger?.row || null;
+        const bits = [];
+        if (mf) {
+          bits.push(`<div class="opp-deep-fact"><span>主力名次</span><strong>#${mf.rank || "—"}</strong></div>`);
+          if (mf.net_amount != null) {
+            bits.push(`<div class="opp-deep-fact"><span>净买入</span><strong class="${changeClass(mf.net_amount)}">${formatMoneyText(mf.net_amount)}</strong></div>`);
+          }
+        }
+        if (dt) {
+          bits.push(`<div class="opp-deep-fact"><span>龙虎榜</span><strong>${dt.list_count || 0}次</strong></div>`);
+          if (dt.net_amount != null) {
+            bits.push(`<div class="opp-deep-fact"><span>龙虎净买</span><strong class="${changeClass(dt.net_amount)}">${formatMoneyText(dt.net_amount)}</strong></div>`);
+          }
+        }
+        if (!bits.length) {
+          return opportunityDeepCard("资金榜单", `<p class="item-meta">近 ${capital.days || 5} 日无主力/龙虎榜命中</p>`);
+        }
+        const reason = dt?.reason ? `<p class="item-meta">${html(dt.reason)}</p>` : "";
+        const tone = (mf && Number(mf.net_amount) > 0) || (dt && Number(dt.net_amount) > 0) ? "good" : "neutral";
+        return opportunityDeepCard("资金榜单", `<div class="opp-deep-facts">${bits.join("")}</div>${reason}`, tone);
+      }
+
+      async function loadOpportunityStockScores(node, button) {
+        if (!node?.stock_code) return;
+        const code = node.stock_code;
+        const host = button?.closest(".opp-deep-scores-body");
+        if (button) {
+          button.disabled = true;
+          button.textContent = "联网现算中…";
+        }
+        if (host) host.innerHTML = `<p class="muted"><span class="spinner"></span> 正在联网拉取日K并现算形态/评审团/资金榜单…</p>`;
+        try {
+          const payload = await fetchJson(`/api/opportunity/stock-scores/${encodeURIComponent(code)}?name=${encodeURIComponent(node.stock_name || "")}`);
+          state.opportunityCanvas.deepScores = state.opportunityCanvas.deepScores || {};
+          state.opportunityCanvas.deepScores[code] = payload;
+          const target = host || $("#opportunityCanvasDetail")?.querySelector(".opp-deep-scores-body");
+          if (target) target.innerHTML = opportunityDeepScoresHtml(payload);
+        } catch (error) {
+          if (host) host.innerHTML = `<p class="notice status error">深度评分加载失败：${html(error.message)}</p>`;
+          else throw error;
+        }
+      }
+
       function renderOpportunityCanvasDetail(node) {        const detail = $("#opportunityCanvasDetail");
         if (!detail) return;
         if (!node) {
@@ -3310,6 +3436,7 @@
         const typeLabel = opportunityCanvasNodeTypeLabel(node);
         const scoreSummaryHtml = opportunityCanvasScoreSummary(node);
         const quantModelsHtml = opportunityCanvasQuantModels(node);
+        const deepScoresHtml = opportunityCanvasDeepScores(node);
         const drilldown = node.drilldown ? `
           <div class="actions canvas-detail-actions">
             <button class="button compact" type="button" data-canvas-drill-node="${html(node.id)}">展开相关信息</button>
@@ -3327,6 +3454,7 @@
           ${facts ? `<div class="canvas-detail-facts">${facts}</div>` : ""}
           ${scoreSummaryHtml}
           ${quantModelsHtml}
+          ${deepScoresHtml}
           ${opportunityCanvasHotSectorMemberships(node)}
           ${opportunityCanvasRelationSummary(node)}
           ${node.detail ? `<div class="canvas-detail-section"><strong>分析摘要</strong><p>${html(node.detail)}</p></div>` : ""}
@@ -3346,6 +3474,9 @@
           const id = event.currentTarget.dataset.canvasDrillNode;
           const targetNode = state.opportunityCanvas.layout?.nodeMap?.get(id);
           loadCanvasDrilldown(targetNode, event.currentTarget).catch((error) => alert(error.message));
+        });
+        detail.querySelector("[data-opp-scores-load]")?.addEventListener("click", (event) => {
+          loadOpportunityStockScores(node, event.currentTarget).catch((error) => alert(error.message));
         });
         detail.querySelectorAll("[data-canvas-focus]").forEach((btn) => {
           btn.addEventListener("click", () => focusOpportunityCanvasNode(btn.dataset.canvasFocus));
@@ -6846,7 +6977,15 @@
         return String(value);
       }
 
-      function suiteCapitalLabel(key) {
+      function suiteCapitalLabel(key, kind = "") {
+        if (kind === "moneyflow") {
+          if (key === "net_amount") return "主力净流入额";
+          if (key === "retail_buy_amount") return "中小单净流入额";
+          if (key === "buy_elg_amount") return "超大单净流入额";
+          if (key === "buy_lg_amount") return "大单净流入额";
+          if (key === "buy_md_amount") return "中单净流入额";
+          if (key === "buy_sm_amount") return "小单净流入额";
+        }
         return (typeof CAPITAL_COLUMN_LABELS !== "undefined" && CAPITAL_COLUMN_LABELS[key]) || key;
       }
 
@@ -6861,10 +7000,10 @@
           ? [
               ["全市场名次", `#${row.rank || "—"}`, "info"],
               ["上榜天数", `${row.list_count || 0} 天`, "neutral"],
-              ["主力买入额", suiteCapitalCell(kind, "main_buy_amount", row.main_buy_amount, null, row), "warn"],
-              ["净买入额", suiteCapitalCell(kind, "net_amount", row.net_amount, null, row), Number(row.net_amount || 0) >= 0 ? "danger" : "success"],
-              ["超大单", suiteCapitalCell(kind, "buy_elg_amount", row.buy_elg_amount, null, row), "neutral"],
-              ["大单", suiteCapitalCell(kind, "buy_lg_amount", row.buy_lg_amount, null, row), "neutral"],
+              ["主力净流入额", suiteCapitalCell(kind, "net_amount", row.net_amount, null, row), Number(row.net_amount || 0) >= 0 ? "danger" : "success"],
+              ["中小单净流入额", suiteCapitalCell(kind, "retail_buy_amount", row.retail_buy_amount, null, row), "neutral"],
+              ["超大单净流入额", suiteCapitalCell(kind, "buy_elg_amount", row.buy_elg_amount, null, row), "neutral"],
+              ["大单净流入额", suiteCapitalCell(kind, "buy_lg_amount", row.buy_lg_amount, null, row), "neutral"],
             ]
           : [
               ["全市场名次", `#${row.rank || "—"}`, "info"],
@@ -6885,7 +7024,7 @@
         if (!records.length) return `<p class="capital-detail-empty">暂无原始日记录</p>`;
         return `<div class="capital-detail-raw-wrap">
           <table class="capital-detail-table">
-            <thead><tr>${cols.map((key) => `<th>${html(suiteCapitalLabel(key))}</th>`).join("")}</tr></thead>
+            <thead><tr>${cols.map((key) => `<th>${html(suiteCapitalLabel(key, kind))}</th>`).join("")}</tr></thead>
             <tbody>${records.map((record) => `<tr>${cols.map((key) => `<td>${html(suiteCapitalCell(kind, key, record?.[key], record, row))}</td>`).join("")}</tr>`).join("")}</tbody>
           </table>
         </div>`;
@@ -6968,7 +7107,7 @@
           </div>
           <div class="suite-stale-banner">${html(status)} · ${html(modeText)} · 最新资金榜 ${html(data.as_of || "—")}</div>
           <div class="suite-capital-grid">
-            ${suiteCapitalSectionCard("主力买入榜", data.moneyflow || {}, "moneyflow")}
+            ${suiteCapitalSectionCard("主力净流入榜", data.moneyflow || {}, "moneyflow")}
             ${suiteCapitalSectionCard("龙虎榜", data.dragon_tiger || {}, "dragon_tiger")}
           </div>
           ${data.reason ? `<p class="suite-empty-note">${html(data.reason)}</p>` : ""}
@@ -9138,35 +9277,129 @@
         $("#featureConfigPill").className = `pill ${llmReady && tushareReady ? "ok" : "warn"}`;
       }
 
+      function modelRowMarkup(model) {
+        const m = model || {};
+        return `
+          <div class="model-row" data-model-row style="border:1px solid var(--border,#e2e2e2); border-radius:8px; padding:10px; margin-top:8px;">
+            <div class="item-top">
+              <label style="display:flex; align-items:center; gap:6px; margin:0;">
+                <input type="checkbox" data-model-enabled ${m.selected ? "checked" : ""} />
+                <span class="item-meta">启用</span>
+              </label>
+              <button type="button" class="button ghost" data-remove-model>删除模型</button>
+            </div>
+            <div class="form-grid" style="margin-top:8px;">
+              <label>模型名称 (key)
+                <input data-model-field="key" value="${html(m.key || "")}" placeholder="如 DeepSeek-V4" autocomplete="off" />
+              </label>
+              <label>模型 ID (model_id)
+                <input data-model-field="model_id" value="${html(m.model_id || "")}" placeholder="如 deepseek-v4-pro" autocomplete="off" />
+              </label>
+              <label>描述
+                <input data-model-field="description" value="${html(m.description || "")}" placeholder="可选" autocomplete="off" />
+              </label>
+              <label>Endpoint
+                <input data-model-field="endpoint" value="${html(m.endpoint || "")}" placeholder="如 /chat/completions" autocomplete="off" />
+              </label>
+              <label>max_tokens
+                <input data-model-field="max_tokens" type="number" min="1" value="${m.max_tokens ?? ""}" placeholder="可选" />
+              </label>
+              <label>超时(秒)
+                <input data-model-field="timeout" type="number" min="1" value="${m.timeout ?? ""}" placeholder="可选" />
+              </label>
+            </div>
+          </div>`;
+      }
+
+      function providerCardMarkup(provider) {
+        const p = provider || {};
+        const keyPill = p.has_api_key
+          ? `<span class="pill ok">Key ${html(p.api_key_masked || "")}</span>`
+          : `<span class="pill warn">未配置 Key</span>`;
+        const styleOptions = ["openai", "dashscope"]
+          .map((style) => `<option value="${style}" ${(p.api_style || "openai") === style ? "selected" : ""}>${style}</option>`)
+          .join("");
+        return `
+          <div class="item" data-provider-card data-original-name="${html(p.name || "")}">
+            <div class="item-top">
+              <input data-provider-field="name" class="item-title-input" value="${html(p.name || "")}" placeholder="Provider 名称" autocomplete="off" style="font-weight:600; max-width:60%;" />
+              ${keyPill}
+            </div>
+            <div class="form-grid" style="margin-top:8px;">
+              <label>接口地址 (base_url)
+                <input data-provider-field="base_url" value="${html(p.base_url || "")}" placeholder="如 https://api.deepseek.com" autocomplete="off" />
+              </label>
+              <label>API 风格
+                <select data-provider-field="api_style">${styleOptions}</select>
+              </label>
+              <label>启用 Provider
+                <select data-provider-field="enabled">
+                  <option value="1" ${p.enabled ? "selected" : ""}>启用</option>
+                  <option value="0" ${p.enabled ? "" : "selected"}>保留(不启用)</option>
+                </select>
+              </label>
+              <label>API Key
+                <input data-provider-field="api_key" type="password" placeholder="留空不覆盖现有 Key" autocomplete="off" />
+              </label>
+            </div>
+            <div data-model-list>
+              ${(p.models || []).map((model) => modelRowMarkup(model)).join("")}
+            </div>
+            <div class="actions" style="margin-top:10px; gap:8px;">
+              <button type="button" class="button ghost" data-add-model>+ 新增模型</button>
+              <button type="button" class="button ghost" data-remove-provider>删除 Provider</button>
+            </div>
+          </div>`;
+      }
+
       function providerModelRows(settings) {
         const providers = settings.llm?.providers || [];
-        if (!providers.length) {
-          return `<div class="item"><p class="item-meta">未找到模型 Provider 配置。</p></div>`;
-        }
-        return providers.map((provider) => `
-          <div class="item" data-provider="${html(provider.name)}">
-            <div class="item-top">
-              <p class="item-title">${html(provider.name)}</p>
-              <span class="pill ${provider.has_api_key ? "ok" : "warn"}">${provider.has_api_key ? "Key " + html(provider.api_key_masked) : "未配置 Key"}</span>
-            </div>
-            <div class="form-grid">
-              <label>API Key
-                <input type="password" data-provider-key="${html(provider.name)}" placeholder="留空不覆盖现有 Key" autocomplete="off" />
-              </label>
-              <label>Provider 状态
-                <input value="${provider.enabled ? "启用" : "配置保留"} · ${html(provider.api_style)}" disabled />
-              </label>
-            </div>
-            <div class="check-row" style="margin-top: 10px;">
-              ${(provider.models || []).map((model) => `
-                <label title="${html(model.description || model.model_id || "")}">
-                  <input type="checkbox" data-llm-model="${html(model.full_key)}" ${model.selected ? "checked" : ""} />
-                  ${html(model.key)}
-                </label>
-              `).join("")}
-            </div>
-          </div>
-        `).join("");
+        const cards = providers.map((provider) => providerCardMarkup(provider)).join("");
+        return `
+          <div data-provider-list>${cards}</div>
+          <div class="actions" style="margin-top:12px;">
+            <button type="button" class="button" data-add-provider>+ 新增 Provider</button>
+          </div>`;
+      }
+
+      function collectLlmProviders() {
+        const cards = [...document.querySelectorAll("[data-provider-card]")];
+        const providers = [];
+        const apiKeys = {};
+        const enabledModels = [];
+        cards.forEach((card) => {
+          const field = (name) => card.querySelector(`[data-provider-field="${name}"]`);
+          const name = (field("name")?.value || "").trim();
+          if (!name) return;
+          const apiKey = (field("api_key")?.value || "").trim();
+          if (apiKey) apiKeys[name] = apiKey;
+          const models = [];
+          card.querySelectorAll("[data-model-row]").forEach((row) => {
+            const mField = (n) => row.querySelector(`[data-model-field="${n}"]`);
+            const key = (mField("key")?.value || "").trim();
+            const modelId = (mField("model_id")?.value || "").trim();
+            if (!key || !modelId) return;
+            models.push({
+              key,
+              model_id: modelId,
+              description: (mField("description")?.value || "").trim(),
+              endpoint: (mField("endpoint")?.value || "").trim(),
+              max_tokens: (mField("max_tokens")?.value || "").trim(),
+              timeout: (mField("timeout")?.value || "").trim(),
+            });
+            if (row.querySelector("[data-model-enabled]")?.checked) {
+              enabledModels.push(`${name}/${key}`);
+            }
+          });
+          providers.push({
+            name,
+            base_url: (field("base_url")?.value || "").trim(),
+            api_style: field("api_style")?.value || "openai",
+            enabled: field("enabled")?.value === "1",
+            models,
+          });
+        });
+        return { providers, apiKeys, enabledModels };
       }
 
       function autoFollowMetaText(af) {
@@ -9268,18 +9501,35 @@
         });
         setupKronosModelControls();
 
+        // 新增 / 删除 Provider 与模型:事件委托绑定在容器上,避免重渲染后失效。
+        $("#llmProviderList").addEventListener("click", (event) => {
+          const target = event.target;
+          if (!(target instanceof Element)) return;
+          if (target.closest("[data-add-provider]")) {
+            const list = $("#llmProviderList").querySelector("[data-provider-list]");
+            if (list) list.insertAdjacentHTML("beforeend", providerCardMarkup({ api_style: "openai", enabled: true, models: [] }));
+          } else if (target.closest("[data-add-model]")) {
+            const card = target.closest("[data-provider-card]");
+            const modelList = card?.querySelector("[data-model-list]");
+            if (modelList) modelList.insertAdjacentHTML("beforeend", modelRowMarkup({ selected: false }));
+          } else if (target.closest("[data-remove-model]")) {
+            target.closest("[data-model-row]")?.remove();
+          } else if (target.closest("[data-remove-provider]")) {
+            const card = target.closest("[data-provider-card]");
+            const name = (card?.querySelector('[data-provider-field="name"]')?.value || "").trim();
+            if (name && !confirm(`确认删除 Provider「${name}」及其下所有模型?`)) return;
+            card?.remove();
+          }
+        });
+
         $("#llmSettingsForm").addEventListener("submit", async (event) => {
           event.preventDefault();
-          const enabledModels = [...document.querySelectorAll("[data-llm-model]:checked")].map((input) => input.dataset.llmModel);
-          const apiKeys = {};
-          document.querySelectorAll("[data-provider-key]").forEach((input) => {
-            if (input.value.trim()) apiKeys[input.dataset.providerKey] = input.value.trim();
-          });
+          const { providers, apiKeys, enabledModels } = collectLlmProviders();
           try {
             const data = await fetchJson("/api/settings/llm", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ enabled_models: enabledModels, api_keys: apiKeys }),
+              body: JSON.stringify({ enabled_models: enabledModels, api_keys: apiKeys, providers }),
             });
             $("#llmConfigMeta").textContent = "已保存";
             $("#llmProviderList").innerHTML = providerModelRows(data.settings);
@@ -9901,7 +10151,7 @@
         btn.textContent = on ? "★ 已自选" : "☆ 加自选";
       }
 
-      // ── 资金榜单（主力买入榜 / 龙虎榜）────────────────────────────
+      // ── 资金榜单（主力净流入榜 / 龙虎榜）────────────────────────────
       function capitalParams() {
         const cap = state.capital;
         const selectedMode = $("#capitalMode")?.value || "single";
@@ -9967,15 +10217,15 @@
         pct_change: "当日涨跌幅",
         net_amount: "净买入额",
         net_amount_rate: "净占比",
-        main_buy_amount: "主力买入额",
-        retail_buy_amount: "散户侧买入额",
-        buy_elg_amount: "超大单",
+        main_buy_amount: "主力净流入额",
+        retail_buy_amount: "中小单净流入额",
+        buy_elg_amount: "超大单净流入额",
         buy_elg_amount_rate: "超大单占比",
-        buy_lg_amount: "大单",
+        buy_lg_amount: "大单净流入额",
         buy_lg_amount_rate: "大单占比",
-        buy_md_amount: "中单",
+        buy_md_amount: "中单净流入额",
         buy_md_amount_rate: "中单占比",
-        buy_sm_amount: "小单",
+        buy_sm_amount: "小单净流入额",
         buy_sm_amount_rate: "小单占比",
         amount_unit: "金额单位",
         l_buy: "龙虎榜买入",
@@ -10023,6 +10273,18 @@
       ]);
       const CAPITAL_INTERNAL_KEYS = new Set(["raw", "raw_json", "code", "quoted", "live_main_net_inflow", "detail_rows", "institution_rows", "institution_daily_rows", "_amount_unit", "top_n"]);
 
+      function capitalMainLabel(key) {
+        if (state.capital?.tab === "moneyflow") {
+          if (key === "net_amount") return "主力净流入额";
+          if (key === "retail_buy_amount") return "中小单净流入额";
+          if (key === "buy_elg_amount") return "超大单净流入额";
+          if (key === "buy_lg_amount") return "大单净流入额";
+          if (key === "buy_md_amount") return "中单净流入额";
+          if (key === "buy_sm_amount") return "小单净流入额";
+        }
+        return CAPITAL_COLUMN_LABELS[key] != null ? CAPITAL_COLUMN_LABELS[key] : key;
+      }
+
       function capitalMoney(value) {
         const v = Number(value);
         if (!Number.isFinite(v)) return "--";
@@ -10053,10 +10315,10 @@
         const isMf = cap.tab === "moneyflow";
         const base = compact
           ? (isMf
-              ? ["rank", "stock", "main_buy_amount", "institution_buy_amount", "institution_amount", "net_amount", "retail_buy_amount", "buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount", "list_count", "first_date", "last_date"]
+              ? ["rank", "stock", "net_amount", "institution_buy_amount", "institution_amount", "retail_buy_amount", "buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount", "list_count", "first_date", "last_date"]
               : ["rank", "stock", "l_buy", "institution_buy_amount", "institution_amount", "l_sell", "net_amount", "l_amount", "amount", "reason_count", "list_count", "first_date", "last_date"])
           : (isMf
-              ? ["select", "rank", "stock", "trade_date", "last_price", "change_pct", "main_buy_amount", "institution_buy_amount", "institution_amount", "net_amount", "retail_buy_amount", "buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount", "net_amount_rate", "buy_elg_amount_rate", "buy_lg_amount_rate", "buy_md_amount_rate", "buy_sm_amount_rate", "amount_unit", "list_count", "first_date", "last_date", "actions"]
+              ? ["select", "rank", "stock", "trade_date", "last_price", "change_pct", "net_amount", "institution_buy_amount", "institution_amount", "retail_buy_amount", "buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount", "net_amount_rate", "buy_elg_amount_rate", "buy_lg_amount_rate", "buy_md_amount_rate", "buy_sm_amount_rate", "amount_unit", "list_count", "first_date", "last_date", "actions"]
               : ["select", "rank", "stock", "trade_date", "last_price", "change_pct", "l_buy", "institution_buy_amount", "institution_amount", "l_sell", "net_amount", "l_amount", "amount", "turnover_rate", "net_rate", "amount_rate", "reason_count", "reason", "list_count", "first_date", "last_date", "actions"]);
         const seen = new Set(base);
         // 已被合成/精选列覆盖的原始字段:股票列已含名称+代码;有最新价/涨跌幅列时 close/pct_change 属重复。
@@ -10175,6 +10437,33 @@
         ].join("|");
       }
 
+      function capitalRankRowForCode(code) {
+        const bare = capitalBareCode(code);
+        if (!bare) return null;
+        const rows = (state.capital && Array.isArray(state.capital.rows)) ? state.capital.rows : [];
+        return rows.find((row) => (
+          capitalBareCode(row.code || row.ts_code) === bare
+          || capitalBareCode(row.ts_code || row.code) === bare
+        )) || null;
+      }
+
+      function capitalRankPriceInfo(row) {
+        if (!row) return null;
+        const pick = (label, value) => {
+          const n = Number(value);
+          return Number.isFinite(n) ? { label, value: n } : null;
+        };
+        if (row.quoted && row.last_price != null) return pick("现价", row.last_price);
+        return pick("收盘", row.close) || pick("价格", row.last_price) || pick("价格", row.price);
+      }
+
+      function capitalRankChangePct(row) {
+        if (!row) return null;
+        const value = (row.quoted && row.change_pct != null) ? row.change_pct : (row.pct_change ?? row.change_pct);
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+      }
+
       function capitalDisplayValue(row, key, value, record) {
         if (value == null || value === "") return "--";
         if (CAPITAL_MONEY_KEYS.has(key)) return capitalDisplayAmount(row, key, value, record);
@@ -10189,10 +10478,10 @@
       function capitalDetailPairs(row) {
         const isMf = state.capital.tab === "moneyflow";
         const keys = isMf
-          ? ["trade_date", "first_date", "last_date", "list_count", "last_price", "change_pct", "close", "pct_change", "main_buy_amount", "institution_buy_amount", "institution_amount", "institution_net_amount", "institution_count", "net_amount", "retail_buy_amount", "buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount", "net_amount_rate", "amount_unit"]
+          ? ["trade_date", "first_date", "last_date", "list_count", "last_price", "change_pct", "close", "pct_change", "net_amount", "institution_buy_amount", "institution_amount", "institution_net_amount", "institution_count", "retail_buy_amount", "buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount", "net_amount_rate", "amount_unit"]
           : ["trade_date", "first_date", "last_date", "list_count", "reason_count", "last_price", "change_pct", "close", "pct_change", "l_buy", "institution_buy_amount", "institution_sell_amount", "institution_net_amount", "institution_amount", "institution_count", "l_sell", "net_amount", "l_amount", "amount", "turnover_rate", "net_rate", "amount_rate"];
         return keys
-          .map((key) => ({ key, label: CAPITAL_COLUMN_LABELS[key] || key, value: Object.prototype.hasOwnProperty.call(row, key) ? row[key] : (row.raw || {})[key] }))
+          .map((key) => ({ key, label: capitalMainLabel(key), value: Object.prototype.hasOwnProperty.call(row, key) ? row[key] : (row.raw || {})[key] }))
           .filter((item) => item.value != null && item.value !== "");
       }
 
@@ -10306,7 +10595,7 @@
         const rawTable = detailRows.length && detailCols.length
           ? `<div class="capital-detail-raw-wrap">
               <table class="capital-detail-table">
-                <thead><tr>${detailCols.map((key) => `<th>${html(CAPITAL_COLUMN_LABELS[key] || key)}</th>`).join("")}</tr></thead>
+                <thead><tr>${detailCols.map((key) => `<th>${html(capitalMainLabel(key))}</th>`).join("")}</tr></thead>
                 <tbody>${detailRows.map((record) => `<tr>${detailCols.map((key) => `<td>${html(capitalDisplayValue(row, key, record ? record[key] : null, record))}</td>`).join("")}</tr>`).join("")}</tbody>
               </table>
             </div>`
@@ -10341,7 +10630,7 @@
           viewRows = sortedCapitalRows(rows, sort.key, sort.dir);
         }
         const th = cols.map((key) => {
-          const label = html(CAPITAL_COLUMN_LABELS[key] != null ? CAPITAL_COLUMN_LABELS[key] : key);
+          const label = html(capitalMainLabel(key));
           if (!sortable || CAPITAL_NO_SORT_KEYS.has(key)) {
             return `<th class="cap-col-${html(key)}">${label}</th>`;
           }
@@ -10368,7 +10657,7 @@
         if (!box) return;
         const win = (cap.data && cap.data.windows && cap.data.windows[String(days)]) || {};
         const rows = win.rows || [];
-        if (meta) meta.textContent = rows.length ? `${rows.length} 条 · 按${cap.tab === "moneyflow" ? "主力买入额" : "龙虎榜买入"}排序` : "--";
+        if (meta) meta.textContent = rows.length ? `${rows.length} 条 · 按${cap.tab === "moneyflow" ? "主力净流入额" : "龙虎榜买入"}排序` : "--";
         if (!rows.length) {
           empty(box, `暂无${days}日聚合数据`);
           return;
@@ -10391,7 +10680,7 @@
         const d = cap.data || {};
         const meta = $("#capitalRankingsMeta");
         if (meta) {
-          const tabName = cap.tab === "moneyflow" ? "主力买入榜" : "龙虎榜";
+          const tabName = cap.tab === "moneyflow" ? "主力净流入榜" : "龙虎榜";
           const modeName = d.start_date && d.end_date
             ? `${d.start_date} ~ ${d.end_date} 区间`
             : (d.mode === "aggregate" ? `近${d.days}日聚合` : "单日");
@@ -10524,11 +10813,17 @@
         const name = item.name || item.stock_name || code;
         const score = (item.total_score != null) ? item.total_score : item.score;
         const rating = item.rating || "";
-        const pct = Number(item.change_pct);
+        const rankRow = capitalRankRowForCode(code);
+        const priceInfo = capitalRankPriceInfo(rankRow) || capitalRankPriceInfo(item);
+        const rankPct = capitalRankChangePct(rankRow);
+        const itemPct = Number(item.change_pct);
+        const pct = rankPct != null ? rankPct : (Number.isFinite(itemPct) ? itemPct : null);
+        const sector = item.sector || rankRow?.sector || rankRow?.industry || rankRow?.raw?.sector || rankRow?.raw?.industry;
         const tier = capitalRatingTierClass(rating);
         const bits = [];
-        if (Number.isFinite(pct)) bits.push(`当日 <span class="${changeClass(pct)}">${pct >= 0 ? "+" : ""}${num(pct)}%</span>`);
-        if (item.sector) bits.push(html(item.sector));
+        if (priceInfo) bits.push(`${html(priceInfo.label)} ¥${num(priceInfo.value)}`);
+        if (pct != null) bits.push(`涨幅 <span class="${changeClass(pct)}">${pct >= 0 ? "+" : ""}${num(pct)}%</span>`);
+        if (sector) bits.push(html(sector));
         if (item.degraded) bits.push(`<span class="cap-analyze-degraded">数据降级</span>`);
         return `
           <div class="cap-analyze-card">
@@ -11324,7 +11619,11 @@
 
       function ccRankRowCapital(row, maxAbs) {
         const nm = row.name || row.ts_code || row.code || "--";
-        const val = row.main_buy_amount != null ? row.main_buy_amount : row.net_amount;
+        // moneyflow 金额单位是「万元」(MONEYFLOW_AMOUNT_UNIT),ccYi 按「元」换算,
+        // 不先乘单位因子会少 4 个数量级。与 capitalDisplayAmount / suiteCapitalCell 口径一致。
+        const factor = capitalAmountFactor(row.amount_unit || row.raw?.amount_unit || "万元");
+        const rawVal = row.net_amount != null ? row.net_amount : row.main_buy_amount;
+        const val = rawVal != null ? Number(rawVal) * factor : rawVal;
         const w = maxAbs > 0 ? Math.max(6, Math.round(Math.abs(val || 0) / maxAbs * 100)) : 6;
         const cls = (val || 0) >= 0 ? "up" : "down";
         const code = row.code || (row.ts_code || "").split(".")[0];
@@ -11424,7 +11723,12 @@
 
       function ccRankings(d) {
         const cap = (d.rankings && d.rankings.capital) ? d.rankings.capital.slice(0, 6) : [];
-        const maxAbs = cap.reduce((mx, r) => Math.max(mx, Math.abs((r.main_buy_amount != null ? r.main_buy_amount : r.net_amount) || 0)), 0);
+        // maxAbs 与 ccRankRowCapital 口径一致:都乘单位因子(moneyflow 默认万元),否则条形宽度比例错位。
+        const maxAbs = cap.reduce((mx, r) => {
+          const raw = r.net_amount != null ? r.net_amount : r.main_buy_amount;
+          const v = raw != null ? Number(raw) * capitalAmountFactor(r.amount_unit || r.raw?.amount_unit || "万元") : 0;
+          return Math.max(mx, Math.abs(v || 0));
+        }, 0);
         const capRows = cap.length ? cap.map((r) => ccRankRowCapital(r, maxAbs)).join("") : `<div class="cc-empty">资金榜单暂无数据</div>`;
         const oppTop = (d.matrix || []).slice().sort((a, b) => (b.opp || 0) - (a.opp || 0)).slice(0, 6);
         const oppRows = oppTop.length ? oppTop.map(ccRankRowOpp).join("") : `<div class="cc-empty">暂无机会标的</div>`;
@@ -11442,7 +11746,7 @@
             + rel.map(ccHoldingRelevanceRow).join("");
         }
         return `<div class="ranks">
-          <div class="panel"><div class="ph"><span class="dotmark"></span><b>资金主线榜</b><span class="tag">主力买入 / 净额</span></div>${capRows}</div>
+          <div class="panel"><div class="ph"><span class="dotmark"></span><b>资金主线榜</b><span class="tag">主力净流入</span></div>${capRows}</div>
           <div class="panel"><div class="ph"><span class="dotmark" style="background:#25b88a"></span><b>机会 Top 榜</b><span class="tag">机会分 / 风险分 双标</span></div>${oppRows}</div>
           <div class="panel"><div class="ph"><span class="dotmark" style="background:#cc5878"></span><b>持仓 · 热点关联</b>${relSummary}</div>${relBody}</div>
         </div>`;
@@ -11730,7 +12034,12 @@
           const res = await fetchJson("/api/command-center/recompute", { method: "POST" });
           const jobId = res.job_id || (res.job && res.job.id);
           if (!jobId) throw new Error("未返回 job_id");
-          await pollJob(jobId, { onDone: async () => { await loadCommandCenter(); } });
+          await pollJob(jobId, {
+            onDone: async (job) => {
+              if (job && job.status === "finished") ccActiveDate = null;
+              await loadCommandCenter();
+            },
+          });
         } catch (e) {
           alert("重新统筹失败: " + e.message);
         } finally {

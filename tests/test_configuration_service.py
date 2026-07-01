@@ -209,3 +209,129 @@ def test_desktop_configuration_bootstraps_user_secrets_from_source_config(tmp_pa
     assert payload["llm"]["configured"] is True
     assert payload["tushare"]["configured"] is True
     assert payload["tushare"]["token_masked"] == "sour********oken"
+
+
+def _provider_only_service(tmp_path, monkeypatch):
+    """初始化一个带 provider 模板的服务,返回 (service, user_dir)。"""
+    project = tmp_path / "project"
+    user = tmp_path / "user"
+    project_config = project / "config"
+    project_config.mkdir(parents=True)
+    (project_config / "llm_provider_config.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "DeepSeek官方": {
+                        "enabled": True,
+                        "api_style": "openai",
+                        "base_url": "https://api.deepseek.com",
+                        "models": {
+                            "DeepSeek-V4": {
+                                "model_id": "deepseek-v4-pro",
+                                "endpoint": "/chat/completions",
+                                "max_tokens": 8192,
+                                "timeout": 240,
+                                "description": "DeepSeek V4",
+                            }
+                        },
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("KRONOS_CONFIG_DIR", raising=False)
+    return RuntimeConfigurationService(project, user), user
+
+
+def test_settings_payload_exposes_extended_model_fields(tmp_path, monkeypatch):
+    service, _ = _provider_only_service(tmp_path, monkeypatch)
+    payload = service.settings_payload()
+    provider = payload["llm"]["providers"][0]
+    assert provider["base_url"] == "https://api.deepseek.com"
+    model = provider["models"][0]
+    assert model["model_id"] == "deepseek-v4-pro"
+    assert model["endpoint"] == "/chat/completions"
+    assert model["max_tokens"] == 8192
+    assert model["timeout"] == 240
+
+
+def test_save_llm_settings_persists_provider_edits(tmp_path, monkeypatch):
+    service, user = _provider_only_service(tmp_path, monkeypatch)
+    result = service.save_llm_settings(
+        {
+            "enabled_models": ["DeepSeek官方/DeepSeek-V4"],
+            "api_keys": {"DeepSeek官方": "sk-edited"},
+            "providers": [
+                {
+                    "name": "DeepSeek官方",
+                    "base_url": "https://api.deepseek.com/v2",
+                    "api_style": "openai",
+                    "enabled": True,
+                    "models": [
+                        {
+                            "key": "DeepSeek-V4",
+                            "model_id": "deepseek-v4-turbo",
+                            "description": "改后的描述",
+                            "endpoint": "/chat/completions",
+                            "max_tokens": "4096",
+                            "timeout": "120",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    assert result["success"] is True
+    saved = json.loads((user / "config" / "llm_provider_config.json").read_text(encoding="utf-8"))
+    provider = saved["providers"]["DeepSeek官方"]
+    assert provider["base_url"] == "https://api.deepseek.com/v2"
+    model = provider["models"]["DeepSeek-V4"]
+    assert model["model_id"] == "deepseek-v4-turbo"
+    assert model["max_tokens"] == 4096  # 字符串数字转 int
+    assert model["timeout"] == 120
+    # 返回的 settings 已反映改动
+    assert result["settings"]["llm"]["providers"][0]["base_url"] == "https://api.deepseek.com/v2"
+
+
+def test_save_llm_settings_adds_and_removes_providers_and_models(tmp_path, monkeypatch):
+    service, user = _provider_only_service(tmp_path, monkeypatch)
+    # 提交里不含 DeepSeek官方 = 删除;新增一个 NewProvider 带两个模型(其中一个无 model_id 应被剔除)
+    service.save_llm_settings(
+        {
+            "enabled_models": ["NewProvider/ModelA"],
+            "providers": [
+                {
+                    "name": "NewProvider",
+                    "base_url": "https://api.new.test",
+                    "api_style": "dashscope",
+                    "enabled": True,
+                    "models": [
+                        {"key": "ModelA", "model_id": "model-a-id"},
+                        {"key": "Incomplete", "model_id": ""},  # 应被剔除
+                    ],
+                }
+            ],
+        }
+    )
+    saved = json.loads((user / "config" / "llm_provider_config.json").read_text(encoding="utf-8"))
+    providers = saved["providers"]
+    assert "DeepSeek官方" not in providers  # 已删除
+    assert "NewProvider" in providers
+    assert providers["NewProvider"]["api_style"] == "dashscope"
+    assert set(providers["NewProvider"]["models"].keys()) == {"ModelA"}  # 无 model_id 的被剔除
+
+
+def test_save_llm_settings_without_providers_keeps_legacy_behavior(tmp_path, monkeypatch):
+    service, user = _provider_only_service(tmp_path, monkeypatch)
+    service.save_llm_settings(
+        {
+            "enabled_models": ["DeepSeek官方/DeepSeek-V4"],
+            "api_keys": {"DeepSeek官方": "sk-legacy"},
+        }
+    )
+    # 不传 providers 时不应写出/改动 provider 配置到用户目录
+    assert not (user / "config" / "llm_provider_config.json").exists()
+    saved = json.loads((user / "config" / "llm_config.json").read_text(encoding="utf-8"))
+    assert saved["api_keys"]["DeepSeek官方"] == "sk-legacy"

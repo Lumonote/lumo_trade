@@ -84,12 +84,12 @@ def get_aggregated(
     sort_by: str = "net_amount",
 ) -> pd.DataFrame:
     """资金榜多日聚合:end_date 及之前最近 days 个有数据交易日,按累计主力净流入
-    降序取前 limit;list_count = 窗口内上榜天数(去重日期)。"""
-    order_expr = (
-        "main_buy_amount DESC, net_amount DESC"
-        if sort_by in {"buy_amount", "main_buy_amount"}
-        else "net_amount DESC"
-    )
+    降序取前 limit;list_count = 窗口内上榜天数(去重日期)。
+
+    ``main_buy_amount`` 是旧前端兼容字段；moneyflow_dc 的主排序口径应使用
+    ``net_amount``(主力净流入),不要把它解释成独立的成交买入额。
+    """
+    order_expr = "net_amount DESC, main_buy_amount DESC"
     return pd.read_sql_query(
         """
         WITH recent_dates AS (
@@ -138,11 +138,7 @@ def get_range_aggregated(
     sort_by: str = "net_amount",
 ) -> pd.DataFrame:
     """资金榜日期区间聚合:按 [start_date, end_date] 内累计主力净流入排序。"""
-    order_expr = (
-        "main_buy_amount DESC, net_amount DESC"
-        if sort_by in {"buy_amount", "main_buy_amount"}
-        else "net_amount DESC"
-    )
+    order_expr = "net_amount DESC, main_buy_amount DESC"
     return pd.read_sql_query(
         """
         SELECT ts_code,
@@ -185,7 +181,7 @@ def get_stock_aggregated(
 ) -> pd.DataFrame:
     """个股资金榜近 N 个有数据交易日聚合。
 
-    rank 为该股在同窗口全市场累计主力买入额榜单中的名次,而不是过滤后名次。
+    rank 为该股在同窗口全市场累计主力净流入额榜单中的名次,而不是过滤后名次。
     """
     core = _bare_code(ts_code)
     as_of = str(end_date or latest_date(snapshot_top_n) or "")
@@ -227,7 +223,7 @@ def get_stock_aggregated(
         ),
         ranked AS (
             SELECT grouped.*,
-                   RANK() OVER (ORDER BY main_buy_amount DESC, net_amount DESC) AS market_rank
+                   RANK() OVER (ORDER BY net_amount DESC) AS market_rank
             FROM grouped
         )
         SELECT * FROM ranked
@@ -244,7 +240,7 @@ def get_stock_range_aggregated(
     end_date: str,
     snapshot_top_n: int = 0,
 ) -> pd.DataFrame:
-    """个股资金榜日期区间聚合,rank 为区间全市场累计主力买入额名次。"""
+    """个股资金榜日期区间聚合,rank 为区间全市场累计主力净流入额名次。"""
     core = _bare_code(ts_code)
     if not core or not start_date or not end_date:
         return pd.DataFrame()
@@ -278,7 +274,7 @@ def get_stock_range_aggregated(
         ),
         ranked AS (
             SELECT grouped.*,
-                   RANK() OVER (ORDER BY main_buy_amount DESC, net_amount DESC) AS market_rank
+                   RANK() OVER (ORDER BY net_amount DESC) AS market_rank
             FROM grouped
         )
         SELECT * FROM ranked

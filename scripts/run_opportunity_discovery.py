@@ -120,6 +120,55 @@ class OpportunityDiscovery:
     def _env_truthy(name: str) -> bool:
         return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes', 'on')
 
+    @staticmethod
+    def _cleanup_timeout_seconds() -> float:
+        raw = os.environ.get('KRONOS_RESOURCE_CLOSE_TIMEOUT', '8')
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 8.0
+        return max(0.0, value)
+
+    @staticmethod
+    def _run_cleanup_with_timeout(label: str, cleanup_func) -> bool:
+        """Run best-effort cleanup without letting resource shutdown block completion."""
+        timeout = OpportunityDiscovery._cleanup_timeout_seconds()
+        if timeout <= 0:
+            cleanup_func()
+            return True
+
+        state = {'error': None}
+
+        def _target():
+            try:
+                cleanup_func()
+            except Exception as exc:
+                state['error'] = exc
+
+        thread = threading.Thread(
+            target=_target,
+            name=f"kronos-cleanup-{label}",
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout)
+        if thread.is_alive():
+            logger.warning(f"{label}关闭超过 {timeout:.1f}s，已转入后台继续清理；主任务先结束")
+            return False
+        if state['error'] is not None:
+            logger.warning(f"{label}关闭失败: {state['error']}")
+            return False
+        return True
+
+    def _close_resources(self) -> None:
+        scorer = getattr(self, 'scorer', None)
+        if scorer and hasattr(scorer, 'close'):
+            self._run_cleanup_with_timeout('scorer', scorer.close)
+
+        session = getattr(self, 'session', None)
+        if session and hasattr(session, 'close'):
+            self._run_cleanup_with_timeout('HTTP Session', session.close)
+
     def _resolve_latest_trade_date(self, pro, base_dt: datetime, max_back_days: int = 14) -> str:
         base_str = base_dt.strftime('%Y%m%d')
         try:
@@ -2031,17 +2080,9 @@ class OpportunityDiscovery:
         except Exception as bt_e:
             logger.warning(f"自动回测失败(不影响主流程): {bt_e}")
 
-        # 关闭资源
-        try:
-            self.scorer.close()
-        except Exception as e:
-            logger.warning(f"关闭scorer失败: {e}")
-
-        # 【优化1】关闭HTTP Session
-        try:
-            self.session.close()
-        except Exception as e:
-            logger.warning(f"关闭HTTP Session失败: {e}")
+        # 关闭资源。数据源/爬虫关闭有时会卡住；报告、入库、回测已完成时，
+        # 不能让 best-effort 清理阻塞 WebUI 任务状态落到 finished。
+        self._close_resources()
 
         return report_path
 

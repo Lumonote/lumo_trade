@@ -100,7 +100,7 @@ MARKET_INTELLIGENCE_SERVICE = MarketIntelligenceService()
 PATTERN_SEARCH_SERVICE = PatternSearchService(USER_ROOT / "data" / "pattern_fingerprints.db")
 TRADING_CLIENT_SERVICE = TradingClientService(PROJECT_ROOT / "config" / "trading_client_adapters.json")
 WATCHLIST_SERVICE = WatchlistService(USER_ROOT / "config" / "watchlist.json")
-# 资金榜单(主力买入榜+龙虎榜):注入自选服务的实时报价以叠加最新价/涨跌幅
+# 资金榜单(主力净流入榜+龙虎榜):注入自选服务的实时报价以叠加最新价/涨跌幅
 CAPITAL_RANKINGS_SERVICE = CapitalRankingsService(quote_provider=WATCHLIST_SERVICE.quotes)
 # 模拟盘台账(起始100W,含简化费用):盯市价复用自选实时报价
 PAPER_TRADING_SERVICE = PaperTradingService(quote_provider=WATCHLIST_SERVICE.quotes)
@@ -231,7 +231,8 @@ COMMAND_CENTER_SERVICE = CommandCenterService(
     hot_membership=lambda date=None: _hot_sector_stock_membership_index(
         _hot_sector_snapshot_for_date(date)),
     news_index=lambda positions: _holdings_news_index(positions, _load_market_intelligence()),
-    hot_news=lambda date=None: opportunity_repo.latest_hot_news(date, limit=10),
+    hot_news=lambda date=None, report_file=None: opportunity_repo.latest_hot_news(
+        date, limit=10, report_file=report_file, latest_run_only=True),
 )
 
 
@@ -1039,7 +1040,6 @@ def _json_safe(value):
 
 
 JOB_SERVICE = BackgroundJobService(JOB_STORE, sanitizer=lambda value: _json_safe(value))
-JOB_SERVICE.mark_interrupted_jobs()
 
 
 def _latest_files(directory, pattern, limit=10):
@@ -1088,6 +1088,105 @@ def _report_url(path):
         except ValueError:
             continue
     return None
+
+
+_OPPORTUNITY_TERMINAL_LOG_MARKERS = (
+    '自动参数优化默认关闭',
+    'KRONOS_SKIP_AUTO_OPTIMIZE',
+    '自动优化已生效',
+    '自动优化未生效',
+    '自动回测失败',
+)
+
+
+def _log_path_after_label(logs, label):
+    prefix = f"{label}:"
+    for line in reversed(logs or []):
+        text = str(line)
+        if prefix not in text:
+            continue
+        value = text.split(prefix, 1)[1].strip()
+        return value or ''
+    return ''
+
+
+def _opportunity_completion_result_from_logs(job):
+    logs = [str(line) for line in (job.get('logs') or [])]
+    joined = '\n'.join(logs)
+    if '投资机会挖掘完成' not in joined or '报表路径:' not in joined:
+        return None
+    if '挖掘结果已入库' not in joined:
+        return None
+    if not any(marker in joined for marker in _OPPORTUNITY_TERMINAL_LOG_MARKERS):
+        return None
+
+    report_path = _log_path_after_label(logs, '报表路径')
+    top_report_raw = _log_path_after_label(logs, 'Top榜路径')
+    top_report_path = Path(top_report_raw) if top_report_raw else None
+    params = job.get('params') or {}
+    source = str(params.get('source') or 'multi').strip() or 'multi'
+    source_label = {
+        'multi': '多源综合',
+        'heat': '仅热度榜',
+        'moneyflow_dc': '资金流向榜单',
+        'sector_hot': '热门板块成分股',
+    }.get(source, source)
+    stock_codes = params.get('stock_codes') or []
+    mode = 'specified_pool' if stock_codes else 'market_scan'
+    mode_label = '指定股票池' if stock_codes else '全市场扫描'
+    return {
+        'report_path': report_path,
+        'report_file': Path(report_path).name if report_path else '',
+        'report_url': _report_url(report_path) if report_path else None,
+        'top_report_path': str(top_report_path) if top_report_path else '',
+        'top_report_file': top_report_path.name if top_report_path else '',
+        'top_report_url': _report_url(top_report_path) if top_report_path else None,
+        'mode': mode,
+        'mode_label': mode_label,
+        'source': source,
+        'source_label': source_label,
+        'params': {
+            'limit': params.get('limit'),
+            'workers': params.get('workers'),
+            'source': source,
+            'stock_codes': stock_codes,
+        },
+    }
+
+
+def _reconcile_completed_opportunity_job(job):
+    if not job or job.get('type') != 'opportunity_discovery':
+        return job
+    if job.get('status') not in ('queued', 'running'):
+        return job
+    result = _opportunity_completion_result_from_logs(job)
+    if not result:
+        return job
+
+    logs = list(job.get('logs') or [])
+    stamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    if not any('任务完成状态已根据已生成报告自动校正' in str(line) for line in logs):
+        logs.append(f"{stamp} 任务完成状态已根据已生成报告自动校正")
+    return JOB_SERVICE.update(
+        job['id'],
+        status='finished',
+        finished_at=datetime.datetime.now().isoformat(),
+        result=result,
+        logs=logs,
+    ) or job
+
+
+def _reconcile_completed_opportunity_jobs_on_startup():
+    try:
+        active_jobs = JOB_STORE.list_by_status(('queued', 'running'), limit=200)
+    except Exception:  # noqa: BLE001
+        active_jobs = []
+    for job in active_jobs:
+        _reconcile_completed_opportunity_job(job)
+
+
+_reconcile_completed_opportunity_jobs_on_startup()
+JOB_SERVICE.mark_interrupted_jobs()
 
 
 def reveal_in_file_manager(path) -> bool:
@@ -3744,7 +3843,10 @@ class _JobLogCapture:
 
 
 def _get_job_snapshot(job_id=None):
-    return JOB_SERVICE.snapshot(job_id, limit=20)
+    snapshot = JOB_SERVICE.snapshot(job_id, limit=20)
+    if job_id:
+        return _reconcile_completed_opportunity_job(snapshot)
+    return [_reconcile_completed_opportunity_job(job) for job in (snapshot or [])]
 
 
 def _run_opportunity_job(job_id, params):
@@ -3963,7 +4065,7 @@ def _run_pattern_refresh_job(job_id, params):
 
 
 def _run_capital_backfill_job(job_id, params):
-    """后台回填资金榜单(主力买入榜 moneyflow + 龙虎榜 dragon_tiger),最近 N 个交易日。"""
+    """后台回填资金榜单(主力净流入榜 moneyflow + 龙虎榜 dragon_tiger),最近 N 个交易日。"""
     _update_job(job_id, status='running', started_at=datetime.datetime.now().isoformat())
     days = int(params.get('days') or 30)
     kinds = tuple(params.get('kinds') or ('moneyflow', 'dragon_tiger'))
@@ -4235,6 +4337,201 @@ def validate_db_snapshot(path):
     return DB_BACKUP_SERVICE.validate_db(path)
 
 
+def _klines_to_ohlcv_df(klines):
+    """把原始日K(Sina dict / Tencent list / CSV 串)转成 QuantitativeModels 可用的
+    OHLCV DataFrame。丢弃非法/0 价行;无有效行返回 None。仅保留 open/high/low/close/
+    volume 五列,其余指标由模型自行派生。"""
+    rows = []
+    for item in klines or []:
+        try:
+            if isinstance(item, dict):
+                o = float(item.get('open') or 0)
+                h = float(item.get('high') or 0)
+                low_v = float(item.get('low') or 0)
+                c = float(item.get('close') or 0)
+                v = float(item.get('volume') or 0)
+            elif isinstance(item, (list, tuple)) and len(item) >= 6:
+                # 腾讯风格: [date, open, close, high, low, volume]
+                o = float(item[1]); c = float(item[2]); h = float(item[3])
+                low_v = float(item[4]); v = float(item[5])
+            else:
+                parts = str(item).split(',')
+                if len(parts) < 6:
+                    continue
+                o = float(parts[1]); c = float(parts[2]); h = float(parts[3])
+                low_v = float(parts[4]); v = float(parts[5])
+        except (TypeError, ValueError):
+            continue
+        if o <= 0 or c <= 0:
+            continue
+        rows.append({
+            'open': o,
+            'high': h if h > 0 else max(o, c),
+            'low': low_v if low_v > 0 else min(o, c),
+            'close': c,
+            'volume': v if v > 0 else 0.0,
+        })
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
+
+
+def _opportunity_jury_from_df(df):
+    """在一段日K上跑 30 量化模型,产出「多空评审团」分值:多/空/观望票数 +
+    情景概率(多/空/震荡) + 量价博弈分(0–100,50 为均衡) + 态势标签。
+    与个股分析套件 30 模型口径一致(count_quant_signals)。失败/数据不足返回降级结构。"""
+    from analysis.stock_analysis_suite import (
+        count_quant_signals, compute_volume_price_game_score,
+    )
+    try:
+        counts = count_quant_signals(df)
+    except Exception as exc:  # noqa: BLE001
+        return {'data_status': 'unavailable', 'reason': f'量化模型运行失败: {str(exc)[:80]}'}
+    buy = int(counts.get('buy_signal_count') or 0)
+    sell = int(counts.get('sell_signal_count') or 0)
+    hold = int(counts.get('hold_signal_count') or 0)
+    total = int(counts.get('total') or 0)
+    if total <= 0:
+        return {'data_status': 'unavailable', 'reason': '量化模型未产出信号'}
+    game = compute_volume_price_game_score(buy, total, sell)
+    bullish = int(round(buy / total * 100))
+    bearish = int(round(sell / total * 100))
+    sideways = 100 - bullish - bearish
+    neutral_ratio = max(0.0, (total - buy - sell) / total)
+    if neutral_ratio >= 0.6 and 40 <= game <= 60:
+        label = '观望主导'
+    elif game >= 80:
+        label = '强势多头'
+    elif game >= 60:
+        label = '震荡偏多'
+    elif game > 40:
+        label = '震荡'
+    elif game > 20:
+        label = '震荡偏空'
+    else:
+        label = '强势空头'
+    return {
+        'data_status': 'fresh',
+        'game_score': game,
+        'label': label,
+        'buy_signal_count': buy,
+        'sell_signal_count': sell,
+        'hold_signal_count': hold,
+        'total_models': total,
+        'bullish': bullish,
+        'bearish': bearish,
+        'sideways': sideways,
+        'source': '30 量化模型多空票数归一化',
+    }
+
+
+def _opportunity_stock_scores(code, name='', window_days=30, fetch_klines=None,
+                              capital_summary=None):
+    """投资机会挖掘·个股深度评分(懒加载,按需现算)。返回三块分值:
+
+    - ``pattern``:同类图形「自回测」——该股最近 window_days 的形态在自身历史里
+      扫描相似片段,统计前向 5/10/20 日胜率/平均收益 → 形态评分(win_rate×100)。
+    - ``jury``:多空评审团——30 量化模型末根 K 多空票数 → 量价博弈分 + 情景概率。
+    - ``capital``:资金榜单——主力净流入榜名次 + 龙虎榜聚合(CapitalRankingsService)。
+
+    形态回测与评审团共用一次日K拉取(Sina 免 token);资金榜单走本地库查询。
+    三者任一失败互不影响,各自降级。``fetch_klines``/``capital_summary`` 可注入以便离线单测。
+    """
+    from analysis.pattern_backtest import scan_series, parse_close_series, _summarise_horizon
+
+    code = _stock_code_key(code) or str(code or '').strip()
+    if not code:
+        return {'ok': False, 'error': '缺少股票代码'}
+    window_days = _safe_int(window_days, 30, minimum=5, maximum=120) or 30
+    horizons = [5, 10, 20]
+    result = {
+        'ok': True,
+        'code': code,
+        'name': name or code,
+        'window_days': window_days,
+        'horizons': horizons,
+    }
+
+    if fetch_klines is None:
+        try:
+            from scripts.build_pattern_fingerprints import fetch_recent_klines as fetch_klines
+        except Exception as exc:  # noqa: BLE001
+            fetch_klines = None
+            result['pattern'] = {'data_status': 'unavailable', 'reason': f'K线取数模块不可用: {exc}'}
+            result['jury'] = {'data_status': 'unavailable', 'reason': 'K线取数模块不可用'}
+
+    klines = None
+    if fetch_klines is not None:
+        digits = ''.join(ch for ch in code if ch.isdigit())
+        sina = ('sh' if digits.startswith('6') else 'sz') + digits
+        try:
+            _name, klines = fetch_klines(sina, 250)
+            if _name and not name:
+                result['name'] = _name
+        except Exception as exc:  # noqa: BLE001
+            klines = None
+            reason = f'日K拉取失败: {str(exc)[:80]}'
+            result['pattern'] = {'data_status': 'unavailable', 'reason': reason}
+            result['jury'] = {'data_status': 'unavailable', 'reason': reason}
+
+    # ── 形态回测(自回测)─────────────────────────────────────────
+    if klines is not None and 'pattern' not in result:
+        closes = parse_close_series(klines)
+        need = window_days + max(horizons) + 2
+        if len(closes) < need:
+            result['pattern'] = {
+                'data_status': 'unavailable',
+                'reason': f'历史数据不足(需 ≥{need} 个交易日,当前 {len(closes)})',
+            }
+        else:
+            query = closes[-window_days:]
+            samples = scan_series(closes, query, window_days=window_days, horizons=horizons)
+            per_h = {}
+            for h in horizons:
+                rets = [s['returns'][h] for s in samples if h in s.get('returns', {})]
+                per_h[str(h)] = _summarise_horizon(h, rets)
+            primary = per_h.get('10') or per_h.get(str(horizons[0]))
+            count = primary['count'] if primary else 0
+            wr = primary['win_rate'] if (primary and count) else None
+            ar = primary['avg_return'] if (primary and count) else None
+            result['pattern'] = {
+                'data_status': 'fresh' if count else 'thin',
+                'pattern_score': round(wr * 100, 1) if wr is not None else None,
+                'win_rate': wr,
+                'avg_return': ar,
+                'sample_count': count,
+                'horizons': per_h,
+            }
+
+    # ── 多空评审团(30 模型)──────────────────────────────────────
+    if klines is not None and 'jury' not in result:
+        df = _klines_to_ohlcv_df(klines)
+        if df is None or len(df) < 35:
+            have = 0 if df is None else len(df)
+            result['jury'] = {
+                'data_status': 'unavailable',
+                'reason': f'量化模型需 ≥35 交易日,当前仅 {have} 日',
+            }
+        else:
+            result['jury'] = _opportunity_jury_from_df(df)
+
+    # ── 资金榜单(本地库)─────────────────────────────────────────
+    try:
+        if capital_summary is not None:
+            result['capital'] = capital_summary(code)
+        else:
+            result['capital'] = CAPITAL_RANKINGS_SERVICE.stock_capital_summary(code)
+    except Exception as exc:  # noqa: BLE001
+        result['capital'] = {
+            'kind': 'stock_capital_rankings',
+            'code': code,
+            'data_status': 'unavailable',
+            'reason': f'资金榜单读取失败: {str(exc)[:80]}',
+        }
+
+    return result
+
+
 def _opportunity_pattern_backtest(params, log_cb=None, fetch_klines=None):
     """对某次机会挖掘 run 的 Top-N 股票做「形态自回测」:用每只票最近 window_days
     的形态在自身历史里扫描相似片段,统计前向 5/10/20 日胜率与平均收益 → 形态评分。
@@ -4388,7 +4685,7 @@ DESKTOP_PAGES = {
     },
     'capital_rankings': {
         'title': '资金榜单',
-        'subtitle': '主力买入榜与龙虎榜:单日/多日聚合、刷新补偿、多选股票用机会挖掘算法分析',
+        'subtitle': '主力净流入榜与龙虎榜:单日/多日聚合、刷新补偿、多选股票用机会挖掘算法分析',
     },
     'paper_trading': {
         'title': '模拟盘',

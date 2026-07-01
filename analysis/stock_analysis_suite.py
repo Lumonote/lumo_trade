@@ -79,6 +79,51 @@ def compute_volume_price_game_score(
     return int(round(max(0.0, min(100.0, score))))
 
 
+def count_quant_signals(df: "pd.DataFrame") -> Dict[str, Any]:
+    """在一段 OHLCV 行情上跑 30 个量化模型，统计末根 K 的多/空/观望票数。
+
+    与 ``StockAnalysisSuite._run_quant_models`` 同口径（信号末值 1→多 / -1→空 /
+    其余→观望），抽成模块级纯函数，便于投资机会挖掘等链路在不实例化完整套件
+    （及其网络/缓存依赖）的前提下复用。``df`` 至少需 ``open/high/low/close/volume``
+    五列，其余指标由 ``QuantitativeModels`` 自行派生。
+    """
+    models = QuantitativeModels(df)
+    models.run_all_models()
+    perf = getattr(models, "models_performance", {}) or {}
+    buy = sell = hold = 0
+    per_model: list = []
+    for _name, signal_series in (models.signals or {}).items():
+        try:
+            last = signal_series[-1] if hasattr(signal_series, "__getitem__") else signal_series
+            if hasattr(last, "iloc"):
+                last = last.iloc[-1] if len(last) else 0
+        except Exception:  # noqa: BLE001
+            last = 0
+        try:
+            last_val = int(last)
+        except (TypeError, ValueError):
+            last_val = 0
+        if last_val == 1:
+            buy += 1
+        elif last_val == -1:
+            sell += 1
+        else:
+            hold += 1
+        name_cn = (perf.get(_name) or {}).get("中文名称")
+        per_model.append({
+            "model": str(_name),
+            "name_cn": str(name_cn) if name_cn else None,
+            "signal": last_val,
+        })
+    return {
+        "buy_signal_count": buy,
+        "sell_signal_count": sell,
+        "hold_signal_count": hold,
+        "total": buy + sell + hold,
+        "per_model": per_model,
+    }
+
+
 def compute_chip_structure_score(concentration_pct: float, profit_ratio_pct: float) -> int:
     """5维评分④. Spec §4 ④.
 
@@ -1158,43 +1203,10 @@ class StockAnalysisSuite:
             return "sideways", 0.0
 
     def _run_quant_models(self, code: str, df: pd.DataFrame) -> Dict[str, int]:
-        models = QuantitativeModels(df)
-        models.run_all_models()
         # 模型中文名来自 technical_analysis 各模型定义的 models_performance['中文名称']
         # (30 个模型全部定义),作为权威来源透传,避免在前端/Excel 各自维护一份英文→中文映射。
-        perf = getattr(models, "models_performance", {}) or {}
-        buy = sell = hold = 0
-        per_model: list = []
-        for _name, signal_series in (models.signals or {}).items():
-            try:
-                last = signal_series[-1] if hasattr(signal_series, "__getitem__") else signal_series
-                if hasattr(last, "iloc"):
-                    last = last.iloc[-1] if len(last) else 0
-            except Exception:  # noqa: BLE001
-                last = 0
-            try:
-                last_val = int(last)
-            except (TypeError, ValueError):
-                last_val = 0
-            if last_val == 1:
-                buy += 1
-            elif last_val == -1:
-                sell += 1
-            else:
-                hold += 1
-            name_cn = (perf.get(_name) or {}).get("中文名称")
-            per_model.append({
-                "model": str(_name),
-                "name_cn": str(name_cn) if name_cn else None,
-                "signal": last_val,
-            })
-        return {
-            "buy_signal_count": buy,
-            "sell_signal_count": sell,
-            "hold_signal_count": hold,
-            "total": buy + sell + hold,
-            "per_model": per_model,
-        }
+        # 统计逻辑抽到模块级 count_quant_signals,供机会挖掘等链路在不实例化套件时复用。
+        return count_quant_signals(df)
 
     def collect_cached_reports(self, code: str, base_dir: "Path | None" = None) -> Dict[str, Any]:
         base = Path(base_dir) if base_dir is not None else Path("reports")

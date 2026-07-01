@@ -130,7 +130,8 @@ def test_overview_holdings_relevance_default_sources_empty():
 
 def _svc_with_hot_news(hot_news):
     return CommandCenterService(
-        load_report=lambda: {"items": [], "report_path": None, "date": "2026-06-19"},
+        load_report=lambda: {"items": [], "report_path": None, "date": "2026-06-19",
+                             "file": "opportunity_top10_20260619_153102.md"},
         capital_rankings=lambda: {"rows": []},
         market_env=lambda: {"sentiment": 55},
         holdings=lambda: {"account": {}, "positions": [], "max_drawdown": 0.0},
@@ -148,14 +149,16 @@ def test_overview_includes_hot_news_payload():
     ]
     captured = {}
 
-    def _hn(date=None):
+    def _hn(date=None, report_file=None):
         captured["date"] = date
+        captured["report_file"] = report_file
         return news
 
     out = _svc_with_hot_news(_hn).overview()
     assert out["hot_news"] == news       # 原样、顺序不变
     assert out["degraded"]["hot_news"] is False
     assert captured["date"] == "2026-06-19"  # 按报告日期读取
+    assert captured["report_file"] == "opportunity_top10_20260619_153102.md"
 
 
 def test_overview_hot_news_degrades_independently():

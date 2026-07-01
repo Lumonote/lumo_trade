@@ -1202,6 +1202,23 @@ def opportunity_run_items(request: Request, run_id=None) -> Response:
         return _json_response({"items": [], "error": str(exc)}, status_code=500)
 
 
+@_native_get("/api/opportunity/stock-scores/:stock_code")
+def opportunity_stock_scores(request: Request, stock_code=None) -> Response:
+    """投资机会挖掘·个股深度评分(懒加载):形态回测 + 多空评审团 + 资金榜单。
+
+    按需现算(联网拉日K,约 5–15 秒),三块分值各自降级互不影响。
+    """
+    code = _path_param(request, "stock_code", stock_code)
+    name = _query_value(request, "name", "")
+    window_days = webui_core._safe_int(_query_value(request, "window_days"), 30, minimum=5, maximum=120) or 30
+    try:
+        payload = webui_core._opportunity_stock_scores(code, name=name, window_days=window_days)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"ok": False, "error": str(exc)}, status_code=500)
+    status = 200 if payload.get("ok") else 400
+    return _json_response(payload, status_code=status)
+
+
 @_native_get("/api/hot-sector-snapshot")
 def hot_sector_snapshot(request: Request) -> Response:
     """最新热门板块全量快照摘要（板块级，不展开全部成分股）。"""

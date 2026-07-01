@@ -123,28 +123,64 @@ def _save_hot_news(conn, run_id: int, hot_news: Optional[List[Dict[str, Any]]],
 
 
 def latest_hot_news(run_date: Optional[str] = None,
-                    limit: int = 10) -> List[Dict[str, Any]]:
-    """读取某天(或全局)最近一次有热点的 run 的前 limit 条热点新闻。
+                    limit: int = 10, *,
+                    report_file: Optional[str] = None,
+                    latest_run_only: bool = False) -> List[Dict[str, Any]]:
+    """读取热点新闻。
 
-    run_date 非空 → 该日期 run_at DESC 最近一次有热点的 run;为空 → 全局最近一次。
-    返回 ``{rank, title, url, source, publish_time, heat}``,按 heat 降序;无数据 → []。
+    ``report_file`` 非空时精确读取该报告对应的 run；若该 run 没有热点则返回 []
+    而不是回退旧数据。``latest_run_only`` 为 True 时读取指定日期(或全局)最新 run,
+    同样不要求该 run 有热点。默认保持历史行为:读取最近一次有热点的 run。
     """
     conn = get_conn()
-    where = "AND r.run_date = ?" if run_date else ""
-    params: tuple = (str(run_date),) if run_date else ()
-    run_row = conn.execute(
-        f"""
+    if report_file:
+        name = _basename(report_file)
+        run_row = conn.execute(
+            """
+            SELECT id FROM opportunity_run
+            WHERE report_file = ?
+            ORDER BY run_at DESC, id DESC
+            LIMIT 1
+            """,
+            (name,),
+        ).fetchone()
+        if not run_row:
+            return []
+        return _hot_news_for_run(conn, run_row[0], limit)
+
+    if latest_run_only:
+        where = "WHERE r.run_date = ?" if run_date else ""
+        params: tuple = (str(run_date),) if run_date else ()
+        sql = f"""
+        SELECT r.id FROM opportunity_run r
+        {where}
+        ORDER BY r.run_at DESC, r.id DESC
+        LIMIT 1
+        """
+    else:
+        where = "AND r.run_date = ?" if run_date else ""
+        params = (str(run_date),) if run_date else ()
+        sql = f"""
         SELECT r.id FROM opportunity_run r
         WHERE EXISTS(SELECT 1 FROM opportunity_hot_news h WHERE h.run_id = r.id)
         {where}
         ORDER BY r.run_at DESC, r.id DESC
         LIMIT 1
-        """,
+        """
+    run_row = conn.execute(
+        sql,
         params,
     ).fetchone()
     if not run_row:
         return []
-    run_id = run_row[0]
+    return _hot_news_for_run(conn, run_row[0], limit)
+
+
+def _basename(value: Any) -> str:
+    return str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _hot_news_for_run(conn, run_id: int, limit: int) -> List[Dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT news_rank AS rank, title, url, source, publish_time, heat
@@ -352,8 +388,34 @@ def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[
                      PARTITION BY SUBSTR(mf.ts_code, 1, 6) ORDER BY mf.trade_date DESC
                    ) AS mf_rn
             FROM moneyflow_dc mf
-            WHERE mf.top_n = 1
+            WHERE mf.top_n = 0   -- 资金榜全市场快照哨兵(SNAPSHOT_TOP_N);
+                                 -- top_n=1 是历史误用、几乎无行,会让资金流向列恒为空
           ) WHERE mf_rn = 1
+        ),
+        pool_codes AS (SELECT DISTINCT code FROM joined),
+        first_select AS (
+          -- 每只股票的首次入选交易日(用于「入选后涨幅」的买入基准日)
+          SELECT code, MIN(run_date) AS first_date FROM joined GROUP BY code
+        ),
+        entry_px AS (
+          -- 买入价 = 首次入选之后第一个交易日的开盘价(与报告口径一致:次日开盘买入)
+          SELECT code, entry_open FROM (
+            SELECT o.code AS code, o.open AS entry_open,
+                   ROW_NUMBER() OVER (PARTITION BY o.code ORDER BY o.ts ASC) AS rn
+            FROM ohlcv o
+            JOIN first_select fs ON fs.code = o.code
+            WHERE o.frequency = '1d' AND SUBSTR(o.ts, 1, 10) > fs.first_date
+          ) WHERE rn = 1
+        ),
+        latest_px AS (
+          -- 现价 = 该股最近一个交易日的收盘价
+          SELECT code, latest_close FROM (
+            SELECT o.code AS code, o.close AS latest_close,
+                   ROW_NUMBER() OVER (PARTITION BY o.code ORDER BY o.ts DESC) AS rn
+            FROM ohlcv o
+            JOIN pool_codes pc ON pc.code = o.code
+            WHERE o.frequency = '1d'
+          ) WHERE rn = 1
         )
         SELECT
           j.code,
@@ -376,11 +438,15 @@ def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[
           mf.main_net_inflow,
           mf.retail_flow,
           mf.total_inflow,
-          mf.flow_unit
+          mf.flow_unit,
+          ep.entry_open,
+          lp.latest_close
         FROM joined j
         LEFT JOIN latest_mf mf ON mf.code = j.code
+        LEFT JOIN entry_px ep ON ep.code = j.code
+        LEFT JOIN latest_px lp ON lp.code = j.code
         GROUP BY j.code
-        ORDER BY distinct_days DESC, j.last_seen DESC, j.best_score DESC
+        ORDER BY distinct_days DESC, last_seen DESC, best_score DESC
         LIMIT ?
         """,
         params,
@@ -402,6 +468,14 @@ def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[
                 d[f"{key}_text"] = f"{val * scale:+.2f}万"
             else:
                 d[f"{key}_text"] = None
+        # 入选后涨幅: (最新收盘 - 首次入选次日开盘) / 次日开盘 * 100。
+        # 与报告口径一致(次日开盘买入)。任一价格缺失则为 None,前端显示 --。
+        entry_open = _num(d.pop("entry_open", None))
+        latest_close = _num(d.pop("latest_close", None))
+        if entry_open and latest_close is not None:
+            d["post_select_return_pct"] = round((latest_close - entry_open) / entry_open * 100, 2)
+        else:
+            d["post_select_return_pct"] = None
         out.append(d)
     return out
 

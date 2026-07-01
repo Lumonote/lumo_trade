@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import statistics
+import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from analysis.pattern_matcher import normalize_curve, pearson_similarity
@@ -32,6 +33,10 @@ DEFAULT_MIN_GAP_DAYS = 5
 DEFAULT_MAX_WORKERS = 6
 DEFAULT_TOP_STOCKS = 8
 MAX_ERRORS_KEPT = 20
+# 整体硬超时：单只票的 fetch 内部已有 socket 超时+重试，但 socket timeout 是每次
+# recv 的超时而非总时限，遇到慢速 trickle/代理隧道挂起时可能永不触发，导致整个
+# job 死挂。这里在 future 层加总时限兜底，超时后未完成的票按「拉取超时」跳过。
+DEFAULT_BACKTEST_TIMEOUT = 180
 
 # fetch 回调签名： (symbol, limit) -> (name, klines)
 FetchKlines = Callable[[str, int], Tuple[str, List[Any]]]
@@ -148,6 +153,7 @@ def backtest_patterns(
     max_workers: int = DEFAULT_MAX_WORKERS,
     top_stocks: int = DEFAULT_TOP_STOCKS,
     progress_callback: Optional[Callable[[str], None]] = None,
+    total_timeout: float = DEFAULT_BACKTEST_TIMEOUT,
 ) -> Dict[str, Any]:
     """对一组候选股票联网回测查询形态，返回汇总统计。
 
@@ -201,29 +207,56 @@ def backtest_patterns(
 
     workers = max(1, min(int(max_workers), total))
     done = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        for candidate, samples, error in pool.map(_work, candidates):
-            done += 1
-            code = str(candidate.get("stock_code") or candidate.get("symbol") or "")
-            if error is not None:
+    timed_out = False
+    # 用 submit + as_completed(timeout) 取代 pool.map：map 按提交顺序产出，单只票
+    # 卡死会阻塞其余已完成的票永远无法被消费；as_completed 按完成顺序产出，配合
+    # 总时限兜底，单只死挂只损失它自己，不会拖垮整个 job。
+    deadline = time.monotonic() + max(1.0, float(total_timeout))
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    try:
+        future_to_candidate = {pool.submit(_work, c): c for c in candidates}
+        try:
+            for future in concurrent.futures.as_completed(
+                future_to_candidate, timeout=max(0.1, deadline - time.monotonic())
+            ):
+                candidate, samples, error = future.result()
+                done += 1
+                code = str(candidate.get("stock_code") or candidate.get("symbol") or "")
+                if error is not None:
+                    if len(errors) < MAX_ERRORS_KEPT:
+                        errors.append({"stock_code": code, "error": error})
+                    _log(f"[{done}/{total}] {code} 拉取失败：{error}")
+                    continue
+                scanned += 1
+                hit = len(samples or [])
+                if hit:
+                    sample_count += hit
+                    per_stock_count[code] = {
+                        "stock_code": code,
+                        "stock_name": str(candidate.get("stock_name") or ""),
+                        "count": hit,
+                    }
+                    for sample in samples:
+                        for h, ret in sample["returns"].items():
+                            if h in returns_by_horizon:
+                                returns_by_horizon[h].append(ret)
+                _log(f"[{done}/{total}] {code} 命中 {hit} 个相似样本")
+        except concurrent.futures.TimeoutError:
+            timed_out = True
+            pending = [c for f, c in future_to_candidate.items() if not f.done()]
+            for c in pending:
+                code = str(c.get("stock_code") or c.get("symbol") or "")
                 if len(errors) < MAX_ERRORS_KEPT:
-                    errors.append({"stock_code": code, "error": error})
-                _log(f"[{done}/{total}] {code} 拉取失败：{error}")
-                continue
-            scanned += 1
-            hit = len(samples or [])
-            if hit:
-                sample_count += hit
-                per_stock_count[code] = {
-                    "stock_code": code,
-                    "stock_name": str(candidate.get("stock_name") or ""),
-                    "count": hit,
-                }
-                for sample in samples:
-                    for h, ret in sample["returns"].items():
-                        if h in returns_by_horizon:
-                            returns_by_horizon[h].append(ret)
-            _log(f"[{done}/{total}] {code} 命中 {hit} 个相似样本")
+                    errors.append({"stock_code": code, "error": f"拉取超时(>{int(total_timeout)}s)"})
+            for f in future_to_candidate:
+                f.cancel()
+            _log(
+                f"回测整体超时(>{int(total_timeout)}s)：跳过 {len(pending)} 只未完成股票，"
+                f"以已完成的 {scanned} 只汇总"
+            )
+    finally:
+        # 未完成的 future 可能仍卡在网络上：wait=False 避免 with 退出时再次阻塞。
+        pool.shutdown(wait=not timed_out)
 
     horizon_stats = [_summarise_horizon(h, returns_by_horizon[h]) for h in horizons]
     top = sorted(
@@ -243,4 +276,5 @@ def backtest_patterns(
         "horizons": horizon_stats,
         "top_stocks": top,
         "errors": errors,
+        "timed_out": timed_out,
     }

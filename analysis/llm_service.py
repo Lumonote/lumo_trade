@@ -31,9 +31,16 @@ class LLMConfig:
         else:
             self.config_path = Path(config_path)
 
-        # 通用配置路径
+        # 通用配置路径:优先 KRONOS_CONFIG_DIR(WebUI/桌面写入的用户目录),
+        # 否则回退项目 config/。与 config_path 的解析逻辑对齐,避免设置页改了
+        # base_url / model_id 后,真正跑分析的 LLMConfig 仍读旧的项目配置。
         if provider_config_path is None:
-            self.provider_config_path = Path(__file__).parent.parent / 'config' / 'llm_provider_config.json'
+            config_dir = os.environ.get('KRONOS_CONFIG_DIR')
+            user_provider_path = Path(config_dir) / 'llm_provider_config.json' if config_dir else None
+            if user_provider_path is not None and user_provider_path.exists():
+                self.provider_config_path = user_provider_path
+            else:
+                self.provider_config_path = Path(__file__).parent.parent / 'config' / 'llm_provider_config.json'
         else:
             self.provider_config_path = Path(provider_config_path)
 

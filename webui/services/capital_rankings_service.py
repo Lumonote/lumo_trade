@@ -1,4 +1,4 @@
-"""资金榜单服务:主力买入榜(moneyflow)+ 龙虎榜(dragon_tiger_list)。
+"""资金榜单服务:主力净流入榜(moneyflow)+ 龙虎榜(dragon_tiger_list)。
 
 提供单日 / 多日聚合查询、可选叠加实时报价、回填 N 天。报价(quote_provider)
 与取数(fetcher / dates)均可注入,便于离线测试与数据源切换。
@@ -197,7 +197,7 @@ class CapitalRankingsService:
                 end_date,
                 limit=top_n,
                 snapshot_top_n=SNAPSHOT_TOP_N,
-                sort_by="main_buy_amount",
+                sort_by="net_amount",
             )
             return self._envelope("moneyflow", mode, as_of, days, top_n, df, with_quotes, start_date, end_date)
         if mode == "aggregate":
@@ -248,7 +248,7 @@ class CapitalRankingsService:
         end_date=None,
         with_quotes=False,
     ) -> dict:
-        """个股资金榜单摘要:主力买入榜 + 龙虎榜。
+        """个股资金榜单摘要:主力净流入榜 + 龙虎榜。
 
         默认按 date/end_date 之前最近 days 个有数据交易日聚合;传入
         start_date/end_date 时改用显式日期区间。rank 保留全市场同窗口名次。
@@ -357,7 +357,7 @@ class CapitalRankingsService:
             "end_date": section_end or (row or {}).get("last_date"),
             "latest_date": latest,
             "data_status": "fresh" if row else "unavailable",
-            "reason": None if row else "该股未进入主力买入榜数据窗口",
+            "reason": None if row else "该股未进入主力净流入榜数据窗口",
             "count": len(rows),
             "row": row,
             "rows": rows,
@@ -412,7 +412,7 @@ class CapitalRankingsService:
                     days=days,
                     limit=top_n,
                     snapshot_top_n=SNAPSHOT_TOP_N,
-                    sort_by="main_buy_amount",
+                    sort_by="net_amount",
                 )
             else:
                 df = dragon_tiger_list_repo.get_aggregated(
