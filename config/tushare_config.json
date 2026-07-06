@@ -1,6 +1,6 @@
 {
   "tushare": {
-    "token": "730174aab0492840d5431f0b432b994bece5399632d9ea95d80197cc",
+    "token": "",
     "timeout": 30,
     "retry_count": 3
   },

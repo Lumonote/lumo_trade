@@ -86,6 +86,7 @@ class OpportunityDiscovery:
         self.sector_news_collector = SectorNewsCollector()
         self.topics_collector = TrendingTopicsCollector()
         self.global_hot_news = []
+        self.command_center_hot_news = []
         self.sector_hot_news = []
         self.max_workers = max_workers
         self.latest_hot_sector_snapshot_id = None
@@ -119,6 +120,12 @@ class OpportunityDiscovery:
     @staticmethod
     def _env_truthy(name: str) -> bool:
         return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+    def _snapshot_command_center_hot_news(self, hot_news: Optional[List[Dict]]) -> None:
+        """Freeze the news list used by 风险·机遇大屏 before report-topic rewrites."""
+        self.command_center_hot_news = [
+            dict(item) for item in (hot_news or []) if isinstance(item, dict)
+        ]
 
     @staticmethod
     def _cleanup_timeout_seconds() -> float:
@@ -408,6 +415,7 @@ class OpportunityDiscovery:
             'fid': fid,
             'fs': fs,
             'fields': fields,
+            '_': str(int(time.time() * 1000)),
         }
         url = 'https://push2.eastmoney.com/api/qt/clist/get?' + urllib.parse.urlencode(params)
         headers = {
@@ -416,6 +424,8 @@ class OpportunityDiscovery:
                 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
             ),
             'Accept': 'application/json,text/plain,*/*',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
             'Referer': 'https://quote.eastmoney.com/',
         }
         attempts = max(1, int(attempts))
@@ -1536,10 +1546,12 @@ class OpportunityDiscovery:
         try:
             logger.info("正在采集全市场热门新闻 TOP10（东方财富/同花顺/雪球）...")
             self.global_hot_news = self.hot_news_collector.get_top_news(limit=10)
+            self._snapshot_command_center_hot_news(self.global_hot_news)
             logger.info(f"✓ 成功采集 {len(self.global_hot_news)} 条热门新闻")
         except Exception as e:
             logger.warning(f"热门新闻采集失败: {e}")
             self.global_hot_news = []
+            self.command_center_hot_news = []
 
         # 【优化2】步骤1.5: 预加载全局数据（大盘情绪、板块数据）
         logger.info(f"\n步骤1.5: 正在预加载全局数据（大盘情绪、板块数据）...")
@@ -2040,7 +2052,7 @@ class OpportunityDiscovery:
             })
             run_id = opportunity_repo.save_run(
                 run_meta, opportunity_repo.build_items(filter_results),
-                hot_news=self.global_hot_news)
+                hot_news=self.command_center_hot_news)
             logger.info(f"✓ 挖掘结果已入库: run_id={run_id} ({run_meta['run_at'][:10]})")
         except Exception as db_e:
             logger.warning(f"挖掘结果入库失败(不影响主流程): {db_e}")

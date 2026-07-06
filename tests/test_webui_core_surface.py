@@ -104,3 +104,71 @@ def test_desktop_html_has_quality_gate_wiring():
     assert "ov.quality" in html                  # 读 quality 字段
     assert "未通过质量门" in html                  # 红条文案
     assert "bbp-overlay-flag" in html            # 黄旗
+
+
+def test_desktop_html_has_market_cloud_sidebar_menu():
+    """桌面左侧栏提供大盘云图焦点入口。"""
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    html = (repo_root / "webui" / "templates" / "desktop.html").read_text(encoding="utf-8")
+    css = (repo_root / "webui" / "static" / "kronos_desktop.css").read_text(encoding="utf-8")
+    js = (repo_root / "webui" / "static" / "kronos_market_cloud.js").read_text(encoding="utf-8")
+    core_text = (repo_root / "webui" / "core.py").read_text(encoding="utf-8")
+
+    assert 'class="market-cloud-menu' in html
+    assert 'href="/desktop/market_cloud"' in html
+    assert "{% if active_page == 'market_cloud' %}" in html
+    assert "marketCloudRoot" in html
+    assert "大盘云图" in html
+    assert "market-cloud-points" in html
+    assert "kronos_market_cloud.js" in html
+    assert "'market_cloud':" in core_text
+    assert "'title': '大盘云图'" in core_text
+    assert "tushare_market_cloud" in js
+    assert "TuShare全市场" in js
+    assert 'sizeMode:"amount"' in js or 'sizeMode: "amount"' in js
+    assert "面积按成交额" in js
+    assert "mc-sector-panel" in js
+    assert "panelPinned" in js
+    assert "data-mc-close-panel" in js
+    assert "data-sector-id" in js
+    assert "mc-terminal-top" in js
+    assert "mc-home-link" in js
+    assert 'href="/desktop/features"' in js
+    assert "返回主界面" in js
+    assert "mcHeaderRefreshBtn" in js
+    assert "刷新实时行情" in js
+    assert "mcTradeDateInput" in js
+    assert "mcDateSearchBtn" in js
+    assert "mcLiveBtn" in js
+    assert "date=" in js
+    assert "mcBreadthBar" in js
+    assert "上涨" in js
+    assert "下跌" in js
+    assert "平盘" in js
+    assert "涨跌过滤" in js
+    assert "data-filter" in js
+    assert "data-range" in js
+    assert "openMarketCloudStock" in js
+    assert "openStockContext" in js
+    assert "data-stock-code" in js
+    assert "data-stock-name" in js
+    assert "zoomSectorId" in js
+    assert "mcZoomBackBtn" in js
+    assert "返回全市场" in js
+    assert "mc-zoom-back" in css
+    assert "pointer-events: auto" in css
+    assert "中证500" in js
+    assert "sh000905" in core_text
+    assert ".market-cloud-menu" in css
+    assert ".app-shell.nav-collapsed .market-cloud-menu" in css
+    assert 'body[data-page="market_cloud"] .sidebar' in css
+    assert ".mc-terminal-bottom" in css
+    assert ".mc-filter-bar" in css
+    assert ".mc-date-bar" in css
+    assert ".mc-breadth-bar" in css
+    assert ".mc-home-link" in css
+    assert ".mc-header-action" in css
+    assert ".mc-sector-panel" in css
+    assert ".mc-sector-panel.pinned" in css

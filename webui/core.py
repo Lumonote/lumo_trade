@@ -321,8 +321,11 @@ for k, v in REAL_CODES_MAP.items():
 REAL_INDEX_CODES = {
     "sh000001": "上证指数",
     "sz399001": "深证成指",
-    "sh000300": "沪深300",
     "sz399006": "创业板指",
+    "sh000985": "中证全指",
+    "sh000016": "上证50",
+    "sh000300": "沪深300",
+    "sh000905": "中证500",
 }
 
 # Market Global State
@@ -934,8 +937,8 @@ def _format_datetime(ts=None):
     return dt.strftime('%Y-%m-%d %H:%M:%S')
 
 
-def _load_market_intelligence():
-    return MARKET_INTELLIGENCE_SERVICE.load()
+def _load_market_intelligence(force_refresh=False):
+    return MARKET_INTELLIGENCE_SERVICE.load(force_refresh=bool(force_refresh))
 
 
 def _normalize_stock_codes(raw_codes):
@@ -3598,7 +3601,7 @@ def _real_sector_rows(intelligence):
     return rows
 
 
-def _build_market_dashboard():
+def _build_market_dashboard(force_market_refresh=False):
     stocks = market_state.get('stocks', [])
     real_stocks = [stock for stock in stocks if stock.get('real_api_code')]
     top_movers = sorted(
@@ -3607,7 +3610,10 @@ def _build_market_dashboard():
         reverse=True,
     )[:8]
 
-    intelligence = _load_market_intelligence()
+    intelligence = (
+        _load_market_intelligence(force_refresh=True)
+        if force_market_refresh else _load_market_intelligence()
+    )
     # 板块动量：完全由东财真实行业板块驱动（按当日涨跌幅热度降序，含主力净流入）。
     # 不写死板块——拉取失败时返回空（前端显示「暂无数据」），不回退合成板块。
     sector_rows = _real_sector_rows(intelligence)
@@ -3667,6 +3673,54 @@ def _build_market_dashboard():
         'sectors': sector_rows,
         'news': market_state.get('news', [])[:8],
         'intelligence': intelligence,
+    }
+
+
+def _normalize_market_cloud_trade_date(value):
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    compact = re.sub(r'\D', '', text)
+    if len(compact) != 8:
+        return ''
+    try:
+        datetime.datetime.strptime(compact, '%Y%m%d')
+    except ValueError:
+        return ''
+    return compact
+
+
+def _market_cloud_payload(force_refresh=False, limit=5000, trade_date=None):
+    limit = _safe_int(limit, 5000, minimum=100, maximum=6000) or 5000
+    normalized_trade_date = _normalize_market_cloud_trade_date(trade_date)
+    error = None
+    try:
+        stocks = MARKET_INTELLIGENCE_SERVICE.fetch_market_cloud_stocks(
+            limit=limit,
+            force_refresh=bool(force_refresh),
+            trade_date=normalized_trade_date or None,
+        )
+    except Exception as exc:
+        stocks = []
+        error = str(exc)
+
+    dashboard = _build_market_dashboard(force_market_refresh=force_refresh)
+    source = (stocks[0].get('source') if stocks and isinstance(stocks[0], dict) else None)
+    return {
+        'generated_at': datetime.datetime.now().isoformat(),
+        'source': source or ('tushare_market_cloud' if normalized_trade_date else ('market_cloud' if stocks else 'dashboard_fallback')),
+        'error': error,
+        'requested_trade_date': normalized_trade_date,
+        'trade_date': (
+            stocks[0].get('trade_date')
+            if stocks and isinstance(stocks[0], dict) and stocks[0].get('trade_date')
+            else normalized_trade_date
+        ),
+        'stocks': stocks,
+        'indices': dashboard.get('indices') or [],
+        'primary_index': dashboard.get('primary_index'),
+        'sectors': dashboard.get('sectors') or [],
+        'dashboard': dashboard,
     }
 
 
@@ -4671,6 +4725,10 @@ def _run_pattern_backtest_job(job_id, params):
 
 
 DESKTOP_PAGES = {
+    'market_cloud': {
+        'title': '大盘云图',
+        'subtitle': '全 A 涨跌热力图、行业分组、资金流向与个股快看',
+    },
     'features': {
         'title': '总览',
         'subtitle': '市场状态、核心指标、热榜与个股快搜',

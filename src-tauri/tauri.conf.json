@@ -33,7 +33,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' tauri: asset: http://127.0.0.1:* http://localhost:*; img-src 'self' data: blob: http: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:* http://localhost:* https://cdn.staticfile.net https://cdn.plot.ly; style-src 'self' 'unsafe-inline'; connect-src 'self' http: https: ws: wss:; font-src 'self' data:"
     }
   },
   "bundle": {
@@ -45,30 +45,12 @@
       "../assets/kronos_ai_stock.ico"
     ],
     "resources": {
-      "../analysis": "analysis",
+      "../packaging/backend/kronos_webui_backend": "packaging/backend/kronos_webui_backend",
+      "../webui/templates": "webui/templates",
+      "../webui/static": "webui/static",
       "../assets": "assets",
-      "../config/comprehensive_data_sources.json": "config/comprehensive_data_sources.json",
-      "../config/crawler_config.json": "config/crawler_config.json",
-      "../config/llm_provider_config.json": "config/llm_provider_config.json",
-      "../config/related_entities.json": "config/related_entities.json",
-      "../config/scoring_runtime_config.json": "config/scoring_runtime_config.json",
-      "../config/trading_client_adapters.json": "config/trading_client_adapters.json",
-      "../data_store": "data_store",
-      "../data/kronos_data.sqlite": "data/kronos_data.sqlite",
-      "../examples": "examples",
       "../figures": "figures",
-      "../finetune": "finetune",
-      "../model": "model",
-      "../resources": "resources",
-      "../scripts": "scripts",
-      "../tools": "tools",
-      "../utils": "utils",
-      "../webui": "webui",
-      "../quick_start.bat": "quick_start.bat",
-      "../quick_start.ps1": "quick_start.ps1",
-      "../quick_start.sh": "quick_start.sh",
-      "../requirements.txt": "requirements.txt",
-      "../packaging/backend/kronos_webui_backend": "packaging/backend/kronos_webui_backend"
+      "../config/*.json": "config/"
     }
   }
 }

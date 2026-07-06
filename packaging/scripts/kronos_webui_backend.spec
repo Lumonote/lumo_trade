@@ -1,5 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for the self-contained WebUI backend used by Tauri."""
+"""PyInstaller spec for the self-contained WebUI backend used by Tauri.
+
+源码保护说明（务实级）
+========================
+PyInstaller 把 *模块*（.py 源码）通过 hiddenimports 收集后编译进 PYZ
+（字节码，_internal/base_library.zip + PYZ-00.pyz），而 datas 仅承载运行期
+*数据文件*（模板/静态资源/配置/权重等）。
+
+历史版本曾把 analysis/ scripts/ webui/ model/ 等整目录原样塞进 datas，导致
+opportunity_scorer.py、kronos.py 等核心算法的 .py 明文随包发行，可被直接打开
+阅读。本 spec 改用 _project_data_files() 只收集非源码数据文件，源码一律走
+hiddenimports → PYZ 字节码。build_backend.py 还会在打包后扫除残留 .py/.pyi。
+"""
 
 from pathlib import Path
 
@@ -12,27 +24,54 @@ project_root = Path(SPECPATH).parents[1]
 bundle_mode = os.environ.get("KRONOS_BACKEND_BUNDLE_MODE", "lite").lower()
 include_ml = bundle_mode == "full"
 
-datas = [
-    (str(project_root / "analysis"), "analysis"),
-    (str(project_root / "assets"), "assets"),
-    (str(project_root / "config" / "crawler_config.json"), "config"),
-    (str(project_root / "config" / "comprehensive_data_sources.json"), "config"),
-    (str(project_root / "config" / "llm_provider_config.json"), "config"),
-    (str(project_root / "config" / "related_entities.json"), "config"),
-    (str(project_root / "config" / "scoring_runtime_config.json"), "config"),
-    (str(project_root / "config" / "trading_client_adapters.json"), "config"),
-    (str(project_root / "data_store"), "data_store"),
-    (str(project_root / "examples"), "examples"),
-    (str(project_root / "figures"), "figures"),
-    (str(project_root / "finetune"), "finetune"),
-    (str(project_root / "model"), "model"),
-    (str(project_root / "resources"), "resources"),
-    (str(project_root / "scripts"), "scripts"),
-    (str(project_root / "tools"), "tools"),
-    (str(project_root / "utils"), "utils"),
-    (str(project_root / "webui"), "webui"),
-    (str(project_root / "requirements.txt"), "."),
-]
+# 源码/构建产物后缀：这些一律 *不* 作为 datas 进包（模块走 PYZ 字节码，
+# 开发文档与缓存对运行无意义）。.py 进包 = 明文泄漏，是本修复要消除的根因。
+_SOURCE_SUFFIXES = {".py", ".pyc", ".pyi", ".pyo"}
+_DEV_SUFFIXES = {".md", ".rst", ".toml", ".cfg", ".ini", ".spec", ".log", ".sh", ".bat", ".ps1", ".lock"}
+_SKIP_NAMES = {".DS_Store", "requirements.txt", "Thumbs.db", ".gitkeep", ".gitignore", "LICENSE", "LICENSE.txt"}
+_SKIP_DIRS = {"__pycache__", "tests", "test", "__tests__", ".pytest_cache", ".mypy_cache", ".git"}
+
+
+def _project_data_files(rel_dir, dest=None, extra_skip=()):
+    """收集项目目录下的运行期 *数据文件*，绝不带 .py 源码。
+
+    返回 [(src_abs, dest_rel_dir), ...]，仅供 Analysis(datas=...) 使用。
+    Python 模块由 hiddenimports 收集编译进 PYZ；这里只挑出运行期真正需要
+    读文件的非源码资源（templates/static/config/权重/json 等）。.DS_Store、
+    requirements.txt、安装脚本等开发/系统杂物一并不进包。
+    """
+    src_dir = project_root / rel_dir
+    dest = dest or rel_dir
+    out = []
+    if not src_dir.exists():
+        return out
+    skip_suffixes = _SOURCE_SUFFIXES | _DEV_SUFFIXES | set(extra_skip)
+    for path in src_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if any(part in _SKIP_DIRS for part in path.parts):
+            continue
+        if path.name in _SKIP_NAMES:
+            continue
+        if path.suffix in skip_suffixes:
+            continue
+        rel = path.relative_to(src_dir)
+        out.append((str(path), str(Path(dest) / rel.parent)))
+    return out
+
+
+# 仅运行期数据文件进包；源码模块走 hiddenimports → PYZ。
+# 注意：tushare_config.json 的真实 token 在打包前须由 build_backend.py 清空
+# （见 _strip_secrets_from_config），此处只负责搬运文件。
+datas = []
+datas += _project_data_files("webui")          # templates/ static/（.html/.js/.css/.json）
+datas += _project_data_files("analysis")       # 量化模型/规则附带的 .json/.yaml 数据
+datas += _project_data_files("config")         # 运行期配置（token 已清空）
+datas += _project_data_files("data_store")     # sqlite/json 数据底座
+datas += _project_data_files("assets")         # 图标/图片
+datas += _project_data_files("model")          # 模型权重/.json（不含 .py）
+# resources/ utils/ scripts/ 的非 .py 文件仅为安装脚本/文档，运行期不需要，不打包。
+# examples/ finetune/ figures/ tools/ 为开发期产物，整体不打包。
 
 datas += collect_data_files("plotly")
 datas += collect_data_files("robyn")

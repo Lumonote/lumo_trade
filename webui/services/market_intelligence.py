@@ -137,6 +137,7 @@ class MarketIntelligenceService:
         self._industry_map_date: str = ''
         self._industry_building: bool = False
         self._industry_lock = threading.Lock()
+        self._market_cloud_cache: dict[str, Any] = {'ts': 0, 'key': '', 'payload': None}
         self._maybe_refresh_industry_map()  # 进程启动即后台预热，首个 load 多半已就绪
 
     def _request_json(self, url: str, headers: dict[str, str] | None = None, timeout: int = 5,
@@ -302,6 +303,7 @@ class MarketIntelligenceService:
             'fid': fid,
             'fs': fs,
             'fields': 'f12,f14,f2,f3,f62,f100',
+            '_': str(int(time.time() * 1000)),
         }
         url = 'https://push2.eastmoney.com/api/qt/clist/get?' + urllib.parse.urlencode(params)
         payload = self._request_json(
@@ -312,6 +314,8 @@ class MarketIntelligenceService:
                     'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
                 ),
                 'Accept': 'application/json,text/plain,*/*',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
                 'Referer': 'https://quote.eastmoney.com/',
             },
             timeout=4,
@@ -336,6 +340,372 @@ class MarketIntelligenceService:
                 'source': 'eastmoney',
             })
         return items
+
+    def _recent_tushare_trade_dates(self, pro: Any, max_back_days: int = 10) -> list[str]:
+        """Resolve recent open trade dates for Tushare date-keyed snapshots."""
+        today = datetime.datetime.now().date()
+        start = today - datetime.timedelta(days=max(max_back_days * 2, 30))
+        try:
+            cal = pro.trade_cal(
+                exchange='SSE',
+                start_date=start.strftime('%Y%m%d'),
+                end_date=today.strftime('%Y%m%d'),
+                is_open='1',
+                fields='cal_date,is_open',
+            )
+            if cal is not None and not getattr(cal, 'empty', True) and 'cal_date' in cal.columns:
+                days = sorted(str(day) for day in cal['cal_date'].tolist() if str(day or '').strip())
+                if days:
+                    return days[-max_back_days:][::-1]
+        except Exception:
+            pass
+
+        dates: list[str] = []
+        candidate = today
+        for _ in range(max_back_days * 2):
+            if candidate.weekday() < 5:
+                dates.append(candidate.strftime('%Y%m%d'))
+                if len(dates) >= max_back_days:
+                    break
+            candidate -= datetime.timedelta(days=1)
+        return dates
+
+    @staticmethod
+    def _stock_basic_by_ts_code(df: Any) -> dict[str, dict[str, Any]]:
+        if df is None or getattr(df, 'empty', True) or 'ts_code' not in getattr(df, 'columns', []):
+            return {}
+        mapping: dict[str, dict[str, Any]] = {}
+        for _, row in df.iterrows():
+            ts_code = str(row.get('ts_code') or '').strip()
+            symbol = str(row.get('symbol') or ts_code.split('.')[0]).strip()
+            # TuShare stock_basic is the A-share list, but defensive filters keep B-share
+            # codes out of the cloud if a broader response ever slips through.
+            if not ts_code or not symbol.isdigit() or len(symbol) != 6 or symbol.startswith(('200', '900')):
+                continue
+            mapping[ts_code] = {
+                'code': symbol,
+                'name': str(row.get('name') or '').strip(),
+                'industry': str(row.get('industry') or '').strip(),
+                'market': str(row.get('market') or '').strip(),
+            }
+        return mapping
+
+    @staticmethod
+    def _df_by_ts_code(df: Any) -> dict[str, Any]:
+        if df is None or getattr(df, 'empty', True) or 'ts_code' not in getattr(df, 'columns', []):
+            return {}
+        return {
+            str(row.get('ts_code') or '').strip(): row
+            for _, row in df.iterrows()
+            if str(row.get('ts_code') or '').strip()
+        }
+
+    def fetch_tushare_market_cloud_stocks(
+        self,
+        limit: int = 5000,
+        trade_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Preferred full-market rows from Tushare Pro for the desktop market cloud.
+
+        Unit contract for the frontend is yuan: daily.amount(千元) → 元,
+        daily_basic.total_mv/circ_mv(万元) → 元, moneyflow_dc.net_amount(万元) → 元.
+        Missing token/permission/network returns [] so callers can keep the older
+        Eastmoney/Sina fallbacks visible.
+        """
+        limit = max(100, min(int(limit or 5000), 6000))
+        try:
+            import tushare as ts  # 延迟导入，避免拖慢模块加载
+            from scripts.stock_filter_utils import load_tushare_token
+        except Exception:
+            return []
+
+        try:
+            token = load_tushare_token()
+        except Exception:
+            return []
+        if not token or token == 'your_tushare_token_here':
+            return []
+
+        try:
+            pro = ts.pro_api(token)
+        except Exception:
+            return []
+
+        try:
+            basic_df = pro.stock_basic(
+                exchange='',
+                list_status='L',
+                fields='ts_code,symbol,name,industry,market,list_date',
+            )
+        except Exception:
+            return []
+        basics = self._stock_basic_by_ts_code(basic_df)
+        if not basics:
+            return []
+
+        requested_trade_date = re.sub(r'\D', '', str(trade_date or '').strip())
+        if requested_trade_date and len(requested_trade_date) != 8:
+            return []
+        quote_df = None
+        resolved_trade_date = None
+        for day in ([requested_trade_date] if requested_trade_date else self._recent_tushare_trade_dates(pro)):
+            try:
+                quote_df = pro.daily(
+                    trade_date=day,
+                    fields='ts_code,trade_date,close,pct_chg,amount',
+                )
+            except Exception:
+                quote_df = None
+            if quote_df is not None and not getattr(quote_df, 'empty', True):
+                resolved_trade_date = day
+                break
+        if quote_df is None or getattr(quote_df, 'empty', True) or not resolved_trade_date:
+            return []
+
+        try:
+            daily_basic_df = pro.daily_basic(
+                trade_date=resolved_trade_date,
+                fields='ts_code,trade_date,turnover_rate,total_mv,circ_mv',
+            )
+        except Exception:
+            daily_basic_df = None
+
+        flow_df = None
+        fetch_flow = getattr(pro, 'moneyflow_dc', None) or getattr(pro, 'moneyflow_ths', None)
+        if fetch_flow is not None:
+            try:
+                flow_df = fetch_flow(trade_date=resolved_trade_date)
+            except Exception:
+                flow_df = None
+
+        quote_map = self._df_by_ts_code(quote_df)
+        basic_map = self._df_by_ts_code(daily_basic_df)
+        flow_map = self._df_by_ts_code(flow_df)
+        flow_cols = ('net_amount', 'net_mf_amount', 'net_amount_main')
+
+        items: list[dict[str, Any]] = []
+        for ts_code, quote in quote_map.items():
+            meta = basics.get(ts_code)
+            if not meta:
+                continue
+            code = meta.get('code') or ts_code.split('.')[0]
+            name = meta.get('name') or code
+            amount = _safe_float(quote.get('amount'), None)
+            amount_yuan = amount * 1000.0 if amount is not None else None
+            metrics = basic_map.get(ts_code)
+            total_mv = _safe_float(metrics.get('total_mv') if metrics is not None else None, None)
+            circ_mv = _safe_float(metrics.get('circ_mv') if metrics is not None else None, None)
+            market_cap = (total_mv if total_mv is not None else circ_mv)
+            market_cap_yuan = market_cap * 10000.0 if market_cap is not None else None
+
+            flow = None
+            flow_row = flow_map.get(ts_code)
+            if flow_row is not None:
+                for col in flow_cols:
+                    if col in getattr(flow_row, 'index', []):
+                        value = _safe_float(flow_row.get(col), None)
+                        if value is not None:
+                            flow = value * 10000.0
+                            break
+
+            industry = meta.get('industry') or meta.get('market') or '其他'
+            items.append({
+                'code': code,
+                'name': name,
+                'price': _safe_float(quote.get('close'), None),
+                'change_pct': round(_safe_float(quote.get('pct_chg'), 0.0) or 0.0, 2),
+                'amount': amount_yuan,
+                'turnover_rate': _safe_float(metrics.get('turnover_rate') if metrics is not None else None, None),
+                'market_cap': market_cap_yuan,
+                'main_net_inflow': flow,
+                'main_net_inflow_text': _money_text(flow) if flow is not None else '—',
+                'industry': industry,
+                'trade_date': resolved_trade_date,
+                'source': 'tushare_market_cloud',
+            })
+
+        items.sort(
+            key=lambda row: (
+                _safe_float(row.get('market_cap'), 0.0) or 0.0,
+                _safe_float(row.get('amount'), 0.0) or 0.0,
+            ),
+            reverse=True,
+        )
+        return items[:limit]
+
+    def fetch_eastmoney_market_cloud_stocks(
+        self,
+        limit: int = 5000,
+        now: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Realtime full-market rows from Eastmoney for the desktop market cloud."""
+        now = time.time() if now is None else now
+        limit = max(100, min(int(limit or 5000), 6000))
+        params = {
+            'pn': '1',
+            'pz': str(limit),
+            'po': '1',
+            'np': '1',
+            'fltt': '2',
+            'invt': '2',
+            'fid': 'f3',
+            'fs': 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048',
+            'fields': 'f12,f14,f2,f3,f6,f8,f20,f62,f100',
+            '_': str(int(now * 1000)),
+        }
+        url = 'https://push2.eastmoney.com/api/qt/clist/get?' + urllib.parse.urlencode(params)
+        try:
+            payload = self._request_json(
+                url,
+                headers={
+                    'User-Agent': _UA,
+                    'Accept': 'application/json,text/plain,*/*',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                    'Referer': 'https://quote.eastmoney.com/',
+                },
+                timeout=6,
+                trust_env=False,
+            )
+            rows = ((payload or {}).get('data') or {}).get('diff') or []
+        except Exception:
+            rows = []
+
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            code = str(row.get('f12') or '').strip()
+            name = str(row.get('f14') or '').strip()
+            if not code or not name:
+                continue
+            flow = _safe_float(row.get('f62'), None)
+            amount = _safe_float(row.get('f6'), None)
+            market_cap = _safe_float(row.get('f20'), None)
+            industry = str(row.get('f100') or '').strip() or self._industry_map.get(code, '')
+            items.append({
+                'code': code,
+                'name': name,
+                'price': _safe_float(row.get('f2'), None),
+                'change_pct': round(_safe_float(row.get('f3'), 0.0) or 0.0, 2),
+                'amount': amount,
+                'turnover_rate': _safe_float(row.get('f8'), None),
+                'market_cap': market_cap,
+                'main_net_inflow': flow,
+                'main_net_inflow_text': _money_text(flow) if flow is not None else '—',
+                'industry': industry,
+                'source': 'eastmoney_market_cloud',
+            })
+        return items
+
+    def fetch_market_cloud_stocks(
+        self,
+        limit: int = 5000,
+        force_refresh: bool = False,
+        trade_date: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch a broad A-share list for the desktop market-cloud treemap."""
+        now = time.time()
+        requested_trade_date = re.sub(r'\D', '', str(trade_date or '').strip())
+        if requested_trade_date and len(requested_trade_date) != 8:
+            return []
+        limit = max(100, min(int(limit or 5000), 6000))
+        cache_key = f"{requested_trade_date or 'latest'}:{limit}"
+        cached = self._market_cloud_cache.get('payload')
+        if (
+            not force_refresh
+            and cached is not None
+            and self._market_cloud_cache.get('key') == cache_key
+            and now - self._market_cloud_cache.get('ts', 0) < self.ttl_seconds
+        ):
+            return cached
+
+        if requested_trade_date:
+            items = self.fetch_tushare_market_cloud_stocks(limit=limit, trade_date=requested_trade_date)
+            self._market_cloud_cache = {'ts': now, 'key': cache_key, 'payload': items}
+            return items
+
+        if force_refresh:
+            items = self.fetch_eastmoney_market_cloud_stocks(limit=limit, now=now)
+            if not items:
+                items = self.fetch_sina_market_cloud_stocks(limit=limit)
+            if items:
+                self._market_cloud_cache = {'ts': now, 'key': cache_key, 'payload': items}
+                return items
+
+        items = self.fetch_tushare_market_cloud_stocks(limit=limit)
+        if items:
+            self._market_cloud_cache = {'ts': now, 'key': cache_key, 'payload': items}
+            return items
+
+        items = self.fetch_eastmoney_market_cloud_stocks(limit=limit, now=now)
+        if not items:
+            items = self.fetch_sina_market_cloud_stocks(limit=limit)
+        self._market_cloud_cache = {'ts': now, 'key': cache_key, 'payload': items}
+        return items
+
+    def fetch_sina_market_cloud_stocks(self, limit: int = 5000) -> list[dict[str, Any]]:
+        """Fallback full-market rows from Sina industry nodes."""
+        limit = max(100, min(int(limit or 5000), 6000))
+        headers = {'User-Agent': _UA, 'Referer': 'https://finance.sina.com.cn/'}
+        index = request_text(
+            'https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php',
+            headers=headers, timeout=5, encoding='gbk', errors='ignore', retries=2,
+        )
+        nodes = [
+            (node_id, name)
+            for node_id, name in re.findall(r'"(new_\w+)"\s*:\s*"new_\w+,([^,]+),', index)
+            if node_id != 'new_stock'
+        ]
+        if not nodes:
+            return []
+
+        def fetch_node(item: tuple[str, str]) -> list[dict[str, Any]]:
+            node_id, industry = item
+            url = (
+                'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+                f'Market_Center.getHQNodeData?page=1&num=1000&sort=changepercent&asc=0'
+                f'&node={node_id}&_s_r_a=page'
+            )
+            try:
+                raw = request_text(url, headers=headers, timeout=5,
+                                   encoding='gbk', errors='ignore', retries=1)
+                rows = json.loads(raw) if raw.strip().startswith('[') else []
+            except Exception:
+                return []
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                code = str(row.get('code') or '').strip()
+                name = str(row.get('name') or '').strip()
+                if not code or not name:
+                    continue
+                amount = _safe_float(row.get('amount'), None)
+                out.append({
+                    'code': code,
+                    'name': name,
+                    'price': _safe_float(row.get('trade') or row.get('price'), None),
+                    'change_pct': round(_safe_float(row.get('changepercent'), 0.0) or 0.0, 2),
+                    'amount': amount,
+                    'turnover_rate': _safe_float(row.get('turnoverratio'), None),
+                    'market_cap': _safe_float(
+                        row.get('mktcap') or row.get('totalmarketcap') or row.get('nmc'),
+                        None,
+                    ),
+                    'main_net_inflow': None,
+                    'main_net_inflow_text': '—',
+                    'industry': industry,
+                    'source': 'sina_market_cloud',
+                })
+            return out
+
+        merged: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            for rows in executor.map(fetch_node, nodes):
+                for row in rows:
+                    merged.setdefault(row['code'], row)
+                    if len(merged) >= limit:
+                        break
+                if len(merged) >= limit:
+                    break
+        return list(merged.values())[:limit]
 
     def fetch_eastmoney_changes(self, limit: int = 15) -> list[dict[str, Any]]:
         """东方财富盘口异动（push2ex getAllStockChanges），仅取看涨异动用于「实时异动」面板。
@@ -637,10 +1007,10 @@ class MarketIntelligenceService:
             code = str(row.get('code') or '').strip()
             row['industry'] = self._industry_map.get(code) or str(row.get('industry') or '').strip()
 
-    def load(self) -> dict[str, Any]:
+    def load(self, force_refresh: bool = False) -> dict[str, Any]:
         now = time.time()
         cached = self._cache.get('payload')
-        if cached and now - self._cache.get('ts', 0) < self.ttl_seconds:
+        if not force_refresh and cached and now - self._cache.get('ts', 0) < self.ttl_seconds:
             return cached
 
         self._maybe_refresh_industry_map()  # 隔日则后台重建行业映射（非阻塞）
@@ -697,7 +1067,7 @@ class MarketIntelligenceService:
 
         # 概念板块：同上，clist → 腾讯回退。
         try:
-            concept_boards = self.fetch_eastmoney_clist('m:90+t:3', fid='f3', limit=8)
+            concept_boards = self.fetch_eastmoney_clist('m:90+t:3', fid='f3', limit=10)
         except Exception:
             concept_boards = []
         if not concept_boards:

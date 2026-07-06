@@ -33,6 +33,7 @@ def upsert_rows(rows: List[Dict]) -> int:
     """Insert or update rows. Returns number of rows affected."""
     if not rows:
         return 0
+    rows = _merge_duplicate_pk_rows(rows)
     placeholders = ",".join("?" * len(_FIELDS))
     set_clause = ", ".join(
         f"{c}=excluded.{c}" for c in _FIELDS if c not in _PK
@@ -48,6 +49,57 @@ def upsert_rows(rows: List[Dict]) -> int:
         values,
     )
     return cur.rowcount if cur.rowcount else len(values)
+
+
+def _merge_duplicate_pk_rows(rows: List[Dict]) -> List[Dict]:
+    """Merge same-seat rows from multiple reasons before upsert.
+
+    Tushare top_inst can return the same institution/side for one stock-day under
+    different reasons. The table primary key intentionally stores one row per
+    seat, so merge the fetched batch first instead of letting later reasons
+    overwrite earlier amounts.
+    """
+    merged: dict[tuple, Dict] = {}
+    reasons: dict[tuple, list[str]] = {}
+    for row in rows:
+        key = tuple(_to_native(row.get(c)) for c in _PK)
+        if key not in merged:
+            merged[key] = dict(row)
+            reason = str(row.get("reason") or "").strip()
+            reasons[key] = [reason] if reason else []
+            continue
+        item = merged[key]
+        for col in ("net_amount", "buy_amount", "sell_amount"):
+            item[col] = _sum_values(item.get(col), row.get(col))
+        item["is_quant"] = max(_num(item.get("is_quant")) or 0, _num(row.get("is_quant")) or 0)
+        q_existing = _num(item.get("quant_confidence"))
+        q_new = _num(row.get("quant_confidence"))
+        if q_new is not None and (q_existing is None or q_new > q_existing):
+            item["quant_confidence"] = row.get("quant_confidence")
+        reason = str(row.get("reason") or "").strip()
+        if reason and reason not in reasons[key]:
+            reasons[key].append(reason)
+    for key, item in merged.items():
+        if reasons.get(key):
+            item["reason"] = " / ".join(reasons[key])
+    return list(merged.values())
+
+
+def _num(v):
+    try:
+        if v is None or pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sum_values(a, b):
+    nums = [v for v in (_num(a), _num(b)) if v is not None]
+    return sum(nums) if nums else None
 
 
 def get_by_code(ts_code: str, trade_date: Optional[str] = None) -> pd.DataFrame:

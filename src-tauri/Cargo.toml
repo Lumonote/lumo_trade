@@ -13,3 +13,12 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 tauri-plugin-notification = "2"
 
+# 源码保护（务实级）：release 构建去除调试符号、panic 改 abort（缩小体积+去掉
+# panic 字符串里的源码路径），LTO 跨编译单元优化。这些都是分发二进制的标准
+# 加固，不影响功能，只让逆向更难、产物更小。
+[profile.release]
+strip = "symbols"
+lto = true
+panic = "abort"
+codegen-units = 1
+

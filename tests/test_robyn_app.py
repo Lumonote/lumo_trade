@@ -139,6 +139,31 @@ def test_robyn_native_query_params(robyn_module):
     assert "clients" in trading_response.json()
 
 
+def test_robyn_stock_dashboard_refresh_query_forces_market_refresh(robyn_module, monkeypatch):
+    from robyn.testing import TestClient
+
+    seen = []
+
+    def fake_dashboard(force_market_refresh=False):
+        seen.append(force_market_refresh)
+        return {"intelligence": {"eastmoney": {"concept_boards": []}}}
+
+    monkeypatch.setattr(robyn_module.webui_core, "_build_market_dashboard", fake_dashboard)
+    monkeypatch.setattr(robyn_module.webui_core, "_load_latest_opportunities", lambda: {})
+    monkeypatch.setattr(robyn_module.webui_core, "_load_batch_summary", lambda: {})
+    monkeypatch.setattr(robyn_module.webui_core, "_load_report_history", lambda: [])
+    monkeypatch.setattr(robyn_module.webui_core, "_module_health", lambda: {})
+    monkeypatch.setattr(robyn_module.webui_core, "_get_job_snapshot", lambda: [])
+
+    with TestClient(robyn_module.app) as client:
+        normal_response = client.get("/api/stock-dashboard")
+        refresh_response = client.get("/api/stock-dashboard", query_params={"refresh": "1"})
+
+    assert normal_response.status_code == 200
+    assert refresh_response.status_code == 200
+    assert seen == [False, True]
+
+
 def test_robyn_native_job_start_validation(robyn_module):
     from robyn.testing import TestClient
 

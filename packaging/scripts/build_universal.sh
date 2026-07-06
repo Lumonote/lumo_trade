@@ -79,6 +79,47 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+BUILD_LOCK_DIR="$PROJECT_ROOT/.kronos-build.lock"
+
+release_build_lock() {
+    if [ -n "${BUILD_LOCK_DIR:-}" ] && [ -d "$BUILD_LOCK_DIR" ]; then
+        local lock_pid=""
+        lock_pid="$(cat "$BUILD_LOCK_DIR/pid" 2>/dev/null || true)"
+        if [ "$lock_pid" = "$$" ]; then
+            rm -rf "$BUILD_LOCK_DIR"
+        fi
+    fi
+}
+
+acquire_build_lock() {
+    if mkdir "$BUILD_LOCK_DIR" 2>/dev/null; then
+        echo "$$" > "$BUILD_LOCK_DIR/pid"
+        trap release_build_lock EXIT INT TERM
+        return 0
+    fi
+
+    local lock_pid=""
+    lock_pid="$(cat "$BUILD_LOCK_DIR/pid" 2>/dev/null || true)"
+    if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+        echo -e "${YELLOW}⚠️  发现残留打包锁，正在清理: $BUILD_LOCK_DIR${NC}"
+        rm -rf "$BUILD_LOCK_DIR"
+        if mkdir "$BUILD_LOCK_DIR" 2>/dev/null; then
+            echo "$$" > "$BUILD_LOCK_DIR/pid"
+            trap release_build_lock EXIT INT TERM
+            return 0
+        fi
+    fi
+
+    echo -e "${RED}❌ 已有 Kronos 打包任务正在运行${NC}"
+    if [ -n "$lock_pid" ]; then
+        echo -e "${YELLOW}   持锁进程 PID: $lock_pid${NC}"
+    fi
+    echo -e "${YELLOW}   请等待当前打包结束，或先停止旧打包进程后重试。${NC}"
+    exit 1
+}
+
+acquire_build_lock
+
 # 检测当前操作系统
 detect_os() {
     case "$(uname -s)" in
@@ -207,6 +248,25 @@ build_bundled_backend() {
         return 1
     fi
     echo -e "${GREEN}✅ 内置 backend 构建完成: $backend_exe${NC}"
+}
+
+check_cargo_artifact_lock() {
+    local cargo_lock="$PROJECT_ROOT/src-tauri/target/release/.cargo-lock"
+    if [ ! -f "$cargo_lock" ] || ! command -v lsof >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local lock_holders=""
+    lock_holders="$(lsof -n "$cargo_lock" 2>/dev/null | awk 'NR > 1 {print $1 " " $2}' | sort -u || true)"
+    if [ -z "$lock_holders" ]; then
+        return 0
+    fi
+
+    echo -e "${RED}❌ Cargo artifact 目录仍被旧进程占用${NC}"
+    echo -e "${YELLOW}   锁文件: $cargo_lock${NC}"
+    echo "$lock_holders" | sed 's/^/   /'
+    echo -e "${YELLOW}   请先结束上面这些旧 cargo/tauri 打包进程，再重新运行打包。${NC}"
+    return 1
 }
 
 # 检查Docker环境
@@ -514,7 +574,19 @@ build_tauri_desktop() {
     echo "=========================================="
 
     check_tauri_environment || return 1
+    check_cargo_artifact_lock || return 1
+
+    # 源码保护：先压缩混淆前端静态资源，再构建 PyInstaller 后端。
+    # spec 会把 webui/static 也打进后端 bundle；顺序反了会把未压缩 JS 留在后端内。
+    # dev 原版由 git 保留，这里仅作用于打进 app 的产物。
+    if [ -x "$PROJECT_ROOT/packaging/scripts/minify_static.sh" ]; then
+        "$PROJECT_ROOT/packaging/scripts/minify_static.sh" || echo -e "${YELLOW}⚠️  前端压缩失败，继续用原文件打包${NC}"
+    fi
     build_bundled_backend || return 1
+    # PyInstaller 后端构建较久；期间 IDE/rust-analyzer/另一条打包命令可能重新拿到
+    # Cargo artifact 锁。Tauri 启动前再查一次，避免卡在 cargo 的 Blocking waiting...
+    check_cargo_artifact_lock || return 1
+
     cd "$PROJECT_ROOT"
 
     if [ "$platform_name" = "macOS" ]; then

@@ -15,11 +15,27 @@
           <p class="brand-note">智能投研控制台</p>
         </div>
         <nav class="nav" aria-label="桌面导航">
+          <a class="market-cloud-menu {% if active_page == 'market_cloud' %}active{% endif %}" href="/desktop/market_cloud" data-short="云" title="大盘云图">
+            <span class="market-cloud-visual" aria-hidden="true">
+              <span class="market-cloud-orb"></span>
+              <span class="market-cloud-points">
+                <i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i>
+              </span>
+            </span>
+            <span class="market-cloud-copy">
+              <strong>大盘云图</strong>
+              <small>资金 / 热点 / 风险</small>
+            </span>
+          </a>
           {% for key, meta in pages.items() %}
-	          <a class="{% if key == active_page %}active{% endif %}" href="/desktop/{{ key }}" data-short="{{ meta.title[:1] }}" title="{{ meta.title }}">
-	            <span>{{ meta.title }}</span>
-	          </a>
-	          {% endfor %}
+          {% if key != 'market_cloud' %}
+          <a class="{% if key == active_page %}active{% endif %}" href="/desktop/{{ key }}" data-short="{{ meta.title[:1] }}" title="{{ meta.title }}">
+            <span>{{ meta.title }}</span>
+          </a>
+          {% endif %}
+          {% endfor %}
         </nav>
         <div class="sidebar-foot">市场分析 · 报告 · 配置</div>
       </aside>
@@ -45,6 +61,10 @@
         </header>
 
         {# 「总览」页已并入 features 单页（见 DESKTOP_PAGE_ALIASES: overview→features） #}
+
+        {% if active_page == 'market_cloud' %}
+        <section id="marketCloudRoot" class="market-cloud-screen"></section>
+        {% endif %}
 
 
         {% if active_page == 'command_center' %}
@@ -1210,5 +1230,6 @@
     <script src="/static/kronos_desktop_shell.js"></script>
     <script src="/static/provider_context_menu.js"></script>
     <script src="/static/kronos_desktop_app.js?v={{ asset_v('kronos_desktop_app.js') }}"></script>
+    <script src="/static/kronos_market_cloud.js?v={{ asset_v('kronos_market_cloud.js') }}"></script>
   </body>
 </html>

@@ -56,6 +56,30 @@ def test_falls_back_to_backtest_recommendations_csv(tmp_path):
     assert health["top_recent"][0]["return_5d"] == pytest.approx(3.0)
 
 
+def test_prefers_newer_recommendations_over_older_rebuilt_csv(tmp_path):
+    import os
+
+    old_rebuilt = _write_csv(
+        tmp_path,
+        "backtest_rebuilt_20260401_000000.csv",
+        [{"date": "2026-04-01", "score": 72, "quant": 60, "ret": -5.0}],
+    )
+    recommendations = _write_csv(
+        tmp_path / "backtest",
+        "recommendations.csv",
+        [{"date": "2026-07-02", "score": 90, "quant": 80, "ret": 4.0}],
+    )
+    os.utime(old_rebuilt, (1, 1))
+    os.utime(recommendations, (2, 2))
+
+    health = ScoringHealthService([tmp_path]).health()
+
+    assert health["source"] == "recommendations"
+    assert health["file"] == "recommendations.csv"
+    assert health["date_range"]["start"] == "2026-07-02"
+    assert health["baseline"]["full"]["avg_return"] == pytest.approx(4.0)
+
+
 def test_sample_rows_clean_nan_name_and_pad_code(tmp_path):
     path = tmp_path / "backtest" / "recommendations.csv"
     path.parent.mkdir(parents=True, exist_ok=True)

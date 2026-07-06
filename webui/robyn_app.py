@@ -454,9 +454,10 @@ def save_tushare_settings(request: Request) -> Response:
 
 @_native_get("/api/stock-dashboard")
 def get_stock_dashboard(request: Request) -> Response:
+    refresh_market = str(_query_value(request, "refresh", "") or "").lower() in {"1", "true", "yes"}
     dashboard = {
         "generated_at": webui_core.datetime.datetime.now().isoformat(),
-        "market": webui_core._build_market_dashboard(),
+        "market": webui_core._build_market_dashboard(force_market_refresh=refresh_market),
         "opportunity": webui_core._load_latest_opportunities(),
         "batch": webui_core._load_batch_summary(),
         "reports": webui_core._load_report_history(),
@@ -470,6 +471,18 @@ def get_stock_dashboard(request: Request) -> Response:
         "jobs": webui_core._get_job_snapshot(),
     }
     return _json_response(dashboard)
+
+
+@_native_get("/api/market-cloud")
+def get_market_cloud(request: Request) -> Response:
+    refresh_market = str(_query_value(request, "refresh", "") or "").lower() in {"1", "true", "yes"}
+    limit = webui_core._safe_int(_query_value(request, "limit"), 5000, minimum=100, maximum=6000) or 5000
+    trade_date = _query_value(request, "date", "")
+    return _json_response(webui_core._market_cloud_payload(
+        force_refresh=refresh_market,
+        limit=limit,
+        trade_date=trade_date,
+    ))
 
 
 @_native_get("/api/stock-kline/:stock_code")
@@ -1160,7 +1173,7 @@ def notification_events(request: Request) -> Response:
 
 @_native_get("/api/scoring-health")
 def scoring_health(request: Request) -> Response:
-    """评分算法健康度：最新 backtest_rebuilt_*.csv 的分档胜率 / 降级占比 / 日期范围。"""
+    """评分算法健康度：最新可用回测 CSV 的分档胜率 / 降级占比 / 日期范围。"""
     try:
         start_date = (_query_value(request, "start_date") or "").strip() or None
         end_date = (_query_value(request, "end_date") or "").strip() or None

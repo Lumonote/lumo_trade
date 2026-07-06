@@ -341,6 +341,37 @@ def test_dragon_tiger_ranking_attaches_institution_amounts_and_names(conn):
     assert len(agg_row["institution_rows"]) == 3
 
 
+def test_dragon_tiger_institution_totals_merge_duplicate_reason_rows(conn):
+    """同一机构同日同方向命中多个上榜原因时,席位金额应合计而不是被后写记录覆盖。"""
+    _seed_dragon_tiger([
+        {"trade_date": "2026-06-04", "ts_code": "000001.SZ", "name": "甲",
+         "net_amount": 3e7, "l_buy": 4e7, "reason": "日涨幅偏离7%"},
+    ])
+    _seed_dragon_tiger_inst([
+        {
+            "ts_code": "000001.SZ", "trade_date": "2026-06-04",
+            "inst_name": "机构专用", "side": "buy",
+            "buy_amount": 1.0e7, "sell_amount": 1.0e6, "net_amount": 9.0e6,
+            "is_quant": 0, "quant_confidence": 0.0, "reason": "日涨幅偏离7%",
+        },
+        {
+            "ts_code": "000001.SZ", "trade_date": "2026-06-04",
+            "inst_name": "机构专用", "side": "buy",
+            "buy_amount": 2.0e7, "sell_amount": 2.0e6, "net_amount": 1.8e7,
+            "is_quant": 0, "quant_confidence": 0.0, "reason": "换手率达20%",
+        },
+    ])
+
+    row = _svc().dragon_tiger_ranking(
+        date="2026-06-04", top_n=10, mode="single", with_quotes=False,
+    )["rows"][0]
+
+    assert row["institution_buy_amount"] == pytest.approx(3.0e7)
+    assert row["institution_sell_amount"] == pytest.approx(3.0e6)
+    assert row["institution_net_amount"] == pytest.approx(2.7e7)
+    assert row["institution_rows"][0]["reason"] == "日涨幅偏离7% / 换手率达20%"
+
+
 def test_moneyflow_ranking_can_surface_matching_institution_names(conn):
     _seed_moneyflow([
         {"trade_date": "2026-06-04", "ts_code": "000001.SZ", "name": "甲", "net_amount": 3e7, "buy_elg_amount": 100.0, "buy_lg_amount": 50.0},

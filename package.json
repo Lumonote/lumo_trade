@@ -8,6 +8,8 @@
     "desktop:build": "tauri build"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0"
+    "@tauri-apps/cli": "^2.0.0",
+    "esbuild": "^0.28.1",
+    "terser": "^5.48.0"
   }
 }

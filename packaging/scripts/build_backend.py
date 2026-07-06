@@ -19,6 +19,18 @@ CONFIG_PATH = PROJECT_ROOT / "build" / "pyinstaller_config"
 MPL_CONFIG_PATH = PROJECT_ROOT / "build" / "matplotlib_config"
 XDG_CACHE_PATH = PROJECT_ROOT / "build" / "xdg_cache"
 
+# 打包产物里不允许残留明文源码的后缀（模块已编译进 PYZ，留 .py 等于泄漏）。
+_PLAINTEXT_SOURCE_SUFFIXES = (".py", ".pyi", ".pyc", ".pyo")
+# 运行期无意义、白白增加体积/暴露信息的文件名/后缀。
+_DEV_DOC_SUFFIXES = (".md", ".rst", ".spec", ".log")
+_DEV_DOC_NAMES = {".DS_Store", "requirements.txt", "LICENSE", "LICENSE.txt"}
+# 仅扫除「本项目自有源码目录」下的残留；第三方包目录保持原样避免误伤。
+_PROJECT_SOURCE_DIRS = ("analysis", "scripts", "webui", "model", "utils", "tools", "examples", "finetune", "resources")
+# 打包版配置里必须清空的敏感字段路径（点分）；用户运行时在 user_root/config 自行填入。
+_SECRET_CONFIG_PATHS = {
+    "config/tushare_config.json": ("tushare", "token"),
+}
+
 TORCH_DYLIBS = {
     "libc10.dylib",
     "libomp.dylib",
@@ -84,6 +96,76 @@ def _adhoc_codesign_macos(bundle_dir: Path) -> None:
         )
 
 
+def _strip_plaintext_source(bundle_dir: Path) -> int:
+    """扫除产物里本项目自有目录下残留的明文源码/开发文档。
+
+    spec 已用 _project_data_files() 只搬数据文件，这里做兜底：万一某子目录
+    整目录被 collect 进来（或第三方 hook 带入），仍把 .py/.pyi/.pyc/README
+    等抹掉，确保只余字节码（在 PYZ 内）与运行期数据文件。返回删除文件数。
+    """
+    removed = 0
+    internal = bundle_dir / "_internal"
+    if not internal.exists():
+        return 0
+    scan_roots = [internal / d for d in _PROJECT_SOURCE_DIRS if (internal / d).exists()]
+    for root in scan_roots:
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            name = path.name
+            if name in _DEV_DOC_NAMES or path.suffix in _PLAINTEXT_SOURCE_SUFFIXES or path.suffix in _DEV_DOC_SUFFIXES:
+                try:
+                    path.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+    # _internal 顶层也清掉 requirements.txt / README* 等泄漏信息。
+    for name in ("requirements.txt", "README.md", "README.rst", "LICENSE", "LICENSE.txt"):
+        victim = internal / name
+        if victim.exists():
+            try:
+                victim.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def _strip_secrets_from_config(bundle_dir: Path) -> int:
+    """把打包版配置中的真实 token 清空。
+
+    用户运行时由 configuration_service 从 user_root/config 覆盖（首启会从打包
+    版 bootstrap 一份到用户目录），所以打包配置应为「空 token 模板」。返回清
+    空的字段数。源码目录 config/tushare_config.json 本身保留开发者本机用的
+    token（不进包），这里只处理 bundle 内的拷贝。
+    """
+    import json
+
+    internal = bundle_dir / "_internal"
+    cleaned = 0
+    for rel, key_path in _SECRET_CONFIG_PATHS.items():
+        cfg = internal / rel
+        if not cfg.exists():
+            continue
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        node = data
+        ok = True
+        for k in key_path[:-1]:
+            if not isinstance(node, dict) or k not in node:
+                ok = False
+                break
+            node = node[k]
+        if ok and isinstance(node, dict) and key_path[-1] in node:
+            if node[key_path[-1]]:
+                node[key_path[-1]] = ""
+                cfg.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                cleaned += 1
+    return cleaned
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build bundled Kronos WebUI backend")
     parser.add_argument("--clean", action="store_true", help="remove previous backend build first")
@@ -135,6 +217,12 @@ def main() -> int:
     if args.mode == "full":
         _fix_macos_torch_rpaths(bundle_dir)
     _adhoc_codesign_macos(bundle_dir)
+
+    # 源码保护（务实级）：扫除残留明文 .py 源码 + 清空打包配置中的真实 token。
+    removed_src = _strip_plaintext_source(bundle_dir)
+    removed_secret = _strip_secrets_from_config(bundle_dir)
+    if removed_src or removed_secret:
+        print(f"安全清理: 移除明文/开发文件 {removed_src} 个, 清空敏感字段 {removed_secret} 处")
 
     executable = bundle_dir / (
         "kronos_webui_backend.exe" if sys.platform == "win32" else "kronos_webui_backend"

@@ -6,6 +6,52 @@ def _mk_board(board_type, name, change_pct, net=0.0):
             "change_pct": change_pct, "main_net_inflow": net}
 
 
+def test_opportunity_eastmoney_clist_bypasses_http_cache(monkeypatch):
+    """机会挖掘的东财热门板块请求应绕过缓存，避免 Top10 板块总是旧数据。"""
+    discovery = OpportunityDiscovery.__new__(OpportunityDiscovery)
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": {"diff": []}}
+
+    class FakeSession:
+        def get(self, url, headers=None, timeout=8, proxies=None):
+            captured["url"] = url
+            captured["headers"] = headers or {}
+            captured["proxies"] = proxies
+            return FakeResponse()
+
+    discovery.session = FakeSession()
+    rows = discovery._eastmoney_clist("m:90+t:3", fid="f3", limit=10, attempts=1)
+
+    assert rows == []
+    assert "&_=" in captured["url"]
+    assert captured["headers"].get("Cache-Control") == "no-cache"
+    assert captured["headers"].get("Pragma") == "no-cache"
+
+
+def test_command_center_hot_news_snapshot_isolated_from_report_topics():
+    """大屏右栏落库新闻应固定为采集到的新闻,不被后续首页话题覆盖。"""
+    discovery = OpportunityDiscovery.__new__(OpportunityDiscovery)
+    hot_news = [
+        {"title": "东财最新新闻", "url": "http://news/1", "source": "东方财富", "heat": 96},
+    ]
+
+    discovery._snapshot_command_center_hot_news(hot_news)
+    hot_news[0]["title"] = "后续被改写的话题"
+    discovery.global_hot_news = [
+        {"title": "股吧话题", "url": "http://topic/1", "source": "东方财富股吧", "heat": 90},
+    ]
+
+    assert discovery.command_center_hot_news == [
+        {"title": "东财最新新闻", "url": "http://news/1", "source": "东方财富", "heat": 96},
+    ]
+
+
 def test_select_hot_boards_prioritizes_concepts():
     """以概念为主：席位充足时概念占 70%(默认)，行业仅补足剩余。"""
     boards = [_mk_board("概念", f"C{i}", 10 - i) for i in range(12)]

@@ -120,6 +120,10 @@ fn bundled_backend_path(app: &tauri::App) -> Option<PathBuf> {
     .find(|path| path.exists())
 }
 
+fn bundled_config_dir(project_root: &Path) -> PathBuf {
+    project_root.join("config")
+}
+
 fn user_data_dir(app: &tauri::App) -> PathBuf {
     app.path()
         .app_data_dir()
@@ -352,6 +356,7 @@ fn start_backend(app: &tauri::App) -> Option<Child> {
     }
 
     let project_root = bundled_project_root(app);
+    let source_config_dir = bundled_config_dir(&project_root);
 
     if let Some(backend_exe) = bundled_backend_path(app) {
         let mut command = Command::new(backend_exe);
@@ -361,10 +366,7 @@ fn start_backend(app: &tauri::App) -> Option<Child> {
             .env("KRONOS_PROJECT_ROOT", &project_root)
             .env("KRONOS_USER_DIR", &user_dir)
             .env("KRONOS_DESKTOP", "tauri")
-            .env(
-                "KRONOS_SOURCE_CONFIG_DIR",
-                env!("CARGO_MANIFEST_DIR").replace("/src-tauri", "/config"),
-            )
+            .env("KRONOS_SOURCE_CONFIG_DIR", &source_config_dir)
             .env("KRONOS_HOST", BACKEND_HOST)
             .env("KRONOS_PORT", BACKEND_PORT.to_string())
             .env("FLASK_DEBUG", "0")
@@ -436,10 +438,7 @@ fn start_backend(app: &tauri::App) -> Option<Child> {
         .current_dir(project_root)
         .env("KRONOS_DESKTOP", "tauri")
         .env("KRONOS_USER_DIR", &user_dir)
-        .env(
-            "KRONOS_SOURCE_CONFIG_DIR",
-            env!("CARGO_MANIFEST_DIR").replace("/src-tauri", "/config"),
-        )
+        .env("KRONOS_SOURCE_CONFIG_DIR", &source_config_dir)
         .env("KRONOS_HOST", BACKEND_HOST)
         .env("KRONOS_PORT", BACKEND_PORT.to_string())
         .env("FLASK_DEBUG", "0")

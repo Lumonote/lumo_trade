@@ -1,7 +1,7 @@
 """评分算法健康度服务。
 
 读取 results 目录(经 webui/services/paths.py 的 results_dir() 解析,可叠加额外
-搜索目录)最新一份 ``backtest_rebuilt_*.csv``;若没有,回退读取
+搜索目录)中最新一份可用回测 CSV:``backtest_rebuilt_*.csv`` 或
 ``backtest/recommendations.csv``。计算:
 
 - S/A/B/C 分档样本数、5 日胜率、平均收益(全量 + 最近 20 个交易日两组)
@@ -75,16 +75,11 @@ class ScoringHealthService:
             try:
                 if directory.exists():
                     candidates.extend(p for p in directory.glob("backtest_rebuilt_*.csv") if p.is_file())
+                    recommendations = directory / "backtest" / "recommendations.csv"
+                    if recommendations.is_file():
+                        candidates.append(recommendations)
             except OSError:
                 continue
-        if not candidates:
-            for directory in self._search_dirs:
-                try:
-                    path = directory / "backtest" / "recommendations.csv"
-                    if path.is_file():
-                        candidates.append(path)
-                except OSError:
-                    continue
         if not candidates:
             return None
         return max(candidates, key=lambda p: p.stat().st_mtime)
