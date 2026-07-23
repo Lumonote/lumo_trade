@@ -657,9 +657,23 @@ fn main() {
         .expect("error while building Kronos Tauri application");
 
     app.run(|app_handle, event| {
-        // 仅「真正退出」（菜单退出 / Cmd+Q）才杀后端；关窗已改为隐藏常驻（见 D1）。
-        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-            app_handle.state::<BackendProcess>().stop();
+        match event {
+            // macOS：主窗已被 D1 改成关=隐藏，全窗隐藏后点 Dock 图标只会触发
+            // Reopen 事件——不处理它 Dock 就「点不开」，只剩托盘「控制台」能唤回。
+            // 这里与托盘 open_main 同款：唤醒 + 前置主窗。
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => {
+                if let Some(main) = app_handle.get_webview_window("main") {
+                    let _ = main.unminimize();
+                    let _ = main.show();
+                    let _ = main.set_focus();
+                }
+            }
+            // 仅「真正退出」（菜单退出 / Cmd+Q）才杀后端；关窗已改为隐藏常驻（见 D1）。
+            RunEvent::ExitRequested { .. } | RunEvent::Exit => {
+                app_handle.state::<BackendProcess>().stop();
+            }
+            _ => {}
         }
     });
 }

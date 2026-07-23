@@ -24,6 +24,7 @@ if __package__ in (None, ""):
 from webui import core as webui_core
 from webui.services.model_runtime import load_model_payload, loaded_model_info, run_prediction_payload
 from webui.services import futures_service, quant_radar_service, star_orbit_service
+from webui.services import license_service
 from webui.services import stock_screener_service
 from data_store import quant_radar_repo, star_orbit_repo
 
@@ -233,6 +234,62 @@ def _env_int(name: str, default: int) -> int:
         return max(1, int(os.environ.get(name, default)))
     except (TypeError, ValueError):
         return default
+
+
+# ---------------------------------------------------------------------------
+# 设备验证门禁：打包态(或 KRONOS_LICENSE_REQUIRED=1)下，激活通过前拦截全部功能。
+# 老启动器 kronos_modern_gui 的验证从未接入 Tauri 打包链，这里在 HTTP 层补上：
+# 页面 302 → /activate，API 403，激活面(激活页/授权API/静态资源)放行。
+# ---------------------------------------------------------------------------
+
+_LICENSE_ALLOWED_PREFIXES = ("/api/license/", "/static/", "/assets/")
+_LICENSE_ALLOWED_PATHS = {"/activate", "/favicon.ico"}
+
+
+def _license_path_allowed(path: str) -> bool:
+    return path in _LICENSE_ALLOWED_PATHS or path.startswith(_LICENSE_ALLOWED_PREFIXES)
+
+
+@app.before_request()
+def _license_gate(request: Request):
+    if not license_service.license_required():
+        return request
+    path, _query = _split_path_query(_raw_request_path(request))
+    method = str(getattr(request, "method", "GET") or "GET").upper()
+    if method == "OPTIONS" or _license_path_allowed(path):
+        return request
+    if license_service.is_activated():
+        return request
+    if path.startswith("/api/"):
+        return _json_response(
+            {"error": "license_required", "message": "设备未激活授权，请先完成设备验证"},
+            status_code=403,
+        )
+    return Response(
+        status_code=302,
+        headers=Headers({"Location": "/activate"}),
+        description="",
+    )
+
+
+@_native_get("/activate")
+def activate_page(request: Request) -> Response:
+    return _render_template("activation.html", status=license_service.activation_status())
+
+
+@_native_get("/api/license/status")
+def api_license_status(request: Request) -> Response:
+    return _json_response(license_service.activation_status())
+
+
+@_native_post("/api/license/activate")
+def api_license_activate(request: Request) -> Response:
+    body = _request_json(request)
+    ok, message = license_service.activate(body.get("license_code", ""))
+    payload: dict[str, Any] = {"success": ok, "message": message}
+    if ok:
+        payload["status"] = license_service.activation_status()
+    return _json_response(payload, status_code=200 if ok else 400)
 
 
 def _model_status_payload() -> dict[str, Any]:
@@ -1515,6 +1572,8 @@ def api_open_url(request: Request) -> Response:
 
 @app.startup_handler
 def startup() -> None:
+    if license_service.license_required():
+        license_service.warm_in_background()
     webui_core.start_market_monitor()
     webui_core.start_pattern_autorefresh()
     webui_core.start_paper_eod()

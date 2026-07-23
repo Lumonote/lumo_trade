@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>设备验证 - Kronos</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: radial-gradient(1200px 600px at 20% -10%, #16233d 0%, #0b1220 55%, #080d18 100%);
+    color: #e8eefc;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 520px;
+    background: rgba(17, 26, 45, 0.92);
+    border: 1px solid rgba(94, 129, 190, 0.25);
+    border-radius: 16px;
+    padding: 36px 40px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .brand .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: linear-gradient(135deg, #4f8cff, #38e1c6);
+    box-shadow: 0 0 12px rgba(79, 140, 255, 0.8);
+  }
+  .brand h1 { font-size: 20px; font-weight: 700; letter-spacing: 1px; }
+  .subtitle { color: #8fa3c8; font-size: 13px; margin-bottom: 26px; }
+  .section-label { font-size: 12px; color: #8fa3c8; margin-bottom: 8px; letter-spacing: 0.5px; }
+  .device-row {
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(9, 14, 26, 0.85);
+    border: 1px solid rgba(94, 129, 190, 0.25);
+    border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 22px;
+  }
+  .device-id {
+    flex: 1; font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 17px; letter-spacing: 2px; color: #6fd3ff; user-select: all;
+  }
+  .btn-copy {
+    border: 1px solid rgba(111, 211, 255, 0.4); background: transparent; color: #6fd3ff;
+    border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+  }
+  .btn-copy:hover { background: rgba(111, 211, 255, 0.12); }
+  input[type="text"] {
+    width: 100%;
+    background: rgba(9, 14, 26, 0.85);
+    border: 1px solid rgba(94, 129, 190, 0.3);
+    border-radius: 10px;
+    color: #e8eefc;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 15px; letter-spacing: 1px;
+    padding: 13px 14px; outline: none;
+    text-transform: uppercase;
+  }
+  input[type="text"]:focus { border-color: #4f8cff; box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.18); }
+  .btn-activate {
+    width: 100%; margin-top: 18px;
+    background: linear-gradient(135deg, #3d7bfd, #2ea8e6);
+    border: none; border-radius: 10px;
+    color: #fff; font-size: 15px; font-weight: 600;
+    padding: 13px; cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+  .btn-activate:hover { filter: brightness(1.1); }
+  .btn-activate:disabled { filter: grayscale(0.6); cursor: not-allowed; }
+  .msg { margin-top: 14px; font-size: 13px; border-radius: 8px; padding: 10px 12px; display: none; }
+  .msg.error { display: block; color: #ff9d9d; background: rgba(255, 90, 90, 0.12); border: 1px solid rgba(255, 90, 90, 0.3); }
+  .msg.success { display: block; color: #7ce8c4; background: rgba(46, 213, 137, 0.12); border: 1px solid rgba(46, 213, 137, 0.35); }
+  .activated-box { text-align: center; padding: 10px 0 4px; }
+  .activated-box .icon { font-size: 40px; margin-bottom: 10px; }
+  .activated-box .title { font-size: 17px; font-weight: 600; color: #7ce8c4; margin-bottom: 6px; }
+  .activated-box .meta { font-size: 12px; color: #8fa3c8; margin-bottom: 22px; line-height: 1.8; }
+  .hint { margin-top: 22px; font-size: 12px; color: #64769a; line-height: 1.8; }
+  .hint b { color: #8fa3c8; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand"><span class="dot"></span><h1>Kronos 设备验证</h1></div>
+    <div class="subtitle">本设备需要激活授权后才能使用全部功能</div>
+
+    {% if status.activated %}
+    <div class="activated-box">
+      <div class="icon">✅</div>
+      <div class="title">设备已激活</div>
+      <div class="meta">
+        授权码：{{ status.license_code }}<br>
+        激活时间：{{ status.activated_at }}
+      </div>
+      <button class="btn-activate" onclick="window.location.href='/desktop'">进入 Kronos</button>
+    </div>
+    {% else %}
+    <div class="section-label">本机设备ID（发送给管理员获取授权码）</div>
+    <div class="device-row">
+      <span class="device-id" id="deviceId">{{ status.device_id }}</span>
+      <button class="btn-copy" id="copyBtn" type="button">复制</button>
+    </div>
+
+    <div class="section-label">授权码</div>
+    <input type="text" id="licenseCode" placeholder="LUMO-XXXXX-XXXXX-XXXXX-XXXXX"
+           autocomplete="off" spellcheck="false" maxlength="30">
+    <button class="btn-activate" id="activateBtn" type="button">激活授权</button>
+    <div class="msg" id="msg"></div>
+
+    <div class="hint">
+      <b>激活步骤：</b>① 复制上方设备ID发送给管理员 → ② 获取对应授权码 → ③ 输入授权码点击激活。<br>
+      授权码与设备一一绑定，更换硬件后需重新申请。
+    </div>
+    {% endif %}
+  </div>
+
+<script>
+(function () {
+  var copyBtn = document.getElementById('copyBtn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', function () {
+      var text = document.getElementById('deviceId').textContent.trim();
+      function done() { copyBtn.textContent = '已复制'; setTimeout(function () { copyBtn.textContent = '复制'; }, 1500); }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { fallback(); });
+      } else { fallback(); }
+      function fallback() {
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    });
+  }
+
+  var btn = document.getElementById('activateBtn');
+  if (!btn) return;
+  var input = document.getElementById('licenseCode');
+  var msg = document.getElementById('msg');
+
+  function show(kind, text) { msg.className = 'msg ' + kind; msg.textContent = text; }
+
+  function activate() {
+    var code = (input.value || '').trim().toUpperCase();
+    if (!code) { show('error', '请输入授权码'); return; }
+    btn.disabled = true; btn.textContent = '正在激活…';
+    fetch('/api/license/activate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ license_code: code })
+    }).then(function (resp) { return resp.json().then(function (data) { return { ok: resp.ok, data: data }; }); })
+      .then(function (result) {
+        if (result.ok && result.data.success) {
+          show('success', '✓ ' + (result.data.message || '激活成功') + '，正在进入应用…');
+          setTimeout(function () { window.location.href = '/desktop'; }, 900);
+        } else {
+          show('error', result.data.message || '激活失败，请核对授权码');
+          btn.disabled = false; btn.textContent = '激活授权';
+        }
+      })
+      .catch(function () {
+        show('error', '网络异常，请重试');
+        btn.disabled = false; btn.textContent = '激活授权';
+      });
+  }
+
+  btn.addEventListener('click', activate);
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') activate(); });
+})();
+</script>
+</body>
+</html>

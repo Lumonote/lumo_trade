@@ -92,6 +92,9 @@ hiddenimports = [
     "baostock",
     "bs4",
     "fake_useragent",
+    # 设备验证: license_service 函数内延迟导入设备指纹模块(finetune 是 PEP420
+    # 命名空间包, 不在下方 collect_submodules 之列), 需显式收进 PYZ。
+    "finetune.license_system.device_fingerprint",
     "scripts.run_opportunity_discovery",
     "scripts.hot_stocks_fetcher",
     "scripts.stock_filter_utils",

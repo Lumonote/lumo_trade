@@ -8,11 +8,6 @@ Kronos 授权码生成工具
 
 import hashlib
 import sys
-import os
-
-# 导入授权码生成器
-sys.path.insert(0, os.path.dirname(__file__))
-from license_generator import LicenseGenerator
 
 
 def generate_license_code(device_id, license_type="PERMANENT"):
@@ -23,7 +18,7 @@ def generate_license_code(device_id, license_type="PERMANENT"):
         license_type: 授权类型 (PERMANENT, TRIAL, etc.)
 
     Returns:
-        格式: KRONOS-XXXXD-XXXXX-XXXXX-XXXXX (D表示设备绑定)
+        格式: LUMO-XXXXD-XXXXX-XXXXX-XXXXX (D表示设备绑定)
     """
     # 使用与验证器相同的盐值和算法
     salt = "KRONOS_DEVICE_SALT_2024"
@@ -41,8 +36,8 @@ def generate_license_code(device_id, license_type="PERMANENT"):
     raw_data = f"{segment1}{segment2}{segment3}"
     checksum = hashlib.md5(raw_data.encode()).hexdigest()[:5].upper()
 
-    # 格式化为 KRONOS-XXXXD-XXXXX-XXXXX-XXXXX
-    return f"KRONOS-{segment1}-{segment2}-{segment3}-{checksum}"
+    # 格式化为 LUMO-XXXXD-XXXXX-XXXXX-XXXXX (校验码只覆盖中间三段, 前缀纯展示)
+    return f"LUMO-{segment1}-{segment2}-{segment3}-{checksum}"
 
 
 def main():
