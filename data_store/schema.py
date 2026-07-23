@@ -576,6 +576,89 @@ _MIGRATIONS: List[Tuple[int, str]] = [
           ON stock_related_news(code, fetched_at);
         """,
     ),
+    (
+        17,
+        """
+        -- 回测推荐记录(原 results/backtest/recommendations.csv 的 SQLite 化):
+        -- 每日 Top10 推荐 + 次日开盘买入的 1/3/5/10 日前瞻收益回填。
+        CREATE TABLE IF NOT EXISTS backtest_recommendation (
+          report_date TEXT NOT NULL,
+          code        TEXT NOT NULL,
+          item_rank   INTEGER,
+          name        TEXT,
+          score       REAL,
+          chase_risk  REAL,
+          buy_signals  INTEGER,
+          sell_signals INTEGER,
+          rsi         REAL,
+          day_change  REAL,
+          change_3d   REAL,
+          change_5d   REAL,
+          sector_score REAL,
+          quant_score REAL,
+          tech_score  REAL,
+          momentum_pattern TEXT,
+          buy_price   REAL,
+          return_1d   REAL,
+          return_3d   REAL,
+          return_5d   REAL,
+          return_10d  REAL,
+          updated_at  TEXT,
+          PRIMARY KEY(report_date, code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_btrec_date
+          ON backtest_recommendation(report_date);
+        """,
+    ),
+    (
+        18,
+        """
+        -- 量化雷达按日榜单(quant_radar_service):每日活跃股五机制评分快照,
+        -- 支持按天回看与按代码/名称/行业搜索;完整页面快照仍在 kv_cache(quant_radar)。
+        CREATE TABLE IF NOT EXISTS quant_radar_stock_daily (
+          trade_date      TEXT NOT NULL,           -- ISO YYYY-MM-DD
+          code            TEXT NOT NULL,
+          name            TEXT,
+          industry        TEXT,
+          activity        INTEGER,
+          level           TEXT,
+          level_rank      INTEGER,
+          spoof           INTEGER,
+          hft             INTEGER,
+          orderbook       INTEGER,
+          sentiment       INTEGER,
+          bias            INTEGER,
+          changes_total   INTEGER,
+          changes_bull    INTEGER,
+          changes_bear    INTEGER,
+          quant_seat      INTEGER DEFAULT 0,
+          direction       TEXT,                    -- 砸盘/拉抬/拉锯
+          smash           INTEGER DEFAULT 0,       -- 疑似量化砸盘评分 0-100
+          price           REAL,
+          change_pct      REAL,
+          volume_ratio    REAL,
+          turnover        REAL,
+          amplitude       REAL,
+          main_net_inflow REAL,
+          badges          TEXT,                    -- JSON array
+          reasons         TEXT,                    -- JSON array
+          updated_at      TEXT,
+          PRIMARY KEY (trade_date, code)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_qrsd_code
+          ON quant_radar_stock_daily(code, trade_date);
+        CREATE INDEX IF NOT EXISTS idx_qrsd_date_act
+          ON quant_radar_stock_daily(trade_date, activity DESC);
+        CREATE INDEX IF NOT EXISTS idx_qrsd_date_smash
+          ON quant_radar_stock_daily(trade_date, smash DESC);
+        """,
+    ),
+    (
+        19,
+        # 量化雷达按日表补方向维度列(direction/smash);已建 v18 的库走
+        # _migrate_v19_quant_radar_direction 幂等补列,新库在 v18 建表时已含。
+        "",
+    ),
 ]
 
 
@@ -614,6 +697,19 @@ def _migrate_v11_opportunity_item_sector(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "opportunity_item", "source_detail", "source_detail TEXT")
     _add_column_if_missing(conn, "opportunity_item", "sector", "sector TEXT")
     _add_column_if_missing(conn, "opportunity_item", "sector_code", "sector_code TEXT")
+
+
+def _migrate_v19_quant_radar_direction(conn: sqlite3.Connection) -> None:
+    """量化雷达按日表补方向维度列(dev/App 库已在 v18 建表,幂等补列+索引)。"""
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='quant_radar_stock_daily'"
+    ).fetchone()
+    if not row:
+        return  # v18 建表 DDL 已含全部列,无表说明 v18 尚未跑(不可能走到这)
+    _add_column_if_missing(conn, "quant_radar_stock_daily", "direction", "direction TEXT")
+    _add_column_if_missing(conn, "quant_radar_stock_daily", "smash", "smash INTEGER DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_qrsd_date_smash "
+                 "ON quant_radar_stock_daily(trade_date, smash DESC)")
     _add_column_if_missing(conn, "opportunity_item", "sector_rank", "sector_rank INTEGER")
     _add_column_if_missing(conn, "opportunity_item", "sector_stock_rank", "sector_stock_rank INTEGER")
 
@@ -634,6 +730,8 @@ def migrate(conn: sqlite3.Connection) -> int:
             _migrate_v8_raw_json(conn)
         elif version == 11:
             _migrate_v11_opportunity_item_sector(conn)
+        elif version == 19:
+            _migrate_v19_quant_radar_direction(conn)
         elif sql.strip():
             conn.executescript(sql)
         conn.execute(

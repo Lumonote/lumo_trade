@@ -62,7 +62,19 @@ def load_backtest_data(csv_path: str) -> pd.DataFrame:
         after = len(df)
         if before != after:
             print(f"  去重: {before} → {after} (移除{before - after}条重复)")
-    return mark_degraded(df)
+    df = mark_degraded(df)
+    # v25: 主力资金/期指多空因子富集(读 SQLite 历史;缺数据列为 None → 规则不触发,
+    # 历史回填见 scripts/backfill_factor_history.py)
+    try:
+        from analysis.factor_history import enrich_frame
+
+        df["code6"] = df["code"].map(lambda c: str(c).split(".")[0].strip().zfill(6))
+        df = enrich_frame(df)
+        print(f"  v25因子富集: 主力资金覆盖 {df['main_net_rate'].notna().mean() * 100:.1f}%, "
+              f"期指覆盖 {df['fut_net_chg_3d'].notna().mean() * 100:.1f}%")
+    except Exception as exc:  # noqa: BLE001 无因子历史时退回 v24 行为
+        print(f"  v25因子富集跳过: {exc}")
+    return df
 
 
 def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
@@ -92,6 +104,8 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
             'sector_score': row.get('sector_score'),
             'buy_signals': row.get('buy_signals'),
             'sell_signals': row.get('sell_signals'),
+            'main_net_rate': row.get('main_net_rate'),      # v25 主力净流入率%
+            'fut_net_chg_3d': row.get('fut_net_chg_3d'),    # v25 期指3日净变动(张)
         }
         hits = evaluate_shared_rules(factors)
         penalty = shared_penalty(hits)
@@ -118,7 +132,8 @@ def apply_v8_scoring(df: pd.DataFrame) -> pd.DataFrame:
 
         # v20强化: 量化净买入信号梯度奖励 - (买入-卖出)越多分数越高
         # [sim-only] live 由 buy_count 梯度 + headroom 机制承担
-        if pd.notna(buy_sig) and pd.notna(sell_sig):
+        # v25 审计: net_buy>=10 组 wr 33.3% vs 未触发 40.8%, 奖励负向群体 → 开关可关
+        if RULESET.get('sim_net_buy_gradient', 1) and pd.notna(buy_sig) and pd.notna(sell_sig):
             net_buy = buy_sig - sell_sig
             buy_bonus_val = 0
             if net_buy >= 12: buy_bonus_val = 16

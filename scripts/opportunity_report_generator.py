@@ -1035,58 +1035,19 @@ class OpportunityReportGenerator:
         lookback_days: int = 30,
         reserve_trade_days: int = 10
     ):
-        import os as _os
         import pandas as _pd
 
-        _results_dir = _os.path.join(project_root, 'results')
-        bt_with_returns = None
         _score_col = '_bt_score'
 
-        # 机会挖掘报表优先使用真实推荐回测记录
-        _rec_csv = _os.path.join(_results_dir, 'backtest', 'recommendations.csv')
-        if _os.path.exists(_rec_csv):
-            _rec_df = _pd.read_csv(_rec_csv)
-            if len(_rec_df) > 0:
-                _rec_df = _rec_df.copy()
-                _rec_df['code'] = _rec_df['code'].apply(_normalize_stock_code)
-                _rec_df['report_date'] = _rec_df['report_date'].astype(str).str[:10]
-                _rec_df['_bt_score'] = _pd.to_numeric(_rec_df.get('score'), errors='coerce')
-                bt_with_returns = _rec_df.copy()
-
-        # recommendations 不足时才回退到历史重建
-        if bt_with_returns is None or len(bt_with_returns) < 10:
-            _rebuilt_csvs = sorted([
-                f for f in _os.listdir(_results_dir)
-                if f.startswith('backtest_rebuilt_') and f.endswith('.csv')
-            ])
-            if _rebuilt_csvs:
-                _csv_path = _os.path.join(_results_dir, _rebuilt_csvs[-1])
-                from scripts.simulate_v5_backtest import apply_v8_scoring
-                _raw_df = _pd.read_csv(_csv_path)
-                _scored_df = apply_v8_scoring(_raw_df)
-                bt_with_returns = _scored_df.copy()
-                bt_with_returns['_bt_score'] = _pd.to_numeric(bt_with_returns.get('v8_score'), errors='coerce')
-
-        if bt_with_returns is None or len(bt_with_returns) < 10:
-            _analysis_csvs = sorted([
-                f for f in _os.listdir(_results_dir)
-                if f.startswith('backtest_analysis_') and f.endswith('.csv')
-            ])
-            if _analysis_csvs:
-                _csv_path = _os.path.join(_results_dir, _analysis_csvs[-1])
-                from scripts.simulate_v5_backtest import load_backtest_data, apply_v8_scoring as _apply_scoring
-                _raw_df = load_backtest_data(_csv_path)
-                _scored_df = _apply_scoring(_raw_df)
-                bt_with_returns = _scored_df.copy()
-                bt_with_returns['_bt_score'] = _pd.to_numeric(bt_with_returns.get('v8_score'), errors='coerce')
-
-        if bt_with_returns is not None and len(bt_with_returns) > 0:
-            bt_with_returns = bt_with_returns.copy()
-            bt_with_returns['code'] = bt_with_returns['code'].apply(_normalize_stock_code)
-            bt_with_returns['report_date'] = bt_with_returns['report_date'].astype(str).str[:10]
-
+        # 回测推荐记录全量走 SQLite(backtest_recommendation 表,读写同库):
+        # 旧 project_root/results 下的 CSV 读法在打包 App 里指向冻结目录(不存在),
+        # 在开发环境里指向早已停更的仓库副本,历史回测表因此消失/陈旧。
+        from data_store import backtest_recommendation_repo as _btr
+        _btr.seed_from_legacy_csv_if_empty()
+        bt_with_returns = _btr.load_df()
         if bt_with_returns is None or len(bt_with_returns) == 0:
             return None, _score_col, None, None
+        bt_with_returns['_bt_score'] = _pd.to_numeric(bt_with_returns.get('score'), errors='coerce')
 
         cutoff_dt = self._compute_backtest_report_cutoff(current_report_dt, reserve_trade_days=reserve_trade_days)
         anchor_dt = cutoff_dt or current_report_dt

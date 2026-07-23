@@ -1,12 +1,25 @@
 # tests/test_scoring_health_service.py
 """ScoringHealthService：分档统计正确性(全量 + 最近1个月) / 降级run占比 /
 B级退化警示 / 空态(无CSV、坏CSV)。构造临时 backtest_rebuilt_*.csv 离线验证。
+
+2026-07-09 起数据源 SQLite 优先(backtest_recommendation 表),表空回退 CSV;
+故所有 CSV 用例先隔离到空临时库,另有 DB 优先用例。
 """
 from __future__ import annotations
 
 import pytest
 
+from data_store import backtest_recommendation_repo as btr
+from data_store import connection as conn_mod
 from webui.services.scoring_health_service import ScoringHealthService
+
+
+@pytest.fixture(autouse=True)
+def _isolated_empty_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("KRONOS_SQLITE_PATH", str(tmp_path / "health.sqlite"))
+    conn_mod.reset_for_testing()
+    yield
+    conn_mod.reset_for_testing()
 
 
 CSV_HEADER = "report_date,filename,rank,code,name,score,quant_score,return_5d\n"
@@ -35,6 +48,24 @@ def test_empty_dir_returns_explicit_unavailable(tmp_path):
     health = svc.health()
     assert health["available"] is False
     assert "暂无回测数据" in health["message"]
+
+
+def test_sqlite_takes_priority_over_csv(tmp_path):
+    """backtest_recommendation 表有数据时优先于目录里的 CSV。"""
+    _write_csv(tmp_path / "backtest", "recommendations.csv",
+               [{"date": "2026-01-01", "score": 40, "quant": 0, "ret": -9.0}])
+    btr.upsert_rows([{
+        'report_date': '2026-07-01', 'rank': 1, 'code': '600519', 'name': 'X',
+        'score': 90, 'quant_score': 80, 'return_5d': 4.0,
+    }])
+
+    health = ScoringHealthService([tmp_path]).health()
+    assert health["available"] is True
+    assert health["source"] == "sqlite"
+    assert health["file"] == "backtest_recommendation"
+    assert health["total_rows"] == 1
+    assert health["date_range"]["start"] == "2026-07-01"
+    assert health["baseline"]["full"]["avg_return"] == pytest.approx(4.0)
 
 
 def test_falls_back_to_backtest_recommendations_csv(tmp_path):

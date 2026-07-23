@@ -34,7 +34,7 @@ def test_moneyflow_upsert_dedup_by_top_n(tmp_db):
     assert moneyflow_repo.count() == 4
     out = moneyflow_repo.get_top_n("20260520", 3)
     assert len(out) == 2
-    assert moneyflow_repo.latest_date() == "20260520"
+    assert moneyflow_repo.latest_date() == "2026-05-20"  # 写入边界统一归一为 ISO
 
 
 def test_moneyflow_upsert_handles_bom_column(tmp_db):

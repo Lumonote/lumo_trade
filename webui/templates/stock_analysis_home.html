@@ -1397,7 +1397,7 @@
     <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
 </head>
 
-<body>
+<body data-desktop-mode="{{ '1' if desktop_mode else '0' }}">
     <header class="topbar">
         <div class="topbar-inner">
             <a class="brand" href="/">
@@ -3907,6 +3907,7 @@
         </div>
     </div>
     <script src="/static/provider_context_menu.js"></script>
+    <script src="/static/kronos_open_external.js?v={{ asset_v('kronos_open_external.js') }}"></script>
 </body>
 
 </html>

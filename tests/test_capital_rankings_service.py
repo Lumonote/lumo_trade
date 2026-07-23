@@ -537,3 +537,73 @@ def test_backfill_outcome_counts_institution_rows():
     out = backfill_outcome({"dragon_tiger": {"rows": 0, "inst_rows": 3, "errors": []}})
     assert out["ok"] is True
     assert out["rows"] == 3
+
+
+# ---------- 「无量化」过滤 ----------
+
+_QINFO = {"codes": {"000002"}, "as_of": "2026-06-04", "available": True}
+
+
+def _svc_nq(qinfo=_QINFO):
+    from webui.services.capital_rankings_service import CapitalRankingsService
+    return CapitalRankingsService(quote_provider=None, quant_codes_fn=lambda: qinfo)
+
+
+def _seed_three(date="2026-06-04"):
+    _seed_moneyflow([
+        {"trade_date": date, "ts_code": "000001.SZ", "name": "甲", "net_amount": 3e7, "close": 10.0, "pct_change": 5.0},
+        {"trade_date": date, "ts_code": "000002.SZ", "name": "乙", "net_amount": 9e7, "close": 20.0, "pct_change": 9.9},
+        {"trade_date": date, "ts_code": "000003.SZ", "name": "丙", "net_amount": 1e7, "close": 5.0, "pct_change": 1.0},
+    ])
+
+
+def test_moneyflow_no_quant_filters_rows_and_windows(conn):
+    _seed_three()
+    res = _svc_nq().moneyflow_ranking(date="2026-06-04", top_n=10, mode="single", no_quant=True)
+    codes = [r["code"] for r in res["rows"]]
+    assert "000002" not in codes and set(codes) == {"000001", "000003"}
+    assert res["no_quant"] is True
+    assert res["quant_filtered"] == 1
+    assert res["quant_criteria_available"] is True
+    assert res["quant_as_of"] == "2026-06-04"
+    for win in ("5", "30"):
+        assert res["windows"][win]["quant_filtered"] == 1
+        assert all(r["code"] != "000002" for r in res["windows"][win]["rows"])
+
+
+def test_moneyflow_no_quant_overfetch_refills_top_n(conn):
+    # top_n=1 且榜首 000002 是量化股:over-fetch 后仍能给出 1 行(次名 000001)
+    _seed_three()
+    res = _svc_nq().moneyflow_ranking(date="2026-06-04", top_n=1, mode="single", no_quant=True)
+    assert [r["code"] for r in res["rows"]] == ["000001"]
+    assert res["top_n"] == 1 and res["count"] == 1
+
+
+def test_moneyflow_default_no_quant_off_and_lazy(conn):
+    _seed_three()
+    called = []
+    from webui.services.capital_rankings_service import CapitalRankingsService
+    svc = CapitalRankingsService(quant_codes_fn=lambda: called.append(1) or _QINFO)
+    res = svc.moneyflow_ranking(date="2026-06-04", top_n=10, mode="single")
+    assert res["no_quant"] is False and res["quant_filtered"] == 0
+    assert {r["code"] for r in res["rows"]} == {"000001", "000002", "000003"}
+    assert not called  # 未勾选时不触碰量化代码集
+
+
+def test_moneyflow_no_quant_criteria_unavailable_noop(conn):
+    _seed_three()
+    res = _svc_nq({"codes": set(), "as_of": None, "available": False}).moneyflow_ranking(
+        date="2026-06-04", top_n=10, mode="single", no_quant=True)
+    assert res["quant_criteria_available"] is False
+    assert res["quant_filtered"] == 0
+    assert {r["code"] for r in res["rows"]} == {"000001", "000002", "000003"}
+
+
+def test_dragon_tiger_no_quant(conn):
+    _seed_dragon_tiger([
+        {"trade_date": "2026-06-04", "ts_code": "000002.SZ", "name": "乙", "l_buy": 9e7, "l_sell": 1e7, "net_rate": 5.0},
+        {"trade_date": "2026-06-04", "ts_code": "600001.SH", "name": "丁", "l_buy": 5e7, "l_sell": 2e7, "net_rate": 3.0},
+    ])
+    res = _svc_nq().dragon_tiger_ranking(date="2026-06-04", top_n=10, mode="single", no_quant=True)
+    assert [r["code"] for r in res["rows"]] == ["600001"]
+    assert res["quant_filtered"] == 1

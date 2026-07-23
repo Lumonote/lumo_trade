@@ -7,7 +7,7 @@
     <script async src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
     <link rel="stylesheet" href="/static/kronos_desktop.css?v={{ asset_v('kronos_desktop.css') }}" />
   </head>
-	  <body data-page="{{ active_page }}">
+	  <body data-page="{{ active_page }}" data-desktop-mode="{{ '1' if desktop_mode else '0' }}">
 	    <div class="app-shell" id="appShell">
       <aside class="sidebar">
         <div class="brand">
@@ -77,13 +77,15 @@
             <div class="panel-header">
               <h2 class="panel-title">资金榜单</h2>
               <span class="panel-meta" id="capitalRankingsMeta">--</span>
+              <span class="panel-meta" id="capitalNoQuantInfo"></span>
             </div>
             <div class="panel-body">
               <div class="actions capital-tabs" id="capitalTabs">
                 <button class="button compact" type="button" data-cap-tab="moneyflow">主力净流入榜</button>
                 <button class="button secondary compact" type="button" data-cap-tab="dragon_tiger">龙虎榜</button>
+                <button class="button secondary compact" type="button" data-cap-tab="quant">量化交易分析</button>
               </div>
-              <div class="capital-filter-grid capital-controls">
+              <div class="capital-filter-grid capital-controls capital-classic">
                 <label>统计模式
                   <select id="capitalMode">
                     <option value="single">单日</option>
@@ -105,8 +107,9 @@
                 <label>Top N
                   <input id="capitalTopN" type="number" value="50" min="1" max="500" />
                 </label>
+                <label class="capital-noquant-field"><input type="checkbox" id="capitalNoQuant" /> 无量化(剔除量化参与股)</label>
               </div>
-              <div class="actions capital-actions">
+              <div class="actions capital-actions capital-classic">
                 <button class="button" type="button" id="capitalQueryBtn">查询</button>
                 <label class="capital-backfill-field">补偿天数
                   <input id="capitalBackfillDays" type="number" value="30" min="1" max="120" />
@@ -117,9 +120,10 @@
             </div>
           </div>
 
-          <div class="panel">
+          <div class="panel capital-classic">
             <div class="panel-header">
               <label class="capital-selectall"><input type="checkbox" id="capitalSelectAll" /> 全选</label>
+              <input id="capitalSearchInput" class="table-search" type="search" placeholder="搜索代码 / 名称…" autocomplete="off" />
               <div class="actions">
                 <button class="button" type="button" id="capitalAnalyzeBtn">分析选中 (0)</button>
               </div>
@@ -127,7 +131,7 @@
             <div class="capital-table-wrap" id="capitalTable"></div>
           </div>
 
-          <div class="panel" id="capitalAnalyzePanel" hidden>
+          <div class="panel capital-classic" id="capitalAnalyzePanel" hidden>
             <div class="panel-header">
               <h2 class="panel-title">分析结果</h2>
               <span class="panel-meta" id="capitalAnalyzeMeta">机会挖掘评分</span>
@@ -135,10 +139,11 @@
             <div class="panel-body" id="capitalAnalyzeResult"></div>
           </div>
 
-          <div class="capital-window-grid">
+          <div class="capital-window-grid capital-classic">
             <div class="panel">
               <div class="panel-header">
                 <h2 class="panel-title">5日净流入榜</h2>
+                <input id="capitalWindow5Search" class="table-search" type="search" placeholder="搜索代码 / 名称…" autocomplete="off" />
                 <span class="panel-meta" id="capitalWindow5Meta">--</span>
               </div>
               <div class="capital-table-wrap compact" id="capitalWindow5Table"></div>
@@ -146,9 +151,356 @@
             <div class="panel">
               <div class="panel-header">
                 <h2 class="panel-title">30日净流入榜</h2>
+                <input id="capitalWindow30Search" class="table-search" type="search" placeholder="搜索代码 / 名称…" autocomplete="off" />
                 <span class="panel-meta" id="capitalWindow30Meta">--</span>
               </div>
               <div class="capital-table-wrap compact" id="capitalWindow30Table"></div>
+            </div>
+          </div>
+
+          <div id="quantRadarSection" class="quant-radar-layout" hidden>
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">量化温度计</h2>
+                <div class="actions quant-date-actions">
+                  <input id="quantDateInput" type="date" title="选择日期回看历史榜单(自上线之日起按天积累)" />
+                  <button class="button secondary compact" type="button" id="quantDateBtn">查看该日</button>
+                  <button class="button secondary compact" type="button" id="quantTodayBtn" hidden>回实时</button>
+                </div>
+                <span class="panel-meta" id="quantGaugeMeta">--</span>
+              </div>
+              <div class="panel-body">
+                <div class="quant-gauge-grid" id="quantGaugeGrid"></div>
+                <div class="quant-predict-line" id="quantMarketPrediction"></div>
+              </div>
+            </div>
+
+            <div class="quant-two-col">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">收割预警</h2>
+                  <div class="actions quant-alert-controls">
+                    <input id="quantAlertSearch" class="table-search" type="search" placeholder="搜代码/名称/行业…" autocomplete="off" />
+                    <select id="quantAlertSortSelect" class="table-sort" title="卡片排序">
+                      <option value="activity">按活跃度</option>
+                      <option value="change_pct">按涨跌%</option>
+                      <option value="name">按名称</option>
+                    </select>
+                  </div>
+                  <span class="panel-meta" id="quantAlertsMeta">五机制高危名单</span>
+                </div>
+                <div class="panel-body" id="quantAlerts"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <h2 class="panel-title">量化活跃板块</h2>
+                  <input id="quantSectorsSearch" class="table-search" type="search" placeholder="搜板块 / 状态…" autocomplete="off" />
+                  <span class="panel-meta" id="quantSectorsMeta">--</span>
+                </div>
+                <div class="capital-table-wrap compact" id="quantSectorsTable"></div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">量化活跃股票榜</h2>
+                <div class="actions quant-stock-actions">
+                  <input id="quantSearchInput" placeholder="搜当日榜单:代码/名称/行业" />
+                  <button class="button secondary compact" type="button" id="quantSearchBtn">搜索</button>
+                  <button class="button secondary compact" type="button" id="quantSmashBtn">只看砸盘</button>
+                  <input id="quantStockInput" placeholder="输入6位代码深评,如 600519" maxlength="6" inputmode="numeric" />
+                  <button class="button compact" type="button" id="quantStockBtn">个股量化行为分析</button>
+                  <button class="button secondary compact" type="button" id="quantRefreshBtn">刷新</button>
+                </div>
+                <span class="panel-meta" id="quantStocksMeta">--</span>
+              </div>
+              <div class="capital-table-wrap" id="quantStocksTable"></div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">吸筹埋伏榜 · 主力持续吸筹</h2>
+                <input id="quantAccumSearch" class="table-search" type="search" placeholder="搜代码/名称/行业…" autocomplete="off" />
+                <div class="actions" id="quantAccumWindows">
+                  <button class="button secondary compact" type="button" data-accum-win="20">20日</button>
+                  <button class="button compact" type="button" data-accum-win="40">40日</button>
+                  <button class="button secondary compact" type="button" data-accum-win="60">60日</button>
+                </div>
+                <label class="panel-meta"><input type="checkbox" id="quantAccumNoQuant" /> 无量化</label>
+                <span class="panel-meta" id="quantAccumNoQuantInfo"></span>
+                <span class="panel-meta" id="quantAccumMeta">--</span>
+              </div>
+              <div class="capital-table-wrap" id="quantAccumTable"></div>
+              <p class="panel-meta control-help">吸筹=窗口内主力资金持续净流入且股价横盘(±15%),公开数据代理指标、「疑似」口径,不构成投资建议;点击行查看个股量化行为深评。</p>
+            </div>
+
+            <div class="panel" id="quantStockPanel" hidden>
+              <div class="panel-header">
+                <h2 class="panel-title">个股量化行为深评</h2>
+                <span class="panel-meta" id="quantStockMeta">--</span>
+              </div>
+              <div class="panel-body" id="quantStockDetail"></div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">量化知识卡 · 五大机制与防御</h2>
+                <span class="panel-meta">监管时间线 · 散户防御指南</span>
+              </div>
+              <div class="panel-body" id="quantKnowledge"></div>
+            </div>
+          </div>
+        </section>
+        {% endif %}
+
+
+        {% if active_page == 'futures' %}
+        <section class="futures-layout">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">股指期货行情</h2>
+              <div class="panel-header-actions">
+                <span class="panel-meta">较昨结算价 · 基差=期价−现货指数 · 盘中约30秒自动刷新</span>
+                <span class="panel-meta" id="futuresQuotesMeta">读取中…</span>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="futures-quote-grid" id="futuresQuoteGrid">
+                <p class="muted">正在读取四大股指期货行情…</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">多空持仓 · 中金所前20席位</h2>
+              <span class="panel-meta" id="futuresPosMeta">--</span>
+            </div>
+            <div class="panel-body">
+              <div class="actions capital-tabs" id="futuresVarietyTabs">
+                <button class="button compact" type="button" data-fut-var="IF">IF 沪深300</button>
+                <button class="button secondary compact" type="button" data-fut-var="IH">IH 上证50</button>
+                <button class="button secondary compact" type="button" data-fut-var="IC">IC 中证500</button>
+                <button class="button secondary compact" type="button" data-fut-var="IM">IM 中证1000</button>
+              </div>
+              <div class="capital-filter-grid futures-controls">
+                <label>日期（留空=最新已发布交易日）
+                  <input id="futuresDate" type="date" />
+                </label>
+                <label>合约
+                  <select id="futuresContract">
+                    <option value="ALL">全部合约（聚合）</option>
+                  </select>
+                </label>
+                <label class="futures-query-field">&nbsp;
+                  <button class="button" type="button" id="futuresQueryBtn">查询</button>
+                </label>
+              </div>
+              <div class="futures-summary" id="futuresSummary"></div>
+              <p class="panel-meta control-help">持仓排名为中金所盘后数据（约16:00发布）；多单=持买单量、空单=持卖单量，单位为手；增减为较上一交易日变化。</p>
+            </div>
+          </div>
+
+          <div class="futures-rank-grid">
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">🔴 多单榜（持买单量）</h2>
+                <span class="panel-meta" id="futuresLongMeta">--</span>
+              </div>
+              <div class="capital-table-wrap compact" id="futuresLongTable"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">🟢 空单榜（持卖单量）</h2>
+                <span class="panel-meta" id="futuresShortMeta">--</span>
+              </div>
+              <div class="capital-table-wrap compact" id="futuresShortTable"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">⚖️ 会员净持仓榜（多−空）</h2>
+                <span class="panel-meta" id="futuresNetMeta">--</span>
+              </div>
+              <div class="capital-table-wrap compact" id="futuresNetTable"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <h2 class="panel-title">📊 成交量榜</h2>
+                <span class="panel-meta" id="futuresVolMeta">--</span>
+              </div>
+              <div class="capital-table-wrap compact" id="futuresVolTable"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">前20席位持仓趋势</h2>
+              <div class="panel-header-actions">
+                <select id="futuresTrendDays" class="canvas-date-select" title="趋势窗口">
+                  <option value="5">近5日</option>
+                  <option value="10" selected>近10日</option>
+                  <option value="20">近20日</option>
+                </select>
+                <span class="panel-meta" id="futuresTrendMeta">--</span>
+              </div>
+            </div>
+            <div id="futuresTrendChart" class="panel-body chart futures-trend-chart">
+              <p class="muted" style="padding:16px;">正在读取持仓趋势…（首次拉取需逐日下载中金所数据，稍慢；之后走本地缓存）</p>
+            </div>
+          </div>
+        </section>
+        {% endif %}
+
+
+        {% if active_page == 'screener' %}
+        <section class="screener-layout">
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">筛选条件（留空的条件不参与，各维度之间取交集）</h2>
+              <div class="panel-header-actions">
+                <span class="panel-meta" id="scrMetaLine">数据面读取中…</span>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="screener-groups">
+                <fieldset class="screener-group">
+                  <legend>行情快照</legend>
+                  <div class="capital-filter-grid">
+                    <label>涨跌幅 ≥ %<input id="scrPctMin" type="number" step="0.1" placeholder="如 0" /></label>
+                    <label>涨跌幅 ≤ %<input id="scrPctMax" type="number" step="0.1" placeholder="如 7" /></label>
+                    <label>现价 ≥ 元<input id="scrPriceMin" type="number" step="0.01" placeholder="如 3" /></label>
+                    <label>现价 ≤ 元<input id="scrPriceMax" type="number" step="0.01" placeholder="如 100" /></label>
+                    <label>换手率 ≥ %<input id="scrTurnoverMin" type="number" step="0.1" placeholder="如 3" /></label>
+                  </div>
+                  <div class="screener-checks">
+                    <label><input id="scrExcludeST" type="checkbox" checked /> 排除ST</label>
+                    <label><input id="scrExcludeLimitUp" type="checkbox" /> 排除已涨停</label>
+                    <span class="screener-sep">板块:</span>
+                    <label><input class="scr-board" value="main" type="checkbox" /> 主板</label>
+                    <label><input class="scr-board" value="chinext" type="checkbox" /> 创业板</label>
+                    <label><input class="scr-board" value="star" type="checkbox" /> 科创板</label>
+                    <label><input class="scr-board" value="bse" type="checkbox" /> 北交所</label>
+                  </div>
+                </fieldset>
+                <fieldset class="screener-group">
+                  <legend>主力资金（本地资金流库）</legend>
+                  <div class="capital-filter-grid">
+                    <label>当日主力净流入 ≥ 万<input id="scrMainNetMin" type="number" step="100" placeholder="如 2000" /></label>
+                    <label>净流入率 ≥ %<input id="scrNetRateMin" type="number" step="0.5" placeholder="如 3" /></label>
+                    <label>连续净流入 ≥ 天<input id="scrStreakDays" type="number" min="1" max="10" placeholder="如 3" /></label>
+                  </div>
+                </fieldset>
+                <fieldset class="screener-group">
+                  <legend>盘口异动 · 量化雷达</legend>
+                  <div class="capital-filter-grid">
+                    <label>量化活跃度 ≥<input id="scrActivityMin" type="number" min="0" max="100" placeholder="如 40" /></label>
+                    <label>当日异动 ≥ 笔<input id="scrChangesMin" type="number" min="1" placeholder="如 5" /></label>
+                    <label>盘口方向
+                      <select id="scrDirection">
+                        <option value="">不限</option>
+                        <option value="拉抬">拉抬</option>
+                        <option value="排除砸盘">排除砸盘</option>
+                        <option value="砸盘">砸盘（收割预警）</option>
+                      </select>
+                    </label>
+                  </div>
+                </fieldset>
+                <fieldset class="screener-group">
+                  <legend>主力吸筹（吸筹埋伏榜）</legend>
+                  <div class="capital-filter-grid">
+                    <label>启用
+                      <select id="scrAccumEnable">
+                        <option value="">不启用</option>
+                        <option value="1">仅吸筹判定达标股</option>
+                      </select>
+                    </label>
+                    <label>窗口
+                      <select id="scrAccumWindow">
+                        <option value="20">20 日</option>
+                        <option value="40" selected>40 日</option>
+                        <option value="60">60 日</option>
+                      </select>
+                    </label>
+                    <label>埋伏评分 ≥<input id="scrAccumScoreMin" type="number" min="0" max="100" placeholder="如 60" /></label>
+                  </div>
+                </fieldset>
+                <fieldset class="screener-group">
+                  <legend>龙虎榜</legend>
+                  <div class="capital-filter-grid">
+                    <label>上榜窗口
+                      <select id="scrDragonDays">
+                        <option value="">不启用</option>
+                        <option value="1">最近1个交易日</option>
+                        <option value="3">近3个交易日</option>
+                        <option value="5">近5个交易日</option>
+                        <option value="10">近10个交易日</option>
+                      </select>
+                    </label>
+                    <label>累计净买入 ≥ 万<input id="scrDragonNetMin" type="number" step="500" placeholder="如 3000" /></label>
+                  </div>
+                  <div class="screener-checks">
+                    <label><input id="scrDragonQuantSeat" type="checkbox" /> 出现量化席位</label>
+                  </div>
+                </fieldset>
+                <fieldset class="screener-group">
+                  <legend>机会挖掘评分（最新一次）</legend>
+                  <div class="capital-filter-grid">
+                    <label>综合评分 ≥<input id="scrOppScoreMin" type="number" min="0" max="100" placeholder="如 75" /></label>
+                  </div>
+                </fieldset>
+                <fieldset class="screener-group">
+                  <legend>技术形态（日K，候选多时仅评估前300只）</legend>
+                  <div class="screener-checks">
+                    <label><input id="scrTechMa20" type="checkbox" /> 站上MA20</label>
+                    <label><input id="scrTechMaBull" type="checkbox" /> 均线多头 MA5&gt;MA10&gt;MA20</label>
+                    <label><input id="scrTechNewHigh" type="checkbox" /> 收盘创20日新高</label>
+                    <label><input id="scrTechMacdGolden" type="checkbox" /> MACD金叉（近3日）</label>
+                    <label><input id="scrTechKdjGolden" type="checkbox" /> KDJ金叉（近3日）</label>
+                  </div>
+                  <div class="capital-filter-grid">
+                    <label>RSI ≥<input id="scrTechRsiMin" type="number" min="0" max="100" placeholder="如 40" /></label>
+                    <label>RSI ≤<input id="scrTechRsiMax" type="number" min="0" max="100" placeholder="如 65" /></label>
+                    <label>当日量 / 5日均量 ≥<input id="scrTechVolRatio" type="number" step="0.1" placeholder="如 1.5" /></label>
+                  </div>
+                </fieldset>
+                <fieldset class="screener-group">
+                  <legend>量化模型信号（机会挖掘同源 30 模型）</legend>
+                  <div class="capital-filter-grid">
+                    <label>买入信号 ≥ 票<input id="scrQuantBuyMin" type="number" min="0" max="30" placeholder="如 6" /></label>
+                    <label>卖出信号 ≤ 票<input id="scrQuantSellMax" type="number" min="0" max="30" placeholder="0=无卖出信号" /></label>
+                  </div>
+                  <p class="panel-meta control-help">逐股跑机会挖掘同一套 30 个量化交易模型统计末根K多空票数；与技术形态共用日K，候选多时仅评估前300只。</p>
+                </fieldset>
+              </div>
+              <div class="actions screener-actions">
+                <label>排序
+                  <select id="scrSort">
+                    <option value="main_net_wan" selected>主力净流入</option>
+                    <option value="change_pct">涨跌幅</option>
+                    <option value="activity">量化活跃度</option>
+                    <option value="accum_score">吸筹评分</option>
+                    <option value="opp_score">机会评分</option>
+                    <option value="dragon_net_wan">龙虎榜净买</option>
+                    <option value="turnover">换手率</option>
+                    <option value="quant_buy">量化买入票数</option>
+                  </select>
+                </label>
+                <button class="button" type="button" id="scrRunBtn">开始选股</button>
+                <button class="button secondary" type="button" id="scrResetBtn">重置条件</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2 class="panel-title">选股结果</h2>
+              <span class="panel-meta" id="scrResultMeta">--</span>
+            </div>
+            <div class="panel-body">
+              <div id="scrNotes"></div>
+              <div class="capital-table-wrap compact" id="scrResultTable">
+                <p class="muted">设置条件后点击「开始选股」。</p>
+              </div>
             </div>
           </div>
         </section>
@@ -408,7 +760,9 @@
               <h2 class="panel-title">我的自选</h2>
               <div class="panel-header-actions">
                 <span id="watchlistMeta" class="panel-meta">--</span>
+                <span id="wlAlertsMeta" class="panel-meta" style="margin-left:8px">· 智能提醒扫描中…</span>
                 <button id="watchlistRefreshBtn" class="button secondary" type="button">刷新行情</button>
+                <button id="wlAlertsRefreshBtn" class="button secondary compact" type="button">扫描提醒</button>
               </div>
             </div>
             <div class="panel-body">
@@ -894,6 +1248,7 @@
                 <li><strong>Tushare</strong> — 沪深行情、交易日历、基本面数据（需用户自备 token）</li>
                 <li><strong>AKShare</strong> — 开源财经数据接口</li>
                 <li><strong>东方财富 Eastmoney</strong> — 行情、龙虎榜、资金流向、筹码分布</li>
+                <li><strong>中国金融期货交易所 CFFEX</strong> — 股指期货成交持仓排名（多空单席位数据）</li>
                 <li><strong>同花顺 Tonghuashun</strong> — 行情与板块数据</li>
                 <li><strong>雪球 Xueqiu</strong> — 行情与投资者讨论</li>
                 <li><strong>新浪财经 Sina</strong> — 行情与资讯</li>
@@ -1036,6 +1391,7 @@
             <button data-suite-tab="financials"          class="suite-tab" type="button">财务三大表</button>
             <button data-suite-tab="pattern_backtest"    class="suite-tab" type="button">形态回测</button>
             <button data-suite-tab="related_news"        class="suite-tab" type="button">关联热点</button>
+            <button data-suite-tab="quant_behavior"      class="suite-tab" type="button">量化行为</button>
           </nav>
           <div class="stock-suite-panels" id="stockSuitePanels">
             <div class="suite-pane" data-suite-pane="quick">
@@ -1060,6 +1416,7 @@
             <div class="suite-pane hidden" data-suite-pane="financials" id="suitePaneFinancials"></div>
             <div class="suite-pane hidden" data-suite-pane="pattern_backtest" id="suitePanePatternBacktest"></div>
             <div class="suite-pane hidden" data-suite-pane="related_news" id="suitePaneRelatedNews"></div>
+            <div class="suite-pane hidden" data-suite-pane="quant_behavior" id="suitePaneQuantBehavior"></div>
           </div>
         </div>
       </div>
@@ -1229,6 +1586,7 @@
 
     <script src="/static/kronos_desktop_shell.js"></script>
     <script src="/static/provider_context_menu.js"></script>
+    <script src="/static/kronos_open_external.js?v={{ asset_v('kronos_open_external.js') }}"></script>
     <script src="/static/kronos_desktop_app.js?v={{ asset_v('kronos_desktop_app.js') }}"></script>
     <script src="/static/kronos_market_cloud.js?v={{ asset_v('kronos_market_cloud.js') }}"></script>
   </body>

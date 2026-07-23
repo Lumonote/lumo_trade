@@ -105,6 +105,7 @@ class WatchlistService:
                     "code": code,
                     "name": str(it.get("name") or "").strip(),
                     "added_at": str(it.get("added_at") or _now()),
+                    "pinned": bool(it.get("pinned")),
                 })
         return out
 
@@ -126,7 +127,21 @@ class WatchlistService:
     # ------------------------------------------------------------------
     def list_items(self) -> list[dict[str, Any]]:
         with self._lock:
-            return self._read()
+            items = self._read()
+        items.sort(key=lambda it: (not bool(it.get("pinned")), it.get("added_at", "")))
+        return items
+
+    def pin(self, code: Any, pinned: bool = True) -> tuple[dict[str, Any], int]:
+        norm = normalize_code(code)
+        with self._lock:
+            items = self._read()
+            for it in items:
+                if it["code"] == norm:
+                    it["pinned"] = bool(pinned)
+                    items.sort(key=lambda it: (not bool(it.get("pinned")), it.get("added_at", "")))
+                    self._write(items)
+                    return {"items": items, "pinned": bool(pinned), "code": norm}, 200
+            return {"error": "代码不在自选列表中"}, 404
 
     def add(self, code: Any, name: Any = "") -> tuple[dict[str, Any], int]:
         norm = normalize_code(code)
@@ -259,11 +274,8 @@ class WatchlistService:
         else:
             tone = "震荡"
 
+        # 最强/最弱已在收益卡正文行展示, highlights 芯片只放增量信息避免重复
         highlights = []
-        if best:
-            highlights.append(f"最强 {best.get('name') or best.get('code')} {best.get('change_pct'):+.2f}%")
-        if worst:
-            highlights.append(f"最弱 {worst.get('name') or worst.get('code')} {worst.get('change_pct'):+.2f}%")
         if top_sector:
             highlights.append(f"最大板块 {top_sector['name']} {top_sector['count']} 只")
         if net_inflow is not None:
@@ -391,6 +403,7 @@ class WatchlistService:
                 "code": it["code"],
                 "name": it["name"] or quote.get("name") or it["code"],
                 "added_at": it["added_at"],
+                "pinned": bool(it.get("pinned")),
                 "price": quote.get("price"),
                 "change_pct": quote.get("change_pct"),
                 "change_amount": quote.get("change_amount"),

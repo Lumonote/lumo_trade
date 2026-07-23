@@ -6745,3 +6745,300 @@ body[data-page="market_cloud"] .mc-empty {
     padding-bottom: 2px;
   }
 }
+
+/* ===================== 股指期货页（futures） ===================== */
+.futures-layout {
+  display: grid;
+  gap: 14px;
+}
+
+.futures-quote-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 12px;
+}
+
+.futures-quote-card {
+  border: 1px solid rgba(15, 40, 80, 0.08);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  overflow: auto;
+}
+
+.futures-quote-card .fut-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.futures-quote-card .fut-card-head strong {
+  font-size: 1rem;
+}
+
+.fut-main-row td {
+  background: rgba(255, 193, 7, 0.10);
+}
+
+.futures-controls {
+  margin-top: 10px;
+}
+
+.futures-query-field {
+  display: flex;
+  align-items: flex-end;
+}
+
+.futures-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.fut-stat {
+  flex: 1 1 150px;
+  min-width: 150px;
+  border: 1px solid rgba(15, 40, 80, 0.06);
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: #fafbfc;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fut-stat .fut-stat-label {
+  font-size: 0.75rem;
+  color: #78909c;
+}
+
+.fut-stat strong {
+  font-size: 1.05rem;
+}
+
+.fut-signal-pill {
+  display: inline-block;
+  padding: 2px 12px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.82rem;
+}
+
+.futures-rank-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 1100px) {
+  .futures-rank-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.futures-trend-chart {
+  min-height: 340px;
+}
+
+/* ---------------- 量化交易分析(Quant Radar) —— 资金榜单第三tab ---------------- */
+.quant-radar-layout { display: grid; gap: 14px; }
+.quant-two-col { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 14px; }
+.quant-gauge-grid { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.quant-chip { min-width: 92px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); display: flex; flex-direction: column; gap: 2px; }
+.quant-chip b { font-size: 1.05rem; color: var(--ink); }
+.quant-chip span { font-size: 0.78rem; color: var(--muted); }
+.quant-chip.up b { color: var(--red); }
+.quant-chip.down b { color: var(--green); }
+.quant-chip.warn b { color: var(--amber); }
+.quant-top-types { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.quant-type-tag { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--surface-tint); border: 1px solid var(--line); color: var(--ink-2); font-size: 0.76rem; }
+.quant-type-tag.hot { background: #fdecea; border-color: #efb8b4; color: var(--red); }
+.quant-predict-line { margin-top: 10px; padding: 10px 12px; border-left: 3px solid var(--blue); background: var(--surface-tint); border-radius: 6px; font-size: 0.9rem; color: var(--ink-2); }
+.quant-alert-card { border: 1px solid #efb8b4; border-left: 4px solid var(--red); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: #fffafa; cursor: pointer; }
+.quant-alert-card:hover { box-shadow: var(--shadow-sm); }
+.quant-alert-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.quant-alert-reason { margin-top: 4px; font-size: 0.82rem; color: var(--ink-2); }
+.quant-badges { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+.quant-lv { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.76rem; color: #ffffff; background: var(--faint); }
+.quant-lv-1 { background: var(--amber); }
+.quant-lv-2 { background: #d97706; }
+.quant-lv-3 { background: var(--red); }
+.quant-row { cursor: pointer; }
+.quant-row:hover td { background: var(--nav-active); }
+.quant-table td.up { color: var(--red); }
+.quant-table td.down { color: var(--green); }
+.quant-link { cursor: pointer; color: var(--blue); }
+.quant-stock-actions input { width: 180px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.quant-mech-bar { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; }
+.quant-mech-name { width: 72px; font-size: 0.82rem; color: var(--ink-2); flex: none; }
+.quant-mech-track { flex: 1; height: 8px; border-radius: 999px; background: var(--bg-subtle); overflow: hidden; }
+.quant-mech-fill { height: 100%; border-radius: 999px; background: var(--blue); }
+.quant-mech-fill.warm { background: var(--amber); }
+.quant-mech-fill.hot { background: var(--red); }
+.quant-mech-score { font-weight: 700; font-size: 0.85rem; color: var(--ink); min-width: 26px; text-align: right; }
+.quant-reason { font-size: 0.8rem; color: var(--muted); margin: 2px 0 2px 80px; }
+.quant-detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.quant-activity-big { font-size: 1.6rem; color: var(--ink); }
+.quant-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.quant-predict-card { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; font-size: 0.85rem; background: var(--surface-soft); display: flex; gap: 8px; align-items: flex-start; }
+.quant-know-sub { margin: 12px 0 4px; font-size: 0.8rem; font-weight: 700; color: var(--muted); }
+.quant-knowledge-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.quant-know-card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--surface-soft); font-size: 0.84rem; }
+.quant-know-card summary { cursor: pointer; }
+.quant-know-card ul { margin: 4px 0; padding-left: 18px; color: var(--ink-2); }
+.quant-timeline-row { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; font-size: 0.84rem; color: var(--ink-2); }
+.quant-defense ol,
+.quant-defense-list { margin: 4px 0; padding-left: 20px; font-size: 0.85rem; color: var(--ink-2); }
+.quant-disclaimer { margin-top: 10px; font-size: 0.76rem; }
+
+@media (max-width: 1100px) {
+  .quant-two-col { grid-template-columns: 1fr; }
+  .quant-detail-grid { grid-template-columns: 1fr; }
+  .quant-reason { margin-left: 0; }
+}
+
+.quant-suite-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+
+/* 量化雷达:头部控件不换行(覆盖 .actions 基类的 wrap + margin-top) */
+.quant-date-actions,
+.quant-stock-actions { flex-wrap: nowrap; margin-top: 0; align-items: center; }
+.quant-date-actions input[type="date"] {
+  width: 150px; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit;
+}
+#quantSearchInput { width: 190px; }
+#quantStockInput { width: 180px; }
+@media (max-width: 1500px) {
+  .quant-stock-actions { flex-wrap: wrap; }
+}
+
+/* 量化雷达:砸盘方向视觉(A股绿跌语义) */
+.quant-type-tag.smash { background: #e6f4ea; border-color: #b9e4ce; color: var(--green); }
+.quant-alert-card.quant-smash-card { border-color: #b9e4ce; border-left-color: var(--green); background: #f6fbf8; }
+.quant-smash-row td { background: #f3faf6; }
+.quant-dir-tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.76rem; border: 1px solid var(--line); color: var(--muted); }
+.quant-dir-tag.smash { background: #e6f4ea; border-color: #b9e4ce; color: var(--green); font-weight: 700; }
+.quant-dir-tag.pump { background: #fdecea; border-color: #efb8b4; color: var(--red); }
+
+/* 量化雷达:榜单分页(全量数据客户端分页,表格随页自然展开,不再框内滚动) */
+.quant-radar-layout .capital-table-wrap,
+.quant-radar-layout .capital-table-wrap.compact { max-height: none; }
+.quant-pager { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 4px 2px; }
+.quant-pager .button { min-width: 0; }
+.quant-pager .button[disabled] { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
+.quant-pager-info { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
+
+
+/* 吸筹埋伏榜(2026-07-16) */
+.quant-accum-row{cursor:pointer}
+.quant-accum-chart{display:flex;align-items:flex-end;gap:2px;height:52px;margin-top:8px}
+.quant-accum-bar{flex:1 1 4px;max-width:10px;min-width:2px;border-radius:2px 2px 0 0}
+.quant-accum-bar.in{background:#d9544f}
+.quant-accum-bar.out{background:#3aa370}
+
+
+/* 资金榜单:全表排序 + 搜索 + 行内按钮(2026-07-16) */
+.row-cell-actions { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; justify-content: flex-end; }
+.row-cell-actions .button { min-width: 0; white-space: nowrap; }
+.capital-actions-col { white-space: nowrap; }
+
+.table-search {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  min-width: 160px;
+  max-width: 220px;
+  background: var(--surface, #fff);
+  color: var(--ink);
+}
+.table-search:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.table-sort {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  background: var(--surface, #fff);
+  color: var(--ink);
+}
+.quant-alert-controls { flex-wrap: nowrap; margin-top: 0; align-items: center; gap: 8px; }
+/* 卡片右侧按钮同排:卡片改双列网格,内容自动堆左列,按钮块跨全高钉在右列居中 */
+.quant-alert-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: start; }
+.quant-alert-card > * { grid-column: 1; }
+.quant-alert-card > .quant-alert-actions { grid-column: 2; grid-row: 1 / -1; align-self: center; margin-top: 0; }
+
+/* 量化表头排序(镜像 .cap-sortable) */
+.capital-data-table th.quant-sortable { cursor: pointer; user-select: none; }
+.capital-data-table th.quant-sortable:hover { background: #e2e8f0; color: var(--ink); }
+.capital-data-table th.quant-sortable.sorted { color: var(--ink); background: #e7eefc; }
+.capital-data-table th .quant-sort-arrow { display: inline-block; margin-left: 4px; font-size: 10px; color: var(--blue); }
+
+@media (max-width: 720px) {
+  .table-search { min-width: 120px; max-width: 100%; }
+  .quant-alert-controls { flex-wrap: wrap; }
+  .row-cell-actions { flex-wrap: wrap; }
+}
+
+/* 量化行为:异动时间线点阵图(拉抬/砸盘过程) (2026-07-20) */
+.quant-tl-wrap { border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); padding: 10px 10px 4px; margin: 4px 0 8px; }
+.quant-tl-svg { width: 100%; height: auto; display: block; }
+.quant-tl-svg circle { cursor: crosshair; }
+.quant-tl-legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: 0.72rem; color: var(--ink-2); padding: 6px 2px 6px; }
+.quant-tl-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+.quant-tl-legend .tl-bull { background: var(--red, #d9544f); }
+.quant-tl-legend .tl-bear { background: var(--green, #3aa370); }
+.quant-tl-legend .tl-neutral { background: #d97706; }
+.quant-tl-legend .tl-line { width: 14px; height: 2px; border-radius: 1px; background: var(--blue, #2f6fdd); }
+.quant-tl-empty { font-size: 0.8rem; }
+
+/* 量化行为全景图 v2 图例(2026-07-20):蜡烛/资金柱方形色块 */
+.quant-tl-legend i.sq { border-radius: 2px; }
+.quant-tl-legend .tl-candle-up, .quant-tl-legend .tl-flow-in { background: var(--red, #d9544f); }
+.quant-tl-legend .tl-candle-down, .quant-tl-legend .tl-flow-out { background: var(--green, #3aa370); }
+
+/* 条件选股页 (2026-07-20) */
+.screener-layout { display: flex; flex-direction: column; gap: 16px; }
+.screener-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.screener-group { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 12px; margin: 0; background: var(--surface-soft); min-width: 0; }
+.screener-group legend { font-size: 0.82rem; font-weight: 700; color: var(--ink-2); padding: 0 6px; }
+.screener-group .capital-filter-grid { margin-top: 4px; }
+.screener-checks { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-top: 8px; font-size: 0.84rem; color: var(--ink-2); align-items: center; }
+.screener-checks label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.screener-sep { color: var(--muted); }
+.screener-actions { align-items: end; gap: 12px; flex-wrap: wrap; }
+.screener-actions label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); }
+.screener-actions select { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface, #fff); color: var(--ink); font: inherit; }
+.screener-note { font-size: 0.78rem; margin: 4px 0; }
+.screener-hits { max-width: 300px; }
+.screener-hits .quant-type-tag { margin: 1px 2px 1px 0; }
+#scrResultTable td small { color: var(--muted); margin-left: 2px; }
+
+/* 条件选股:窄分组内覆盖 capital-filter-grid 的宽页固定四列模板(修复输入框溢出遮挡) */
+.screener-group .capital-filter-grid {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px 10px;
+}
+.screener-group .capital-filter-grid label { min-width: 0; max-width: none; width: auto; }
+.screener-group .capital-filter-grid input,
+.screener-group .capital-filter-grid select {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  box-sizing: border-box;
+}
+
+/* 自选股智能提醒 v2 inline (2026-07-22):每行 item-meta 内嵌信号芯片,三级色 */
+.wl-chip { display: inline-block; vertical-align: text-bottom; padding: 0 6px; border-radius: 999px; font-size: 0.7rem; font-weight: 700; margin-left: 4px; border: 1px solid var(--line); cursor: default; }
+.wl-chip-danger { background: #fdecea; border-color: #efb8b4; color: var(--red, #d9544f); }
+.wl-chip-warn  { background: #fff7e6; border-color: #f5d08c; color: #b45309; }
+.wl-chip-info  { background: #e8f1fd; border-color: #bcd4f5; color: var(--blue, #2f6fdd); }
+.wl-row-alerts { display: grid; gap: 4px; margin-top: 6px; min-width: 0; }
+.wl-alert-item { display: flex; gap: 6px; align-items: baseline; font-size: 12px; min-width: 0; }
+.wl-alert-item .wl-chip { margin-left: 0; flex: 0 0 auto; }
+.wl-alert-text { color: var(--ink-2); line-height: 1.5; min-width: 0; }
+.wl-pin-btn { min-width: 0; padding: 2px 5px; font-size: 0.8rem; line-height: 1; border: 1px solid var(--line); background: transparent; border-radius: 4px; cursor: pointer; opacity: 0.35; transition: opacity 0.15s; }
+.wl-pin-btn:hover,.wl-pin-btn.wl-pinned { opacity: 1; }
+.wl-pin-btn.wl-pinned { background: #fff7e6; border-color: #f5d08c; }

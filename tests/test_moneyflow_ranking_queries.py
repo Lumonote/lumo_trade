@@ -153,3 +153,66 @@ def test_get_stock_range_aggregated_uses_explicit_bounds(conn):
     assert df.iloc[0]["net_amount"] == pytest.approx(5e7)
     assert df.iloc[0]["first_date"] == "2026-06-02"
     assert df.iloc[0]["last_date"] == "2026-06-03"
+
+
+def test_trade_date_normalized_on_write_and_read(conn):
+    """YYYYMMDD 与 ISO 双格式混存修复:写入按 _date_key 归一,读取两种格式参数都命中。
+
+    历史 bug: run_opportunity_discovery 把 Tushare 原生 20260529 直接写入,
+    与资金榜回填的 2026-05-29 在库里分叉,跨桶聚合/趋势查询漏行。
+    """
+    from data_store import moneyflow_repo as repo
+
+    repo.upsert_df(_df([{"trade_date": "20260604", "ts_code": "000001.SZ",
+                         "name": "甲", "net_amount": 5e7}]), top_n=100)
+    stored = [r[0] for r in conn.execute("SELECT trade_date FROM moneyflow_dc").fetchall()]
+    assert stored == ["2026-06-04"]
+
+    # 同日再写 ISO 格式应命中同一 PK 行(update),不产生第二行
+    repo.upsert_df(_df([{"trade_date": "2026-06-04", "ts_code": "000001.SZ",
+                         "name": "甲", "net_amount": 9e7}]), top_n=100)
+    assert conn.execute("SELECT COUNT(*) FROM moneyflow_dc").fetchone()[0] == 1
+
+    assert len(repo.get_top_n("20260604", 100)) == 1
+    assert len(repo.get_top_n("2026-06-04", 100)) == 1
+    assert len(repo.get_ranking("20260604", limit=5, snapshot_top_n=100)) == 1
+    agg = repo.get_aggregated("20260604", days=2, limit=5, snapshot_top_n=100)
+    assert len(agg) == 1
+    rng = repo.get_range_aggregated("20260601", "20260604", limit=5, snapshot_top_n=100)
+    assert len(rng) == 1
+    rows = repo.get_stock_rows("000001", "20260601", "20260604", snapshot_top_n=100)
+    assert len(rows) == 1
+
+
+def _window_df(dates, codes, net=1000.0):
+    rows = []
+    for d in dates:
+        for c in codes:
+            rows.append({"trade_date": d, "ts_code": c, "name": "股" + c[:6],
+                         "pct_change": 0.5, "close": 10.0,
+                         "net_amount": net, "net_amount_rate": 0.5,
+                         "buy_elg_amount": net * 0.6, "buy_elg_amount_rate": 0.3,
+                         "buy_lg_amount": 0.0, "buy_lg_amount_rate": 0.0,
+                         "buy_md_amount": 0.0, "buy_md_amount_rate": 0.0,
+                         "buy_sm_amount": 0.0, "buy_sm_amount_rate": 0.0,
+                         "amount_unit": "万元"})
+    return pd.DataFrame(rows)
+
+
+def test_get_market_window_returns_recent_days_ascending(conn):
+    from data_store import moneyflow_repo as repo
+
+    dates = ["2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10"]
+    repo.upsert_df(_window_df(dates, ["600000.SH", "000001.SZ"]), top_n=0)
+    repo.upsert_df(_window_df(["2026-07-10"], ["600000.SH"]), top_n=20)  # 其它桶不串
+
+    df = repo.get_market_window("2026-07-10", 3)
+    assert sorted(df["trade_date"].unique()) == ["2026-07-08", "2026-07-09", "2026-07-10"]
+    assert list(df["trade_date"]) == sorted(df["trade_date"])          # 升序
+    assert len(df) == 6                                                # 3日 × 2股
+    # as-of 回看:end_date 早于最新日
+    df_past = repo.get_market_window("2026-07-08", 2)
+    assert sorted(df_past["trade_date"].unique()) == ["2026-07-07", "2026-07-08"]
+    # 兼容 YYYYMMDD 输入与空范围
+    assert len(repo.get_market_window("20260710", 1)["trade_date"].unique()) == 1
+    assert repo.get_market_window("2020-01-01", 5).empty

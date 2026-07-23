@@ -28,8 +28,47 @@ def hits_by_rule(factors, **kw):
     return {h.rule: h.delta for h in evaluate_shared_rules(factors, **kw)}
 
 
-def test_ruleset_version_is_v24():
-    assert RULESET_VERSION == 'v24'
+def test_ruleset_version_is_v25():
+    assert RULESET_VERSION == 'v25'
+
+
+# ===== v25#1/#2: 主力资金 (main_net_rate 当日主力净流入率%) =====
+
+def test_main_outflow_penalty_triggers_at_threshold():
+    h = hits_by_rule({'main_net_rate': -5})
+    assert h.get('main_outflow') == -10
+
+
+def test_main_outflow_not_triggered_above_threshold():
+    h = hits_by_rule({'main_net_rate': -4.9})
+    assert 'main_outflow' not in h
+    assert 'main_inflow' not in h
+
+
+def test_main_inflow_bonus_moderate_band_only():
+    assert hits_by_rule({'main_net_rate': 2}).get('main_inflow') == 4
+    assert hits_by_rule({'main_net_rate': 4.9}).get('main_inflow') == 4
+    # >5% 极端流入≈基线(过度共识), 不奖励
+    assert 'main_inflow' not in hits_by_rule({'main_net_rate': 5})
+    assert 'main_inflow' not in hits_by_rule({'main_net_rate': 1.9})
+
+
+def test_main_rate_missing_triggers_nothing():
+    h = hits_by_rule({'rsi': 45})
+    assert 'main_outflow' not in h and 'main_inflow' not in h
+
+
+# ===== v25#3: 期指多空市场门控 (fut_net_chg_3d, 张) =====
+
+def test_fut_bear_penalty_at_threshold():
+    assert hits_by_rule({'fut_net_chg_3d': -8000}).get('fut_bear') == -10
+    assert hits_by_rule({'fut_net_chg_3d': -15000}).get('fut_bear') == -10
+
+
+def test_fut_bear_not_triggered_above_threshold():
+    assert 'fut_bear' not in hits_by_rule({'fut_net_chg_3d': -7999})
+    assert 'fut_bear' not in hits_by_rule({'fut_net_chg_3d': 5000})
+    assert 'fut_bear' not in hits_by_rule({})  # 缺失不触发
 
 
 # ===== v24#1: chg3d ≥12 罚12, ≥18 罚15 (恢复重罚) =====

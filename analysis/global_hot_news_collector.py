@@ -126,7 +126,10 @@ class GlobalHotNewsCollector:
         for url in candidates:
             try:
                 r = requests.get(url, headers=self.headers, timeout=10)
-                r.encoding = 'utf-8'
+                # 同花顺页面服务器声明 charset=gbk，强制 utf-8 会整页解成 � 乱码；
+                # 仅当 header 未声明(requests 默认 ISO-8859-1)时才用探测编码兜底
+                if not r.encoding or r.encoding.lower() == 'iso-8859-1':
+                    r.encoding = r.apparent_encoding or 'utf-8'
                 soup = BeautifulSoup(r.text, 'html.parser')
 
                 items = []

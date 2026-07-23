@@ -21,7 +21,6 @@
 import os
 import sys
 import json
-import shutil
 import logging
 import pandas as pd
 import numpy as np
@@ -45,15 +44,6 @@ def _resolve_backtest_dir() -> str:
         base = os.path.join(str(results_dir()), 'backtest')
     except Exception:
         return os.path.join(project_root, 'results', 'backtest')
-    # 首次迁移:统一目录还没有历史样本而仓库有 → 播种,保留既有回测/优化数据
-    repo_rec = os.path.join(project_root, 'results', 'backtest', 'recommendations.csv')
-    user_rec = os.path.join(base, 'recommendations.csv')
-    if not os.path.exists(user_rec) and os.path.exists(repo_rec):
-        try:
-            os.makedirs(base, exist_ok=True)
-            shutil.copy2(repo_rec, user_rec)
-        except OSError:
-            pass
     return base
 
 
@@ -68,9 +58,19 @@ def _resolve_scoring_config() -> str:
 
 
 BACKTEST_DIR = _resolve_backtest_dir()
-RECOMMENDATIONS_FILE = os.path.join(BACKTEST_DIR, 'recommendations.csv')
 BACKTEST_REPORT_DIR = os.path.join(BACKTEST_DIR, 'reports')
 SCORING_RUNTIME_CONFIG = _resolve_scoring_config()
+
+
+def _btr_repo():
+    """回测推荐记录仓库(SQLite backtest_recommendation 表)。
+
+    2026-07-09「全部走 SQLite」:recommendations 不再落 CSV;表空时自动从
+    存量 CSV 一次性种子导入(幂等),之后 CSV 只是历史存档。
+    """
+    from data_store import backtest_recommendation_repo as btr
+    btr.seed_from_legacy_csv_if_empty()
+    return btr
 
 # 回测基线（v8.0算法优化 - 去重后Top10 + 置信度分级，score>=78阈值）
 BASELINE = {
@@ -233,19 +233,8 @@ def save_recommendations(passed_stocks: List[Dict], report_date: str = None):
         logger.info("没有推荐股票需要记录")
         return
 
-    new_df = pd.DataFrame(records)
-
-    # 追加到已有记录
-    if os.path.exists(RECOMMENDATIONS_FILE):
-        existing = pd.read_csv(RECOMMENDATIONS_FILE)
-        # 去除同日重复
-        existing = existing[existing['report_date'] != report_date]
-        combined = pd.concat([existing, new_df], ignore_index=True)
-    else:
-        combined = new_df
-
-    combined.to_csv(RECOMMENDATIONS_FILE, index=False, encoding='utf-8-sig')
-    logger.info(f"已保存 {len(records)} 条推荐记录到 {RECOMMENDATIONS_FILE}")
+    saved = _btr_repo().replace_day(report_date, records)
+    logger.info(f"已保存 {saved} 条推荐记录到 SQLite(backtest_recommendation, {report_date})")
 
 
 def update_returns(days_back: int = 30, recompute_all: bool = False,
@@ -259,29 +248,21 @@ def update_returns(days_back: int = 30, recompute_all: bool = False,
     Args:
         days_back: 仅处理 report_date 在最近这么多天内的记录（0/None=不限）。
             非 recompute_all 时还会跳过已填好 return_5d 的行以提速。
-        recompute_all: 重算全部已结算行（覆盖旧值），动手前自动备份 CSV。
+        recompute_all: 重算全部已结算行（覆盖旧值）。收益是从日线可复算的
+            派生值,SQLite 化后不再做落盘前备份。
         throttle: 每只票取数之间的休眠秒数（礼貌限速）。
 
     Returns:
         ``{'updated': n, 'rows': total, 'targets': m, 'reason': str}``
     """
-    if not os.path.exists(RECOMMENDATIONS_FILE):
+    repo = _btr_repo()
+    df = repo.load_df()
+    if df.empty:
         logger.warning("没有历史推荐记录")
         return {'updated': 0, 'rows': 0, 'targets': 0, 'reason': 'no_recommendations'}
-
-    df = pd.read_csv(RECOMMENDATIONS_FILE)
     for col in ('buy_price', 'return_1d', 'return_3d', 'return_5d', 'return_10d'):
         if col not in df.columns:
             df[col] = np.nan
-
-    if recompute_all:
-        backup = RECOMMENDATIONS_FILE.replace(
-            '.csv', f'.backup_{datetime.now():%Y%m%d_%H%M%S}.csv')
-        try:
-            shutil.copy2(RECOMMENDATIONS_FILE, backup)
-            logger.info(f"已备份 recommendations.csv -> {backup}")
-        except Exception as e:
-            logger.warning(f"备份失败（继续）: {e}")
 
     report_dt = pd.to_datetime(df['report_date'], errors='coerce')
     settled = report_dt <= (datetime.now() - timedelta(days=1))
@@ -344,7 +325,7 @@ def update_returns(days_back: int = 30, recompute_all: bool = False,
             if wrote:
                 updated += 1
 
-    df.to_csv(RECOMMENDATIONS_FILE, index=False, encoding='utf-8-sig')
+    repo.save_df(df)
     logger.info(f"已更新 {updated}/{len(target_idx)} 条记录的收益"
                 f"（{len(by_code)} 只票，其中 {no_data_codes} 只无数据；源: Eastmoney/Tushare）")
     return {'updated': updated, 'rows': len(df), 'targets': len(target_idx), 'reason': 'ok'}
@@ -363,11 +344,10 @@ def generate_backtest_report(days_back: int = None) -> str:
     """
     ensure_dirs()
 
-    if not os.path.exists(RECOMMENDATIONS_FILE):
+    df = _btr_repo().load_df()
+    if df.empty:
         logger.warning("没有历史推荐记录")
         return ""
-
-    df = pd.read_csv(RECOMMENDATIONS_FILE)
 
     if days_back:
         cutoff = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
@@ -571,11 +551,10 @@ def optimize_scoring_config(days_back: int = 120, min_samples: int = 30,
         'config_path': SCORING_RUNTIME_CONFIG,
     }
 
-    if not os.path.exists(RECOMMENDATIONS_FILE):
+    raw = _btr_repo().load_df()
+    if raw.empty:
         result['reason'] = 'no_recommendations'
         return result
-
-    raw = pd.read_csv(RECOMMENDATIONS_FILE)
     if 'return_5d' not in raw.columns:
         result['reason'] = 'missing_return_column'
         return result
@@ -775,15 +754,10 @@ def run_baostock_smoke_test(days_ago: int = 20, cleanup: bool = True) -> Dict:
         result['reason'] = f'baostock_login_exception:{e}'
         return result
 
+    repo = _btr_repo()
     try:
         report_date = (datetime.now() - timedelta(days=max(days_ago, 12))).strftime('%Y-%m-%d')
-        if os.path.exists(RECOMMENDATIONS_FILE):
-            df = pd.read_csv(RECOMMENDATIONS_FILE)
-        else:
-            df = pd.DataFrame()
-
-        if len(df) > 0 and 'name' in df.columns:
-            df = df[df['name'] != test_name].copy()
+        repo.delete_by_name(test_name)
 
         test_row = {
             'report_date': report_date,
@@ -808,12 +782,11 @@ def run_baostock_smoke_test(days_ago: int = 20, cleanup: bool = True) -> Dict:
             'return_5d': None,
             'return_10d': None,
         }
-        df = pd.concat([df, pd.DataFrame([test_row])], ignore_index=True)
-        df.to_csv(RECOMMENDATIONS_FILE, index=False, encoding='utf-8-sig')
+        repo.upsert_rows([test_row])
 
         update_returns(days_back=120)
 
-        after_df = pd.read_csv(RECOMMENDATIONS_FILE)
+        after_df = repo.load_df()
         smoke_df = after_df[after_df['name'] == test_name].copy()
         if len(smoke_df) == 0:
             result['reason'] = 'smoke_row_missing'
@@ -839,11 +812,7 @@ def run_baostock_smoke_test(days_ago: int = 20, cleanup: bool = True) -> Dict:
 
         if cleanup:
             try:
-                if os.path.exists(RECOMMENDATIONS_FILE):
-                    clean_df = pd.read_csv(RECOMMENDATIONS_FILE)
-                    if 'name' in clean_df.columns:
-                        clean_df = clean_df[clean_df['name'] != test_name]
-                        clean_df.to_csv(RECOMMENDATIONS_FILE, index=False, encoding='utf-8-sig')
+                repo.delete_by_name(test_name)
             except Exception:
                 pass
 

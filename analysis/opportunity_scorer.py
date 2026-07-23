@@ -662,6 +662,13 @@ class OpportunityScorer:
                 'buy_signals': quant_buy_count,
                 'sell_signals': quant_sell_count,
             }
+            # v25: 主力资金/期指多空增量因子(只读本地 SQLite, 与 sim 同一取数实现;
+            # 数据缺失/过期 → None, 共享规则按约定不触发)
+            try:
+                from analysis.factor_history import live_extra_factors
+                shared_factors.update(live_extra_factors(stock_code))
+            except Exception as _fh_exc:  # noqa: BLE001
+                logger.debug(f"{stock_code} v25增量因子跳过: {_fh_exc}")
             shared_hits = evaluate_shared_rules(shared_factors, skip=LIVE_PATTERN_COVERED_RULES)
             for hit in shared_hits:
                 if hit.delta < 0:
@@ -691,16 +698,10 @@ class OpportunityScorer:
 
             # v21移除: qs<50奖励 (真回测仅6样本,不可靠)
 
-            # v21核心: 模型买入信号越多,分数越高 (真回测: buy>=10=55%wr/+2.16%)
-            buy_bonus_val = 0
-            if quant_buy_count >= 14: buy_bonus_val = 10
-            elif quant_buy_count >= 12: buy_bonus_val = 8
-            elif quant_buy_count >= 10: buy_bonus_val = 6
-            elif quant_buy_count >= 8: buy_bonus_val = 4
-            elif quant_buy_count >= 6: buy_bonus_val = 2
-            if buy_bonus_val > 0:
-                v54_total_bonus += buy_bonus_val
-                logger.info(f"{stock_code} 买入信号奖励: buy={quant_buy_count}, 加{buy_bonus_val}分")
+            # v25移除: v21 buy_count 梯度奖励(+2..+10) — 全量回测(1487行)全面反向:
+            # buy>=10: 37.1%wr / >=12: 29.9% / >=14: 19.4%, 双半窗一致低于基线(40.3%);
+            # 与 sim 侧 sim_net_buy_gradient=0 同步关闭, 移除后 A>B 倒挂与 [82,85) 断层修复。
+            # 证据与裁决: analysis/scoring_rules.py v25 docstring #4。
 
             # v21新增: 高位股奖励 (真回测pos>=0.7: 49.1%wr/+2.57%)
             position_pct_val = result.get('details', {}).get('momentum', {}).get('position_pct', 0.5)

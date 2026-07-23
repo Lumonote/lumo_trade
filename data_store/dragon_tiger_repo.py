@@ -121,6 +121,18 @@ def get_by_code(ts_code: str, trade_date: Optional[str] = None) -> pd.DataFrame:
     )
 
 
+def get_quant_by_date(start_date: str, end_date: str) -> pd.DataFrame:
+    """日期窗口内 is_quant=1 的量化席位行(量化雷达按日扫描;命中 idx_lhbi_quant)。"""
+    if not start_date or not end_date:
+        return pd.DataFrame()
+    return pd.read_sql_query(
+        f"SELECT {','.join(_FIELDS)} FROM dragon_tiger_inst "
+        "WHERE is_quant=1 AND trade_date>=? AND trade_date<=? "
+        "ORDER BY trade_date DESC, ABS(COALESCE(net_amount,0)) DESC",
+        get_conn(), params=(start_date, end_date),
+    )
+
+
 def latest(ts_code: str) -> Optional[Dict]:
     """Return the most recent trade_date row(s) as a dict, or None."""
     clause, code_params = _code_match(ts_code)

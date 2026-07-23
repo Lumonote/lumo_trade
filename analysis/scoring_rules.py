@@ -19,6 +19,33 @@ v24 改动 (依据 docs/superpowers/specs/2026-06-10-pc-and-scoring-optimization
    sector 缺失视为不满足门控
 5. 新增 RSI≥80 × chase≥60 组合罚 -10 (全场最差大子群 105/26.7%/-6.99%)
 
+v25 改动 (2026-07-09, 新接入主力资金 moneyflow_dc + 期指多空 CFFEX 前20席位,
+因子取数统一走 analysis/factor_history.py, 历史回填 scripts/backfill_factor_history.py;
+同数据集 1487 行剔 degraded, 稳定性=前/后半窗方向一致):
+1. 新增 main_outflow 罚: 当日主力净流入率 <= -5% 罚 10
+   (187/29.4%wr/-3.09%; 前半 38.0% vs 基线 42.3%, 后半 19.5% vs 38.4%)
+2. 新增 main_inflow 奖: 2% <= 净流入率 < 5% 奖 4 (温和吸筹带, 122/46.7%/+1.51%;
+   前半 44.4%/+2.17, 后半 48.5%/+0.99 双半窗同向; 注意 >5% 极端流入≈基线, 不奖)
+3. 新增 fut_bear 罚(市场门控): 四品种(IF/IH/IC/IM)前20席位净持仓 3 日滚动净变动
+   <= -8000 张(≈窗口 P20)时全场罚 10 (267样本 前半 34.8% vs 42.3%, 后半 25.9% vs 38.4%;
+   网格 6/8/10 单调改善取 10 = 常规规则尺度上限; 15 仍走强但属旋钮边界且 live
+   有 25 分惩罚上限会截断, 防过拟合不取)
+4. 关闭 net_buy/buy_count 梯度奖(sim 的 sim_net_buy_gradient=0 + live v21 块删除):
+   当前全量数据全面反向 — buy>=10: 37.1%wr, >=12: 29.9%, >=14: 19.4%(却拿+10),
+   双半窗一致低于基线; 关闭后 A>B 倒挂修复(45.1%<50.0% → 63%>52%),
+   [82,85) 断层 32%→50%+ 同步修复 (v21 "buy>=10=55%wr" 系旧小样本结论)
+5. rsi_pullback_pen 4→0: n=379(打了25%的行) 触发组 40.9% ≈ 未触发 40.1%,
+   双半窗 Δ+0.8/+0.4, 惩罚无区分度 → 停用
+6. sim_tech_high_pen 3→0: 触发组 45.5% 反而高于未触发 39.6%, 方向反转 → 停用
+   落选: main_in_days3 连续流入天数(39-40% 全平坦无信号)、期指净多回补奖励(前半不成立)、
+   净空×追高交叉罚(前半 n=13 样本不足, 两条独立罚已自然叠加)、
+   rsi_overbought/qs_high 软化(对分层零影响, 维持原值观察)
+
+v25 终版回测 (同数据集 1487 行剔 degraded):
+  B+: 235/55.7%wr/+2.30% (v24: 338/49.7%/+1.44)
+  三段走窗 B+ wr: 53.8 / 63.4 / 54.5 全>50%; A>B ✓; 评分桶单调违例 0;
+  新因子独立增量(关梯度奖后对照): B+ wr 52.2→55.7, 近半窗 avg +1.47→+2.23
+
 使用方式:
     from analysis.scoring_rules import evaluate_shared_rules, RULESET, RULESET_VERSION
     hits = evaluate_shared_rules({'rsi': 82, 'chase_risk': 65, ...})
@@ -47,13 +74,13 @@ v24 改动 (依据 docs/superpowers/specs/2026-06-10-pc-and-scoring-optimization
 import math
 from typing import Dict, FrozenSet, Iterable, List, NamedTuple, Optional
 
-RULESET_VERSION = 'v24'
+RULESET_VERSION = 'v25'
 
 RULESET: Dict[str, float] = {
     # ===== RSI 分区 =====
     'rsi_extreme_pen': 25,        # rsi >= 85
     'rsi_overbought_pen': 15,     # 80 <= rsi < 85
-    'rsi_pullback_pen': 4,        # 50 < rsi < 60 (涨停次日回落区, 36.7%wr/-1.37%)
+    'rsi_pullback_pen': 0,        # 50 < rsi < 60 [v25停用: n=379 触发组≈未触发, 无区分度]
     'rsi_golden_bonus': 4,        # 40 <= rsi <= 50 (黄金区, 52.5%wr/+2.79%)
     'rsi_oversold_bonus': 5,      # rsi < 35
 
@@ -95,6 +122,15 @@ RULESET: Dict[str, float] = {
     'sector_hot_pen': 12,         # sector_score >= 95 过热
     'sector_dead_peak_pen': 10,   # 60-75 死区 U 型连续惩罚峰值 (中心 67.5)
 
+    # ===== 主力资金 (v25, 因子: main_net_rate 当日主力净流入率%) =====
+    'main_outflow_pen': 10,       # main_net_rate <= -5 主力大幅流出 (29.4%wr/-3.09%)
+    'main_outflow_rate': -5,      # 流出罚触发阈值(%)
+    'main_inflow_bonus': 4,       # 2 <= main_net_rate < 5 温和吸筹带 (46.7%wr/+1.51%)
+
+    # ===== 期指多空市场门控 (v25, 因子: fut_net_chg_3d 四品种前20净持仓3日净变动,张) =====
+    'fut_bear_pen': 10,           # fut_net_chg_3d <= -8000 净空加深, 全场降温 [v25网格取10]
+    'fut_bear_threshold': -8000,  # ≈回测窗口 P20; live 由 factor_history 提供同口径因子
+
     # ===== 涨停/低chase 奖励 (live 由牛股 Pattern 块实现, 调用时 skip) =====
     'zt_low_chase_bonus': 10,     # 涨停首板 + chase<50 + 非信号拥挤(buy<=8)
     'strong_low_chase_bonus': 12, # day>=7 + chase<40
@@ -103,8 +139,9 @@ RULESET: Dict[str, float] = {
 
     # ===== sim-only (仅 simulate_v5_backtest 消费, 见模块 docstring) =====
     'sim_score_high_threshold': 76,
-    'sim_tech_high_pen': 3,
+    'sim_tech_high_pen': 0,       # [v25停用: 触发组 45.5% 高于未触发 39.6%, 方向反转]
     'sim_adj_cap': 95,
+    'sim_net_buy_gradient': 0,    # [v25停用: buy>=10 组 37.1%/>=14 组 19.4%, 奖励负向群体]
 }
 
 # live 调用方应 skip 的规则 (其牛股动量 Pattern 块已实现同类逻辑, 避免重复计分)
@@ -140,7 +177,8 @@ def evaluate_shared_rules(factors: Dict, ruleset: Optional[Dict[str, float]] = N
     Args:
         factors: 成品因子字典, 支持键:
             rsi, chase_risk, change_3d, change_5d, day_change,
-            quant_score, tech_score, sector_score, buy_signals, sell_signals
+            quant_score, tech_score, sector_score, buy_signals, sell_signals,
+            main_net_rate (v25 主力净流入率%), fut_net_chg_3d (v25 期指3日净变动,张)
             缺失/None/NaN 的因子对应规则不触发。
         ruleset: 参数表, 默认 RULESET (v24)。
         skip: 要跳过的规则 id 集合 (如 live 侧的 LIVE_PATTERN_COVERED_RULES)。
@@ -273,6 +311,22 @@ def evaluate_shared_rules(factors: Dict, ruleset: Optional[Dict[str, float]] = N
     if chase is not None and rsi is not None and chase < 25 and rsi < 50:
         add('low_risk_momentum', p['low_risk_momentum_bonus'],
             f"低风险动量:+{p['low_risk_momentum_bonus']:.0f}")
+
+    # ===== 主力资金 (v25) =====
+    main_rate = _num(factors.get('main_net_rate'))
+    if main_rate is not None:
+        if main_rate <= p['main_outflow_rate']:
+            add('main_outflow', -p['main_outflow_pen'],
+                f"主力大幅流出{main_rate:.1f}%:-{p['main_outflow_pen']:.0f}")
+        elif 2 <= main_rate < 5:
+            add('main_inflow', p['main_inflow_bonus'],
+                f"主力温和吸筹{main_rate:.1f}%:+{p['main_inflow_bonus']:.0f}")
+
+    # ===== 期指多空市场门控 (v25) =====
+    fut_3d = _num(factors.get('fut_net_chg_3d'))
+    if fut_3d is not None and fut_3d <= p['fut_bear_threshold']:
+        add('fut_bear', -p['fut_bear_pen'],
+            f"期指净空加深{fut_3d:.0f}张:-{p['fut_bear_pen']:.0f}(市场降温)")
 
     return hits
 

@@ -1,7 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the Kronos desktop windows (main + tray popup).",
+  "description": "Default capability for the Kronos desktop windows (main + tray popup). remote 授权让主窗(内容来自 http://127.0.0.1:7070 的后端页面)也能走 IPC(open_url 外链代开 / OS 通知),否则 Tauri v2 ACL 会拒绝远程源调用。",
   "windows": ["main", "tray-popup"],
+  "remote": {
+    "urls": ["http://127.0.0.1:7070", "http://localhost:7070"]
+  },
   "permissions": ["core:default", "core:event:default", "notification:default"]
 }

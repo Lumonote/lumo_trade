@@ -20,6 +20,7 @@ import threading
 import time
 import urllib.parse
 import warnings
+import webbrowser
 import datetime
 import logging
 from collections import defaultdict
@@ -261,6 +262,14 @@ def start_command_center_recompute():
 PATTERN_SEARCH_SERVICE.set_quote_provider(WATCHLIST_SERVICE.quotes)
 # K线默认是新浪日K（隔日/盘中按天一根）；叠加自选同款实时报价，让当日那根bar与「实时价」徽章跟随盘中最新价。
 STOCK_KLINE_SERVICE.set_quote_provider(WATCHLIST_SERVICE.quotes)
+# 量化雷达活跃榜的行业列复用 market_intelligence 的新浪行业分类映射(按天后台构建),
+# 避免 clist 被掐走本地兜底时行业列全空;服务保持不 import core。
+try:
+    from webui.services import quant_radar_service as _quant_radar_service
+
+    _quant_radar_service.set_industry_provider(MARKET_INTELLIGENCE_SERVICE.industry_map)
+except Exception:  # noqa: BLE001 — 行业列是装饰,注入失败不影响主流程
+    pass
 
 tokenizer = None
 model = None
@@ -2136,10 +2145,26 @@ def fetch_board_constituents(board_code, limit=60):
         fs=f'b:{code}', fid='f3', limit=int(limit or 60))
 
 
-def board_stocks_payload(code, name='', limit=60):
-    """板块成分股弹窗 payload(行情台/画布板块芯片 → 成分股列表)。
+def _board_stock_row(s):
+    """成分股行统一精简为弹窗所需字段(东财主路/星轨兜底同形)。"""
+    return {
+        'code': s.get('code'),
+        'name': s.get('name'),
+        'price': s.get('price'),
+        'change_pct': s.get('change_pct'),
+        'main_net_inflow': s.get('main_net_inflow'),
+        'main_net_inflow_text': s.get('main_net_inflow_text') or '',
+    }
 
-    拉取失败/空/非东财来源 → ``degraded=True`` + ``note``,``stocks=[]``,不报错。
+
+def board_stocks_payload(code, name='', limit=60):
+    """板块成分股弹窗 payload(行情台/行业热力/画布板块芯片 → 成分股列表)。
+
+    东财 clist 主路失败/空(BK 码)→ 复用星轨成分股三层兜底
+    :func:`star_orbit_service.board_constituents`(东财双路由 → Tushare ``dc_member``
+    EOD 归属 + 实时报价叠加 → 本地关联缓存);兜底命中 → ``degraded=False`` 并透传
+    ``note/source/stale/quoted/as_of``。仍全空/非东财来源 → ``degraded=True`` +
+    ``note``,``stocks=[]``,不报错。
     """
     code = str(code or '').strip()
     name = str(name or '').strip()
@@ -2149,30 +2174,37 @@ def board_stocks_payload(code, name='', limit=60):
     except Exception as exc:
         logger.debug(f"拉取板块成分股失败 {code}: {exc}")
         rows = []
-    for s in rows:
-        stocks.append({
-            'code': s.get('code'),
-            'name': s.get('name'),
-            'price': s.get('price'),
-            'change_pct': s.get('change_pct'),
-            'main_net_inflow': s.get('main_net_inflow'),
-            'main_net_inflow_text': s.get('main_net_inflow_text') or '',
-        })
+    stocks = [_board_stock_row(s) for s in rows]
+    note = ''
+    extra = {}
+    if not stocks and code.upper().startswith('BK'):
+        # 东财主路挂了(网络/限流)→ 星轨三层兜底(东财直连↔默认路由 → Tushare
+        # dc_member → star_orbit_board_member 缓存),命中则叠加实时报价后同形返回。
+        try:
+            from webui.services import star_orbit_service
+            fb = star_orbit_service.board_constituents(code, name, limit=limit) or {}
+        except Exception as exc:
+            logger.debug(f"星轨兜底拉板块成分股失败 {code}: {exc}")
+            fb = {}
+        stocks = [_board_stock_row(s) for s in (fb.get('stocks') or [])]
+        if stocks:
+            note = str(fb.get('note') or '')
+            extra = {k: fb[k] for k in ('source', 'stale', 'quoted', 'as_of') if k in fb}
     degraded = not stocks
     if not stocks:
         if code and not code.upper().startswith('BK'):
             note = '该板块非东财来源,暂无实时成分股,请用外链查看。'
         else:
             note = '东财成分股暂不可用(网络/限流),请用外链查看或稍后重试。'
-    else:
-        note = ''
-    return {
+    payload = {
         'board': {'code': code, 'name': name},
         'stocks': stocks,
         'count': len(stocks),
         'degraded': degraded,
         'note': note,
     }
+    payload.update(extra)
+    return payload
 
 
 def _overlay_board_realtime(stocks, board_code=None):
@@ -4745,6 +4777,14 @@ DESKTOP_PAGES = {
         'title': '资金榜单',
         'subtitle': '主力净流入榜与龙虎榜:单日/多日聚合、刷新补偿、多选股票用机会挖掘算法分析',
     },
+    'futures': {
+        'title': '股指期货',
+        'subtitle': 'IF/IH/IC/IM 行情与基差、中金所前20席位多空单、会员净持仓榜与持仓趋势',
+    },
+    'screener': {
+        'title': '条件选股',
+        'subtitle': '组合行情、资金、盘口异动、吸筹、龙虎榜、机会分与技术形态条件,全市场筛选命中列表',
+    },
     'paper_trading': {
         'title': '模拟盘',
         'subtitle': '现价买入、开盘价买入、输入价格买入、持仓盯市、成交流水与胜率回测',
@@ -4786,11 +4826,37 @@ def resolve_desktop_page(page):
     return DESKTOP_PAGE_ALIASES.get(page, page)
 
 
+def desktop_mode_enabled():
+    """桌面(Tauri)模式:由 src-tauri/main.rs 注入 KRONOS_DESKTOP=tauri。"""
+    return os.environ.get('KRONOS_DESKTOP') == 'tauri'
+
+
+def open_external_url(url):
+    """在系统默认浏览器打开外部链接,返回 (payload, status_code)。
+
+    桌面 App 的 WKWebView 没有新窗口处理器,target=_blank 点击会被静默吞掉;
+    前端拦截后交由本函数用 webbrowser 代开。非桌面模式一律拒绝,避免服务器
+    部署场景被远端请求在宿主机弹浏览器。
+    """
+    target = str(url or '').strip()
+    if not target.lower().startswith(('http://', 'https://')):
+        return {'ok': False, 'error': '仅支持 http/https 链接'}, 400
+    if not desktop_mode_enabled():
+        return {'ok': False, 'error': '仅桌面模式支持系统浏览器代开'}, 403
+    try:
+        opened = webbrowser.open(target, new=2)
+    except Exception as exc:
+        return {'ok': False, 'error': f'打开浏览器失败: {exc}'}, 500
+    if not opened:
+        return {'ok': False, 'error': '系统未能打开默认浏览器'}, 500
+    return {'ok': True, 'url': target}, 200
+
+
 def get_server_config():
     """Return WebUI host, port, and debug mode from environment."""
     host = os.environ.get('KRONOS_HOST', '0.0.0.0')
     port = int(os.environ.get('KRONOS_PORT', '7070'))
-    desktop_mode = os.environ.get('KRONOS_DESKTOP') == 'tauri'
+    desktop_mode = desktop_mode_enabled()
     debug_env = os.environ.get('FLASK_DEBUG')
     debug = (debug_env not in ('0', 'false', 'False')) if debug_env is not None else not desktop_mode
     return host, port, debug

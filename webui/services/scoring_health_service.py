@@ -1,14 +1,17 @@
 """评分算法健康度服务。
 
-读取 results 目录(经 webui/services/paths.py 的 results_dir() 解析,可叠加额外
-搜索目录)中最新一份可用回测 CSV:``backtest_rebuilt_*.csv`` 或
-``backtest/recommendations.csv``。计算:
+数据源优先级(2026-07-09「全部走 SQLite」):
+1. SQLite ``backtest_recommendation`` 表(与 auto_backtest 写侧同库);
+2. 表空时回退扫描 results 目录(results_dir() + 额外搜索目录)中最新一份
+   存量回测 CSV:``backtest_rebuilt_*.csv`` 或 ``backtest/recommendations.csv``。
+
+计算:
 
 - S/A/B/C 分档样本数、5 日胜率、平均收益(全量 + 最近 20 个交易日两组)
 - 降级 run 占比(quant_score==0 或 score<50;降级=取数失败封顶,污染样本)
 - 数据日期范围 / 基线胜率
 
-无 CSV 时返回 ``{"available": False}`` 的明确空态,前端显示「暂无回测数据」。
+两处都无数据时返回 ``{"available": False}`` 的明确空态,前端显示「暂无回测数据」。
 """
 from __future__ import annotations
 
@@ -84,15 +87,43 @@ class ScoringHealthService:
             return None
         return max(candidates, key=lambda p: p.stat().st_mtime)
 
-    def health(self, start_date: str | None = None, end_date: str | None = None,
-               recent_month: bool = False) -> dict:
+    def _load_frame(self):
+        """加载回测样本帧:SQLite 优先,空表回退存量 CSV。
+
+        Returns:
+            (df, src) — src 是 {"file","path","source"};两处都没有时 (None, None)。
+            CSV 读取失败时抛出原异常由调用方降级。
+        """
+        try:
+            from data_store import backtest_recommendation_repo as _btr
+            from data_store import connection as _db_conn
+            db_df = _btr.load_df()
+            if len(db_df) > 0:
+                return db_df, {
+                    "file": "backtest_recommendation",
+                    "path": str(_db_conn.db_path()),
+                    "source": "sqlite",
+                }
+        except Exception:  # noqa: BLE001 — 无 data_store 上下文时按 CSV 兜底
+            pass
         path = self.latest_csv()
         if path is None:
-            return {"available": False, "message": "暂无回测数据(未找到 backtest_rebuilt_*.csv 或 backtest/recommendations.csv)"}
+            return None, None
+        df = pd.read_csv(path, encoding="utf-8-sig")
+        return df, {
+            "file": path.name,
+            "path": str(path),
+            "source": "recommendations" if path.name == "recommendations.csv" else "rebuilt",
+        }
+
+    def health(self, start_date: str | None = None, end_date: str | None = None,
+               recent_month: bool = False) -> dict:
         try:
-            df = pd.read_csv(path, encoding="utf-8-sig")
+            df, src = self._load_frame()
         except Exception as exc:  # noqa: BLE001 — 读取失败按空态降级
             return {"available": False, "message": f"回测数据读取失败: {exc}"}
+        if df is None:
+            return {"available": False, "message": "暂无回测数据(SQLite backtest_recommendation 为空,且未找到 backtest_rebuilt_*.csv 或 backtest/recommendations.csv)"}
         required = {"report_date", "score", "return_5d"}
         if df.empty or not required.issubset(df.columns):
             return {"available": False, "message": "回测数据缺少必需列(report_date/score/return_5d)"}
@@ -132,8 +163,8 @@ class ScoringHealthService:
             return {
                 "available": False,
                 "message": "所选区间无有效回测样本",
-                "file": path.name,
-                "source": "recommendations" if path.name == "recommendations.csv" else "rebuilt",
+                "file": src["file"],
+                "source": src["source"],
                 "available_date_range": {
                     "start": all_dates[0] if all_dates else None,
                     "end": all_dates[-1] if all_dates else None,
@@ -237,9 +268,9 @@ class ScoringHealthService:
 
         return {
             "available": True,
-            "file": path.name,
-            "path": str(path),
-            "source": "recommendations" if path.name == "recommendations.csv" else "rebuilt",
+            "file": src["file"],
+            "path": src["path"],
+            "source": src["source"],
             "available_date_range": {
                 "start": all_dates[0] if all_dates else None,
                 "end": all_dates[-1] if all_dates else None,

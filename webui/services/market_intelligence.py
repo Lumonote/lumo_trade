@@ -18,6 +18,9 @@ from webui.services.http_client import request_json, request_json_post, request_
 DEFAULT_TTL_SECONDS = 180
 # 主力净流入回退榜(Tushare moneyflow_dc)缓存时效：资金流向按日更新，半小时足够新鲜。
 _MAIN_INFLOW_TTL = 1800
+# 大盘云图"全市场覆盖"门槛：实时源(东财/新浪)返回行数低于此值视为部分覆盖,
+# 继续尝试其余数据源并取行数最多的结果(A股约 5000+ 只;新浪行业节点仅覆盖 ~2400 只老股)。
+MARKET_CLOUD_FULL_COVERAGE = 3000
 
 _UA = (
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
@@ -602,7 +605,13 @@ class MarketIntelligenceService:
         force_refresh: bool = False,
         trade_date: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch a broad A-share list for the desktop market-cloud treemap."""
+        """Fetch a broad A-share list for the desktop market-cloud treemap.
+
+        数据源按覆盖度择优:强刷优先东财实时,否则优先 TuShare 全市场日线;
+        任一源覆盖达到 ``MARKET_CLOUD_FULL_COVERAGE``(或请求的 limit)即采用,
+        不足则继续尝试下一源并最终返回行数最多的结果——避免东财 clist 不可达时
+        停留在新浪行业节点仅 ~2400 只的部分覆盖(用户看到"只有两千多家")。
+        """
         now = time.time()
         requested_trade_date = re.sub(r'\D', '', str(trade_date or '').strip())
         if requested_trade_date and len(requested_trade_date) != 8:
@@ -623,24 +632,29 @@ class MarketIntelligenceService:
             self._market_cloud_cache = {'ts': now, 'key': cache_key, 'payload': items}
             return items
 
+        realtime_sources = (
+            lambda: self.fetch_eastmoney_market_cloud_stocks(limit=limit, now=now),
+            lambda: self.fetch_sina_market_cloud_stocks(limit=limit),
+        )
+        full_source = lambda: self.fetch_tushare_market_cloud_stocks(limit=limit)  # noqa: E731
         if force_refresh:
-            items = self.fetch_eastmoney_market_cloud_stocks(limit=limit, now=now)
-            if not items:
-                items = self.fetch_sina_market_cloud_stocks(limit=limit)
-            if items:
-                self._market_cloud_cache = {'ts': now, 'key': cache_key, 'payload': items}
-                return items
+            sources = (realtime_sources[0], full_source, realtime_sources[1])
+        else:
+            sources = (full_source, realtime_sources[0], realtime_sources[1])
 
-        items = self.fetch_tushare_market_cloud_stocks(limit=limit)
-        if items:
-            self._market_cloud_cache = {'ts': now, 'key': cache_key, 'payload': items}
-            return items
-
-        items = self.fetch_eastmoney_market_cloud_stocks(limit=limit, now=now)
-        if not items:
-            items = self.fetch_sina_market_cloud_stocks(limit=limit)
-        self._market_cloud_cache = {'ts': now, 'key': cache_key, 'payload': items}
-        return items
+        enough = min(MARKET_CLOUD_FULL_COVERAGE, limit)
+        best: list[dict[str, Any]] = []
+        for fetch in sources:
+            try:
+                items = fetch() or []
+            except Exception:
+                items = []
+            if len(items) > len(best):
+                best = items
+            if len(best) >= enough:
+                break
+        self._market_cloud_cache = {'ts': now, 'key': cache_key, 'payload': best}
+        return best
 
     def fetch_sina_market_cloud_stocks(self, limit: int = 5000) -> list[dict[str, Any]]:
         """Fallback full-market rows from Sina industry nodes."""
@@ -940,6 +954,15 @@ class MarketIntelligenceService:
     @staticmethod
     def _today() -> str:
         return datetime.datetime.now().strftime('%Y-%m-%d')
+
+    def industry_map(self) -> dict[str, str]:
+        """{6位代码: 行业名} 只读快照(新浪行业分类,按天后台构建;未就绪时返回已有映射)。
+
+        供量化雷达等其它服务经注入使用,不必触达私有成员。
+        """
+        self._maybe_refresh_industry_map()
+        with self._industry_lock:
+            return dict(self._industry_map)
 
     def _maybe_refresh_industry_map(self) -> None:
         """行业映射按天构建：首次/隔日在后台守护线程重建，绝不阻塞 load()。"""

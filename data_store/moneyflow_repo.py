@@ -32,7 +32,8 @@ def upsert_df(df: pd.DataFrame, top_n: int) -> int:
     work["top_n"] = int(top_n)
     if "_amount_unit" in work.columns and "amount_unit" not in work.columns:
         work["amount_unit"] = work["_amount_unit"]
-    work["trade_date"] = work["trade_date"].astype(str)
+    # 双格式混存修复:写入边界统一归一为 ISO(YYYY-MM-DD),与读函数的 _date_key 对称
+    work["trade_date"] = work["trade_date"].astype(str).map(_date_key)
     work["ts_code"] = work["ts_code"].astype(str)
     work["raw_json"] = work.apply(_row_raw_json, axis=1)
     for col in _FIELDS:
@@ -55,7 +56,7 @@ def get_top_n(trade_date: str, top_n: int) -> pd.DataFrame:
     return pd.read_sql_query(
         f"SELECT {','.join(_FIELDS)} FROM moneyflow_dc WHERE trade_date=? AND top_n=?",
         get_conn(),
-        params=(str(trade_date), int(top_n)),
+        params=(_date_key(trade_date), int(top_n)),
     )
 
 
@@ -72,7 +73,7 @@ def get_ranking(trade_date: str, limit: int = 50, snapshot_top_n: int = 0) -> pd
         LIMIT ?
         """,
         get_conn(),
-        params=(str(trade_date), int(snapshot_top_n), int(limit)),
+        params=(_date_key(trade_date), int(snapshot_top_n), int(limit)),
     )
 
 
@@ -126,7 +127,7 @@ def get_aggregated(
         LIMIT ?
         """.format(order_expr=order_expr),
         get_conn(),
-        params=(str(end_date), int(snapshot_top_n), int(days), int(snapshot_top_n), int(limit)),
+        params=(_date_key(end_date), int(snapshot_top_n), int(days), int(snapshot_top_n), int(limit)),
     )
 
 
@@ -169,7 +170,7 @@ def get_range_aggregated(
         LIMIT ?
         """.format(order_expr=order_expr),
         get_conn(),
-        params=(int(snapshot_top_n), str(start_date), str(end_date), int(limit)),
+        params=(int(snapshot_top_n), _date_key(start_date), _date_key(end_date), int(limit)),
     )
 
 
@@ -184,7 +185,7 @@ def get_stock_aggregated(
     rank 为该股在同窗口全市场累计主力净流入额榜单中的名次,而不是过滤后名次。
     """
     core = _bare_code(ts_code)
-    as_of = str(end_date or latest_date(snapshot_top_n) or "")
+    as_of = _date_key(end_date) or str(latest_date(snapshot_top_n) or "")
     if not core or not as_of:
         return pd.DataFrame()
     return pd.read_sql_query(
@@ -281,7 +282,7 @@ def get_stock_range_aggregated(
         WHERE ts_code=? OR ts_code LIKE ?
         """,
         get_conn(),
-        params=(int(snapshot_top_n), str(start_date), str(end_date), core, f"{core}.%"),
+        params=(int(snapshot_top_n), _date_key(start_date), _date_key(end_date), core, f"{core}.%"),
     )
 
 
@@ -303,7 +304,37 @@ def get_stock_rows(
         ORDER BY trade_date DESC
         """,
         get_conn(),
-        params=(int(snapshot_top_n), str(start_date), str(end_date), core, f"{core}.%"),
+        params=(int(snapshot_top_n), _date_key(start_date), _date_key(end_date), core, f"{core}.%"),
+    )
+
+
+def get_market_window(end_date: str, days: int, snapshot_top_n: int = 0) -> pd.DataFrame:
+    """近 N 个交易日(<= end_date)的全市场资金流行,按 trade_date 升序。
+
+    供吸筹检测按窗口批量扫描(约 5000 股 × N 日);days 上限 250。
+    """
+    end_iso = _date_key(end_date)
+    n = max(1, min(int(days or 1), 250))
+    if not end_iso:
+        return pd.DataFrame()
+    dates = [r[0] for r in get_conn().execute(
+        """
+        SELECT DISTINCT trade_date FROM moneyflow_dc
+        WHERE top_n=? AND trade_date<=? ORDER BY trade_date DESC LIMIT ?
+        """,
+        (int(snapshot_top_n), end_iso, n),
+    )]
+    if not dates:
+        return pd.DataFrame()
+    placeholders = ",".join("?" for _ in dates)
+    return pd.read_sql_query(
+        f"""
+        SELECT {','.join(_FIELDS)} FROM moneyflow_dc
+        WHERE top_n=? AND trade_date IN ({placeholders})
+        ORDER BY trade_date ASC
+        """,
+        get_conn(),
+        params=(int(snapshot_top_n), *dates),
     )
 
 

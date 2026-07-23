@@ -174,9 +174,13 @@ def backfill_outcome(summary: dict) -> dict:
 
 
 class CapitalRankingsService:
-    def __init__(self, quote_provider: Optional[Callable[[list], dict]] = None):
+    def __init__(self, quote_provider: Optional[Callable[[list], dict]] = None,
+                 quant_codes_fn: Optional[Callable[[], dict]] = None):
         # quote_provider(codes:list[str]) -> {bare_code: {price, change_pct, main_net_inflow,...}}
         self._quote_provider = quote_provider
+        # quant_codes_fn() -> {"codes": set[6位代码], "as_of": str|None, "available": bool}
+        # 「无量化」过滤口径,缺省 lazy import quant_radar_service.quant_active_codes
+        self._quant_codes_fn = quant_codes_fn
 
     # ---------------- 查询 ----------------
 
@@ -189,27 +193,31 @@ class CapitalRankingsService:
         with_quotes=True,
         start_date=None,
         end_date=None,
+        no_quant=False,
     ) -> dict:
+        fetch_n = self._fetch_limit(top_n, no_quant)
         if mode == "aggregate" and start_date and end_date:
             as_of = end_date
             df = moneyflow_repo.get_range_aggregated(
                 start_date,
                 end_date,
-                limit=top_n,
+                limit=fetch_n,
                 snapshot_top_n=SNAPSHOT_TOP_N,
                 sort_by="net_amount",
             )
-            return self._envelope("moneyflow", mode, as_of, days, top_n, df, with_quotes, start_date, end_date)
+            return self._envelope("moneyflow", mode, as_of, days, top_n, df, with_quotes,
+                                  start_date, end_date, no_quant=no_quant)
         if mode == "aggregate":
             as_of = date or moneyflow_repo.latest_date(SNAPSHOT_TOP_N)
-            df = (moneyflow_repo.get_aggregated(as_of, days=days, limit=top_n,
+            df = (moneyflow_repo.get_aggregated(as_of, days=days, limit=fetch_n,
                                                 snapshot_top_n=SNAPSHOT_TOP_N)
                   if as_of else None)
         else:
             as_of = date or moneyflow_repo.latest_date(SNAPSHOT_TOP_N)
-            df = (moneyflow_repo.get_ranking(as_of, limit=top_n, snapshot_top_n=SNAPSHOT_TOP_N)
+            df = (moneyflow_repo.get_ranking(as_of, limit=fetch_n, snapshot_top_n=SNAPSHOT_TOP_N)
                   if as_of else None)
-        return self._envelope("moneyflow", mode, as_of, days, top_n, df, with_quotes)
+        return self._envelope("moneyflow", mode, as_of, days, top_n, df, with_quotes,
+                              no_quant=no_quant)
 
     def dragon_tiger_ranking(
         self,
@@ -220,24 +228,28 @@ class CapitalRankingsService:
         with_quotes=True,
         start_date=None,
         end_date=None,
+        no_quant=False,
     ) -> dict:
+        fetch_n = self._fetch_limit(top_n, no_quant)
         if mode == "aggregate" and start_date and end_date:
             as_of = end_date
             df = dragon_tiger_list_repo.get_range_aggregated(
                 start_date,
                 end_date,
-                top_n=top_n,
+                top_n=fetch_n,
                 sort_by="l_buy",
             )
-            return self._envelope("dragon_tiger", mode, as_of, days, top_n, df, with_quotes, start_date, end_date)
+            return self._envelope("dragon_tiger", mode, as_of, days, top_n, df, with_quotes,
+                                  start_date, end_date, no_quant=no_quant)
         if mode == "aggregate":
             as_of = date or dragon_tiger_list_repo.latest_date()
-            df = (dragon_tiger_list_repo.get_aggregated(as_of, days=days, top_n=top_n)
+            df = (dragon_tiger_list_repo.get_aggregated(as_of, days=days, top_n=fetch_n)
                   if as_of else None)
         else:
             as_of = date or dragon_tiger_list_repo.latest_date()
-            df = dragon_tiger_list_repo.get_top_n(as_of, top_n) if as_of else None
-        return self._envelope("dragon_tiger", mode, as_of, days, top_n, df, with_quotes)
+            df = dragon_tiger_list_repo.get_top_n(as_of, fetch_n) if as_of else None
+        return self._envelope("dragon_tiger", mode, as_of, days, top_n, df, with_quotes,
+                              no_quant=no_quant)
 
     def stock_capital_summary(
         self,
@@ -295,11 +307,36 @@ class CapitalRankingsService:
             "dragon_tiger": dragon_tiger,
         }
 
-    def _envelope(self, kind, mode, as_of, days, top_n, df, with_quotes, start_date=None, end_date=None) -> dict:
+    @staticmethod
+    def _fetch_limit(top_n, no_quant) -> int:
+        """no_quant 时 over-fetch ×3(上限500),过滤后截回 top_n,避免榜单缩水。"""
+        return min(int(top_n) * 3, 500) if no_quant else int(top_n)
+
+    def _quant_code_info(self) -> dict:
+        if self._quant_codes_fn is not None:
+            return self._quant_codes_fn()
+        try:
+            from webui.services import quant_radar_service
+            return quant_radar_service.quant_active_codes()
+        except Exception:  # noqa: BLE001 — 量化口径缺失不能阻断榜单
+            return {"codes": set(), "as_of": None, "available": False}
+
+    def _envelope(self, kind, mode, as_of, days, top_n, df, with_quotes,
+                  start_date=None, end_date=None, no_quant=False) -> dict:
+        quant_info = self._quant_code_info() if no_quant else None
+        quant_codes = (quant_info or {}).get("codes") or set()
         rows = self._normalize(df)
+        quant_filtered = 0
+        if quant_codes:
+            before = len(rows)
+            rows = [r for r in rows if r.get("code") not in quant_codes]
+            quant_filtered = before - len(rows)
+        rows = rows[:top_n]
         if with_quotes:
             rows = self._attach_quotes(rows)
-        windows = self._window_rankings(kind, as_of, top_n, with_quotes) if as_of else {}
+        windows = (self._window_rankings(kind, as_of, top_n, with_quotes,
+                                         quant_info=quant_info)
+                   if as_of else {})
         return {
             "kind": kind,
             "mode": mode,
@@ -311,6 +348,10 @@ class CapitalRankingsService:
             "count": len(rows),
             "rows": rows,
             "windows": windows,
+            "no_quant": bool(no_quant),
+            "quant_filtered": quant_filtered,
+            "quant_criteria_available": (quant_info or {}).get("available") if no_quant else None,
+            "quant_as_of": (quant_info or {}).get("as_of") if no_quant else None,
         }
 
     def _stock_moneyflow_section(
@@ -403,14 +444,16 @@ class CapitalRankingsService:
             "rows": rows,
         }
 
-    def _window_rankings(self, kind, as_of, top_n, with_quotes) -> dict:
+    def _window_rankings(self, kind, as_of, top_n, with_quotes, quant_info=None) -> dict:
+        quant_codes = (quant_info or {}).get("codes") or set()
+        fetch_n = self._fetch_limit(top_n, bool(quant_codes))
         windows: dict[str, dict[str, Any]] = {}
         for days in (5, 30):
             if kind == "moneyflow":
                 df = moneyflow_repo.get_aggregated(
                     as_of,
                     days=days,
-                    limit=top_n,
+                    limit=fetch_n,
                     snapshot_top_n=SNAPSHOT_TOP_N,
                     sort_by="net_amount",
                 )
@@ -418,13 +461,20 @@ class CapitalRankingsService:
                 df = dragon_tiger_list_repo.get_aggregated(
                     as_of,
                     days=days,
-                    top_n=top_n,
+                    top_n=fetch_n,
                     sort_by="l_buy",
                 )
             rows = self._normalize(df)
+            quant_filtered = 0
+            if quant_codes:
+                before = len(rows)
+                rows = [r for r in rows if r.get("code") not in quant_codes]
+                quant_filtered = before - len(rows)
+            rows = rows[:top_n]
             if with_quotes:
                 rows = self._attach_quotes(rows)
-            windows[str(days)] = {"days": days, "count": len(rows), "rows": rows}
+            windows[str(days)] = {"days": days, "count": len(rows), "rows": rows,
+                                  "quant_filtered": quant_filtered}
         return windows
 
     def _normalize(self, df) -> list:

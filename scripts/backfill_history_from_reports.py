@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-历史报告 → recommendations.csv 批量回填（离线、可复现）
+历史报告 → backtest_recommendation(SQLite) 批量回填（离线、可复现）
 =====================================================
 为评分回测优化器扩充近端训练样本。
 
@@ -10,12 +10,14 @@
    tech_score / rsi / buy_signals / sell_signals / 涨幅 等）。
 2. 同 (code, report_date) 的多份日内报告去重，保留因子最完整的一条
    （并列时取文件名最新的一份）。
-3. 与现有 recommendations.csv 取并集：**已存在的 (code, date) 行原样保留**
-   （它们来自实盘打分器，含 momentum_pattern 与已结算收益），仅补入历史新行。
+3. 与 SQLite backtest_recommendation 表取并集：**已存在的 (code, date) 行原样
+   保留**（它们来自实盘打分器，含 momentum_pattern 与已结算收益），仅补入
+   历史新行（ON CONFLICT DO NOTHING）。
 4. 对缺收益的新行，**直接从 sqlite OHLCV 离线计算** 1/3/5/10 日前瞻收益
    （复用 auto_backtest.compute_forward_returns + ohlcv_repo.load_dataframe，
    口径与生产 update_returns 完全一致：次日开盘买入、第 N 日收盘卖出，零网络）。
-5. 写回 CSV（写前自动时间戳备份），并打印扩样前后对比 + score↔5d 相关性诊断。
+5. 写入 SQLite（2026-07-09 起不再落 CSV），并打印扩样前后对比 +
+   score↔5d 相关性诊断。
 
 **不**触碰评分权重/配置（scoring_runtime_config.json / DIMENSION_WEIGHTS /
 chase/quant 逻辑）——那是在另一台机器上并行重调、稍后合并的部分。
@@ -28,18 +30,14 @@ chase/quant 逻辑）——那是在另一台机器上并行重调、稍后合�
 
 import os
 import sys
-import shutil
 import argparse
 import importlib.util
-from datetime import datetime
 
 import pandas as pd
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-
-CSV = os.path.join(ROOT, 'results', 'backtest', 'recommendations.csv')
 
 # 规范列序（与 auto_backtest.save_recommendations 一致）
 COLS = ['report_date', 'rank', 'code', 'name', 'score', 'chase_risk',
@@ -81,19 +79,18 @@ def corr_report(df, label):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='历史报告批量回填 recommendations.csv（离线）')
+    ap = argparse.ArgumentParser(description='历史报告批量回填 backtest_recommendation(离线)')
     ap.add_argument('--dry-run', action='store_true', help='只预演与诊断，不落盘')
     args = ap.parse_args()
 
     rao = _load_module(os.path.join(ROOT, 'scripts', 'rebuild_and_optimize.py'), 'rao')
     ab = _load_module(os.path.join(ROOT, 'scripts', 'auto_backtest.py'), 'ab')
     from data_store import ohlcv_repo
+    from data_store import backtest_recommendation_repo as btr
 
-    # 1) 现有 CSV
-    if os.path.exists(CSV):
-        existing = pd.read_csv(CSV, encoding='utf-8-sig')
-    else:
-        existing = pd.DataFrame(columns=COLS)
+    # 1) 现有 SQLite 记录(表空时自动从存量 CSV 种子导入)
+    btr.seed_from_legacy_csv_if_empty()
+    existing = btr.load_df()
     for col in COLS:
         if col not in existing.columns:
             existing[col] = np.nan
@@ -154,7 +151,7 @@ def main():
     print(f"收益已回填(>=1 档): {filled}/{len(new)} "
           f"(无 sqlite 数据或前瞻不足的行收益留 NaN)")
 
-    # 5) 合并 + 诊断 + 落盘
+    # 5) 合并 + 诊断 + 落库
     merged = pd.concat([existing, new], ignore_index=True)
     merged['code'] = merged['code'].map(norm_code)   # 顺手修复历史前导零丢失
     merged = merged.sort_values(['report_date', 'rank']).reset_index(drop=True)
@@ -168,14 +165,13 @@ def main():
           f"{merged['report_date'].nunique()} 个日期, 含 5d 收益的行 {settled_after}")
 
     if args.dry_run:
-        print("\n[dry-run] 未写文件")
+        print("\n[dry-run] 未写库")
         return
 
-    bak = CSV.replace('.csv', f".backup_{datetime.now():%Y%m%d_%H%M%S}.csv")
-    shutil.copy2(CSV, bak)
-    print(f"已备份 -> {bak}")
-    merged.to_csv(CSV, index=False, encoding='utf-8-sig')
-    print(f"已写入 -> {CSV}")
+    # 已存在的 (code,date) 行原样保留(实盘打分器写入优先) → DO NOTHING
+    inserted = btr.upsert_rows(new.to_dict(orient='records'), on_conflict='ignore')
+    print(f"已写入 SQLite backtest_recommendation: 新增 {inserted} 行, "
+          f"总行数 {btr.count()}")
 
 
 if __name__ == '__main__':

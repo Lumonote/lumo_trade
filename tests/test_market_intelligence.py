@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from webui.services import market_intelligence as market_intelligence_module
 from webui.services.market_intelligence import MarketIntelligenceService
 
 
@@ -90,6 +91,8 @@ def test_load_captures_source_errors():
     service.fetch_eastmoney_clist = lambda *args, **kwargs: []
     # clist 为空会触发热点回退（人气榜+腾讯）；回退也失败时应捕获错误而非抛出/联网。
     service.fetch_hot_rank = lambda limit=12: (_ for _ in ()).throw(RuntimeError("rank offline"))
+    # 板块的腾讯兜底同样不发网(联网机器上不桩会拿到真实板块,断言必挂)
+    service.fetch_tencent_boards = lambda board_type, limit=8: []
 
     payload = service.load()
 
@@ -203,6 +206,8 @@ def test_market_cloud_prefers_tushare_and_converts_units(monkeypatch):
     fake_pro = FakePro()
     monkeypatch.setenv("TUSHARE_TOKEN", "fake-token")
     monkeypatch.setitem(sys.modules, "tushare", SimpleNamespace(pro_api=lambda token: fake_pro))
+    # 桩数据只有 2 行,压低"全市场覆盖"门槛以命中提前返回分支
+    monkeypatch.setattr(market_intelligence_module, "MARKET_CLOUD_FULL_COVERAGE", 1)
 
     service = MarketIntelligenceService()
     service._request_json = lambda *args, **kwargs: pytest.fail("Eastmoney should not be called when TuShare has rows")
@@ -221,9 +226,11 @@ def test_market_cloud_prefers_tushare_and_converts_units(monkeypatch):
     assert first["main_net_inflow_text"] == "2.12亿"
 
 
-def test_market_cloud_force_refresh_prefers_eastmoney_realtime():
+def test_market_cloud_force_refresh_prefers_eastmoney_realtime(monkeypatch):
     """手动刷新大盘云图时优先使用东财实时行情，避免继续展示 TuShare 日线收盘数据。"""
 
+    # 东财桩只有 1 行,压低覆盖门槛使其视为"全市场达标"
+    monkeypatch.setattr(market_intelligence_module, "MARKET_CLOUD_FULL_COVERAGE", 1)
     service = MarketIntelligenceService()
     service.fetch_tushare_market_cloud_stocks = lambda *args, **kwargs: pytest.fail(
         "manual refresh should prefer realtime Eastmoney rows"
@@ -263,6 +270,43 @@ def test_market_cloud_force_refresh_prefers_eastmoney_realtime():
     assert rows[0]["price"] == 1689.01
     assert rows[0]["change_pct"] == 1.23
     assert rows[0]["industry"] == "白酒"
+
+
+def test_market_cloud_refresh_falls_through_when_realtime_partial(monkeypatch):
+    """东财不可达/部分覆盖时(如仅新浪 ~2400 只老股),继续尝试 TuShare 全市场并采用更全的结果。"""
+
+    monkeypatch.setattr(market_intelligence_module, "MARKET_CLOUD_FULL_COVERAGE", 3)
+    service = MarketIntelligenceService()
+    partial = [{"code": "600519", "name": "贵州茅台", "source": "eastmoney_market_cloud"}]
+    full = [{"code": f"60000{i}", "name": f"股{i}", "source": "tushare_market_cloud"}
+            for i in range(3)]
+    service.fetch_eastmoney_market_cloud_stocks = lambda *args, **kwargs: list(partial)
+    service.fetch_tushare_market_cloud_stocks = lambda *args, **kwargs: list(full)
+    service.fetch_sina_market_cloud_stocks = lambda *args, **kwargs: pytest.fail(
+        "TuShare 覆盖已达标,不应再落到新浪部分覆盖")
+
+    rows = service.fetch_market_cloud_stocks(limit=100, force_refresh=True)
+
+    assert len(rows) == 3
+    assert rows[0]["source"] == "tushare_market_cloud"
+
+
+def test_market_cloud_keeps_largest_result_when_all_sources_partial(monkeypatch):
+    """所有源都低于覆盖门槛时,返回行数最多的一组而非首个非空结果。"""
+
+    monkeypatch.setattr(market_intelligence_module, "MARKET_CLOUD_FULL_COVERAGE", 100)
+    service = MarketIntelligenceService()
+    service.fetch_eastmoney_market_cloud_stocks = lambda *args, **kwargs: [
+        {"code": "600519", "source": "eastmoney_market_cloud"}]
+    service.fetch_tushare_market_cloud_stocks = lambda *args, **kwargs: []
+    service.fetch_sina_market_cloud_stocks = lambda *args, **kwargs: [
+        {"code": "600519", "source": "sina_market_cloud"},
+        {"code": "000001", "source": "sina_market_cloud"}]
+
+    rows = service.fetch_market_cloud_stocks(limit=100, force_refresh=True)
+
+    assert len(rows) == 2
+    assert rows[0]["source"] == "sina_market_cloud"
 
 
 def test_market_cloud_trade_date_uses_tushare_history_only(monkeypatch):

@@ -23,8 +23,9 @@ if __package__ in (None, ""):
 
 from webui import core as webui_core
 from webui.services.model_runtime import load_model_payload, loaded_model_info, run_prediction_payload
-from webui.services import star_orbit_service
-from data_store import star_orbit_repo
+from webui.services import futures_service, quant_radar_service, star_orbit_service
+from webui.services import stock_screener_service
+from data_store import quant_radar_repo, star_orbit_repo
 
 
 def _robyn_config() -> Config:
@@ -303,7 +304,10 @@ def _dataframe_info(df: Any) -> dict[str, Any]:
 
 @_native_get("/")
 def index(request: Request) -> Response:
-    return _render_template("stock_analysis_home.html")
+    return _render_template(
+        "stock_analysis_home.html",
+        desktop_mode=webui_core.desktop_mode_enabled(),
+    )
 
 
 @_native_get("/prediction")
@@ -321,6 +325,7 @@ def _desktop_response(page: str = "features") -> Response:
         active_page=page,
         page_title=webui_core.DESKTOP_PAGES[page]["title"],
         page_subtitle=webui_core.DESKTOP_PAGES[page]["subtitle"],
+        desktop_mode=webui_core.desktop_mode_enabled(),
     )
 
 
@@ -702,6 +707,7 @@ def _capital_ranking_payload(request: Request, kind: str) -> dict[str, Any]:
     days = webui_core._safe_int(_query_value(request, "days"), 1, minimum=1, maximum=120) or 1
     top_n = webui_core._safe_int(_query_value(request, "top"), 50, minimum=1, maximum=500) or 50
     with_quotes = str(_query_value(request, "quotes", "1")).strip().lower() not in ("0", "false", "no")
+    no_quant = str(_query_value(request, "no_quant", "0")).strip().lower() in ("1", "true", "yes")
     svc = webui_core.CAPITAL_RANKINGS_SERVICE
     if kind == "moneyflow":
         return svc.moneyflow_ranking(
@@ -712,6 +718,7 @@ def _capital_ranking_payload(request: Request, kind: str) -> dict[str, Any]:
             with_quotes=with_quotes,
             start_date=start_date,
             end_date=end_date,
+            no_quant=no_quant,
         )
     return svc.dragon_tiger_ranking(
         date=date,
@@ -721,6 +728,7 @@ def _capital_ranking_payload(request: Request, kind: str) -> dict[str, Any]:
         with_quotes=with_quotes,
         start_date=start_date,
         end_date=end_date,
+        no_quant=no_quant,
     )
 
 
@@ -1042,7 +1050,7 @@ def market_hotspots(request: Request) -> Response:
 
 @_native_get("/api/market/board-stocks")
 def market_board_stocks(request: Request) -> Response:
-    """板块成分股（东财 ``fs=b:BKxxxx``）——行情台/画布板块芯片 → 成分股弹窗数据源。"""
+    """板块成分股（东财 ``fs=b:BKxxxx``,失败回退星轨链路: Tushare dc_member/缓存）——行情台/行业热力/画布板块芯片 → 成分股弹窗数据源。"""
     code = _query_value(request, "code", "") or ""
     name = _query_value(request, "name", "") or ""
     limit = webui_core._safe_int(_query_value(request, "limit"), 60, minimum=1, maximum=200) or 60
@@ -1161,6 +1169,131 @@ def star_orbit_reset(request: Request) -> Response:
     """恢复默认种子(物理AI/AI产业链 A股映射)。"""
     star_orbit_repo.reset_to_seed()
     return _json_response({"ok": True})
+
+
+# ---------------- 股指期货(行情 + 中金所前20席位多空持仓) ----------------
+@_native_get("/api/futures/overview")
+def futures_overview(request: Request) -> Response:
+    """四大股指期货全合约行情 + 现货指数与基差。``?refresh=1`` 跳过 30s 缓存。"""
+    force = str(_query_value(request, "refresh", "") or "").lower() in {"1", "true", "yes"}
+    return _json_response(futures_service.overview(force=force))
+
+
+@_native_get("/api/futures/positions")
+def futures_positions(request: Request) -> Response:
+    """中金所前20席位多空持仓排名(``?variety=IF&date=YYYY-MM-DD&refresh=1``)。
+
+    无数据(节假日/盘中未发布)也返回 200 + ``ok:false``,由前端就地提示。
+    """
+    return _json_response(futures_service.position_rank(
+        _query_value(request, "variety", "IF"),
+        date=_query_value(request, "date", "") or "",
+        force=str(_query_value(request, "refresh", "") or "").lower() in {"1", "true", "yes"},
+    ))
+
+
+@_native_get("/api/futures/position-trend")
+def futures_position_trend(request: Request) -> Response:
+    """近 N 交易日前20席位多/空/净持仓趋势(``?variety=IF&days=10``)。"""
+    days = webui_core._safe_int(_query_value(request, "days"), 10, minimum=2, maximum=30) or 10
+    return _json_response(futures_service.position_trend(
+        _query_value(request, "variety", "IF"), days=days))
+
+
+# ---------------- 量化交易分析(Quant Radar:活跃识别 + 五机制收割预警) ----------------
+def _quant_kline_fetcher(code: str, limit: int) -> list:
+    """给 quant_radar 注入日K:复用 STOCK_KLINE_SERVICE 的 60s TTL 与实时叠加。"""
+    payload, _err = webui_core.STOCK_KLINE_SERVICE.get_payload(code, period="daily", limit=limit)
+    return ((payload or {}).get("records")) or []
+
+
+@_native_get("/api/quant-radar/overview")
+def quant_radar_overview(request: Request) -> Response:
+    """量化雷达总览:市场温度计/活跃股票榜/板块榜/高危预警/知识卡。``?refresh=1`` 跳过 60s 缓存。
+
+    ``?date=YYYY-MM-DD`` 回看历史(kv 快照优先,按日榜单表重建兜底,纯本地不发网络);
+    休市或盘后异动为空时自动回退最近快照(payload 标 ``fallback_date``),不会 404。
+    """
+    force = str(_query_value(request, "refresh", "") or "").lower() in {"1", "true", "yes"}
+    date = (_query_value(request, "date", "") or "").strip()
+    return _json_response(quant_radar_service.overview(force=force, date=date))
+
+
+@_native_get("/api/quant-radar/day")
+def quant_radar_day(request: Request) -> Response:
+    """按日榜单搜索:``?date=YYYY-MM-DD&q=代码/名称/行业&min_activity=&limit=``。
+
+    date 留空 = 最新有数据的交易日;数据源 quant_radar_stock_daily(当日全量评分行)。
+    limit 缺省 0 = 返回全量(前端分页展示)。
+    """
+    date = (_query_value(request, "date", "") or "").strip()
+    if not date:
+        dates = quant_radar_repo.list_dates(limit=1)
+        date = dates[0] if dates else ""
+    q = (_query_value(request, "q", "") or "").strip()
+    direction = (_query_value(request, "direction", "") or "").strip()
+    min_activity = webui_core._safe_int(
+        _query_value(request, "min_activity"), 0, minimum=0, maximum=100) or 0
+    limit = webui_core._safe_int(_query_value(request, "limit"), 0, minimum=0, maximum=5000) or 0
+    rows = (quant_radar_repo.get_day(date, limit=limit, q=q, min_activity=min_activity,
+                                     direction=direction) if date else [])
+    return _json_response({"ok": True, "date": date, "q": q, "direction": direction,
+                           "count": len(rows), "rows": rows})
+
+
+@_native_get("/api/quant-radar/dates")
+def quant_radar_dates(request: Request) -> Response:
+    """有按日榜单数据的日期列表(最新在前),供日期选择器。"""
+    return _json_response({"ok": True, "dates": quant_radar_repo.list_dates()})
+
+
+@_native_get("/api/quant-radar/stock/:stock_code")
+def quant_radar_stock(request: Request, stock_code=None) -> Response:
+    """个股量化行为深评:五机制评分 + 异动统计 + 量化席位 + 资金结构 + 行为预测。"""
+    code = _safe_unquote_plus(stock_code or _query_value(request, "stock_code", "") or "").strip()
+    payload = quant_radar_service.stock_analysis(code, kline_fetcher=_quant_kline_fetcher)
+    return _json_response(payload, status_code=200 if payload.get("ok") else 400)
+
+
+@_native_get("/api/quant-radar/accumulation")
+def quant_radar_accumulation(request: Request) -> Response:
+    """吸筹埋伏榜:主力持续净流入+量价背离的疑似吸筹股(``?window=20/40/60&date=&refresh=1``)。
+
+    date 留空 = 最新交易日(实时增强);传历史日期走 kv 快照/本地 as-of 重算,不发网络。
+    """
+    window = webui_core._safe_int(_query_value(request, "window"), 40) or 40
+    if window not in (20, 40, 60):  # 白名单,非法一律回退默认(不做 min/max 钳制)
+        window = 40
+    date = (_query_value(request, "date", "") or "").strip()
+    force = str(_query_value(request, "refresh", "") or "").lower() in {"1", "true", "yes"}
+    no_quant = str(_query_value(request, "no_quant", "") or "").lower() in {"1", "true", "yes"}
+    return _json_response(quant_radar_service.accumulation_payload(
+        window=window, date=date, force=force, no_quant=no_quant))
+
+
+@_native_get("/api/screener/meta")
+def screener_meta(request: Request) -> Response:
+    """条件选股:各维度数据新鲜度(日期+覆盖数),供页面顶部提示条件可用性。"""
+    return _json_response(stock_screener_service.meta())
+
+
+@_native_post("/api/screener/run")
+def screener_run(request: Request) -> Response:
+    """条件选股:body 为条件 JSON(market/flow/radar/accum/dragon/opportunity/tech + sort/limit)。
+
+    行情基座注入大盘云图快照(缓存优先,不强刷);技术条件注入 STOCK_KLINE_SERVICE
+    (60s TTL,候选封顶见服务 TECH_CAP)。
+    """
+    try:
+        cond = _request_json(request) or {}
+    except Exception:
+        cond = {}
+    payload = stock_screener_service.screen(
+        cond,
+        market_rows_fn=lambda: (webui_core._market_cloud_payload(limit=6000) or {}).get("stocks") or [],
+        kline_fetcher=_quant_kline_fetcher,
+    )
+    return _json_response(payload, status_code=200 if payload.get("ok") else 400)
 
 
 @_native_get("/api/notifications/events")
@@ -1338,6 +1471,17 @@ def watchlist_list(request: Request) -> Response:
     return _json_response(webui_core.WATCHLIST_SERVICE.list_with_quotes())
 
 
+@_native_get("/api/watchlist/alerts")
+def watchlist_alerts_api(request: Request) -> Response:
+    """自选股智能提醒:超跌反弹/超买/超卖/量化介入/主力出逃/收割预警/放量异动。
+
+    数据面与条件选股共用(本地资金流/量化雷达/吸筹/量化席位 + STOCK_KLINE_SERVICE 日K)。
+    """
+    items = webui_core.WATCHLIST_SERVICE.list_items()
+    return _json_response(stock_screener_service.watchlist_alerts(
+        items, kline_fetcher=_quant_kline_fetcher))
+
+
 @_native_post("/api/watchlist/add")
 def watchlist_add(request: Request) -> Response:
     body = _request_json(request)
@@ -1352,11 +1496,29 @@ def watchlist_remove(request: Request) -> Response:
     return _json_response(result, status_code=status_code)
 
 
+@_native_post("/api/watchlist/pin")
+def watchlist_pin(request: Request) -> Response:
+    body = _request_json(request)
+    result, status_code = webui_core.WATCHLIST_SERVICE.pin(
+        body.get("code"), body.get("pinned", True)
+    )
+    return _json_response(result, status_code=status_code)
+
+
+@_native_post("/api/open-url")
+def api_open_url(request: Request) -> Response:
+    """桌面 App 外链代开:WKWebView 吞掉 target=_blank,由系统默认浏览器打开。"""
+    body = _request_json(request)
+    result, status_code = webui_core.open_external_url(body.get("url"))
+    return _json_response(result, status_code=status_code)
+
+
 @app.startup_handler
 def startup() -> None:
     webui_core.start_market_monitor()
     webui_core.start_pattern_autorefresh()
     webui_core.start_paper_eod()
+    quant_radar_service.start_autosave()
 
 
 def configure_server_from_env() -> None:
@@ -1408,7 +1570,7 @@ def _ensure_port_available(host: str, port: int) -> None:
     except OSError as exc:
         msg = (
             f"❌ Port {port} on {host} is already in use ({exc}). "
-            "Kill the stale Kronos backend or set ROBYN_PORT to a free port."
+            "Kill the stale Kronos backend or set KRONOS_PORT to a free port."
         )
         print(msg, file=sys.stderr, flush=True)
         sys.exit(1)
