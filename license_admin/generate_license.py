@@ -6,8 +6,15 @@ Kronos 授权码生成工具
 管理员使用此工具为用户生成授权码
 """
 
-import hashlib
 import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from finetune.license_system.license_codec import generate_device_license
 
 
 def generate_license_code(device_id, license_type="PERMANENT"):
@@ -20,24 +27,7 @@ def generate_license_code(device_id, license_type="PERMANENT"):
     Returns:
         格式: LUMO-XXXXD-XXXXX-XXXXX-XXXXX (D表示设备绑定)
     """
-    # 使用与验证器相同的盐值和算法
-    salt = "KRONOS_DEVICE_SALT_2024"
-    combined_data = f"{device_id}{salt}{license_type}"
-
-    # 生成SHA256哈希
-    device_hash = hashlib.sha256(combined_data.encode()).hexdigest()
-
-    # 从哈希中提取段落
-    segment1 = device_hash[:4].upper() + "D"  # D表示设备绑定 (Device-bound)
-    segment2 = device_hash[4:9].upper()
-    segment3 = device_hash[9:14].upper()
-
-    # 计算校验码（MD5哈希的前5位）
-    raw_data = f"{segment1}{segment2}{segment3}"
-    checksum = hashlib.md5(raw_data.encode()).hexdigest()[:5].upper()
-
-    # 格式化为 LUMO-XXXXD-XXXXX-XXXXX-XXXXX (校验码只覆盖中间三段, 前缀纯展示)
-    return f"LUMO-{segment1}-{segment2}-{segment3}-{checksum}"
+    return generate_device_license(device_id, license_type)
 
 
 def main():

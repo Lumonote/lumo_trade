@@ -83,3 +83,27 @@ def test_list_by_status_filters_active_jobs(tmp_path):
     jobs = store.list_by_status(("queued", "running"))
 
     assert {job["id"] for job in jobs} == {"queued", "running"}
+
+
+def test_progress_roundtrip_and_migration(tmp_path):
+    """progress 列往返读写;且旧 schema 库(无 progress_json)自动 ALTER 迁移。"""
+    import sqlite3
+
+    db = tmp_path / "jobs.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE webui_jobs (id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL,"
+        " created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, params_json TEXT NOT NULL,"
+        " logs_json TEXT NOT NULL, result_json TEXT, error TEXT, updated_at TEXT NOT NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    store = JobStore(db)
+    store.create({"id": "j1", "type": "opportunity_discovery"})
+    updated = store.update("j1", progress={"v": 1, "percent": 42.5})
+    assert updated["progress"] == {"v": 1, "percent": 42.5}
+    assert store.get("j1")["progress"]["percent"] == 42.5
+
+    store.create({"id": "j2", "type": "x"})
+    assert store.get("j2")["progress"] is None

@@ -58,13 +58,16 @@ logger = logging.getLogger(__name__)
 class OpportunityDiscovery:
     """投资机会挖掘系统"""
 
-    def __init__(self, max_workers: int = 10):
+    def __init__(self, max_workers: int = 10, progress_hook=None):
         """
         初始化投资机会挖掘系统
 
         Args:
             max_workers: 并发处理的最大线程数
+            progress_hook: 可选进度埋点回调 hook(event, **data);None 时零开销。
+                桌面任务传 DiscoveryProgressTracker,CLI 不传行为不变。
         """
+        self.progress_hook = progress_hook
         # 【优化1】创建全局HTTP Session，复用连接
         self.session = requests.Session()
         adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20)
@@ -95,6 +98,16 @@ class OpportunityDiscovery:
 
     def _load_tushare_token(self) -> str:
         return load_tushare_token()
+
+    def _emit(self, event, **data):
+        """进度埋点(可选)。任何异常吞掉:进度展示绝不影响挖掘主流程。"""
+        hook = getattr(self, 'progress_hook', None)
+        if hook is None:
+            return
+        try:
+            hook(event, **data)
+        except Exception:
+            pass
 
     @staticmethod
     def _ruleset_version() -> str:
@@ -1364,6 +1377,7 @@ class OpportunityDiscovery:
         start_time = datetime.now()
 
         # 步骤0: 评估大盘环境(用于报告中提示是否值得入场)
+        self._emit('stage_start', stage='regime')
         self.market_regime = self._assess_market_regime()
         if self.market_regime.get('regime') != 'unknown':
             logger.info(
@@ -1371,6 +1385,9 @@ class OpportunityDiscovery:
                 f"(沪深300 5日{self.market_regime.get('hs300_chg_5d', 0):+.2f}%, "
                 f"20日{self.market_regime.get('hs300_chg_20d', 0):+.2f}%)"
             )
+
+        self._emit('stage_done', stage='regime', detail=str(self.market_regime.get('regime') or ''))
+        self._emit('stage_start', stage='candidates')
 
         # 步骤1: 获取热门股票 TOP 100 与全市场热门新闻TOP10
         if test_codes:
@@ -1411,6 +1428,7 @@ class OpportunityDiscovery:
                     if not s.get('source'):
                         s['source'] = 'heat'
                 logger.info(f"  ✓ 热股: {len(hot_stocks)}只")
+                self._emit('candidates_source', source='热股', count=len(hot_stocks))
 
                 if len(hot_stocks) < limit:
                     deficit = limit - len(hot_stocks)
@@ -1433,18 +1451,22 @@ class OpportunityDiscovery:
                 logger.info(f"  [2/5] 获取前十大热门板块成分股候选...")
                 sector_hot = self._fetch_hot_sector_stocks(limit=max(40, min(120, limit)), board_limit=10)
                 logger.info(f"  ✓ 热门板块成分股: {len(sector_hot)}只")
+                self._emit('candidates_source', source='板块', count=len(sector_hot))
 
                 logger.info(f"  [3/5] 筛选超跌反弹候选...")
                 oversold = self._fetch_oversold_rebound_stocks(limit=30)
                 logger.info(f"  ✓ 超跌反弹: {len(oversold)}只")
+                self._emit('candidates_source', source='超跌', count=len(oversold))
 
                 logger.info(f"  [4/5] 获取个股资金流向...")
                 dragon = self._fetch_capital_flow_stocks(limit=40)
                 logger.info(f"  ✓ 资金流向: {len(dragon)}只")
+                self._emit('candidates_source', source='资金', count=len(dragon))
 
                 logger.info(f"  [5/5] 扫描低位放量待突破候选...")
                 breakout = self._fetch_low_position_breakout_stocks(limit=30)
                 logger.info(f"  ✓ 低位放量: {len(breakout)}只")
+                self._emit('candidates_source', source='低位放量', count=len(breakout))
 
                 # 去重合并（以code为准，热股优先保留）
                 seen_codes = set(s['code'] for s in hot_stocks)
@@ -1541,6 +1563,7 @@ class OpportunityDiscovery:
                 logger.warning("⚠️ 这表示所有实时数据源（东方财富/同花顺）获取失败，请检查网络连接")
 
         logger.info(f"✓ 成功获取 {len(hot_stocks)} 只热门股票")
+        self._emit('candidates_total', total=len(hot_stocks))
 
         # 同步采集：全市场热门新闻TOP10
         try:
@@ -1554,9 +1577,12 @@ class OpportunityDiscovery:
             self.command_center_hot_news = []
 
         # 【优化2】步骤1.5: 预加载全局数据（大盘情绪、板块数据）
+        self._emit('stage_done', stage='candidates', detail=f'候选 {len(hot_stocks)} 只')
+        self._emit('stage_start', stage='preload')
         logger.info(f"\n步骤1.5: 正在预加载全局数据（大盘情绪、板块数据）...")
         self._preload_global_data(hot_stocks)
         logger.info(f"✓ 全局数据预加载完成")
+        self._emit('stage_done', stage='preload')
 
         # 步骤2: 多维度打分分析（并发处理）
         logger.info(f"\n步骤2: 正在进行多维度打分分析...")
@@ -1565,6 +1591,8 @@ class OpportunityDiscovery:
         scored_stocks = []
         completed_count = 0
         total_count = len(hot_stocks)
+        self._emit('stage_start', stage='analyze')
+        self._emit('analyze_total', total=total_count)
         # 【修复】使用不同的变量名，避免覆盖全局start_time
         progress_start_time = time.time()
 
@@ -1642,11 +1670,13 @@ class OpportunityDiscovery:
                     )
 
         logger.info(f"✓ 完成 {len(scored_stocks)}/{total_count} 只股票的分析")
+        self._emit('stage_done', stage='analyze', detail=f'{len(scored_stocks)}/{total_count}')
 
         scored_stocks = self._filter_st_candidates(scored_stocks, "评分结果清洗")
 
         # 步骤3: 漏斗筛选
         logger.info(f"\n步骤3: 正在进行漏斗筛选...")
+        self._emit('stage_start', stage='funnel')
 
         filter_results = []
         for stock_data in scored_stocks:
@@ -1657,6 +1687,7 @@ class OpportunityDiscovery:
         passed_count = len(filter_results)  # v8.0: 所有股票都通过（无淘汰）
         risk_count = sum(1 for r in filter_results if r.get('risk_warnings', []))
         logger.info(f"✓ 评估完成: {passed_count} 只股票，其中 {risk_count} 只有风险标记")
+        self._emit('stage_done', stage='funnel', detail=f'{passed_count} 只 · 风险标记 {risk_count}')
 
         # 额外步骤：采集板块相关新闻（按通过股票的板块的板块频次选取Top板块）
         try:
@@ -1741,11 +1772,13 @@ class OpportunityDiscovery:
 
         # 步骤3.5: LLM深度分析 (B级及以上股票)
         logger.info(f"\n步骤3.5: 对优质股票进行LLM深度分析...")
+        self._emit('stage_start', stage='llm')
 
         try:
             skip_llm = os.environ.get('KRONOS_SKIP_LLM', '').strip().lower() in ('1', 'true', 'yes', 'on')
             if skip_llm:
                 logger.info("⏭️ KRONOS_SKIP_LLM=1，跳过LLM深度分析")
+                self._emit('stage_skip', stage='llm', detail='KRONOS_SKIP_LLM=1')
             else:
                 llm_config = LLMConfig()
                 if llm_config.is_configured():
@@ -1810,10 +1843,12 @@ class OpportunityDiscovery:
                         logger.info("无符合条件(≥60分)的股票，跳过LLM分析")
                 else:
                     logger.info("⏭️ LLM未配置，跳过深度分析")
+                    self._emit('stage_skip', stage='llm', detail='LLM未配置')
                     logger.info("💡 可在GUI中配置通义千问或DeepSeek API以启用AI智能分析")
 
         except Exception as e:
             logger.warning(f"LLM深度分析流程失败: {e}")
+        self._emit('stage_done', stage='llm')
 
         # 额外步骤：为Top10股票补充具体新闻/入选原因
         logger.info(f"\n步骤3.8: 为Top10股票补充具体新闻/入选原因...")
@@ -1998,6 +2033,7 @@ class OpportunityDiscovery:
 
         # 步骤4: 生成报表
         logger.info(f"\n步骤4: 正在生成投资机会挖掘报表...")
+        self._emit('stage_start', stage='report')
 
         # 运行元信息:写进报告头与 DB,让「哪次 run/哪版规则/哪份配置」可追溯,
         # 解释桌面端与 quick_start 两侧报告分数差异。
@@ -2025,6 +2061,7 @@ class OpportunityDiscovery:
             run_meta=run_meta,
         )
         top_report_path = getattr(self.report_generator, 'latest_top_report_path', '') or ''
+        self._emit('stage_done', stage='report')
 
         # 完成
         end_time = datetime.now()
@@ -2042,6 +2079,7 @@ class OpportunityDiscovery:
         logger.info("=" * 60)
 
         # 步骤4.6: 结果入库(按天) —— 桌面 job 与 CLI 共用此入口,best-effort 不阻塞主流程
+        self._emit('stage_start', stage='persist')
         try:
             from data_store import opportunity_repo
             run_meta = dict(run_meta)
@@ -2056,8 +2094,10 @@ class OpportunityDiscovery:
             logger.info(f"✓ 挖掘结果已入库: run_id={run_id} ({run_meta['run_at'][:10]})")
         except Exception as db_e:
             logger.warning(f"挖掘结果入库失败(不影响主流程): {db_e}")
+        self._emit('stage_done', stage='persist')
 
         # 步骤5: 自动回测 - 保存推荐记录并更新历史收益
+        self._emit('stage_start', stage='backtest')
         try:
             from scripts.auto_backtest import (
                 save_recommendations,
@@ -2091,6 +2131,7 @@ class OpportunityDiscovery:
                     logger.info(f"⏭️ 自动优化未生效: {optimize_result.get('reason', 'unknown')}")
         except Exception as bt_e:
             logger.warning(f"自动回测失败(不影响主流程): {bt_e}")
+        self._emit('stage_done', stage='backtest')
 
         # 关闭资源。数据源/爬虫关闭有时会卡住；报告、入库、回测已完成时，
         # 不能让 best-effort 清理阻塞 WebUI 任务状态落到 finished。
@@ -2276,39 +2317,44 @@ class OpportunityDiscovery:
         result_holder = {'result': None, 'error': None}
         stock_code = hot_stock.get('code', '')
         stock_name = hot_stock.get('name', '未知')
+        self._emit('stock_start', code=str(stock_code), name=str(stock_name))
+        outcome_ok = False
+        try:
+            def worker():
+                try:
+                    result_holder['result'] = self._analyze_single_stock(hot_stock)
+                except Exception as exc:
+                    result_holder['error'] = exc
 
-        def worker():
-            try:
-                result_holder['result'] = self._analyze_single_stock(hot_stock)
-            except Exception as exc:
-                result_holder['error'] = exc
-
-        thread = threading.Thread(
-            target=worker,
-            name=f"kronos-stock-{stock_code or 'unknown'}",
-            daemon=True
-        )
-        thread.start()
-        thread.join(timeout=self.per_stock_timeout)
-
-        if thread.is_alive():
-            logger.warning(f"分析 {stock_code} ({stock_name}) 超时({self.per_stock_timeout}s)，跳过")
-            return self._build_failed_stock_result(
-                hot_stock,
-                f'分析超时({self.per_stock_timeout}s)'
+            thread = threading.Thread(
+                target=worker,
+                name=f"kronos-stock-{stock_code or 'unknown'}",
+                daemon=True
             )
+            thread.start()
+            thread.join(timeout=self.per_stock_timeout)
 
-        if result_holder['error'] is not None:
-            logger.error(f"分析 {stock_code} ({stock_name}) 异常: {result_holder['error']}")
-            return self._build_failed_stock_result(
-                hot_stock,
-                f"分析异常: {result_holder['error']}"
-            )
+            if thread.is_alive():
+                logger.warning(f"分析 {stock_code} ({stock_name}) 超时({self.per_stock_timeout}s)，跳过")
+                return self._build_failed_stock_result(
+                    hot_stock,
+                    f'分析超时({self.per_stock_timeout}s)'
+                )
 
-        if result_holder['result']:
-            return result_holder['result']
+            if result_holder['error'] is not None:
+                logger.error(f"分析 {stock_code} ({stock_name}) 异常: {result_holder['error']}")
+                return self._build_failed_stock_result(
+                    hot_stock,
+                    f"分析异常: {result_holder['error']}"
+                )
 
-        return self._build_failed_stock_result(hot_stock, '分析失败')
+            if result_holder['result']:
+                outcome_ok = True
+                return result_holder['result']
+
+            return self._build_failed_stock_result(hot_stock, '分析失败')
+        finally:
+            self._emit('stock_done', code=str(stock_code), ok=outcome_ok)
 
     def _process_single_llm_task(self, llm_analyzer: LLMAnalyzer, stock_result: Dict) -> bool:
         """

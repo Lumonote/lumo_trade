@@ -5,10 +5,18 @@ import time
 import secrets
 import base64
 import os
+import sys
 from datetime import datetime
+from pathlib import Path
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from json_storage import JSONStorage
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from finetune.license_system.license_codec import LICENSE_PREFIX, generate_device_license
 
 
 class LicenseGenerator:
@@ -29,7 +37,7 @@ class LicenseGenerator:
             default_config = {
                 "product_name": "KRONOS",
                 "version": "1.0",
-                "license_format": "KRONOS-{segment1}-{segment2}-{segment3}-{checksum}",
+                "license_format": "LUMO-{segment1}-{segment2}-{segment3}-{checksum}",
                 "rsa_key_size": 2048
             }
             with open(config_path, 'w', encoding='utf-8') as f:
@@ -92,24 +100,7 @@ class LicenseGenerator:
 
     def _generate_device_bound_license(self, device_id, license_type="PERMANENT"):
         """生成与设备ID绑定的授权码"""
-        # 使用设备ID作为盐值生成确定性的授权码（移除时间依赖）
-        salt = "KRONOS_DEVICE_SALT_2024"
-        combined_data = f"{device_id}{salt}{license_type}"  # 只基于设备ID和许可证类型
-
-        # 生成基于设备ID的哈希
-        device_hash = hashlib.sha256(combined_data.encode()).hexdigest()
-
-        # 从哈希中提取段落
-        segment1 = device_hash[:4].upper() + "D"  # D表示设备绑定
-        segment2 = device_hash[4:9].upper()
-        segment3 = device_hash[9:14].upper()
-
-        # 计算校验码（只使用前三段，与客户端验证逻辑保持一致）
-        raw_data = f"{segment1}{segment2}{segment3}"
-        checksum = hashlib.md5(raw_data.encode()).hexdigest()[:5].upper()
-
-        # 生成最终授权码
-        license_code = f"KRONOS-{segment1}-{segment2}-{segment3}-{checksum}"
+        license_code = generate_device_license(device_id, license_type)
 
         # 创建授权记录
         license_record = {
@@ -140,7 +131,7 @@ class LicenseGenerator:
         checksum = hashlib.md5(raw_data.encode()).hexdigest()[:5].upper()
 
         # 生成最终授权码
-        license_code = f"KRONOS-{segment1}-{segment2}-{segment3}-{checksum}"
+        license_code = f"{LICENSE_PREFIX}-{segment1}-{segment2}-{segment3}-{checksum}"
 
         # 创建授权记录
         license_record = {

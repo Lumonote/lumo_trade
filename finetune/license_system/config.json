@@ -1,9 +1,9 @@
 {
-  "product_name": "KRONOS",
+  "product_name": "Lumo Trade",
   "version": "1.0",
-  "license_format": "KRONOS-{segment1}-{segment2}-{segment3}-{checksum}",
+  "license_format": "LUMO-{segment1}-{segment2}-{segment3}-{checksum}",
   "rsa_key_size": 2048,
-  "description": "Kronos金融预测系统授权配置",
+  "description": "Lumo Trade金融预测系统授权配置",
   "license_types": {
     "PERMANENT": {
       "name": "永久授权",

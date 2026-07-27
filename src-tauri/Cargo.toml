@@ -1,8 +1,8 @@
 [package]
-name = "kronos-ultra"
+name = "lumo_trade"
 version = "1.1.6"
 description = "Lumo Trade desktop shell"
-authors = ["Kronos"]
+authors = ["Lumo Trade"]
 edition = "2021"
 
 [build-dependencies]
@@ -21,4 +21,3 @@ strip = "symbols"
 lto = true
 panic = "abort"
 codegen-units = 1
-

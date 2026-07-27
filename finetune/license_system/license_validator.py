@@ -6,8 +6,15 @@ import os
 from datetime import datetime
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
-from device_fingerprint import DeviceFingerprint
-from json_storage import JSONStorage
+
+try:
+    from .device_fingerprint import DeviceFingerprint
+    from .json_storage import JSONStorage
+    from .license_codec import LICENSE_CODE_PATTERN, verify_device_license
+except ImportError:
+    from device_fingerprint import DeviceFingerprint
+    from json_storage import JSONStorage
+    from license_codec import LICENSE_CODE_PATTERN, verify_device_license
 
 
 class LicenseValidator:
@@ -50,7 +57,7 @@ class LicenseValidator:
                 return False, "授权码格式无效"
 
             # 2. 检查授权码类型（设备绑定 vs 通用）
-            # 授权码格式: KRONOS-XXXXD-XXXXX-XXXXX-XXXXX (设备绑定) 或 KRONOS-XXXXU-XXXXX-XXXXX-XXXXX (通用)
+            # 授权码格式: LUMO-XXXXD-XXXXX-XXXXX-XXXXX (设备绑定) 或 LUMO-XXXXU-XXXXX-XXXXX-XXXXX (通用)
             parts = license_code.split('-')
             if len(parts) != 5:
                 return False, "授权码格式无效"
@@ -235,9 +242,7 @@ class LicenseValidator:
 
     def _validate_license_format(self, license_code):
         """验证授权码格式"""
-        import re
-        pattern = r'^KRONOS-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$'
-        return re.match(pattern, license_code) is not None
+        return LICENSE_CODE_PATTERN.fullmatch(license_code) is not None
 
     def _validate_checksum(self, license_code):
         """验证授权码校验码"""
@@ -253,26 +258,7 @@ class LicenseValidator:
 
     def _validate_device_bound_license(self, license_code, device_id):
         """验证设备绑定授权码是否与当前设备匹配"""
-        # 使用与服务端相同的盐值和算法重新生成授权码
-        salt = "KRONOS_DEVICE_SALT_2024"
-        combined_data = f"{device_id}{salt}PERMANENT"  # 假设是PERMANENT类型
-
-        # 生成基于设备ID的哈希
-        device_hash = hashlib.sha256(combined_data.encode()).hexdigest()
-
-        # 从哈希中提取段落
-        segment1 = device_hash[:4].upper() + "D"  # D表示设备绑定
-        segment2 = device_hash[4:9].upper()
-        segment3 = device_hash[9:14].upper()
-
-        # 计算校验码
-        raw_data = f"{segment1}{segment2}{segment3}"
-        checksum = hashlib.md5(raw_data.encode()).hexdigest()[:5].upper()
-
-        # 生成期望的授权码
-        expected_license_code = f"KRONOS-{segment1}-{segment2}-{segment3}-{checksum}"
-
-        return license_code == expected_license_code
+        return verify_device_license(license_code, device_id)
 
     def _verify_signature(self, license_code, signature):
         """验证数字签名"""

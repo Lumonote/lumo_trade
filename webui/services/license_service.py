@@ -20,19 +20,20 @@ robyn 启动时可用 warm_in_background() 预热, 请求路径上永不重复�
 """
 from __future__ import annotations
 
-import hashlib
 import os
-import re
 import sys
 import threading
 from datetime import datetime
 from typing import Any, Optional
 
 from data_store import kv_repo
-
-LICENSE_SALT = "KRONOS_DEVICE_SALT_2024"
-LICENSE_TYPE = "PERMANENT"
-LICENSE_CODE_PATTERN = re.compile(r"^LUMO-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$")
+from finetune.license_system.license_codec import (
+    LICENSE_CODE_PATTERN,
+    LICENSE_SALT,
+    LICENSE_TYPE,
+    generate_device_license,
+    verify_device_license,
+)
 
 KV_NAMESPACE = "license"
 KV_KEY = "activation"
@@ -82,12 +83,7 @@ def _safe_warm() -> None:
 
 def generate_license_code(device_id: str, license_type: str = LICENSE_TYPE) -> str:
     """与 license_admin/generate_license.py 完全一致的设备绑定授权码。"""
-    device_hash = hashlib.sha256(f"{device_id}{LICENSE_SALT}{license_type}".encode()).hexdigest()
-    segment1 = device_hash[:4].upper() + "D"
-    segment2 = device_hash[4:9].upper()
-    segment3 = device_hash[9:14].upper()
-    checksum = hashlib.md5(f"{segment1}{segment2}{segment3}".encode()).hexdigest()[:5].upper()
-    return f"LUMO-{segment1}-{segment2}-{segment3}-{checksum}"
+    return generate_device_license(device_id, license_type)
 
 
 def verify_license_code(license_code: str, device_id: Optional[str] = None) -> tuple[bool, str]:
@@ -98,7 +94,7 @@ def verify_license_code(license_code: str, device_id: Optional[str] = None) -> t
         return False, "仅支持设备绑定授权码(第二段以 D 结尾)"
     if device_id is None:
         device_id = get_device_id()
-    if code != generate_license_code(device_id):
+    if not verify_device_license(code, device_id):
         return False, "授权码与当前设备不匹配"
     return True, "授权码有效"
 

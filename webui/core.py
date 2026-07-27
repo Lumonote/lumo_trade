@@ -1198,7 +1198,19 @@ def _reconcile_completed_opportunity_jobs_on_startup():
 
 
 _reconcile_completed_opportunity_jobs_on_startup()
-JOB_SERVICE.mark_interrupted_jobs()
+
+
+def mark_interrupted_jobs_on_boot() -> int:
+    """把共享任务库里 running/queued 的任务标记「后台进程已重启,任务已中断」。
+
+    只能在真正作为后端服务启动时调用(robyn_app 的 startup 钩子)。过去挂在模块
+    import 期:任何 import webui.core 的进程(pytest 收集、CLI 脚本、并行的 dev
+    实例)都会误杀打包 App 正在跑的任务——2026-07-24 实际误杀过一次机会挖掘。
+    KRONOS_SKIP_INTERRUPT_MARK=1 供 dev 服与打包 App 并行时跳过标记。
+    """
+    if str(os.environ.get('KRONOS_SKIP_INTERRUPT_MARK', '')).strip().lower() in ('1', 'true', 'yes', 'on'):
+        return 0
+    return JOB_SERVICE.mark_interrupted_jobs()
 
 
 def reveal_in_file_manager(path) -> bool:
@@ -3955,11 +3967,17 @@ def _run_opportunity_job(job_id, params):
         job_id,
         f'开始执行投资机会挖掘 ({mode_label} · 来源 {source_label} · 条数 {limit} · 线程 {workers}{stock_hint})',
     )
+    tracker = None
     try:
         from scripts.run_opportunity_discovery import OpportunityDiscovery
+        from webui.services.discovery_progress import DiscoveryProgressTracker
 
+        tracker = DiscoveryProgressTracker(
+            writer=lambda p: _update_job(job_id, progress=p),
+            max_workers=workers,
+        )
         with _JobLogCapture(job_id, ['scripts.run_opportunity_discovery']):
-            discovery = OpportunityDiscovery(max_workers=workers)
+            discovery = OpportunityDiscovery(max_workers=workers, progress_hook=tracker)
             report_path = discovery.run(
                 limit=limit,
                 test_codes=stock_codes or None,
@@ -3993,6 +4011,8 @@ def _run_opportunity_job(job_id, params):
             },
         }
         _append_job_log(job_id, f"机会挖掘完成: {result['report_path'] or '未生成报告'}")
+        if tracker is not None:
+            tracker.finalize(ok=True)
         _update_job(
             job_id,
             status='finished',
@@ -4024,6 +4044,8 @@ def _run_opportunity_job(job_id, params):
             _append_job_log(job_id, f'自动跟单失败(不影响挖掘结果): {exc}')
     except Exception as exc:
         _append_job_log(job_id, f'机会挖掘失败: {exc}')
+        if tracker is not None:
+            tracker.finalize(ok=False)
         _update_job(
             job_id,
             status='failed',
@@ -4792,6 +4814,10 @@ DESKTOP_PAGES = {
     'workbench': {
         'title': '分析工作台',
         'subtitle': '机会挖掘、批量分析、画布关系、任务日志与历史复盘',
+    },
+    'discovery_live': {
+        'title': '挖掘引擎',
+        'subtitle': '投资机会挖掘实时直播:多智能体并行流水线、阶段进度、现场日志与结果直达',
     },
     'patterns': {
         'title': '形态搜股',

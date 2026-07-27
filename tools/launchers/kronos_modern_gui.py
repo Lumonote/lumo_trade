@@ -15,7 +15,6 @@ if sys.platform == 'darwin':
     os.environ['LANG'] = 'zh_CN.UTF-8'
 
 import asyncio
-import hashlib
 import json
 import platform
 import queue
@@ -87,6 +86,12 @@ else:
     project_root = Path(__file__).parent.parent.parent
 
 sys.path.insert(0, str(project_root))
+
+from finetune.license_system.license_codec import (
+    LICENSE_CODE_PATTERN,
+    generate_device_license,
+    verify_device_license,
+)
 
 
 # 全局Python命令检测
@@ -334,10 +339,7 @@ class LicenseValidator:
 
     def activate_license(self, license_code):
         """激活授权码"""
-        import re
-
-        pattern = r'^KRONOS-[A-F0-9]{5}-[A-F0-9]{5}-[A-F0-9]{5}-[A-F0-9]{5}$'
-        if not re.match(pattern, license_code.upper()):
+        if not LICENSE_CODE_PATTERN.fullmatch(license_code.upper()):
             return False, "授权码格式错误"
 
         device_id = self.device_fp.get_device_id()
@@ -367,50 +369,14 @@ class LicenseValidator:
     def _verify_license_code(self, license_code, device_id):
         """验证授权码是否与设备ID匹配 - 使用与实际授权系统相同的算法"""
         try:
-            # 使用与服务端相同的盐值和算法重新生成授权码
-            salt = "KRONOS_DEVICE_SALT_2024"
-            combined_data = f"{device_id}{salt}PERMANENT"  # PERMANENT类型授权
-
-            # 生成基于设备ID的哈希
-            device_hash = hashlib.sha256(combined_data.encode()).hexdigest()
-
-            # 从哈希中提取段落
-            segment1 = device_hash[:4].upper() + "D"  # D表示设备绑定
-            segment2 = device_hash[4:9].upper()
-            segment3 = device_hash[9:14].upper()
-
-            # 计算校验码
-            raw_data = f"{segment1}{segment2}{segment3}"
-            checksum = hashlib.md5(raw_data.encode()).hexdigest()[:5].upper()
-
-            # 生成期望的授权码
-            expected_license_code = f"KRONOS-{segment1}-{segment2}-{segment3}-{checksum}"
-
-            return license_code == expected_license_code
+            return verify_device_license(license_code, device_id)
         except Exception:
             return False
 
     @staticmethod
     def generate_license_code(device_id):
         """根据设备ID生成授权码（用于管理员生成授权码）- 使用与实际授权系统相同的算法"""
-        # 使用与服务端相同的盐值和算法
-        salt = "KRONOS_DEVICE_SALT_2024"
-        combined_data = f"{device_id}{salt}PERMANENT"  # PERMANENT类型授权
-
-        # 生成SHA256哈希
-        device_hash = hashlib.sha256(combined_data.encode()).hexdigest()
-
-        # 从哈希中提取段落
-        segment1 = device_hash[:4].upper() + "D"  # D表示设备绑定 (Device-bound)
-        segment2 = device_hash[4:9].upper()
-        segment3 = device_hash[9:14].upper()
-
-        # 计算校验码（MD5哈希的前5位）
-        raw_data = f"{segment1}{segment2}{segment3}"
-        checksum = hashlib.md5(raw_data.encode()).hexdigest()[:5].upper()
-
-        # 格式化为 KRONOS-XXXXD-XXXXX-XXXXX-XXXXX
-        return f"KRONOS-{segment1}-{segment2}-{segment3}-{checksum}"
+        return generate_device_license(device_id)
 
     def get_license_info(self):
         """获取授权信息"""
@@ -1034,19 +1000,19 @@ class LicenseActivationSheet:
                                       highlightthickness=2, highlightcolor="#4F46E5",
                                       highlightbackground="#E5E7EB")
         self.license_entry.pack(fill=tk.X, ipady=12, ipadx=16)
-        self.license_entry.insert(0, "KRONOS-XXXXX-XXXXX-XXXXX-XXXXX")
+        self.license_entry.insert(0, "LUMO-XXXXX-XXXXX-XXXXX-XXXXX")
         self.license_entry.configure(fg="#9CA3AF")
         self.license_entry.focus_set()
 
         # 占位符效果
         def on_focus_in(e):
-            if self.license_entry.get() == "KRONOS-XXXXX-XXXXX-XXXXX-XXXXX":
+            if self.license_entry.get() == "LUMO-XXXXX-XXXXX-XXXXX-XXXXX":
                 self.license_entry.delete(0, tk.END)
                 self.license_entry.configure(fg="#1F2937")
 
         def on_focus_out(e):
             if not self.license_entry.get():
-                self.license_entry.insert(0, "KRONOS-XXXXX-XXXXX-XXXXX-XXXXX")
+                self.license_entry.insert(0, "LUMO-XXXXX-XXXXX-XXXXX-XXXXX")
                 self.license_entry.configure(fg="#9CA3AF")
 
         self.license_entry.bind("<FocusIn>", on_focus_in)
@@ -1054,7 +1020,7 @@ class LicenseActivationSheet:
 
         # 格式提示
         hint_label = tk.Label(input_frame,
-                              text="格式：KRONOS + 4组5位字符，用短横线分隔",
+                              text="格式：LUMO + 4组5位字符，用短横线分隔",
                               font=("SF Pro Display", 12, "normal"),
                               fg="#9CA3AF", bg="#FFFFFF")
         hint_label.pack(anchor="w")
@@ -1116,7 +1082,7 @@ class LicenseActivationSheet:
         """激活授权码"""
         license_code = self.license_entry.get().strip().upper()
 
-        if not license_code or license_code.startswith("KRONOS-X"):
+        if not license_code or license_code.startswith("LUMO-X"):
             messagebox.showwarning("输入错误", "请输入有效的授权码", parent=self.sheet)
             return
 
@@ -1125,7 +1091,7 @@ class LicenseActivationSheet:
 
             if success:
                 messagebox.showinfo("激活成功",
-                                    f"🎉 恭喜！{message}\n\nKronos 专业版已激活，您现在可以使用所有高级功能！",
+                                    f"🎉 恭喜！{message}\n\nLumo Trade 已激活，您现在可以使用所有高级功能！",
                                     parent=self.sheet)
                 self.success = True
                 self.sheet.destroy()

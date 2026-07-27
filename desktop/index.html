@@ -57,8 +57,11 @@
 
       .status {
         min-height: 24px;
+        max-width: min(720px, calc(100vw - 48px));
         font-size: 14px;
         color: #6a7688;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
 
       .actions {
@@ -127,8 +130,22 @@
       const target = "http://127.0.0.1:7070/desktop/features";
       const status = document.getElementById("status");
       const retry = document.getElementById("retry");
+      const maxAttempts = 15;
       let attempts = 0;
       let timer = null;
+
+      async function backendFailureDetail() {
+        const tauri = window.__TAURI__;
+        if (!tauri || !tauri.core || !tauri.core.invoke) {
+          return "工作台启动失败。请查看应用数据目录 logs/backend.stderr.log。";
+        }
+        try {
+          const detail = await tauri.core.invoke("backend_diagnostics");
+          return `工作台启动失败。\n${detail}`;
+        } catch (error) {
+          return `工作台启动失败。无法读取后端诊断：${error}`;
+        }
+      }
 
       async function probe() {
         attempts += 1;
@@ -142,11 +159,14 @@
             return;
           }
         } catch (error) {
-          if (attempts >= 8) {
-            status.textContent = "工作台暂未就绪，请稍后重试。";
-          }
+          // HTTP 非 2xx 与连接失败在下面使用同一诊断路径。
         }
 
+        if (attempts >= maxAttempts) {
+          status.textContent = await backendFailureDetail();
+          timer = null;
+          return;
+        }
         timer = window.setTimeout(probe, 1000);
       }
 

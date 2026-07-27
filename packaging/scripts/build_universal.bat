@@ -1,292 +1,203 @@
-﻿@echo off
+@echo off
+setlocal EnableExtensions
 chcp 65001 >nul
 
-REM Kronos Windows打包工具 - 增强版
-REM 支持本地构建和Docker构建
-
-setlocal enabledelayedexpansion
+REM Lumo Trade Windows release build.
+REM This intentionally mirrors the macOS path: PyInstaller WebUI backend + Tauri shell.
 
 set "SCRIPT_DIR=%~dp0"
-set "PROJECT_ROOT=%SCRIPT_DIR%..\.."
-
-echo [*] Kronos Windows打包工具
-echo ========================
-echo [DIR] 项目根目录: %PROJECT_ROOT%
-echo.
-
-REM 显示使用帮助
-if "%1"=="" goto show_help
-if "%1"=="--help" goto show_help
-if "%1"=="-h" goto show_help
-if "%1"=="/?" goto show_help
-goto parse_args
-
-:show_help
-echo 使用方法: %0 [平台] [选项]
-echo.
-echo 支持的平台:
-echo   windows        - 构建Windows版本 (本地构建)
-echo   windows-docker - 使用Docker构建Windows版本
-echo   windows-wine   - 使用Wine构建Windows版本
-echo   macos-docker   - 使用Docker构建macOS版本
-echo   linux-docker   - 使用Docker构建Linux版本
-echo   all            - 构建所有平台版本
-echo.
-echo 选项:
-echo   --docker       - 强制使用Docker构建
-echo   --clean        - 构建前清理
-echo   --help, -h, /? - 显示此帮助
-echo.
-echo 示例:
-echo   %0 windows                  # 构建Windows版本
-echo   %0 windows-docker           # 使用Docker构建Windows版本
-echo   %0 all --clean              # 清理后构建所有版本
-echo.
-goto end
-
-:parse_args
-set "PLATFORM=%1"
-set "USE_DOCKER=false"
+for %%I in ("%SCRIPT_DIR%..\..") do set "PROJECT_ROOT=%%~fI"
 set "CLEAN_BUILD=false"
 
-:parse_loop
-shift
-if "%1"=="" goto main_logic
-if "%1"=="--docker" (
-    set "USE_DOCKER=true"
-    goto parse_loop
-)
-if "%1"=="--clean" (
+if /I "%~1"=="windows" shift
+
+:parse_args
+if "%~1"=="" goto configure
+if /I "%~1"=="--clean" (
     set "CLEAN_BUILD=true"
-    goto parse_loop
+    shift
+    goto parse_args
 )
-echo [X] 未知选项: %1
-goto show_help
+if /I "%~1"=="--help" goto show_help
+if /I "%~1"=="-h" goto show_help
+if /I "%~1"=="/?" goto show_help
+echo [ERROR] Unsupported option: %~1
+goto show_help_error
 
-:main_logic
-echo [PC]  当前操作系统: windows
+:show_help
+echo Usage: %~nx0 [windows] [--clean]
 echo.
+echo Builds the same Lumo Trade Tauri/WebUI desktop application as macOS.
+echo Docker/Wine legacy GUI packages are not release-compatible and are disabled.
+exit /b 0
 
-REM 清理函数
-:clean_build
-if "%CLEAN_BUILD%"=="false" goto check_python
-echo [CLEAN] 清理构建目录...
+:show_help_error
+echo Usage: %~nx0 [windows] [--clean]
+exit /b 2
 
-REM 清理Python缓存
-for /d /r "%PROJECT_ROOT%" %%d in (__pycache__) do (
-    if exist "%%d" rmdir /s /q "%%d" 2>nul
-)
-for /r "%PROJECT_ROOT%" %%f in (*.pyc) do (
-    if exist "%%f" del /q "%%f" 2>nul
-)
-
-REM 清理构建目录
-if exist "%PROJECT_ROOT%\build" rmdir /s /q "%PROJECT_ROOT%\build" 2>nul
-if exist "%PROJECT_ROOT%\dist" rmdir /s /q "%PROJECT_ROOT%\dist" 2>nul
-del /q "%PROJECT_ROOT%\*.spec" 2>nul
-
-echo [OK] 清理完成
-goto check_python
-
-:check_python
-echo [CHECK] 检查Python环境...
+:configure
+cd /d "%PROJECT_ROOT%"
+echo [Lumo Trade] Windows Tauri release build
+echo [ROOT] %PROJECT_ROOT%
 
 set "PYTHON_CMD="
-for %%p in (python3.11 python3 python) do (
-    where %%p >nul 2>&1
-    if !errorlevel! == 0 (
-        for /f "tokens=*" %%v in ('%%p --version 2^>^&1') do (
-            echo %%v | findstr "3.11" >nul
-            if !errorlevel! == 0 (
-                set "PYTHON_CMD=%%p"
-                goto python_found
-            )
-            if "!PYTHON_CMD!"=="" (
-                echo %%v | findstr "3\." >nul
-                if !errorlevel! == 0 (
-                    set "PYTHON_CMD=%%p"
-                )
-            )
-        )
-    )
+if exist "%PROJECT_ROOT%\.venv\Scripts\python.exe" set "PYTHON_CMD=%PROJECT_ROOT%\.venv\Scripts\python.exe"
+if not defined PYTHON_CMD if exist "%PROJECT_ROOT%\venv\Scripts\python.exe" set "PYTHON_CMD=%PROJECT_ROOT%\venv\Scripts\python.exe"
+if not defined PYTHON_CMD (
+    where py >nul 2>&1
+    if not errorlevel 1 set "PYTHON_CMD=py -3"
 )
-
-:python_found
-if "%PYTHON_CMD%"=="" (
-    echo [X] 未找到Python 3.x
-    echo [TIP] 请安装Python 3.11或更高版本
+if not defined PYTHON_CMD (
+    where python >nul 2>&1
+    if not errorlevel 1 set "PYTHON_CMD=python"
+)
+if not defined PYTHON_CMD (
+    echo [ERROR] Python 3.11+ was not found.
     exit /b 1
 )
 
-for /f "tokens=*" %%v in ('%PYTHON_CMD% --version 2^>^&1') do echo [Python] 使用Python版本: %%v
-echo [OK] Python环境检查完成
-
-:check_docker
-if "%USE_DOCKER%"=="false" if not "%PLATFORM%"=="windows-docker" if not "%PLATFORM%"=="macos-docker" if not "%PLATFORM%"=="linux-docker" if not "%PLATFORM%"=="windows-wine" goto prepare_resources
-echo [Docker] 检查Docker环境...
-
-where docker >nul 2>&1
+%PYTHON_CMD% -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) else 1)"
 if errorlevel 1 (
-    echo [X] Docker未安装
-    echo [TIP] 请安装Docker Desktop: https://www.docker.com/products/docker-desktop
+    echo [ERROR] Python 3.11+ is required.
     exit /b 1
 )
 
-docker info >nul 2>&1
+if exist "%USERPROFILE%\.cargo\bin\cargo.exe" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+if defined CARGO_HOME if exist "%CARGO_HOME%\bin\cargo.exe" set "PATH=%CARGO_HOME%\bin;%PATH%"
+where cargo >nul 2>&1
 if errorlevel 1 (
-    echo [X] Docker daemon未运行
-    echo [TIP] 请启动Docker Desktop
+    echo [ERROR] Rust/Cargo was not found.
+    echo [TIP] Install Rustup: winget install --id Rustlang.Rustup -e
+    echo [TIP] Then reopen PowerShell and run this build command again.
+    exit /b 1
+)
+if exist "%ProgramFiles%\nodejs\npm.cmd" set "PATH=%ProgramFiles%\nodejs;%PATH%"
+if exist "%LOCALAPPDATA%\Programs\nodejs\npm.cmd" set "PATH=%LOCALAPPDATA%\Programs\nodejs;%PATH%"
+if exist "%USERPROFILE%\.volta\bin\npm.cmd" set "PATH=%USERPROFILE%\.volta\bin;%PATH%"
+if defined NVM_SYMLINK if exist "%NVM_SYMLINK%\npm.cmd" set "PATH=%NVM_SYMLINK%;%PATH%"
+where npm >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Node.js/npm was not found.
+    echo [TIP] Install Node.js LTS: winget install --id OpenJS.NodeJS.LTS -e
+    echo [TIP] Then reopen PowerShell and run this build command again.
     exit /b 1
 )
 
-echo [OK] Docker环境检查完成
-goto prepare_resources
+if defined VSCMD_VER (
+    where link.exe >nul 2>&1
+    if not errorlevel 1 goto msvc_ready
+)
 
-:prepare_resources
-echo [DIR] 准备资源文件 (modern版本)...
-echo [GUI] 使用现代化GUI版本
-echo [OK] 资源文件准备完成
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" set "VSWHERE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VS_INSTALL="
+if exist "%VSWHERE%" for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_INSTALL=%%I"
+if exist "%VSWHERE%" if not defined VS_INSTALL for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS_INSTALL=%%I"
+if not defined VS_INSTALL if exist "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools" set "VS_INSTALL=%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools"
+if not defined VS_INSTALL if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Community" set "VS_INSTALL=%ProgramFiles%\Microsoft Visual Studio\2022\Community"
+if not defined VS_INSTALL if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Professional" set "VS_INSTALL=%ProgramFiles%\Microsoft Visual Studio\2022\Professional"
+if not defined VS_INSTALL if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise" set "VS_INSTALL=%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise"
+if not defined VS_INSTALL goto msvc_not_installed
 
-REM 根据平台选择构建方法
-if "%PLATFORM%"=="windows" goto build_windows
-if "%PLATFORM%"=="windows-docker" goto build_windows_docker
-if "%PLATFORM%"=="windows-wine" goto build_windows_wine
-if "%PLATFORM%"=="macos-docker" goto build_macos_docker
-if "%PLATFORM%"=="linux-docker" goto build_linux_docker
-if "%PLATFORM%"=="all" goto build_all
+echo [MSVC] Visual Studio installation: %VS_INSTALL%
+set "VS_ARCH=x64"
+if /I "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "VS_ARCH=arm64"
+set "VCVARSALL=%VS_INSTALL%\VC\Auxiliary\Build\vcvarsall.bat"
+if exist "%VCVARSALL%" (
+    call "%VCVARSALL%" %VS_ARCH%
+) else (
+    set "VSDEVCMD=%VS_INSTALL%\Common7\Tools\VsDevCmd.bat"
+    if not exist "%VS_INSTALL%\Common7\Tools\VsDevCmd.bat" goto msvc_workload_missing
+    call "%VS_INSTALL%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=%VS_ARCH% -host_arch=%VS_ARCH%
+)
+if errorlevel 1 goto msvc_workload_missing
+where link.exe >nul 2>&1
+if errorlevel 1 goto msvc_workload_missing
+for /f "delims=" %%L in ('where link.exe') do echo [MSVC] Linker: %%L
+goto msvc_ready
 
-echo [X] 不支持的平台: %PLATFORM%
-goto show_help
+:msvc_not_installed
+echo [ERROR] Visual Studio Build Tools was not found.
+echo [TIP] Install Visual Studio 2022 Build Tools with Desktop development with C++:
+echo [TIP] winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+echo [TIP] Then reopen PowerShell and run this build command again.
+exit /b 1
 
-:build_windows
-echo [WIN][COMP] 开始打包Windows版本...
-echo ==========================================
+:msvc_workload_missing
+echo [ERROR] Visual Studio was found, but the MSVC linker link.exe is unavailable.
+echo [TIP] Open Visual Studio Installer, select Modify, and enable Desktop development with C++.
+echo [TIP] Ensure MSVC v143 and a Windows 10 or Windows 11 SDK are selected.
+exit /b 1
 
-cd /d "%PROJECT_ROOT%"
+:msvc_ready
 
-REM 检查并导入Python检测器
-echo [FIND] 检查Python环境...
-%PYTHON_CMD% -c "import sys; sys.path.append('tools'); from python_detector import get_python_detector, verify_python_environment; detector = get_python_detector(); print(f'检测到Python命令: {detector.get_command()}'); verify_python_environment()"
+set "TAURI_CLI=%PROJECT_ROOT%\node_modules\.bin\tauri.cmd"
+if not exist "%TAURI_CLI%" goto install_tauri_dependencies
+call "%TAURI_CLI%" --version >nul 2>&1
+if errorlevel 1 goto install_tauri_dependencies
+goto tauri_dependencies_ready
+
+:install_tauri_dependencies
+echo [DEPS] Installing Windows Tauri CLI dependencies...
+call npm install --include=optional
+if errorlevel 1 exit /b 1
+if not exist "%TAURI_CLI%" (
+    echo [ERROR] Tauri CLI command was not created: %TAURI_CLI%
+    exit /b 1
+)
+call "%TAURI_CLI%" --version >nul 2>&1
 if errorlevel 1 (
-    echo [X] Python环境检查失败
+    echo [ERROR] Windows Tauri CLI could not start after npm install.
     exit /b 1
 )
 
-REM 检查PyInstaller
-%PYTHON_CMD% -c "import PyInstaller" 2>nul
-if errorlevel 1 (
-    echo [PKG] 安装PyInstaller...
-    %PYTHON_CMD% -m pip install PyInstaller
-    if errorlevel 1 (
-        echo [X] PyInstaller安装失败
-        exit /b 1
-    )
+:tauri_dependencies_ready
+
+if not defined KRONOS_BACKEND_BUNDLE_MODE set "KRONOS_BACKEND_BUNDLE_MODE=lite"
+if not defined KRONOS_WEB_SERVER set "KRONOS_WEB_SERVER=robyn"
+
+if /I "%CLEAN_BUILD%"=="true" (
+    echo [CLEAN] Removing previous Windows bundle output...
+    if exist "%PROJECT_ROOT%\src-tauri\target\release\bundle\msi" rmdir /s /q "%PROJECT_ROOT%\src-tauri\target\release\bundle\msi"
+    if exist "%PROJECT_ROOT%\src-tauri\target\release\bundle\nsis" rmdir /s /q "%PROJECT_ROOT%\src-tauri\target\release\bundle\nsis"
 )
 
-REM 运行PyInstaller
-echo [BUILD] 执行PyInstaller构建...
-%PYTHON_CMD% -m PyInstaller --clean --noconfirm packaging\scripts\kronos_windows.spec
+echo [BACKEND] Building bundled Robyn backend (%KRONOS_BACKEND_BUNDLE_MODE%)...
+%PYTHON_CMD% "%PROJECT_ROOT%\packaging\scripts\build_backend.py" --clean --mode "%KRONOS_BACKEND_BUNDLE_MODE%"
 if errorlevel 1 (
-    echo [X] Windows构建失败
+    echo [ERROR] Bundled backend build failed.
     exit /b 1
 )
 
-echo [OK] Windows版本构建完成
-echo [DIR] 输出位置: %PROJECT_ROOT%\dist\
-goto end
-
-:build_windows_docker
-echo [WIN][Docker] 开始Windows Docker构建...
-echo ==========================================
-echo [MAKE] 构建Windows Docker镜像...
-
-cd /d "%PROJECT_ROOT%"
-docker build -f packaging\docker\Dockerfile.windows -t kronos-windows .
-if errorlevel 1 (
-    echo [X] Windows Docker构建失败
+if not exist "%PROJECT_ROOT%\packaging\backend\kronos_webui_backend\kronos_webui_backend.exe" (
+    echo [ERROR] Bundled backend executable is missing.
     exit /b 1
 )
 
-echo [*] 运行Windows Docker容器...
-docker run --rm -v "%PROJECT_ROOT%\dist":/output kronos-windows
+echo [BACKEND] Verifying bundled imports...
+set "KRONOS_USER_DIR=%TEMP%\lumo_trade_backend_import_check"
+"%PROJECT_ROOT%\packaging\backend\kronos_webui_backend\kronos_webui_backend.exe" --import-check
 if errorlevel 1 (
-    echo [X] Windows Docker运行失败
+    echo [ERROR] Bundled backend import check failed. The installer was not built.
     exit /b 1
 )
 
-echo [OK] Windows Docker构建完成
-echo [DIR] 输出位置: %PROJECT_ROOT%\dist\
-goto end
-
-:build_windows_wine
-echo [Wine][WIN] 开始Windows Wine构建...
-echo ==========================================
-echo [MAKE] 构建Wine Docker镜像...
-
-cd /d "%PROJECT_ROOT%"
-docker build -f packaging\docker\Dockerfile.windows-wine -t kronos-wine .
+echo [TAURI] Building Lumo Trade installers...
+call npm run desktop:build -- --bundles nsis
 if errorlevel 1 (
-    echo [X] Wine Docker构建失败
+    echo [ERROR] Tauri desktop build failed.
     exit /b 1
 )
 
-echo [*] 运行Wine Docker容器...
-docker run --rm -v "%PROJECT_ROOT%\dist":/output kronos-wine
+set "BUNDLE_DIR=%PROJECT_ROOT%\src-tauri\target\release\bundle"
+set "OUTPUT_DIR=%PROJECT_ROOT%\packaging\builds"
+if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+powershell.exe -NoProfile -NonInteractive -Command "$src='%BUNDLE_DIR%'; $dst='%OUTPUT_DIR%'; Get-ChildItem -Path $src -Recurse -File | Where-Object { $_.Extension -eq '.msi' -or $_.Name -like '*-setup.exe' } | ForEach-Object { Copy-Item $_.FullName -Destination $dst -Force; Write-Host ('[ARTIFACT] ' + $_.FullName) }"
 if errorlevel 1 (
-    echo [X] Wine Docker运行失败
+    echo [ERROR] Failed to copy Tauri artifacts.
     exit /b 1
 )
 
-echo [OK] Wine构建完成
-echo [DIR] 输出位置: %PROJECT_ROOT%\dist\
-goto end
-
-:build_macos_docker
-echo [MAC][Docker] 开始macOS Docker构建...
-echo ==========================================
-echo [WARN]  注意: macOS Docker构建需要特殊许可
-echo [TIP] 建议在macOS系统上使用本地构建
-goto end
-
-:build_linux_docker
-echo [Linux][Docker] 开始Linux Docker构建...
-echo ==========================================
-echo [MAKE] 构建Linux Docker镜像...
-
-cd /d "%PROJECT_ROOT%"
-docker build -f packaging\docker\Dockerfile.linux -t kronos-linux .
-if errorlevel 1 (
-    echo [X] Linux Docker构建失败
-    exit /b 1
-)
-
-echo [*] 运行Linux Docker容器...
-docker run --rm -v "%PROJECT_ROOT%\dist":/output kronos-linux
-if errorlevel 1 (
-    echo [X] Linux Docker运行失败
-    exit /b 1
-)
-
-echo [OK] Linux Docker构建完成
-echo [DIR] 输出位置: %PROJECT_ROOT%\dist\
-goto end
-
-:build_all
-echo [ALL] 开始构建所有平台版本...
-echo ==========================================
-
-call :build_windows
-if errorlevel 1 goto end
-
-call :build_windows_docker  
-if errorlevel 1 goto end
-
-call :build_linux_docker
-if errorlevel 1 goto end
-
-echo [OK] 所有平台构建完成
-echo [DIR] 输出位置: %PROJECT_ROOT%\dist\
-goto end
-
-:end
-pause
+echo [OK] Lumo Trade Windows build completed.
+echo [OUTPUT] %OUTPUT_DIR%
+exit /b 0

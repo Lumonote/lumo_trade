@@ -95,6 +95,7 @@ hiddenimports = [
     # 设备验证: license_service 函数内延迟导入设备指纹模块(finetune 是 PEP420
     # 命名空间包, 不在下方 collect_submodules 之列), 需显式收进 PYZ。
     "finetune.license_system.device_fingerprint",
+    "finetune.license_system.license_codec",
     "scripts.run_opportunity_discovery",
     "scripts.hot_stocks_fetcher",
     "scripts.stock_filter_utils",
@@ -148,6 +149,10 @@ a = Analysis(
         "tests",
         "unittest",
         "doctest",
+        # SQLAlchemy 的 PyInstaller hook 会顺带收集 PostgreSQL 驱动。桌面版只用
+        # SQLite；psycopg2 自带的 OpenSSL 会抢先于 Python ssl 加载并令 Robyn
+        # 在启动事件循环时直接退出。
+        "psycopg2",
         *([] if include_ml else [
             "torch",
             "modelscope",

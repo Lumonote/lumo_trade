@@ -108,7 +108,7 @@ def test_robyn_native_template_static_and_path_params(robyn_module):
         missing_job_response = client.get("/api/jobs/missing")
 
     assert desktop_response.status_code == 200
-    assert b"Kronos" in desktop_response.content
+    assert b"Lumo Trade" in desktop_response.content
     assert missing_page_response.status_code == 404
     assert static_response.status_code == 200
     assert b"app-shell" in static_response.content
@@ -177,6 +177,33 @@ def test_robyn_native_job_start_validation(robyn_module):
     assert bad_trading_response.json() == {"success": False, "error": "参数不完整"}
 
 
+def test_robyn_desktop_discovery_live_page(robyn_module):
+    from robyn.testing import TestClient
+
+    with TestClient(robyn_module.app) as client:
+        resp = client.get("/desktop/discovery_live")
+
+    assert resp.status_code == 200
+    assert b'id="dlvRoot"' in resp.content
+
+
+def test_robyn_markdown_report_served_with_utf8_charset(robyn_module):
+    """.md 报告必须带 charset=utf-8(曾以 octet-stream 直出导致中文乱码)。"""
+    from robyn.testing import TestClient
+
+    results_dir = robyn_module.webui_core.RESULTS_DIR
+    results_dir.mkdir(parents=True, exist_ok=True)
+    (results_dir / "opportunity_top10_test.md").write_text("# 测试报告\n中文内容", encoding="utf-8")
+
+    with TestClient(robyn_module.app) as client:
+        resp = client.get("/analysis-reports/results/opportunity_top10_test.md")
+
+    assert resp.status_code == 200
+    ctype = "".join(resp.headers.get("content-type") or resp.headers.get("Content-Type") or "")
+    assert "charset=utf-8" in ctype.lower(), ctype
+    assert "测试报告" in resp.text
+
+
 def test_robyn_native_settings_routes(robyn_module):
     from robyn.testing import TestClient
 
@@ -188,7 +215,10 @@ def test_robyn_native_settings_routes(robyn_module):
         )
         tushare_response = client.post(
             "/api/settings/tushare",
-            json_data={"token": "12345678901234567890", "timeout": 45, "retry_count": 2},
+            # 用真实形状的假 Token:占位值 12345678901234567890 会被
+            # _looks_like_placeholder_token 判为未配置(configured=False),
+            # 且历史上曾因环境泄漏被写进真实配置、清掉用户真 Token。
+            json_data={"token": "f" * 40, "timeout": 45, "retry_count": 2},
         )
 
     assert settings_response.status_code == 200

@@ -18,7 +18,7 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-echo -e "${CYAN}🚀 Kronos 通用打包工具${NC}"
+echo -e "${CYAN}🚀 Lumo Trade 通用打包工具${NC}"
 echo "========================"
 echo -e "${BLUE}📁 项目根目录: $PROJECT_ROOT${NC}"
 echo ""
@@ -31,10 +31,8 @@ show_help() {
     echo "  macos          - 使用Tauri构建macOS版本 (本地构建)"
     echo "  macos-dmg      - 仅基于已构建的 .app 重新生成macOS DMG"
     echo "  windows        - 使用Tauri构建Windows版本 (需要Windows环境)"
-    echo "  windows-docker - 旧PyInstaller Docker构建Windows版本"
-    echo "  windows-wine   - 旧PyInstaller Wine构建Windows版本"
     echo "  linux          - 使用Tauri构建Linux版本 (本地构建)"
-    echo "  all            - 构建所有平台版本"
+    echo "  all            - 构建当前操作系统对应的Tauri版本"
     echo ""
     echo "选项:"
     echo "  --docker       - 强制使用Docker构建"
@@ -44,7 +42,7 @@ show_help() {
     echo "示例:"
     echo "  $0 macos                    # 构建macOS版本"
     echo "  $0 macos-dmg                # 仅重新生成DMG"
-    echo "  $0 windows-docker           # 使用Docker构建Windows版本"
+    echo "  $0 windows                  # 在Windows本机构建Windows版本"
     echo "  $0 all --clean              # 清理后构建所有版本"
     echo ""
 }
@@ -148,12 +146,12 @@ load_version_config() {
     VERSION="1.0.0"
     SHORT_VERSION="$VERSION"
     CHANNEL="stable"
-    ARTIFACT_TEMPLATE="Kronos_v{version}_{platform}_{timestamp}"
+    ARTIFACT_TEMPLATE="lumo_trade_v{version}_{platform}_{timestamp}"
 
     # 使用Python解析版本配置（优先）
     if [ -f "$VERSION_CONFIG" ] && [ -n "$PYTHON_CMD" ]; then
         local info
-        info=$($PYTHON_CMD -c "import json,sys; p=json.load(open(r'$VERSION_CONFIG')); print(f\"{p.get('version','1.0.0')}|{p.get('short_version',p.get('version','1.0.0'))}|{p.get('channel','stable')}|{p.get('artifact_template','Kronos_v{version}_{platform}_{timestamp}')}\")" 2>/dev/null || true)
+        info=$($PYTHON_CMD -c "import json,sys; p=json.load(open(r'$VERSION_CONFIG')); print(f\"{p.get('version','1.0.0')}|{p.get('short_version',p.get('version','1.0.0'))}|{p.get('channel','stable')}|{p.get('artifact_template','lumo_trade_v{version}_{platform}_{timestamp}')}\")" 2>/dev/null || true)
         if [ -n "$info" ]; then
             IFS='|' read -r VERSION SHORT_VERSION CHANNEL ARTIFACT_TEMPLATE <<< "$info"
         fi
@@ -245,6 +243,11 @@ build_bundled_backend() {
     fi
     if [ ! -f "$backend_exe" ]; then
         echo -e "${RED}❌ 内置 backend 构建失败: $backend_exe 不存在${NC}"
+        return 1
+    fi
+    echo -e "${BLUE}🔎 校验内置 backend 导入完整性...${NC}"
+    if ! KRONOS_USER_DIR="${TMPDIR:-/tmp}/lumo_trade_backend_import_check" "$backend_exe" --import-check; then
+        echo -e "${RED}❌ 内置 backend 导入自检失败，已停止生成安装包${NC}"
         return 1
     fi
     echo -e "${GREEN}✅ 内置 backend 构建完成: $backend_exe${NC}"
@@ -639,113 +642,6 @@ build_macos_dmg_only() {
     return 0
 }
 
-# Windows Docker构建
-build_windows_docker() {
-    echo -e "${PURPLE}🐳🪟 开始Windows Docker构建...${NC}"
-    echo "=========================================="
-    
-    if ! check_docker; then
-        return 1
-    fi
-    
-    # 检查是否为非Windows系统
-    if [ "$CURRENT_OS" != "windows" ]; then
-        echo -e "${YELLOW}⚠️  非Windows系统无法使用Windows容器${NC}"
-        echo -e "${BLUE}💡 自动切换到Wine构建方案...${NC}"
-        build_windows_wine
-        return $?
-    fi
-    
-    cd "$PROJECT_ROOT"
-    
-    # 使用Docker构建管理器
-    $PYTHON_CMD packaging/scripts/docker_build_manager.py build --platform windows
-    
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ Windows Docker构建成功！${NC}"
-        return 0
-    else
-        echo -e "${YELLOW}❌ Windows Docker构建失败，尝试Wine构建...${NC}"
-        build_windows_wine
-        return $?
-    fi
-}
-
-# Windows Wine构建
-build_windows_wine() {
-    echo -e "${PURPLE}🍷🪟 开始Windows Wine构建...${NC}"
-    echo "=========================================="
-    
-    if ! check_docker; then
-        return 1
-    fi
-    
-    cd "$PROJECT_ROOT"
-    
-    IMAGE_NAME="kronos-windows-wine-builder"
-    CONTAINER_NAME="kronos-wine-build"
-    OUTPUT_DIR="packaging/builds"
-    
-    # 构建Wine Docker镜像
-    echo -e "${BLUE}🔨 构建Wine Docker镜像...${NC}"
-    docker build -f packaging/docker/Dockerfile.windows-wine -t $IMAGE_NAME .
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Wine镜像构建失败${NC}"
-        return 1
-    fi
-    
-    # 创建输出目录（统一到 packaging/builds）
-    mkdir -p "$OUTPUT_DIR"
-    
-    # 运行Wine构建
-    echo -e "${BLUE}🚀 运行Wine构建...${NC}"
-    # 运行容器（不加 --rm，便于复制产物），复制后再清理
-    docker run --name $CONTAINER_NAME $IMAGE_NAME
-    
-    if [ $? -eq 0 ]; then
-        # 从容器复制结果到统一目录
-        docker cp $CONTAINER_NAME:/kronos/dist/. "$OUTPUT_DIR/" || true
-
-        # 清理容器
-        docker rm -f $CONTAINER_NAME >/dev/null 2>&1 || true
-
-        # 读取版本配置并生成标准化ZIP名称
-        load_version_config
-        TIMESTAMP=$(date "+%Y%m%d_%H%M%S")
-        PLATFORM_NAME="Windows"
-        ARTIFACT_NAME="$ARTIFACT_TEMPLATE"
-        ARTIFACT_NAME="${ARTIFACT_NAME/\{version\}/$VERSION}"
-        ARTIFACT_NAME="${ARTIFACT_NAME/\{platform\}/$PLATFORM_NAME}"
-        ARTIFACT_NAME="${ARTIFACT_NAME/\{timestamp\}/$TIMESTAMP}"
-
-        # 将便携版目录压缩为标准命名的ZIP
-        PORTABLE_DIR="$OUTPUT_DIR/Kronos_Ultra_Windows_Portable"
-        if [ -d "$OUTPUT_DIR/Kronos_Ultra_Windows_Portable" ]; then
-            (cd "$OUTPUT_DIR" && zip -r "${ARTIFACT_NAME}.zip" "Kronos_Ultra_Windows_Portable" >/dev/null 2>&1 || true)
-            if [ -f "$OUTPUT_DIR/${ARTIFACT_NAME}.zip" ]; then
-                echo -e "${PURPLE}📦 创建了ZIP产物: $OUTPUT_DIR/${ARTIFACT_NAME}.zip${NC}"
-            fi
-        else
-            # 如果容器中的便携包不在顶层，尝试从 dist 目录中处理
-            if [ -d "$OUTPUT_DIR/dist/Kronos_Ultra_Windows_Portable" ]; then
-                mv "$OUTPUT_DIR/dist/Kronos_Ultra_Windows_Portable" "$OUTPUT_DIR/" 2>/dev/null || true
-                (cd "$OUTPUT_DIR" && zip -r "${ARTIFACT_NAME}.zip" "Kronos_Ultra_Windows_Portable" >/dev/null 2>&1 || true)
-                if [ -f "$OUTPUT_DIR/${ARTIFACT_NAME}.zip" ]; then
-                    echo -e "${PURPLE}📦 创建了ZIP产物: $OUTPUT_DIR/${ARTIFACT_NAME}.zip${NC}"
-                fi
-            fi
-        fi
-
-        echo -e "${GREEN}✅ Windows Wine构建成功！${NC}"
-        echo -e "${CYAN}📁 构建结果目录: $OUTPUT_DIR${NC}"
-        return 0
-    else
-        echo -e "${RED}❌ Windows Wine构建失败${NC}"
-        return 1
-    fi
-}
-
 # Windows本地构建
 build_windows_local() {
     if [ "$CURRENT_OS" != "windows" ]; then
@@ -788,30 +684,18 @@ build_all() {
         fi
     fi
     
-    # Windows构建
-    ((total_count++))
-    echo -e "\n${CYAN}🪟 构建Windows版本...${NC}"
-    if [ "$CURRENT_OS" = "windows" ] && [ "$USE_DOCKER" = "false" ]; then
-        # 在Windows系统上优先使用本地构建
+    # Tauri桌面包必须在目标系统本机构建，确保后端与安装器链路一致。
+    if [ "$CURRENT_OS" = "windows" ]; then
+        ((total_count++))
+        echo -e "\n${CYAN}🪟 构建Windows版本...${NC}"
         if build_windows_local; then
             ((success_count++))
-        else
-            # 如果本地构建失败，尝试Docker构建
-            echo -e "${YELLOW}💡 本地构建失败，尝试Docker构建...${NC}"
-            if build_windows_docker; then
-                ((success_count++))
-            fi
         fi
-    else
-        # 非Windows系统或强制使用Docker时使用Docker构建
-        if build_windows_docker; then
+    elif [ "$CURRENT_OS" = "linux" ]; then
+        ((total_count++))
+        echo -e "\n${CYAN}🐧 构建Linux版本...${NC}"
+        if build_linux; then
             ((success_count++))
-        else
-            # 如果Docker构建失败，尝试Wine构建
-            echo -e "${YELLOW}💡 Docker构建失败，尝试Wine构建...${NC}"
-            if build_windows_wine; then
-                ((success_count++))
-            fi
         fi
     fi
     
@@ -837,7 +721,7 @@ main() {
     fi
     
     # 检查Python环境（除非纯Docker构建）
-    if [ "$USE_DOCKER" = "false" ] || [ "$PLATFORM" = "macos" ] || [ "$PLATFORM" = "macos-dmg" ] || ([ "$PLATFORM" = "windows" ] && [ "$CURRENT_OS" = "windows" ]); then
+    if [ "$USE_DOCKER" = "false" ] || [ "$PLATFORM" = "macos" ] || [ "$PLATFORM" = "macos-dmg" ] || [ "$PLATFORM" = "windows" ]; then
         check_python
         echo ""
     fi
@@ -856,18 +740,11 @@ main() {
             ;;
         "windows")
             if [ "$USE_DOCKER" = true ]; then
-                build_windows_docker
-            elif [ "$CURRENT_OS" = "windows" ]; then
-                build_windows_local
-            else
-                build_windows_docker
+                echo -e "${RED}❌ Windows桌面包不支持Docker跨平台构建${NC}"
+                echo -e "${YELLOW}💡 请在Windows本机运行 build_universal.bat 或本脚本的 windows 目标${NC}"
+                return 1
             fi
-            ;;
-        "windows-docker")
-            build_windows_docker
-            ;;
-        "windows-wine")
-            build_windows_wine
+            build_windows_local
             ;;
         "linux")
             build_linux

@@ -2,6 +2,6 @@
   "version": "1.1.6",
   "short_version": "1.1",
   "channel": "stable",
-  "artifact_template": "Kronos_Ultra_v{version}_{platform}_{timestamp}",
+  "artifact_template": "lumo_trade_v{version}_{platform}_{timestamp}",
   "notes_file": "packaging/UPGRADE.md"
 }

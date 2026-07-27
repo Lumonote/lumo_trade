@@ -21,7 +21,10 @@ from robyn.argument_parser import Config
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from webui import core as webui_core
+# 用点号形式而非 `from webui import core`:后者经由父包属性解析,测试里
+# pop 掉 sys.modules["webui.core"] 重载时会拿到陈旧模块(其 CONFIGURATION_SERVICE
+# 仍绑定真实用户目录),曾把测试占位 Token 写进真实 tushare_config.json。
+import webui.core as webui_core
 from webui.services.model_runtime import load_model_payload, loaded_model_info, run_prediction_payload
 from webui.services import futures_service, quant_radar_service, star_orbit_service
 from webui.services import license_service
@@ -206,7 +209,13 @@ def _safe_child_path(root: Path, relative_path: str) -> Path | None:
 def _file_response(path: Path | None, cache_immutable: bool = False, attachment: bool = False) -> Response:
     if path is None:
         return _text_response("Not Found", status_code=404)
-    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    content_type = mimetypes.guess_type(path.name)[0]
+    if content_type is None:
+        # .md 在多数环境 guess 不出 → 曾以 application/octet-stream 直出,WKWebView
+        # 猜编码把中文渲成乱码;显式给 markdown 类型,其余未知类型保持二进制。
+        content_type = "text/markdown" if path.suffix.lower() in (".md", ".markdown") else "application/octet-stream"
+    if content_type.startswith("text/") or content_type == "application/json":
+        content_type += "; charset=utf-8"
     headers: dict[str, str] = {"Content-Type": content_type}
     if attachment:
         headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
@@ -1572,6 +1581,7 @@ def api_open_url(request: Request) -> Response:
 
 @app.startup_handler
 def startup() -> None:
+    webui_core.mark_interrupted_jobs_on_boot()
     if license_service.license_required():
         license_service.warm_in_background()
     webui_core.start_market_monitor()

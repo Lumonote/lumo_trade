@@ -143,7 +143,7 @@ def _run_import_check() -> int:
     _configure_runtime()
     distribution_names = {
         "modelscope.snapshot_download": "modelscope",
-        "webui.app": None,
+        "finetune.license_system.license_codec": None,
         "model": None,
     }
 
@@ -165,7 +165,10 @@ def _run_import_check() -> int:
         ("httpx", lambda: __import__("httpx")),
         ("flask", lambda: __import__("flask")),
         ("robyn", lambda: __import__("robyn")),
-        ("webui.app", lambda: __import__("webui.app", fromlist=["app"])),
+        (
+            "finetune.license_system.license_codec",
+            lambda: __import__("finetune.license_system.license_codec", fromlist=["verify_device_license"]),
+        ),
     ]
     if _server_mode() == "robyn":
         checks.append(("webui.robyn_app", lambda: __import__("webui.robyn_app", fromlist=["app"])))

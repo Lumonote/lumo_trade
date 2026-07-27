@@ -7,11 +7,13 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
-    thread,
     time::{Duration, Instant},
 };
 
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
+
+#[cfg(unix)]
+use std::thread;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -25,13 +27,22 @@ const BACKEND_PID_FILE: &str = "backend.pid";
 struct BackendProcess {
     child: Mutex<Option<Child>>,
     pid_file: PathBuf,
+    startup_detail: String,
+    stderr_log: PathBuf,
 }
 
 impl BackendProcess {
-    fn new(child: Option<Child>, pid_file: PathBuf) -> Self {
+    fn new(
+        child: Option<Child>,
+        pid_file: PathBuf,
+        startup_detail: String,
+        stderr_log: PathBuf,
+    ) -> Self {
         Self {
             child: Mutex::new(child),
             pid_file,
+            startup_detail,
+            stderr_log,
         }
     }
 
@@ -89,18 +100,20 @@ fn bundled_project_root(app: &tauri::App) -> PathBuf {
     }
 }
 
-fn bundled_backend_path(app: &tauri::App) -> Option<PathBuf> {
+fn bundled_backend_candidates(app: &tauri::App) -> Vec<PathBuf> {
     if cfg!(debug_assertions) {
-        return None;
+        return Vec::new();
     }
 
-    let resource_dir = app.path().resource_dir().ok()?;
+    let Ok(resource_dir) = app.path().resource_dir() else {
+        return Vec::new();
+    };
     let executable_name = if cfg!(windows) {
         "kronos_webui_backend.exe"
     } else {
         "kronos_webui_backend"
     };
-    [
+    vec![
         resource_dir
             .join("_up_")
             .join("packaging")
@@ -116,8 +129,6 @@ fn bundled_backend_path(app: &tauri::App) -> Option<PathBuf> {
             .join("kronos_webui_backend")
             .join(executable_name),
     ]
-    .into_iter()
-    .find(|path| path.exists())
 }
 
 fn bundled_config_dir(project_root: &Path) -> PathBuf {
@@ -292,7 +303,11 @@ fn is_kronos_backend_process(_pid: u32) -> bool {
     false
 }
 
-fn log_stdio(user_dir: &PathBuf, filename: &str) -> Stdio {
+fn backend_log_path(user_dir: &Path, filename: &str) -> PathBuf {
+    user_dir.join("logs").join(filename)
+}
+
+fn log_stdio(user_dir: &Path, filename: &str) -> Stdio {
     let log_dir = user_dir.join("logs");
     if fs::create_dir_all(&log_dir).is_err() {
         return Stdio::null();
@@ -306,12 +321,23 @@ fn log_stdio(user_dir: &PathBuf, filename: &str) -> Stdio {
         .unwrap_or_else(|_| Stdio::null())
 }
 
-fn configure_backend_command(command: &mut Command) {
-    #[cfg(unix)]
-    {
-        command.process_group(0);
-    }
+fn tail_log(path: &Path, max_bytes: usize) -> String {
+    let Ok(content) = fs::read(path) else {
+        return String::new();
+    };
+    let start = content.len().saturating_sub(max_bytes);
+    String::from_utf8_lossy(&content[start..])
+        .trim()
+        .to_string()
 }
+
+#[cfg(unix)]
+fn configure_backend_command(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(windows)]
+fn configure_backend_command(_command: &mut Command) {}
 
 fn python_candidates() -> Vec<(&'static str, Vec<&'static str>)> {
     if cfg!(windows) {
@@ -347,19 +373,27 @@ fn command_exists(program: &str, base_args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-fn start_backend(app: &tauri::App) -> Option<Child> {
+fn start_backend(app: &tauri::App) -> (Option<Child>, String) {
     let user_dir = user_data_dir(app);
     cleanup_stale_backend(&user_dir);
 
     if is_backend_running() {
-        return None;
+        return (
+            None,
+            format!("{BACKEND_HOST}:{BACKEND_PORT} 已有后端进程监听"),
+        );
     }
 
     let project_root = bundled_project_root(app);
     let source_config_dir = bundled_config_dir(&project_root);
+    let backend_candidates = bundled_backend_candidates(app);
 
-    if let Some(backend_exe) = bundled_backend_path(app) {
-        let mut command = Command::new(backend_exe);
+    if let Some(backend_exe) = backend_candidates
+        .iter()
+        .find(|path| path.exists())
+        .cloned()
+    {
+        let mut command = Command::new(&backend_exe);
         configure_backend_command(&mut command);
         command
             .current_dir(&project_root)
@@ -387,11 +421,17 @@ fn start_backend(app: &tauri::App) -> Option<Child> {
         return match command.spawn() {
             Ok(child) => {
                 record_backend_pid(&user_dir, &child);
-                Some(child)
+                (
+                    Some(child),
+                    format!("已启动内置后端：{}", backend_exe.display()),
+                )
             }
             Err(error) => {
                 eprintln!("Failed to start bundled Kronos backend: {error}");
-                None
+                (
+                    None,
+                    format!("无法启动内置后端 {}：{error}", backend_exe.display()),
+                )
             }
         };
     }
@@ -402,11 +442,22 @@ fn start_backend(app: &tauri::App) -> Option<Child> {
         project_root.join("webui").join("app.py")
     };
     if !backend_entry.exists() {
-        eprintln!(
-            "Kronos backend entry not found: {}",
+        let checked_paths = backend_candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let checked_paths = if checked_paths.is_empty() {
+            "（无法解析资源目录）"
+        } else {
+            &checked_paths
+        };
+        let detail = format!(
+            "未找到内置后端。源码入口：{}\n检查过的打包路径：\n{checked_paths}",
             backend_entry.display()
         );
-        return None;
+        eprintln!("{detail}");
+        return (None, detail);
     }
 
     let python = env::var("KRONOS_PYTHON")
@@ -426,12 +477,15 @@ fn start_backend(app: &tauri::App) -> Option<Child> {
 
     let Some((program, mut args)) = python else {
         eprintln!("No Python interpreter found for Kronos backend");
-        return None;
+        return (
+            None,
+            "未找到 Python 3.11 或更高版本，无法启动开发后端".to_string(),
+        );
     };
 
     args.push(backend_entry.to_string_lossy().to_string());
 
-    let mut command = Command::new(program);
+    let mut command = Command::new(&program);
     configure_backend_command(&mut command);
     command
         .args(args)
@@ -456,13 +510,46 @@ fn start_backend(app: &tauri::App) -> Option<Child> {
     match command.spawn() {
         Ok(child) => {
             record_backend_pid(&user_dir, &child);
-            Some(child)
+            (
+                Some(child),
+                format!("已使用 {program} 启动开发后端：{}", backend_entry.display()),
+            )
         }
         Err(error) => {
             eprintln!("Failed to start Kronos backend: {error}");
-            None
+            (None, format!("无法启动开发后端 {program}：{error}"))
         }
     }
+}
+
+#[tauri::command]
+fn backend_diagnostics(backend: tauri::State<'_, BackendProcess>) -> String {
+    let process_detail = match backend.child.lock() {
+        Ok(mut child_slot) => match child_slot.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => format!("内置后端已提前退出（{status}）"),
+                Ok(None) => "内置后端进程仍在运行，但 HTTP 服务尚未就绪".to_string(),
+                Err(error) => format!("无法读取内置后端进程状态：{error}"),
+            },
+            None if is_backend_running() => {
+                format!("{BACKEND_HOST}:{BACKEND_PORT} 有进程监听，但工作台接口未就绪")
+            }
+            None => "内置后端进程没有启动".to_string(),
+        },
+        Err(_) => "无法读取内置后端进程状态".to_string(),
+    };
+
+    let stderr_tail = tail_log(&backend.stderr_log, 4000);
+    let mut detail = format!(
+        "{process_detail}\n{}\n错误日志：{}",
+        backend.startup_detail,
+        backend.stderr_log.display()
+    );
+    if !stderr_tail.is_empty() {
+        detail.push_str("\n\n最近错误：\n");
+        detail.push_str(&stderr_tail);
+    }
+    detail
 }
 
 /// 弹窗去抖状态：记录上次因失焦隐藏的时刻，用于区分「点击托盘想关闭」与「失焦自动收起」。
@@ -623,10 +710,21 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![open_main, hide_popup, open_url])
+        .invoke_handler(tauri::generate_handler![
+            open_main,
+            hide_popup,
+            open_url,
+            backend_diagnostics
+        ])
         .setup(|app| {
             let user_dir = user_data_dir(app);
-            let backend = BackendProcess::new(start_backend(app), backend_pid_path(&user_dir));
+            let (backend_child, startup_detail) = start_backend(app);
+            let backend = BackendProcess::new(
+                backend_child,
+                backend_pid_path(&user_dir),
+                startup_detail,
+                backend_log_path(&user_dir, "backend.stderr.log"),
+            );
             app.manage(backend);
             app.manage(PopupState {
                 last_hidden: Mutex::new(None),

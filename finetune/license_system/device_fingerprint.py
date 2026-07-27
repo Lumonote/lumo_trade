@@ -18,18 +18,113 @@ class DeviceFingerprint:
         self.system = platform.system()
 
     def get_device_fingerprint(self):
-        """获取设备唯一指纹"""
-        hardware_info = self._collect_hardware_info()
+        """获取设备唯一指纹
 
-        # 生成稳定的设备ID
-        combined_info = json.dumps(hardware_info, sort_keys=True)
+        v2: device_id 只由「终身不变」的硬件锚点派生(平台UUID/整机序列号/CPU/架构),
+        不再混入 MAC(可插拔网卡与网络态会变)、psutil 读数(dev 与打包产物有无不同)、
+        system_profiler 超时降级值(曾引入 uuid.getnode() 每进程随机)——这些曾导致
+        打包 App 每次完整重启后授权码与新指纹失配,表现为「重装后授权丢失」。
+        hardware_info 仍保留全量字段用于展示/一致性参考,但不参与哈希。
+        """
+        hardware_info = self._collect_hardware_info()
+        stable_identity = self._stable_identity(hardware_info)
+
+        combined_info = json.dumps(stable_identity, sort_keys=True)
         device_id = hashlib.sha256(combined_info.encode()).hexdigest()[:16].upper()
 
         return {
             "device_id": device_id,
+            "stable_identity": stable_identity,
             "hardware_info": hardware_info,
             "system_info": self._get_system_info()
         }
+
+    def _stable_identity(self, hardware_info):
+        """device_id 的唯一哈希输入:全部成分终身不变,取不到用固定哨兵,绝不随机。"""
+        uuid_value, serial_value = self._get_platform_identifiers()
+        return {
+            "v": 2,
+            "platform_uuid": uuid_value or "UNKNOWN_PLATFORM_UUID",
+            "platform_serial": serial_value or "UNKNOWN_PLATFORM_SERIAL",
+            "cpu_id": hardware_info.get('cpu_id') or "UNKNOWN_CPU",
+            "machine": platform.machine(),
+        }
+
+    def _get_platform_identifiers(self):
+        """(平台UUID, 整机序列号)。用毫秒级且开机即得的稳定来源,避免 system_profiler 超时。"""
+        try:
+            if self.system == "Darwin":
+                result = subprocess.run(
+                    ['/usr/sbin/ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'],
+                    capture_output=True, text=True, timeout=10
+                )
+                uuid_value = serial_value = None
+                for line in result.stdout.split('\n'):
+                    if 'IOPlatformUUID' in line and '=' in line:
+                        uuid_value = line.split('=')[1].strip().strip('"')
+                    elif 'IOPlatformSerialNumber' in line and '=' in line:
+                        serial_value = line.split('=')[1].strip().strip('"')
+                return uuid_value, serial_value
+            if self.system == "Linux":
+                uuid_value = serial_value = None
+                for source, target in (
+                    ('/sys/class/dmi/id/product_uuid', 'uuid'),
+                    ('/etc/machine-id', 'uuid'),
+                    ('/sys/class/dmi/id/board_serial', 'serial'),
+                ):
+                    try:
+                        with open(source, 'r') as f:
+                            value = f.read().strip()
+                        if value and "O.E.M." not in value:
+                            if target == 'uuid' and not uuid_value:
+                                uuid_value = value
+                            elif target == 'serial' and not serial_value:
+                                serial_value = value
+                    except (FileNotFoundError, PermissionError, OSError):
+                        continue
+                return uuid_value, serial_value
+            if self.system == "Windows":
+                uuid_value = None
+                serial_value = None
+                try:
+                    result = subprocess.run(
+                        ['wmic', 'csproduct', 'get', 'UUID', '/value'],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    result2 = subprocess.run(
+                        ['wmic', 'baseboard', 'get', 'SerialNumber', '/value'],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    output = f"{result.stdout}\n{result2.stdout}"
+                except (FileNotFoundError, OSError, subprocess.SubprocessError):
+                    output = ""
+
+                if not output.strip():
+                    powershell = (
+                        "$cs=Get-CimInstance Win32_ComputerSystemProduct;"
+                        "$bb=Get-CimInstance Win32_BaseBoard;"
+                        "Write-Output ('UUID=' + $cs.UUID);"
+                        "Write-Output ('SerialNumber=' + $bb.SerialNumber)"
+                    )
+                    result = subprocess.run(
+                        ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', powershell],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    output = result.stdout
+
+                for line in output.splitlines():
+                    key, separator, raw_value = line.partition('=')
+                    if not separator:
+                        continue
+                    value = raw_value.strip()
+                    if key.strip() == 'UUID' and value and value.upper() != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
+                        uuid_value = value.upper()
+                    elif key.strip() == 'SerialNumber' and value and value.lower() != "to be filled by o.e.m.":
+                        serial_value = value
+                return uuid_value, serial_value
+        except Exception as e:
+            print(f"获取平台标识失败: {e}")
+        return None, None
 
     def _collect_hardware_info(self):
         """收集关键硬件信息"""
@@ -72,13 +167,29 @@ class DeviceFingerprint:
         """获取CPU ID"""
         try:
             if self.system == "Windows":
-                result = subprocess.run(
-                    ['wmic', 'cpu', 'get', 'ProcessorId', '/value'],
-                    capture_output=True, text=True, timeout=10
-                )
-                for line in result.stdout.split('\n'):
+                try:
+                    result = subprocess.run(
+                        ['wmic', 'cpu', 'get', 'ProcessorId', '/value'],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    output = result.stdout
+                except (FileNotFoundError, OSError, subprocess.SubprocessError):
+                    output = ""
+                if not output.strip():
+                    powershell = (
+                        "$cpu=Get-CimInstance Win32_Processor | Select-Object -First 1;"
+                        "Write-Output ('ProcessorId=' + $cpu.ProcessorId)"
+                    )
+                    result = subprocess.run(
+                        ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', powershell],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    output = result.stdout
+                for line in output.splitlines():
                     if 'ProcessorId=' in line:
-                        return line.split('=')[1].strip()
+                        value = line.split('=', 1)[1].strip()
+                        if value:
+                            return value.upper()
 
             elif self.system == "Linux":
                 with open('/proc/cpuinfo', 'r') as f:
@@ -92,12 +203,12 @@ class DeviceFingerprint:
 
             elif self.system == "Darwin":  # macOS
                 result = subprocess.run(
-                    ['sysctl', '-n', 'machdep.cpu.brand_string'],
+                    ['/usr/sbin/sysctl', '-n', 'machdep.cpu.brand_string'],
                     capture_output=True, text=True, timeout=10
                 )
                 cpu_brand = result.stdout.strip()
                 result2 = subprocess.run(
-                    ['sysctl', '-n', 'hw.ncpu'],
+                    ['/usr/sbin/sysctl', '-n', 'hw.ncpu'],
                     capture_output=True, text=True, timeout=10
                 )
                 cpu_count = result2.stdout.strip()
@@ -151,8 +262,8 @@ class DeviceFingerprint:
         except Exception as e:
             print(f"获取主板信息失败: {e}")
 
-        # 使用机器UUID作为备选
-        return str(uuid.getnode())
+        # 固定哨兵(不用 uuid.getnode(): 取不到 MAC 时它每进程随机,曾污染设备指纹)
+        return "UNKNOWN_MOTHERBOARD"
 
     def _get_primary_disk_serial(self):
         """获取主硬盘序列号"""
@@ -241,8 +352,8 @@ class DeviceFingerprint:
         except Exception as e:
             print(f"获取MAC地址失败: {e}")
 
-        # 备选方案
-        return format(uuid.getnode(), '012x').upper()
+        # 固定哨兵(同上, uuid.getnode() 随机风险; MAC 本就不参与 device_id 哈希)
+        return "UNKNOWN_MAC"
 
     def _get_system_uuid(self):
         """获取系统UUID - 使用稳定的硬件UUID，不使用随机生成"""

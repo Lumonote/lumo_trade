@@ -53,3 +53,33 @@ def test_mark_interrupted_jobs_closes_stale_active_jobs(tmp_path):
     assert service.snapshot(running["id"])["status"] == "failed"
     assert service.snapshot(queued["id"])["status"] == "failed"
     assert service.snapshot(running["id"])["error"] == "测试中断"
+
+
+def test_interrupt_marking_moved_off_import_and_gated(tmp_path, monkeypatch):
+    """import webui.core 不得误杀共享库里 running 的任务(曾误杀打包 App 在跑的挖掘);
+    只有 mark_interrupted_jobs_on_boot()(robyn 启动钩子)才标记,且受
+    KRONOS_SKIP_INTERRUPT_MARK 开关控制(dev 与打包 App 并行场景)。"""
+    import importlib
+    import sys
+
+    monkeypatch.setenv("KRONOS_USER_DIR", str(tmp_path))
+    monkeypatch.setenv("KRONOS_DISABLE_PATTERN_AUTOREFRESH", "1")
+    monkeypatch.setenv("KRONOS_DISABLE_QUANT_RADAR_AUTOSAVE", "1")
+    db = tmp_path / "data" / "webui_jobs.sqlite"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    from webui.services.job_store import JobStore
+
+    JobStore(db).create({"id": "victim", "type": "opportunity_discovery", "status": "running", "params": {}})
+
+    sys.modules.pop("webui.core", None)
+    core = importlib.import_module("webui.core")
+    assert core.JOB_STORE.get("victim")["status"] == "running"  # import 期不再误杀
+
+    monkeypatch.setenv("KRONOS_SKIP_INTERRUPT_MARK", "1")
+    assert core.mark_interrupted_jobs_on_boot() == 0
+    assert core.JOB_STORE.get("victim")["status"] == "running"  # 开关生效
+
+    monkeypatch.delenv("KRONOS_SKIP_INTERRUPT_MARK")
+    assert core.mark_interrupted_jobs_on_boot() >= 1
+    assert core.JOB_STORE.get("victim")["status"] == "failed"  # 真启动才标记
+    sys.modules.pop("webui.core", None)

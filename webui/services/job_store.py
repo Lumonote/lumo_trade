@@ -47,10 +47,15 @@ class JobStore:
                     logs_json TEXT NOT NULL,
                     result_json TEXT,
                     error TEXT,
+                    progress_json TEXT,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            try:
+                conn.execute("ALTER TABLE webui_jobs ADD COLUMN progress_json TEXT")
+            except sqlite3.OperationalError:
+                pass  # 列已存在(新建表或已迁移)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_webui_jobs_created_at "
                 "ON webui_jobs(created_at DESC)"
@@ -83,14 +88,15 @@ class JobStore:
         row.setdefault("logs", [])
         row.setdefault("result", None)
         row.setdefault("error", None)
+        row.setdefault("progress", None)
 
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO webui_jobs (
                     id, type, status, created_at, started_at, finished_at,
-                    params_json, logs_json, result_json, error, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    params_json, logs_json, result_json, error, progress_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["id"],
@@ -103,13 +109,14 @@ class JobStore:
                     self._json_dumps(row["logs"]),
                     self._json_dumps(row["result"]) if row["result"] is not None else None,
                     row["error"],
+                    self._json_dumps(row["progress"]) if row["progress"] is not None else None,
                     self._now(),
                 ),
             )
         return row
 
     def update(self, job_id: str, **updates: Any) -> dict[str, Any] | None:
-        allowed_fields = {"status", "started_at", "finished_at", "params", "logs", "result", "error"}
+        allowed_fields = {"status", "started_at", "finished_at", "params", "logs", "result", "error", "progress"}
         updates = {key: value for key, value in updates.items() if key in allowed_fields}
         if not updates:
             return self.get(job_id)
@@ -125,6 +132,9 @@ class JobStore:
                 values.append(self._json_dumps(value))
             elif key == "result":
                 columns.append("result_json = ?")
+                values.append(self._json_dumps(value) if value is not None else None)
+            elif key == "progress":
+                columns.append("progress_json = ?")
                 values.append(self._json_dumps(value) if value is not None else None)
             else:
                 columns.append(f"{key} = ?")
@@ -196,4 +206,7 @@ class JobStore:
             "logs": self._json_loads(row["logs_json"], []),
             "result": self._json_loads(row["result_json"], None),
             "error": row["error"],
+            "progress": self._json_loads(
+                row["progress_json"] if "progress_json" in row.keys() else None, None
+            ),
         }

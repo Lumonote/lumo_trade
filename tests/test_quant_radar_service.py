@@ -690,6 +690,22 @@ def test_desktop_js_wires_accumulation_panel():
     assert "quantStockDetailHtml=(" in js.replace(" ", "")
 
 
+def test_desktop_js_wires_sector_rows_to_the_stock_list():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    js = (root / "webui" / "static" / "kronos_quant_sector_clicks.js").read_text(
+        encoding="utf-8")
+    template = (root / "webui" / "templates" / "desktop.html").read_text(encoding="utf-8")
+
+    assert 'src="/static/kronos_quant_sector_clicks.js' in template
+    assert "function quantShowSectorStocks" in js
+    assert 'closest("[data-quant-board]")' in js
+    assert "quantShowSectorStocks(boardTarget.dataset.quantBoard)" in js
+    assert '$("#quantSearchInput")' in js
+    assert '$("#quantStocksTable")' in js
+
+
 # ----------------------------- 市场环境:期指多空 + 大盘量能 -----------------------------
 
 def test_volume_energy_labels_expansion_and_shrink():
