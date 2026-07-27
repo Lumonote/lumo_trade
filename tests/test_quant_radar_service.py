@@ -699,9 +699,10 @@ def test_desktop_js_wires_sector_rows_to_the_stock_list():
     template = (root / "webui" / "templates" / "desktop.html").read_text(encoding="utf-8")
 
     assert 'src="/static/kronos_quant_sector_clicks.js' in template
-    assert "function quantShowSectorStocks" in js
+    # 发布资源会被压缩并重命名局部函数；全局入口才是稳定契约。
+    assert "window.quantShowSectorStocks" in js
     assert 'closest("[data-quant-board]")' in js
-    assert "quantShowSectorStocks(boardTarget.dataset.quantBoard)" in js
+    assert ".dataset.quantBoard" in js
     assert '$("#quantSearchInput")' in js
     assert '$("#quantStocksTable")' in js
 

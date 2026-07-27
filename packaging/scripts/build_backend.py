@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -39,6 +41,86 @@ TORCH_DYLIBS = {
     "libtorch_cpu.dylib",
     "libtorch_python.dylib",
 }
+
+# PyInstaller only warns when a hidden import is unavailable and can still
+# produce an unusable executable. Keep this list aligned with requirements.txt
+# and the modules collected by kronos_webui_backend.spec so the build fails (or
+# installs the missing wheel) before spending minutes creating the bundle.
+_LITE_BUILD_REQUIREMENTS = (
+    ("PyInstaller", "pyinstaller"),
+    ("numpy", "numpy>=2.1.0"),
+    ("pandas", "pandas>=2.2.3"),
+    ("pytz", "pytz>=2022.1"),
+    ("matplotlib", "matplotlib>=3.9.0"),
+    ("tqdm", "tqdm"),
+    ("requests", "requests>=2.31.0"),
+    ("httpx", "httpx>=0.27.0"),
+    ("aiohttp", "aiohttp>=3.11.0"),
+    ("bs4", "beautifulsoup4"),
+    ("fake_useragent", "fake-useragent"),
+    ("tushare", "tushare>=1.4.0"),
+    ("akshare", "akshare>=1.16.0"),
+    ("baostock", "baostock"),
+    ("robyn", "robyn>=0.84.0,<1.0"),
+    ("jinja2", "jinja2>=3.1.0"),
+    ("plotly", "plotly>=5.20.0"),
+    ("flask", "flask>=3.0.0"),
+    ("flask_cors", "flask-cors>=4.0.0"),
+    ("playwright", "playwright>=1.49.0"),
+    ("yaml", "pyyaml>=6.0"),
+)
+
+_FULL_BUILD_REQUIREMENTS = (
+    ("torch", "torch>=2.5.0"),
+    ("einops", "einops"),
+    ("huggingface_hub", "huggingface_hub>=0.33.1"),
+    ("modelscope", "modelscope>=1.20.0"),
+    ("safetensors", "safetensors"),
+)
+
+
+def _build_requirements(mode: str) -> tuple[tuple[str, str], ...]:
+    if mode == "full":
+        return _LITE_BUILD_REQUIREMENTS + _FULL_BUILD_REQUIREMENTS
+    return _LITE_BUILD_REQUIREMENTS
+
+
+def _missing_build_requirements(mode: str) -> list[tuple[str, str]]:
+    return [
+        (module_name, requirement)
+        for module_name, requirement in _build_requirements(mode)
+        if importlib.util.find_spec(module_name) is None
+    ]
+
+
+def _ensure_build_dependencies(mode: str) -> None:
+    missing = _missing_build_requirements(mode)
+    if not missing:
+        print(f"[DEPS] Backend build dependencies are ready ({mode}).")
+        return
+
+    module_names = ", ".join(module_name for module_name, _requirement in missing)
+    requirements = [requirement for _module_name, requirement in missing]
+    command = [sys.executable, "-m", "pip", "install", *requirements]
+    print(f"[DEPS] Missing backend build dependencies: {module_names}")
+    print(f"[DEPS] Installing with: {sys.executable}")
+    try:
+        subprocess.check_call(command, cwd=str(PROJECT_ROOT))
+    except (OSError, subprocess.CalledProcessError) as exc:
+        install_command = subprocess.list2cmdline(command)
+        raise RuntimeError(
+            "Failed to install desktop backend dependencies with the Python "
+            f"used for this build. Run this command and retry:\n{install_command}"
+        ) from exc
+
+    importlib.invalidate_caches()
+    still_missing = _missing_build_requirements(mode)
+    if still_missing:
+        unresolved = ", ".join(module_name for module_name, _requirement in still_missing)
+        raise RuntimeError(
+            "pip completed, but these desktop backend modules are still unavailable "
+            f"to {sys.executable}: {unresolved}"
+        )
 
 
 def _install_name_tool_available() -> bool:
@@ -177,6 +259,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    _ensure_build_dependencies(args.mode)
+
     if args.clean:
         shutil.rmtree(DIST_PATH / "kronos_webui_backend", ignore_errors=True)
         shutil.rmtree(WORK_PATH, ignore_errors=True)
@@ -185,11 +269,6 @@ def main() -> int:
     CONFIG_PATH.mkdir(parents=True, exist_ok=True)
     MPL_CONFIG_PATH.mkdir(parents=True, exist_ok=True)
     XDG_CACHE_PATH.mkdir(parents=True, exist_ok=True)
-
-    try:
-        import PyInstaller  # noqa: F401
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
 
     cmd = [
         sys.executable,

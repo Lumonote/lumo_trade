@@ -18,11 +18,16 @@ use std::thread;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT: u16 = 7070;
 const BACKEND_BUNDLE_MODE: &str = env!("KRONOS_BACKEND_BUNDLE_MODE");
 const WEB_SERVER: &str = env!("KRONOS_WEB_SERVER");
 const BACKEND_PID_FILE: &str = "backend.pid";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 struct BackendProcess {
     child: Mutex<Option<Child>>,
@@ -337,7 +342,9 @@ fn configure_backend_command(command: &mut Command) {
 }
 
 #[cfg(windows)]
-fn configure_backend_command(_command: &mut Command) {}
+fn configure_backend_command(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
 
 fn python_candidates() -> Vec<(&'static str, Vec<&'static str>)> {
     if cfg!(windows) {

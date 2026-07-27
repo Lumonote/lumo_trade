@@ -53,9 +53,15 @@ def test_desktop_binary_and_artifact_names_use_lumo_trade():
 
 def test_rust_desktop_process_helpers_are_platform_gated():
     source = (ROOT / "src-tauri/src/main.rs").read_text(encoding="utf-8")
+    spec = (ROOT / "packaging/scripts/kronos_webui_backend.spec").read_text(encoding="utf-8")
 
     assert "#[cfg(unix)]\nuse std::thread;" in source
-    assert "#[cfg(windows)]\nfn configure_backend_command(_command: &mut Command) {}" in source
+    assert "#[cfg(windows)]\nuse std::os::windows::process::CommandExt;" in source
+    assert "const CREATE_NO_WINDOW: u32 = 0x08000000;" in source
+    windows_helper = source[source.index("#[cfg(windows)]\nfn configure_backend_command") :]
+    windows_helper = windows_helper[: windows_helper.index("\n}\n") + 3]
+    assert "command.creation_flags(CREATE_NO_WINDOW);" in windows_helper
+    assert "console=True" in spec
 
 
 def test_bundled_backend_excludes_conflicting_postgres_ssl_libraries():
