@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import calendar
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +28,8 @@ TIER_THRESHOLDS = ((85.0, "S"), (78.0, "A"), (70.0, "B"))
 RECENT_DAYS = 20
 RECENT_MONTH_DAYS = 31
 B_RECENT_WINRATE_WARN = 0.45
+# 与 opportunity_report_generator「历史回测表现」同口径:预留最近 N 个交易日
+REPORT_RESERVE_TRADE_DAYS = 10
 
 
 def _tier(score: float) -> str:
@@ -65,6 +68,70 @@ def _annualized_from_5d_return(value) -> float | None:
     if ret <= -1:
         return None
     return round((((1 + ret) ** (252 / 5)) - 1) * 100, 2)
+
+
+def _stats(frame: pd.DataFrame) -> dict:
+    evaluable = frame[frame["return_5d"].notna()]
+    n = int(len(evaluable))
+    if n == 0:
+        return {"n": int(len(frame)), "evaluable": 0, "win_rate": None, "avg_return": None}
+    return {
+        "n": int(len(frame)),
+        "evaluable": n,
+        "win_rate": round(float((evaluable["return_5d"] > 0).mean()), 4),
+        "avg_return": round(float(evaluable["return_5d"].mean()), 4),
+    }
+
+
+def _calendar_trade_days(anchor: pd.Timestamp) -> list[str]:
+    """交易日历(YYYY-MM-DD 升序, <= anchor);拿不到或过陈旧(落后 anchor 20 天以上)返回 []。"""
+    try:
+        from data.cache.data_cache import get_trade_calendar
+
+        anchor_ymd = anchor.strftime("%Y%m%d")
+        days = sorted(str(d) for d in get_trade_calendar() if str(d) <= anchor_ymd)
+        if days and days[-1] >= (anchor - pd.Timedelta(days=20)).strftime("%Y%m%d"):
+            return [f"{d[:4]}-{d[4:6]}-{d[6:8]}" for d in days]
+    except Exception:  # noqa: BLE001 — 无缓存上下文时回退样本日代理
+        pass
+    return []
+
+
+def _shift_one_month_back(anchor: pd.Timestamp) -> pd.Timestamp:
+    """与报告生成器 _shift_one_month_back 一致:回退一个日历月,月末夹紧。"""
+    year, month = anchor.year, anchor.month - 1
+    if month == 0:
+        year, month = year - 1, 12
+    day = min(anchor.day, calendar.monthrange(year, month)[1])
+    return pd.Timestamp(year=year, month=month, day=day)
+
+
+def _report_window_block(df: pd.DataFrame) -> dict | None:
+    """markdown 报告「历史回测表现」同口径统计块。
+
+    以最新样本日为锚,预留最近 10 个交易日得 cutoff(等 5/10 日收益验证完),
+    再向前回看 1 个自然月;分档沿用 canonical S/A/B/C。交易日历不可用时以
+    样本日期为交易日代理(报告每个交易日落一批推荐,近似成立)。
+    """
+    valid = df[df["_report_dt"].notna()]
+    if valid.empty:
+        return None
+    anchor = valid["_report_dt"].max()
+    trade_days = _calendar_trade_days(anchor)
+    if not trade_days:
+        trade_days = sorted(valid["_report_dt"].dt.strftime("%Y-%m-%d").unique())
+    if len(trade_days) <= REPORT_RESERVE_TRADE_DAYS:
+        return None
+    cutoff = pd.Timestamp(trade_days[-(REPORT_RESERVE_TRADE_DAYS + 1)])
+    window_start = _shift_one_month_back(cutoff)
+    sub = valid[(valid["_report_dt"] >= window_start) & (valid["_report_dt"] <= cutoff)]
+    return {
+        "window_start": window_start.strftime("%Y-%m-%d"),
+        "cutoff": cutoff.strftime("%Y-%m-%d"),
+        "reserve_trade_days": REPORT_RESERVE_TRADE_DAYS,
+        "baseline": _stats(sub),
+        "tiers": [{"tier": tier, "stats": _stats(sub[sub["tier"] == tier])} for tier in TIER_ORDER],
+    }
 
 
 class ScoringHealthService:
@@ -143,6 +210,8 @@ class ScoringHealthService:
 
         df["report_date"] = df["report_date"].astype(str)
         df["_report_dt"] = pd.to_datetime(df["report_date"], errors="coerce")
+        # 报告同口径块在任何用户区间过滤之前、按全量数据计算(口径固定,便于对数)
+        report_window = _report_window_block(df)
         all_dates = sorted(str(d) for d in df["report_date"].dropna().unique())
         all_valid_dates = df["_report_dt"].dropna()
         requested_start = pd.to_datetime(start_date, errors="coerce") if start_date else pd.NaT
@@ -187,26 +256,12 @@ class ScoringHealthService:
             recent_dates = set(dates[-RECENT_DAYS:])
             recent = df[df["report_date"].isin(recent_dates)]
 
-        def _stats(frame: pd.DataFrame) -> dict:
-            evaluable = frame[frame["return_5d"].notna()]
-            n = int(len(evaluable))
-            if n == 0:
-                return {"n": int(len(frame)), "evaluable": 0, "win_rate": None, "avg_return": None}
-            return {
-                "n": int(len(frame)),
-                "evaluable": n,
-                "win_rate": round(float((evaluable["return_5d"] > 0).mean()), 4),
-                "avg_return": round(float(evaluable["return_5d"].mean()), 4),
-            }
-
         tiers = []
         for tier in TIER_ORDER:
-            full = _stats(df[df["tier"] == tier])
-            rec = _stats(recent[recent["tier"] == tier])
             tiers.append({
                 "tier": tier,
-                "full": full,
-                "recent": rec,
+                "full": _stats(df[df["tier"] == tier]),
+                "recent": _stats(recent[recent["tier"] == tier]),
             })
 
         b_recent = next(t for t in tiers if t["tier"] == "B")["recent"]
@@ -291,6 +346,7 @@ class ScoringHealthService:
             "total_rows": int(len(df)),
             "baseline": {"full": _stats(df), "recent": _stats(recent)},
             "tiers": tiers,
+            "report_window": report_window,
             "degraded": {
                 "count": degraded_count,
                 "ratio": round(degraded_count / len(df), 4) if len(df) else 0.0,

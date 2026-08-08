@@ -25,6 +25,7 @@ if __package__ in (None, ""):
 # pop 掉 sys.modules["webui.core"] 重载时会拿到陈旧模块(其 CONFIGURATION_SERVICE
 # 仍绑定真实用户目录),曾把测试占位 Token 写进真实 tushare_config.json。
 import webui.core as webui_core
+from webui.parent_watchdog import start_parent_watchdog
 from webui.services.model_runtime import load_model_payload, loaded_model_info, run_prediction_payload
 from webui.services import futures_service, quant_radar_service, star_orbit_service
 from webui.services import license_service
@@ -585,7 +586,14 @@ def get_stock_analysis_suite(request: Request, stock_code=None) -> Response:
     name = _query_value(request, "name", "")
     force_refresh = str(_query_value(request, "refresh", "") or "").lower() in {"1", "true", "yes"}
     try:
-        payload = webui_core.STOCK_SUITE_SERVICE.get_suite(code, name=name, force_refresh=force_refresh)
+        quote = webui_core._latest_stock_quote(code) or {}
+        current_price = webui_core._safe_float(quote.get("price"), 0.0)
+        payload = webui_core.STOCK_SUITE_SERVICE.get_suite(
+            code,
+            name=name,
+            force_refresh=force_refresh,
+            current_price=current_price if current_price > 0 else None,
+        )
     except ValueError as exc:
         return _json_response({"success": False, "error": str(exc)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
@@ -1620,6 +1628,8 @@ def run_server() -> None:
     host, port, _debug = webui_core.get_server_config()
     configure_server_from_env()
     _ensure_port_available(host, port)
+    # 桌面外壳非正常死亡时没人来杀我们(后端在独立进程组),靠守望线程自了。
+    start_parent_watchdog()
     app.start(host=host, port=port, _check_port=False)
 
 

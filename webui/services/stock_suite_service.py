@@ -137,7 +137,13 @@ class StockSuiteService:
             "market": market,
         }
 
-    def get_suite(self, code: str, name: str = "", force_refresh: bool = False) -> Dict[str, Any]:
+    def get_suite(
+        self,
+        code: str,
+        name: str = "",
+        force_refresh: bool = False,
+        current_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
         code = self._validate_code(code)
         meta = self._stock_meta(code, name)
         now = _dt.datetime.now().isoformat(timespec="seconds")
@@ -145,6 +151,12 @@ class StockSuiteService:
             self._suite.invalidate(code)
         try:
             payload = self._suite.get_full_payload(code)
+            compute_risk = getattr(self._suite, "compute_risk_control", None)
+            if current_price is not None and callable(compute_risk):
+                payload = {
+                    **payload,
+                    "risk_control": compute_risk(code, current_price=current_price),
+                }
             # 展示层重载一致性：已审阅 overlay 的金句 override / 逐人 insight 在此 merge 进 panel，
             # 与刚生成时 trigger_panel_overlay 返回的 merged_panel 保持一致。仅在此展示边界 merge——
             # compute/cache/regenerate 仍喂原始 panel 给 LLM（否则模型会把自己上一轮的金句当基线）。

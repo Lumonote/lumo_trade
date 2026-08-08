@@ -245,3 +245,52 @@ def test_invalid_csv_degrades_to_unavailable(tmp_path):
         "foo,bar\n1,2\n", encoding="utf-8")
     health = ScoringHealthService([tmp_path]).health()
     assert health["available"] is False
+
+
+def test_report_window_parity_block(tmp_path, monkeypatch):
+    """report_window = markdown 报告「历史回测表现」同口径:
+    以最新样本日为锚,预留最近10个交易日得 cutoff,再向前回看1个自然月;
+    分档用 canonical S≥85/A 78-85/B 70-78/C<70。"""
+    import webui.services.scoring_health_service as svc_mod
+    monkeypatch.setattr(svc_mod, "_calendar_trade_days", lambda anchor: [])
+
+    rows = []
+    # 20 个样本日(交易日历不可用时以样本日作交易日代理)
+    for i in range(20):
+        rows.append({
+            "date": f"2026-04-{i + 1:02d}",
+            "score": 88, "quant": 70,
+            "ret": -1.0 if i == 9 else 1.0,
+        })
+    # 80 分在报告口径下应落 A 档(78-85),而不是旧报告的 80-85 之外
+    rows.append({"date": "2026-04-05", "score": 80, "quant": 70, "ret": 2.0})
+    _write_csv(tmp_path, "backtest_rebuilt_20260420_000000.csv", rows)
+
+    health = ScoringHealthService([tmp_path]).health()
+    rw = health["report_window"]
+    assert rw is not None
+    # 20 日预留最后 10 日 → cutoff = 第 11 个自然样本日
+    assert rw["cutoff"] == "2026-04-10"
+    assert rw["window_start"] == "2026-03-10"
+    tiers = {t["tier"]: t["stats"] for t in rw["tiers"]}
+    # 窗口内 S = 04-01..04-10 共 10 条(9 胜 1 负),04-11 之后被预留期排除
+    assert tiers["S"]["n"] == 10
+    assert tiers["S"]["win_rate"] == pytest.approx(0.9)
+    assert tiers["S"]["avg_return"] == pytest.approx(0.8)
+    assert tiers["A"]["n"] == 1
+    assert tiers["A"]["win_rate"] == pytest.approx(1.0)
+    assert rw["baseline"]["n"] == 11
+
+
+def test_report_window_absent_when_history_too_short(tmp_path, monkeypatch):
+    """样本日不足以预留 10 个交易日时不产出 report_window(与报告行为一致)。"""
+    import webui.services.scoring_health_service as svc_mod
+    monkeypatch.setattr(svc_mod, "_calendar_trade_days", lambda anchor: [])
+
+    rows = [{"date": f"2026-04-{i + 1:02d}", "score": 88, "quant": 70, "ret": 1.0}
+            for i in range(5)]
+    _write_csv(tmp_path, "backtest_rebuilt_20260405_000000.csv", rows)
+
+    health = ScoringHealthService([tmp_path]).health()
+    assert health["available"] is True
+    assert health["report_window"] is None

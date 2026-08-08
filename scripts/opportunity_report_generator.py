@@ -26,9 +26,19 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from analysis.scoring_rules import RULESET_VERSION  # noqa: E402  v24共享规则版本号
+from analysis import outcome_markers  # noqa: E402  入选后表现标记(只提示不改分)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 「历史回测表现」分档 —— 与桌面「报告与健康」置信度档位保持一致
+# (S>=85 / A 78-85 / B 70-78 / C<70),两处胜率/收益才能直接对数。
+BACKTEST_SCORE_BINS = [
+    (85, 999, 'S 级 (≥85分)', '#d32f2f'),
+    (78, 85, 'A 级 (78-85分)', '#f57c00'),
+    (70, 78, 'B 级 (70-78分)', '#1565c0'),
+    (0, 70, 'C 级 (<70分)', '#757575'),
+]
 
 def _fmt_money(num):
     try:
@@ -159,6 +169,35 @@ def _get_displayable_sector_change(
             return None
 
     return change
+
+
+def _stock_marker_payload(stock: Dict) -> Dict:
+    """个股 → 入选后表现标记(见 analysis/outcome_markers.py)。异常时返回空结构。
+
+    带上 ``extract_context`` 的走势/相关资料, 描述才能讲这只票自己的位置与节奏,
+    而不是只罗列命中的标记。
+    """
+    try:
+        return outcome_markers.marker_payload(
+            outcome_markers.extract_factors(stock),
+            outcome_markers.extract_context(stock),
+        )
+    except Exception:
+        return {'version': outcome_markers.MARKERS_VERSION, 'markers': [],
+                'constitution': outcome_markers.constitution([]), 'description': '',
+                'narrative': ''}
+
+
+def _marker_badges_text(stock: Dict, limit: int = 3) -> str:
+    """个股 → 一行紧凑徽章文本, 供表格/标题旁展示。无命中返回空串。"""
+    payload = _stock_marker_payload(stock)
+    hits = payload.get('markers') or []
+    if not hits:
+        return ''
+    badges = [f"{h['emoji']}{h['label']}" for h in hits[:limit]]
+    if len(hits) > limit:
+        badges.append(f"+{len(hits) - limit}")
+    return ' '.join(badges)
 
 
 def _generate_selection_reason(stock: Dict) -> str:
@@ -1073,45 +1112,83 @@ class OpportunityReportGenerator:
     def _build_market_regime_alert(self, regime_info: Optional[Dict],
                                     s_count: int, a_count: int,
                                     passed_count: int) -> List[str]:
-        """生成大盘环境提示 + 候选不足时的"放空一天的勇气"提醒。
+        """生成大盘/风格环境提示 + 候选不足时的"放空一天的勇气"提醒。
 
         触发情况:
-        - 大盘 risk_off (沪深300 5日跌≥3%): 强烈建议观望
-        - S 级 = 0 且 A 级 < 5: 候选质量偏低，建议观望
-        - S 级 + A 级 < 3: 没有像样的标的
+        - risk_off (沪深300 或 中证1000/国证2000 任一走坏): 红色横幅+仓位建议
+        - caution (风格指数温和走弱): 橙色横幅+仓位建议
+        - S 级 = 0 且 A 级 < 5 / S+A < 3: 候选质量偏低，建议观望
         正常情况下也会显示一行简短的市场状态。
+
+        2026-07 教训: 小盘崩盘时沪深300被权重撑平,横幅必须直接展示风格指数。
         """
         lines = []
-        regime = (regime_info or {}).get('regime', 'unknown')
-        chg5 = (regime_info or {}).get('hs300_chg_5d')
-        chg20 = (regime_info or {}).get('hs300_chg_20d')
+        info = regime_info or {}
+        regime = info.get('regime', 'unknown')
+        chg5 = info.get('hs300_chg_5d')
+        chg20 = info.get('hs300_chg_20d')
+        style_indices = info.get('style_indices') or {}
+        advice = info.get('position_advice')
+        if not advice:
+            try:
+                from analysis.market_regime import position_advice as _pa
+                advice = _pa(regime)
+            except Exception:
+                advice = None
+
+        _LEVEL_MARK = {'risk_off': '🔴', 'caution': '🟠', 'neutral': '⚪', 'risk_on': '🟢'}
+
+        def _index_bits() -> List[str]:
+            bits = []
+            for _name, _m in style_indices.items():
+                if _m.get('chg_5d') is None:
+                    continue
+                _c20 = _m.get('chg_20d')
+                _c20_txt = f"{_c20:+.2f}%" if _c20 is not None else "—"
+                mark = _LEVEL_MARK.get(_m.get('level'), '⚪')
+                bits.append(f"{mark} {_name} 5日{_m['chg_5d']:+.2f}% / 20日{_c20_txt}")
+            if not bits and chg5 is not None:
+                _c20_txt = f"{chg20:+.2f}%" if chg20 is not None else "—"
+                bits.append(f"沪深300 近5日 {chg5:+.2f}% / 近20日 {_c20_txt}")
+            return bits
 
         # 严重情况判定
         is_thin = (s_count == 0 and a_count < 5) or (s_count + a_count < 3)
         is_bear = regime == 'risk_off'
+        is_caution = regime == 'caution'
 
         if is_bear or is_thin:
-            warn_parts = []
-            if is_bear and chg5 is not None:
-                warn_parts.append(
-                    f"⚠️ <strong>大盘走弱</strong>(沪深300 近5日 {chg5:+.2f}%, 近20日 {chg20:+.2f}%)，整体环境不利"
-                )
-            if is_thin:
-                warn_parts.append(
-                    f"⚠️ <strong>今日候选质量偏低</strong>(S 级 {s_count} 只 / A 级 {a_count} 只 / 通过筛选 {passed_count} 只)"
-                )
             lines.append("\n## 🛑 风险提示")
             lines.append('<div style="border: 2px solid #d32f2f; background: #ffebee; padding: 12px; border-radius: 6px; font-size: 14px;">')
-            for p in warn_parts:
-                lines.append(f'<p style="margin: 4px 0;">{p}</p>')
-            lines.append('<p style="margin: 8px 0 0; font-weight: bold; color: #c62828;">📍 建议:今日观望或仅参与 S 级标的，控制总仓位 ≤ 30%</p>')
+            if is_bear:
+                lines.append('<p style="margin: 4px 0;">⚠️ <strong>市场/风格环境走弱</strong>，整体环境不利：</p>')
+                for _bit in _index_bits():
+                    lines.append(f'<p style="margin: 2px 0 2px 12px;">{_bit}</p>')
+            if is_thin:
+                lines.append(
+                    f'<p style="margin: 4px 0;">⚠️ <strong>今日候选质量偏低</strong>(S 级 {s_count} 只 / A 级 {a_count} 只 / 通过筛选 {passed_count} 只)</p>'
+                )
+            _advice_txt = advice or "今日观望或仅参与 S 级标的，控制总仓位 ≤ 30%"
+            lines.append(f'<p style="margin: 8px 0 0; font-weight: bold; color: #c62828;">📍 仓位建议: {_advice_txt}</p>')
             lines.append('</div>')
             lines.append("")
-        elif regime in ('risk_on', 'neutral') and chg5 is not None:
-            tag = '✅ 风险偏好' if regime == 'risk_on' else '🟡 中性'
-            lines.append(
-                f"\n> **市场环境**: {tag} | 沪深300 近5日 {chg5:+.2f}% / 近20日 {chg20:+.2f}% | 今日 S 级 {s_count} 只, A 级 {a_count} 只\n"
-            )
+        elif is_caution:
+            lines.append("\n## 🟠 谨慎提示")
+            lines.append('<div style="border: 2px solid #ef6c00; background: #fff3e0; padding: 12px; border-radius: 6px; font-size: 14px;">')
+            lines.append('<p style="margin: 4px 0;">⚠️ <strong>风格指数温和走弱</strong>：</p>')
+            for _bit in _index_bits():
+                lines.append(f'<p style="margin: 2px 0 2px 12px;">{_bit}</p>')
+            if advice:
+                lines.append(f'<p style="margin: 8px 0 0; font-weight: bold; color: #e65100;">📍 仓位建议: {advice}</p>')
+            lines.append('</div>')
+            lines.append("")
+        elif regime in ('risk_on', 'neutral'):
+            bits = _index_bits()
+            if bits:
+                tag = '✅ 风险偏好' if regime == 'risk_on' else '🟡 中性'
+                lines.append(
+                    f"\n> **市场环境**: {tag} | {' | '.join(bits)} | 今日 S 级 {s_count} 只, A 级 {a_count} 只\n"
+                )
         return lines
 
     def _build_yesterday_recap(self, current_report_dt: datetime) -> List[str]:
@@ -1395,6 +1472,20 @@ class OpportunityReportGenerator:
                         "已在 Top 榜排序中排到非降级样本之后。\n"
                     )
 
+            # === 动态置信度阈值: 近1月Top10分数分位数(带静态下限),对抗评分通胀 ===
+            # (评分通胀后 91% 样本 ≥85 分,静态 S 阈值失去区分度;窗口样本不足时回退静态)
+            _bt_prepared = None
+            _tier_thresholds = {'S': 85.0, 'A': 78.0, 'B': 70.0, 'dynamic': False}
+            try:
+                from analysis.market_regime import compute_dynamic_tier_thresholds as _cdtt
+                _bt_prepared = self._prepare_backtest_history(current_report_dt)
+                _bt_df_for_thr = _bt_prepared[0]
+                if _bt_df_for_thr is not None and len(_bt_df_for_thr) > 0:
+                    _thr_scores = _bt_df_for_thr[_bt_prepared[1]].dropna().tolist()
+                    _tier_thresholds = _cdtt(_thr_scores)
+            except Exception as _thr_err:
+                logger.debug(f"动态置信度阈值计算失败: {_thr_err}")
+
             # === 头部增强: 昨日推荐复盘 + 大盘环境/候选不足提示 ===
             try:
                 _recap = self._build_yesterday_recap(current_report_dt)
@@ -1405,8 +1496,11 @@ class OpportunityReportGenerator:
                 logger.debug(f"昨日复盘失败: {_re}")
 
             try:
-                _s_count = sum(1 for _s in top_20 if _stock_final_score(_s) >= 85)
-                _a_count = sum(1 for _s in top_20 if 78 <= _stock_final_score(_s) < 85)
+                _s_count = sum(1 for _s in top_20 if _stock_final_score(_s) >= _tier_thresholds['S'])
+                _a_count = sum(
+                    1 for _s in top_20
+                    if _tier_thresholds['A'] <= _stock_final_score(_s) < _tier_thresholds['S']
+                )
                 _alert = self._build_market_regime_alert(market_regime, _s_count, _a_count, passed_count)
                 if _alert:
                     lines.extend(_alert)
@@ -1414,9 +1508,35 @@ class OpportunityReportGenerator:
             except Exception as _ae:
                 logger.debug(f"大盘提示失败: {_ae}")
 
+            # 批次拥挤度(日级风险): 当日入选结构是否扎堆在过热板块/追高位
+            try:
+                _crowd_items = [outcome_markers.extract_factors(_s)
+                                for _s in (analysis_results or [])]
+                _crowd = outcome_markers.batch_crowding(_crowd_items)
+                if _crowd.get('crowded'):
+                    lines.append(
+                        f"> 🚨 **批次拥挤预警** —— {'；'.join(_crowd['reasons'])}。"
+                        f"当日入选 {_crowd['total']} 只，板块满格 "
+                        f"{_crowd['hot_sector_share'] * 100:.0f}%、追高 "
+                        f"{_crowd['high_chase_share'] * 100:.0f}%。"
+                        f"回溯 2025-11~2026-07 的 117 个入选日：拥挤日(28 天/527 只)"
+                        f"后续 10 日均值 **-3.64%**，健康日(89 天/1358 只)为 -1.23%。\n"
+                    )
+                    lines.append("---\n")
+                elif not _crowd.get('insufficient'):
+                    lines.append(
+                        f"> ✅ **批次结构健康** —— 当日入选 {_crowd['total']} 只，"
+                        f"板块满格 {_crowd['hot_sector_share'] * 100:.0f}%、"
+                        f"追高 {_crowd['high_chase_share'] * 100:.0f}%，均在常态区间"
+                        f"(历史健康日后续 10 日均值 -1.23%，优于拥挤日的 -3.64%)。\n"
+                    )
+                    lines.append("---\n")
+            except Exception as _ce:
+                logger.debug(f"批次拥挤度提示失败: {_ce}")
+
             lines.append("## 🏆 综合排名 TOP20")
             lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
-            lines.append('<thead><tr><th>排名</th><th>代码</th><th>股票名称</th><th>综合得分</th><th>详细分析</th></tr></thead>')
+            lines.append('<thead><tr><th>排名</th><th>代码</th><th>股票名称</th><th>综合得分</th><th>表现标记</th><th>详细分析</th></tr></thead>')
             lines.append('<tbody>')
 
             recent_repeat_map = self._collect_recent_repeat_entries(
@@ -1451,8 +1571,14 @@ class OpportunityReportGenerator:
                 if advanced_txt and advanced_txt != "—":
                     analysis_parts.append(f"【高级】{advanced_txt}")
                 full_analysis = "；".join(part for part in analysis_parts if part)
-                
-                lines.append(f'<tr><td style="text-align: center;">{i}</td><td style="text-align: center;">{code}</td><td>{name_txt}</td><td style="text-align: center;">{score:.2f}</td><td>{full_analysis}</td></tr>')
+
+                _mk = _stock_marker_payload(stock)
+                _con = _mk['constitution']
+                _badges = _marker_badges_text(stock)
+                _mk_cell = (f"{_con['grade']}<br><span style=\"font-size:11px;\">{_badges}</span>"
+                            if _badges else _con['grade'])
+
+                lines.append(f'<tr><td style="text-align: center;">{i}</td><td style="text-align: center;">{code}</td><td>{name_txt}</td><td style="text-align: center;">{score:.2f}</td><td style="text-align: center;font-size:12px;">{_mk_cell}</td><td>{full_analysis}</td></tr>')
 
             lines.append('</tbody></table>')
 
@@ -1460,7 +1586,7 @@ class OpportunityReportGenerator:
             lines.append("\n---\n")
             lines.append("## 📈 置信度分级 & 历史回测表现\n")
 
-            # 当日推荐的置信度分布
+            # 当日推荐的置信度分布(阈值 = 动态分位数,见上方 _tier_thresholds)
             tier_counts = {'S': 0, 'A': 0, 'B': 0, 'C': 0}
 
             def _resolve_tier_by_display_score(stock_item: Dict) -> str:
@@ -1468,11 +1594,11 @@ class OpportunityReportGenerator:
                     score_val = float(stock_item.get('final_score', 0) or 0)
                 except Exception:
                     score_val = 0.0
-                if score_val >= 85:
+                if score_val >= _tier_thresholds['S']:
                     return 'S'
-                if score_val >= 78:
+                if score_val >= _tier_thresholds['A']:
                     return 'A'
-                if score_val >= 70:
+                if score_val >= _tier_thresholds['B']:
                     return 'B'
                 return 'C'
 
@@ -1482,14 +1608,21 @@ class OpportunityReportGenerator:
                     tier_counts[tier] += 1
 
             lines.append("### 当日推荐置信度分布")
+            if _tier_thresholds.get('dynamic'):
+                lines.append(
+                    f"\n> 📐 分级阈值已按近1月Top10分数分位数动态重标定"
+                    f"(样本{_tier_thresholds.get('sample_size', 0)}条): "
+                    f"S≥{_tier_thresholds['S']:.1f} / A≥{_tier_thresholds['A']:.1f} / B≥{_tier_thresholds['B']:.1f}。"
+                    f"评分整体通胀时静态85分线上样本占比过高,分位数阈值恢复S级「前15%」的区分度。\n"
+                )
             lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 14px;">')
             lines.append('<thead><tr><th>置信度</th><th>说明</th><th>数量</th></tr></thead>')
             lines.append('<tbody>')
             tier_info = [
-                ('S', '强烈推荐(≥85分)'),
-                ('A', '可考虑(≥78分)'),
-                ('B', '谨慎(≥70分)'),
-                ('C', '不建议(<70分)')
+                ('S', f"强烈推荐(≥{_tier_thresholds['S']:.1f}分)"),
+                ('A', f"可考虑(≥{_tier_thresholds['A']:.1f}分)"),
+                ('B', f"谨慎(≥{_tier_thresholds['B']:.1f}分)"),
+                ('C', f"不建议(<{_tier_thresholds['B']:.1f}分)")
             ]
             for tier, desc in tier_info:
                 count = tier_counts.get(tier, 0)
@@ -1501,7 +1634,34 @@ class OpportunityReportGenerator:
                 import json as _json
                 import pandas as _pd
 
-                bt_with_returns, _score_col, _cutoff_dt, _window_start_dt = self._prepare_backtest_history(current_report_dt)
+                if _bt_prepared is not None:
+                    bt_with_returns, _score_col, _cutoff_dt, _window_start_dt = _bt_prepared
+                else:
+                    bt_with_returns, _score_col, _cutoff_dt, _window_start_dt = self._prepare_backtest_history(current_report_dt)
+
+                # 同期指数基准(与交易规则同口径: 次日开盘买、第5交易日收盘卖)。
+                # 目的: 窗口滚进极端行情时,"策略差"与"市场/风格差"可一眼归因。
+                _bench_maps = {}
+                if bt_with_returns is not None and len(bt_with_returns) > 0:
+                    try:
+                        from analysis.market_regime import (
+                            forward_returns_for_dates as _fwd,
+                            get_index_bars as _gib,
+                        )
+                        _verified_dates = sorted(
+                            str(d)[:10] for d in
+                            bt_with_returns.dropna(subset=['return_5d'])['report_date'].unique()
+                        )
+                        if _verified_dates:
+                            for _sym, _bars in _gib(('sh000001', 'sh000852'), datalen=200).items():
+                                _bench_maps[_sym] = _fwd(_bars, _verified_dates, horizon=5)
+                    except Exception as _bench_err:
+                        logger.debug(f"指数基准计算失败: {_bench_err}")
+
+                def _bench_avg(_sym: str, _dates) -> Optional[float]:
+                    _m = _bench_maps.get(_sym) or {}
+                    _vals = [_m[str(_d)[:10]] for _d in _dates if str(_d)[:10] in _m]
+                    return (sum(_vals) / len(_vals)) if _vals else None
 
                 # 自动补充缺失的收益数据
                 if bt_with_returns is not None and len(bt_with_returns) >= 10:
@@ -1515,6 +1675,7 @@ class OpportunityReportGenerator:
                                 _ts.set_token(_token)
                                 _pro = _ts.pro_api()
                                 _filled = 0
+                                _filled_idx = []
                                 for _idx in bt_with_returns[_missing_mask].index:
                                     try:
                                         _code = str(int(bt_with_returns.at[_idx, 'code'])).zfill(6)
@@ -1538,6 +1699,7 @@ class OpportunityReportGenerator:
                                                     _p10 = _price_df.iloc[_buy_idx + 9]['close']
                                                     bt_with_returns.at[_idx, 'return_10d'] = (_p10 - _bp) / _bp * 100
                                                     _filled += 1
+                                                    _filled_idx.append(_idx)
                                                     # 同时补充5d如果也缺失
                                                     if _pd.isna(bt_with_returns.at[_idx, 'return_5d']) and _buy_idx + 5 <= len(_price_df):
                                                         _p5 = _price_df.iloc[_buy_idx + 4]['close']
@@ -1546,6 +1708,14 @@ class OpportunityReportGenerator:
                                         pass
                                 if _filled > 0:
                                     logger.info(f"自动补充了 {_filled}/{_missing_count} 条缺失的10日收益数据")
+                                    # 回写 SQLite:让「报告与健康」页与报告看到同一份收益数据
+                                    try:
+                                        from data_store import backtest_recommendation_repo as _btr_fill
+                                        _btr_fill.upsert_rows(
+                                            bt_with_returns.loc[_filled_idx].to_dict(orient='records'))
+                                        logger.info(f"已将 {_filled} 条补充收益回写 backtest_recommendation 表")
+                                    except Exception as _persist_err:
+                                        logger.debug(f"补充收益回写失败: {_persist_err}")
                         except Exception as _fill_err:
                             logger.debug(f"自动补充收益数据失败: {_fill_err}")
 
@@ -1557,18 +1727,12 @@ class OpportunityReportGenerator:
                             f"\n**统计窗口**: {_window_start_dt.strftime('%Y-%m-%d')} ~ {_cutoff_dt.strftime('%Y-%m-%d')}"
                             f"（先预留最近10个交易日，再向前回看1个月）\n"
                         )
-                    lines.append("\n**样本口径**: 历史每日Top10推荐（不是全量候选池），因此高分样本占比会明显更高。\n**交易规则**: 报告次日开盘价买入，第5个交易日收盘价卖出（年化按 252/5≈50.4 次复利估算）。")
+                    lines.append("\n**样本口径**: 历史每日Top10推荐（不是全量候选池），因此高分样本占比会明显更高。\n**交易规则**: 报告次日开盘价买入，第5个交易日收盘价卖出（年化按 252/5≈50.4 次复利估算）。\n**分档口径**: 与桌面「报告与健康」页一致（S≥85 / A 78-85 / B 70-78 / C<70）；健康页「报告同口径」表可与本表直接对数。")
                     lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
-                    lines.append('<thead><tr><th>评分区间</th><th>数量</th><th>5日均收益</th><th>5日胜率</th><th>10日均收益</th><th>盈亏比</th><th>年化估算</th></tr></thead>')
+                    lines.append('<thead><tr><th>评分区间</th><th>数量</th><th>5日均收益</th><th>5日超额(vs上证)</th><th>5日胜率</th><th>10日均收益</th><th>盈亏比</th><th>年化估算</th></tr></thead>')
                     lines.append('<tbody>')
 
-                    score_bins = [
-                        (85, 999, 'S 级 (≥85分)', '#d32f2f'),
-                        (80, 85, 'A 级 (80-85分)', '#f57c00'),
-                        (70, 80, '70-80分', '#1565c0'),
-                        (60, 70, '60-70分', '#757575'),
-                        (0, 60, '60分以下', '#9e9e9e')
-                    ]
+                    score_bins = BACKTEST_SCORE_BINS
 
                     _ANN_CYCLES = 252.0 / 5.0  # 5日持仓 → 一年约 50.4 次复利
 
@@ -1579,7 +1743,7 @@ class OpportunityReportGenerator:
                             subset = bt_with_returns[(bt_with_returns[_score_col] >= low) & (bt_with_returns[_score_col] < high)]
 
                         if len(subset) == 0:
-                            lines.append(f'<tr><td style="font-weight: bold;">{label}</td><td style="text-align: center;">0</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
+                            lines.append(f'<tr><td style="font-weight: bold;">{label}</td><td style="text-align: center;">0</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
                             continue
 
                         r5 = subset['return_5d'].dropna()
@@ -1587,6 +1751,9 @@ class OpportunityReportGenerator:
                         if len(r5) > 0:
                             wr = (r5 > 0).mean() * 100
                             avg5 = r5.mean()
+                            _bin_dates = subset.dropna(subset=['return_5d'])['report_date'].tolist()
+                            _bin_bench = _bench_avg('sh000001', _bin_dates)
+                            _excess_str = f"{avg5 - _bin_bench:+.2f}%" if _bin_bench is not None else "—"
                             avg10_str = f"{r10.mean():+.2f}%" if len(r10) > 0 else "数据不足"
                             wins = r5[r5 > 0].sum()
                             losses = r5[r5 < 0].sum()
@@ -1597,13 +1764,13 @@ class OpportunityReportGenerator:
                                 ann_str = f"{ann:+.1f}%"
                             except Exception:
                                 ann_str = "—"
-                            lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td style="text-align: center;">{avg5:+.2f}%</td><td style="text-align: center;">{wr:.1f}%</td><td style="text-align: center;">{avg10_str}</td><td style="text-align: center;">{pf_str}</td><td style="text-align: center; font-weight: bold;">{ann_str}</td></tr>')
+                            lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td style="text-align: center;">{avg5:+.2f}%</td><td style="text-align: center;">{_excess_str}</td><td style="text-align: center;">{wr:.1f}%</td><td style="text-align: center;">{avg10_str}</td><td style="text-align: center;">{pf_str}</td><td style="text-align: center; font-weight: bold;">{ann_str}</td></tr>')
                         else:
-                            lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
+                            lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
                     lines.append('</tbody></table>')
 
-                    # 核心阈值提示（按80分以上统计）
-                    _above80 = bt_with_returns[bt_with_returns[_score_col] >= 80]
+                    # 核心阈值提示（S+A 档,与分档口径一致）
+                    _above80 = bt_with_returns[bt_with_returns[_score_col] >= 78]
                     _r5_80 = _above80['return_5d'].dropna()
                     if len(_r5_80) > 0:
                         try:
@@ -1611,7 +1778,7 @@ class OpportunityReportGenerator:
                             _ann80_str = f" | 年化估算: {_ann80:+.1f}%"
                         except Exception:
                             _ann80_str = ""
-                        lines.append(f"\n**核心统计(评分≥80)**: {len(_above80)}条 | "
+                        lines.append(f"\n**核心统计(S+A, 评分≥78)**: {len(_above80)}条 | "
                                     f"已验证{len(_r5_80)}条 | "
                                     f"5日胜率: {(_r5_80 > 0).mean()*100:.1f}% | "
                                     f"5日均收益: {_r5_80.mean():+.2f}%"
@@ -1637,6 +1804,23 @@ class OpportunityReportGenerator:
                                     f"5日胜率: {(total_r5 > 0).mean()*100:.1f}%"
                                     f"{_ann_total_str} | "
                                     f"数据范围: {_date_min} ~ {_date_max}")
+
+                    # 同期指数基准与超额归因(窗口滚进极端行情时,"差"可归因于市场还是选股)
+                    if len(total_r5) > 0 and _bench_maps:
+                        _all_dates = bt_with_returns.dropna(subset=['return_5d'])['report_date'].tolist()
+                        _sh_avg = _bench_avg('sh000001', _all_dates)
+                        _csi_avg = _bench_avg('sh000852', _all_dates)
+                        _bench_parts = []
+                        if _sh_avg is not None:
+                            _bench_parts.append(f"上证 {_sh_avg:+.2f}%(组合超额 {total_r5.mean() - _sh_avg:+.2f}%)")
+                        if _csi_avg is not None:
+                            _bench_parts.append(f"中证1000 {_csi_avg:+.2f}%(组合超额 {total_r5.mean() - _csi_avg:+.2f}%)")
+                        if _bench_parts:
+                            lines.append(f"\n**同期指数基准(同口径5日)**: {' | '.join(_bench_parts)}")
+                            lines.append(
+                                "\n> 📌 归因提示: 组合绝对收益为负、但相对中证1000超额为正 → 主因是小盘/题材风格整体走弱(风格贝塔);"
+                                "两者同时为负 → 选股本身在衰减,应降低参与度。"
+                            )
 
                     # 分档收益分布
                     lines.append("\n### 收益分档分布")
@@ -4005,6 +4189,16 @@ class OpportunityReportGenerator:
                 if selected_adjustments:
                     parts.append(f"【关键加减分】{'；'.join(selected_adjustments[:10])}")
 
+            # 入选后表现标记(2026-07-29 回溯, 只提示不改分)
+            _marker_payload = _stock_marker_payload(stock)
+            if _marker_payload['markers']:
+                # 只出对这只票的判断, 不复述回测数字(标定依据留在 outcome_markers 注册表)。
+                # 体质分层单独提到前面, 免得 【表现标记】【走势定位】 两个方括号头贴在一起。
+                parts.append(
+                    f"【表现标记】{_marker_payload['constitution']['grade']}。"
+                    f"{_marker_payload['narrative']}"
+                )
+
             # 新增：入选原因与最新动态
             reason = _generate_selection_reason(stock)
             # 添加数据来源标签
@@ -4526,11 +4720,36 @@ class OpportunityReportGenerator:
             # 新增：入选原因与最新动态
             selection_reason = _generate_selection_reason(stock)
             latest_news = stock.get('latest_news')
+            marker_payload = _stock_marker_payload(stock)
+            marker_hits = marker_payload.get('markers') or []
+            marker_html = ''
+            if marker_hits:
+                con = marker_payload['constitution']
+                tone = '#c53030' if con['net'] < 0 else ('#2f855a' if con['net'] > 0 else '#4a5568')
+                chips = ''.join(
+                    '<span title="{ev}" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;'
+                    'border-radius:10px;font-size:11px;background:{bg};color:{fg};">{emoji}{label}</span>'.format(
+                        ev=' —— '.join(p for p in (h['detail'], h.get('summary'), h.get('action')) if p),
+                        bg='#fff5f5' if h['kind'] == 'negative' else '#f0fff4',
+                        fg='#c53030' if h['kind'] == 'negative' else '#2f855a',
+                        emoji=h['emoji'], label=h['label'])
+                    for h in marker_hits
+                )
+                marker_html = (
+                    '<div class="outcome-markers" style="margin-bottom:8px;">'
+                    f'<span style="font-weight:600;color:#4a5568;">🏷️ 表现标记:</span> '
+                    f'<span style="color:{tone};font-weight:600;">{con["grade"]}(净{con["net"]:+d})</span> '
+                    f'{chips}'
+                    f'<div style="font-size:11px;color:#718096;margin-top:3px;">'
+                    f'{con["summary"]}，{con["advice"]}'
+                    f'</div></div>'
+                )
             news_html = ''
-            
-            if selection_reason or latest_news:
+
+            if selection_reason or latest_news or marker_html:
                 news_html = '<div class="stock-news-section" style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed #e2e8f0;">'
-                
+                news_html += marker_html
+
                 if selection_reason:
                     news_html += f'<div class="selection-reason" style="margin-bottom: 8px;"><span style="font-weight: 600; color: #4a5568;">🔍 入选原因:</span> <span style="color: #2d3748;">{selection_reason}</span></div>'
                     

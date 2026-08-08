@@ -1547,6 +1547,69 @@ class OpportunityScorer:
             logger.error(f"量化模型评分失败: {e}")
             return 0.0, {'error': str(e)}
 
+    def marker_inputs_from_ohlcv(self, stock_code: str,
+                                 historical_data: Optional[pd.DataFrame]) -> Dict:
+        """OHLCV → 「入选后表现标记」所需的技术面因子 + 这只票的走势上下文。
+
+        个股分析套件在该股**没有机会挖掘入选记录**时也要出标记与描述, 但技术分、
+        追高风险以及位置/涨幅/连涨节奏这些明细原本只在本评分链路里产出。与其在
+        个股分析里另写一套近似公式(两套口径必然漂移, 标记阈值 tech<45 / chase≥80
+        是按本链路的分布标定的), 不如把同两个内部方法包一层公开出去 —— 本地推导
+        出的标记与描述因此与该股真正入选时完全可比。
+
+        Args:
+            stock_code: 仅用于日志。
+            historical_data: 日线 OHLCV; 数据不足时相应项为 None / 整块跳过。
+
+        Returns:
+            ``{'factors': {tech_score, rsi, chase_risk, change_5d},
+               'context': {position_pct, distance_from_high, change_20d, ...}}``。
+            拿不到的因子一律 None(**不会**退化成 0 —— ``_score_technical_analysis``
+            无数据时返回 0.0, 直接用会把"没数据"误读成"技术极弱"而错误触发
+            「技术乏力」标记)。
+        """
+        factors: Dict[str, Any] = {
+            'tech_score': None, 'rsi': None, 'chase_risk': None, 'change_5d': None,
+        }
+        context: Dict[str, Any] = {}
+        if historical_data is None or getattr(historical_data, 'empty', True):
+            return {'factors': factors, 'context': context}
+
+        try:
+            tech_score, tech_details = self._score_technical_analysis(stock_code, historical_data)
+            tech_details = tech_details or {}
+            if not tech_details.get('error'):
+                factors['tech_score'] = tech_score
+                factors['rsi'] = tech_details.get('RSI')
+                for src, dst in (('volume_ratio', 'volume_ratio'), ('MA_status', 'ma_status'),
+                                 ('MACD_status', 'macd_status'),
+                                 ('vol_price_status', 'vol_price_status')):
+                    if tech_details.get(src) is not None:
+                        context[dst] = tech_details[src]
+        except Exception as e:
+            logger.debug(f"{stock_code}: 标记技术面因子计算失败: {e}")
+
+        try:
+            _momentum_score, momentum = self._score_momentum(stock_code, historical_data)
+            momentum = momentum or {}
+            if not momentum.get('error'):
+                factors['chase_risk'] = momentum.get('chase_risk_score')
+                factors['change_5d'] = momentum.get('change_5d')
+                for key in ('position_pct', 'distance_from_high', 'change_5d', 'change_20d',
+                            'change_60d', 'drawdown_from_recent', 'consecutive_up_days',
+                            'entry_timing'):
+                    if momentum.get(key) is not None:
+                        context[key] = momentum[key]
+        except Exception as e:
+            logger.debug(f"{stock_code}: 标记动量因子计算失败: {e}")
+
+        return {'factors': factors, 'context': context}
+
+    def marker_factors_from_ohlcv(self, stock_code: str,
+                                  historical_data: Optional[pd.DataFrame]) -> Dict:
+        """只要标记因子时的薄封装, 见 ``marker_inputs_from_ohlcv``。"""
+        return self.marker_inputs_from_ohlcv(stock_code, historical_data)['factors']
+
     def _score_technical_analysis(self, stock_code: str,
                                   historical_data: Optional[pd.DataFrame]) -> Tuple[float, Dict]:
         """

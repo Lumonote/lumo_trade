@@ -611,6 +611,11 @@ class MarketIntelligenceService:
         任一源覆盖达到 ``MARKET_CLOUD_FULL_COVERAGE``(或请求的 limit)即采用,
         不足则继续尝试下一源并最终返回行数最多的结果——避免东财 clist 不可达时
         停留在新浪行业节点仅 ~2400 只的部分覆盖(用户看到"只有两千多家")。
+
+        覆盖度择优后再做新鲜度兜底:交易日盘中/收盘后 TuShare 只有上一交易日
+        日线(当日日线晚间才发布),行数最多的结果反而是昨天的数据——此时用腾讯
+        批量实时报价覆盖 价/涨跌/成交额/换手(:meth:`_overlay_realtime_quotes`),
+        市值/主力净流入保持日线口径。指定 ``trade_date`` 的历史回看不叠加。
         """
         now = time.time()
         requested_trade_date = re.sub(r'\D', '', str(trade_date or '').strip())
@@ -653,8 +658,134 @@ class MarketIntelligenceService:
                 best = items
             if len(best) >= enough:
                 break
+        best = self._overlay_realtime_quotes(best)
         self._market_cloud_cache = {'ts': now, 'key': cache_key, 'payload': best}
         return best
+
+    @staticmethod
+    def _cloud_quotes_overlay_due(rows: list[dict[str, Any]], today: datetime.date | None = None) -> bool:
+        """昨日日线快照是否需要叠加实时报价。
+
+        仅当「TuShare 日线源 + 数据日≠今日 + 今日为工作日」时为真:实时源(东财/
+        新浪)本身就是当日数据;周末休市时上一交易日就是最新完整数据;当日日线
+        已发布(晚间之后)也无需覆盖。工作日休市(节假日)会空跑一轮报价,但腾讯
+        返回的仍是最近交易日数值且 trade_date 以报价时间为准,结果不受影响。
+        """
+        if not rows:
+            return False
+        first = rows[0] if isinstance(rows[0], dict) else {}
+        if first.get('source') != 'tushare_market_cloud':
+            return False
+        data_date = re.sub(r'\D', '', str(first.get('trade_date') or ''))
+        if len(data_date) != 8:
+            return False
+        today = today or datetime.date.today()
+        if today.weekday() >= 5:
+            return False
+        return data_date != today.strftime('%Y%m%d')
+
+    def _overlay_realtime_quotes(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """用腾讯实时报价覆盖陈旧日线行(就地修改并返回)。
+
+        覆盖 价/涨跌/成交额/换手,并把 trade_date 推进到报价日;命中的行标
+        ``quoted: True``。报价拉取失败或为空 → 原样返回(继续展示上一交易日,
+        与旧行为一致,不能因兜底失败让云图整块变空)。
+        """
+        today = datetime.date.today()
+        if not self._cloud_quotes_overlay_due(rows, today=today):
+            return rows
+        try:
+            quotes = self._fetch_tencent_cloud_quotes(
+                [code for code in (str(row.get('code') or '') for row in rows) if code]
+            )
+        except Exception:
+            quotes = {}
+        if not quotes:
+            return rows
+        today_key = today.strftime('%Y%m%d')
+        for row in rows:
+            quote = quotes.get(str(row.get('code') or ''))
+            if not quote:
+                continue
+            quote = dict(quote)
+            quote_date = quote.pop('quote_date', None)
+            applied = False
+            for key, value in quote.items():
+                if value is not None:
+                    row[key] = value
+                    applied = True
+            if applied:
+                row['trade_date'] = quote_date or today_key
+                row['quoted'] = True
+        return rows
+
+    @staticmethod
+    def _tencent_cloud_secid(code: str) -> str:
+        """A股代码 → 腾讯行情前缀代码;非 6 位数字返回空。
+
+        北交所含 43/83/87/88 与新段 920 → bj(镜像 quant_radar 规则并补 920,
+        那边 9 开头一律归 sh 会错判 920xxx);沪 6/9 → sh;余下深市 → sz。
+        """
+        c = str(code or '').strip()
+        if len(c) != 6 or not c.isdigit():
+            return ''
+        if c.startswith('92') or c[0] in '48':
+            return 'bj' + c
+        if c[0] in '69':
+            return 'sh' + c
+        return 'sz' + c
+
+    def _fetch_tencent_cloud_quotes(
+        self,
+        codes: list[str],
+        batch: int = 80,
+        max_workers: int = 8,
+    ) -> dict[str, dict[str, Any]]:
+        """腾讯批量实时报价(qt.gtimg.cn,本机可达),供云图昨日日线做实时覆盖。
+
+        字段位 2026-07 实测:2代码 3现价 30报价时间(YYYYMMDDHHMMSS) 32涨跌%
+        37成交额(万元→元) 38换手率。单批失败跳过,整体失败返回 {}。
+        """
+        secids: list[str] = []
+        seen: set[str] = set()
+        for code in codes or []:
+            sid = self._tencent_cloud_secid(code)
+            if sid and sid not in seen:
+                seen.add(sid)
+                secids.append(sid)
+        if not secids:
+            return {}
+        chunks = [secids[i:i + batch] for i in range(0, len(secids), batch)]
+        headers = {'User-Agent': _UA, 'Referer': 'https://gu.qq.com/'}
+
+        def fetch_chunk(chunk: list[str]) -> str:
+            try:
+                return request_text(
+                    'https://qt.gtimg.cn/q=' + ','.join(chunk),
+                    headers=headers, timeout=5, encoding='gbk', errors='ignore', retries=1,
+                )
+            except Exception:
+                return ''
+
+        out: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for text in executor.map(fetch_chunk, chunks):
+                for line in (text or '').splitlines():
+                    if '="' not in line:
+                        continue
+                    fields = line.split('="', 1)[1].rstrip('";').split('~')
+                    if len(fields) <= 38 or not fields[2].strip():
+                        continue
+                    amount = _safe_float(fields[37], None)
+                    quote_date = re.sub(r'\D', '', fields[30] if len(fields) > 30 else '')[:8]
+                    out[fields[2].strip()] = {
+                        'price': _safe_float(fields[3], None),
+                        'change_pct': _safe_float(fields[32], None),
+                        'amount': amount * 10000.0 if amount is not None else None,
+                        'turnover_rate': _safe_float(fields[38], None),
+                        'quote_date': quote_date if len(quote_date) == 8 else None,
+                    }
+        return out
 
     def fetch_sina_market_cloud_stocks(self, limit: int = 5000) -> list[dict[str, Any]]:
         """Fallback full-market rows from Sina industry nodes."""

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from analysis import outcome_markers
 from data_store.connection import get_conn
 
 
@@ -220,6 +221,12 @@ def build_items(filter_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             sr.get("degraded") or quant.get("degraded")
             or quant.get("error") == "无历史数据"
         )
+        # 标记因子/走势上下文统一走 outcome_markers 的提取器: 那里带降级守卫
+        # (技术明细 error 时 tech_score 按缺失处理, 不会把"取数失败"读成"技术0分")。
+        markers = outcome_markers.marker_payload(
+            outcome_markers.extract_factors(stock),
+            outcome_markers.extract_context(stock),
+        )
         out.append({
             "code": str(stock.get("stock_code") or stock.get("code") or "").strip(),
             "name": stock.get("name") or stock.get("stock_name"),
@@ -248,6 +255,12 @@ def build_items(filter_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "sell_signals": _num(quant.get("sell_count")),
                 "quant_score": _num(scores.get("quantitative")),
                 "exclusions": sr.get("exclusion_flags") or [],
+                # 入选后表现标记(2026-07-29 回溯): 只提示不改分, 见 analysis/outcome_markers.py
+                "markers": markers.get("markers") or [],
+                "constitution": markers.get("constitution") or {},
+                "marker_description": markers.get("description") or "",
+                "marker_narrative": markers.get("narrative") or "",
+                "markers_version": markers.get("version"),
             },
         })
     return out
@@ -341,6 +354,29 @@ def run_for_hot_sector_snapshot(snapshot_id) -> Optional[Dict[str, Any]]:
         LIMIT 1
         """,
         (sid,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def latest_item_for_code(code: str) -> Optional[Dict[str, Any]]:
+    """某只个股最近一次入选的 item 行(含 run_date/run_at)。从未入选 → None。
+
+    供个股分析复用「入选后表现标记」: 直接读该股上次入选时已入库的标记,
+    与机会挖掘报告口径完全一致, 不重算因子。
+    """
+    key = str(code or "").strip()
+    if not key:
+        return None
+    row = get_conn().execute(
+        """
+        SELECT i.*, r.run_date, r.run_at, r.ruleset_version
+        FROM opportunity_item i
+        JOIN opportunity_run r ON r.id = i.run_id
+        WHERE i.code = ?
+        ORDER BY r.run_at DESC, r.id DESC
+        LIMIT 1
+        """,
+        (key,),
     ).fetchone()
     return dict(row) if row else None
 

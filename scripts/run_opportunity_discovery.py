@@ -1319,45 +1319,71 @@ class OpportunityDiscovery:
             return []
 
     def _assess_market_regime(self) -> Dict:
-        """评估大盘环境，用于动态收紧/放松候选阈值。
+        """评估大盘 + 小盘风格环境，用于动态收紧/放松候选阈值。
 
-        返回 {regime: 'risk_on'|'neutral'|'risk_off'|'unknown', hs300_chg_5d, hs300_chg_20d}
+        2026-07 教训: 小盘/题材崩盘时沪深300被权重股撑平,只盯沪深300的门控
+        全程不触发。改为纳入中证1000/国证2000,任一风格指数走坏即降级(取最差)。
+
+        返回 {regime: 'risk_on'|'neutral'|'caution'|'risk_off'|'unknown',
+        hs300_chg_5d, hs300_chg_20d, style_regime, style_indices, style_reasons,
+        position_advice}
         """
+        result: Dict = {'regime': 'unknown'}
+
+        # 1) 风格环境(沪深300+中证1000+国证2000; 新浪日K→SQLite, 不依赖token)
+        try:
+            from analysis.market_regime import assess_style_regime
+            style = assess_style_regime()
+        except Exception as e:
+            logger.warning(f"风格环境评估失败: {e}")
+            style = None
+        if style and style.get('style_regime') != 'unknown':
+            result.update({
+                'regime': style['style_regime'],
+                'style_regime': style['style_regime'],
+                'style_indices': style.get('indices') or {},
+                'style_reasons': style.get('reasons') or [],
+                'position_advice': style.get('position_advice'),
+            })
+            hs300 = (style.get('indices') or {}).get('沪深300') or {}
+            if hs300.get('chg_5d') is not None:
+                result['hs300_chg_5d'] = hs300['chg_5d']
+                result['hs300_chg_20d'] = hs300.get('chg_20d')
+            return result
+
+        # 2) 新浪不可达 → 回退 Tushare 沪深300(旧路径,只有大盘视角)
         try:
             import tushare as ts
         except ImportError:
-            return {'regime': 'unknown'}
+            return result
 
         token = self._load_tushare_token()
         if not token:
-            return {'regime': 'unknown'}
+            return result
         try:
+            from analysis.market_regime import classify_index_level, position_advice
             pro = ts.pro_api(token)
             trade_date = self._resolve_latest_trade_date(pro, datetime.now())
             df = pro.index_daily(ts_code='000300.SH', end_date=trade_date, limit=25)
             if df is None or len(df) < 21:
-                return {'regime': 'unknown'}
+                return result
             df = df.sort_values('trade_date').reset_index(drop=True)
             close_today = float(df.iloc[-1]['close'])
             close_5d = float(df.iloc[-6]['close'])
             close_20d = float(df.iloc[-21]['close'])
             chg_5d = (close_today - close_5d) / close_5d * 100
             chg_20d = (close_today - close_20d) / close_20d * 100
-            if chg_5d <= -3 or (chg_5d <= -1 and chg_20d <= -5):
-                regime = 'risk_off'
-            elif chg_5d >= 3 and chg_20d >= 3:
-                regime = 'risk_on'
-            else:
-                regime = 'neutral'
+            regime = classify_index_level({'chg_5d': chg_5d, 'chg_20d': chg_20d})
             return {
                 'regime': regime,
                 'hs300_chg_5d': round(chg_5d, 2),
                 'hs300_chg_20d': round(chg_20d, 2),
                 'trade_date': trade_date,
+                'position_advice': position_advice(regime),
             }
         except Exception as e:
             logger.warning(f"大盘环境评估失败: {e}")
-            return {'regime': 'unknown'}
+            return result
 
     def run(self, limit: int = 100, test_codes: List[str] = None, source: str = 'multi') -> str:
         """

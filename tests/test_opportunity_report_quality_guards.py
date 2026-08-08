@@ -89,3 +89,14 @@ def test_latest_opportunities_hides_fully_degraded_report(tmp_path, monkeypatch)
     assert payload["latest_report"]["all_degraded"] is True
     assert payload["items"] == []
     assert "已隐藏诊断性 Top 榜" in payload["empty_reason"]
+
+
+def test_backtest_score_bins_match_health_tiers():
+    """报告「历史回测表现」分档必须与桌面「报告与健康」置信度档位一致
+    (S≥85 / A 78-85 / B 70-78 / C<70),否则两处胜率/收益无法对数。"""
+    from scripts import opportunity_report_generator as mod
+    from webui.services import scoring_health_service as health
+
+    bins = [(low, high) for low, high, _label, _color in mod.BACKTEST_SCORE_BINS]
+    assert bins == [(85, 999), (78, 85), (70, 78), (0, 70)]
+    assert health.TIER_THRESHOLDS == ((85.0, "S"), (78.0, "A"), (70.0, "B"))

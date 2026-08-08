@@ -1966,6 +1966,27 @@ def _format_signal_parts(signals):
     return '，'.join(parts)
 
 
+def _format_outcome_markers(signals) -> str:
+    """入选后表现标记 → 一行文本(见 analysis/outcome_markers.py)。旧版 run 无此字段返回空串。
+
+    只出「体质分层 + 命中的标记」, 不复述回测数字 —— 回测是标定这些规则的依据,
+    不是给用户看的结论。
+    """
+    if not isinstance(signals, dict):
+        return ''
+    markers = signals.get('markers')
+    if not isinstance(markers, list) or not markers:
+        return ''
+    con = signals.get('constitution') or {}
+    badges = '、'.join(f"{m.get('emoji', '')}{m.get('label', '')}" for m in markers[:4])
+    grade = con.get('grade') or ''
+    if not grade:
+        return badges
+    summary = con.get('summary') or ''
+    head = f"{grade}（{summary}）" if summary else grade
+    return f"{head}：{badges}"
+
+
 def _opportunity_item_from_run_row(row):
     row = dict(row or {})
     scores = _json_obj(row.get('scores_json'), {})
@@ -1979,6 +2000,9 @@ def _opportunity_item_from_run_row(row):
         fields.append({'label': '评分分项', 'value': score_parts})
     if signal_parts:
         fields.append({'label': '风险信号', 'value': signal_parts})
+    marker_parts = _format_outcome_markers(signals)
+    if marker_parts:
+        fields.append({'label': '表现标记', 'value': marker_parts})
     if row.get('source'):
         _src = str(row.get('source'))
         fields.append({'label': '候选来源', 'value': _CANVAS_SOURCE_LABELS.get(_src, _src)})

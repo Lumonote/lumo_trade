@@ -256,8 +256,11 @@ def test_robyn_native_prediction_validation(robyn_module, tmp_path):
 def test_robyn_stock_analysis_suite_get(robyn_module, monkeypatch):
     from robyn.testing import TestClient
 
+    captured = {}
+
     class _StubSvc:
-        def get_suite(self, code, name="", **_kwargs):
+        def get_suite(self, code, name="", **kwargs):
+            captured.update(kwargs)
             return {
                 "success": True,
                 "stock": {"code": code, "name": name, "market": "XSHE", "sector": "—"},
@@ -265,6 +268,11 @@ def test_robyn_stock_analysis_suite_get(robyn_module, monkeypatch):
             }
 
     monkeypatch.setattr(robyn_module.webui_core, "STOCK_SUITE_SERVICE", _StubSvc())
+    monkeypatch.setattr(
+        robyn_module.webui_core,
+        "_latest_stock_quote",
+        lambda _code: {"price": 66.66, "source": "tencent"},
+    )
 
     client = TestClient(robyn_module.app)
     response = client.get("/api/stock-analysis-suite/000001?name=平安银行")
@@ -273,6 +281,7 @@ def test_robyn_stock_analysis_suite_get(robyn_module, monkeypatch):
     assert body["success"] is True
     assert body["stock"]["code"] == "000001"
     assert body["stock"]["name"] == "平安银行"
+    assert captured["current_price"] == 66.66
 
 
 def test_robyn_stock_analysis_suite_capital_rankings_get(robyn_module, monkeypatch):

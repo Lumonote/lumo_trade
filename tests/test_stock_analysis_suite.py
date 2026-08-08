@@ -154,6 +154,27 @@ def test_compute_risk_control_with_atr_and_levels():
     assert isinstance(rc["deep_signals"], list)
 
 
+def test_compute_risk_control_rebases_price_levels_to_realtime_quote():
+    suite = StockAnalysisSuite()
+    df = _fake_ohlcv(120)
+    historical_close = round(float(df["close"].iloc[-1]), 2)
+    suite._load_ohlcv = lambda code: df  # type: ignore[attr-defined]
+
+    rc = suite.compute_risk_control("000001", current_price=66.66)
+
+    assert historical_close != 66.66
+    assert rc["scaled_entry"][0]["price"] == 66.66
+    assert rc["tiered_take_profit"][1]["price"] == 76.66
+    assert rc["tiered_take_profit"][2]["price"] == 86.66
+    assert rc["tiered_take_profit"][3]["price"] == 99.99
+    assert rc["execution_plan"]["stop_loss"]["price"] < 66.66
+    assert rc["price_basis"] == {
+        "source": "realtime_quote",
+        "current_price": 66.66,
+        "ohlcv_close": historical_close,
+    }
+
+
 def test_compute_risk_control_insufficient_data():
     suite = StockAnalysisSuite()
     suite._load_ohlcv = lambda code: _fake_ohlcv(30)  # < 60 bars

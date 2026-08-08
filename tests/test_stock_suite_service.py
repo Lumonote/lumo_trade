@@ -62,6 +62,24 @@ def test_get_suite_returns_jsonable_dict(monkeypatch):
     assert "capital_rankings" in out
 
 
+def test_get_suite_recomputes_risk_control_with_realtime_price():
+    class _PriceAwareSuite(_FakeSuite):
+        def compute_risk_control(self, code, current_price=None):
+            self.calls.append(("risk", code, current_price))
+            return {
+                "available": True,
+                "scaled_entry": [{"label": "现价建仓", "price": current_price}],
+            }
+
+    fake = _PriceAwareSuite()
+    svc = StockSuiteService(orchestrator=fake)
+
+    out = svc.get_suite("000001", name="平安银行", current_price=66.66)
+
+    assert ("risk", "000001", 66.66) in fake.calls
+    assert out["risk_control"]["scaled_entry"][0]["price"] == 66.66
+
+
 def test_get_suite_for_shanghai_market():
     """600/688/8 prefixes should map to XSHG."""
     svc = StockSuiteService(orchestrator=_FakeSuite())

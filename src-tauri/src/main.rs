@@ -6,7 +6,10 @@ use std::{
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -26,6 +29,11 @@ const BACKEND_PORT: u16 = 7070;
 const BACKEND_BUNDLE_MODE: &str = env!("KRONOS_BACKEND_BUNDLE_MODE");
 const WEB_SERVER: &str = env!("KRONOS_WEB_SERVER");
 const BACKEND_PID_FILE: &str = "backend.pid";
+/// SIGTERM 后给后端的收尾宽限:8 × 50ms ≈ 0.4s,之后直接 SIGKILL。
+#[cfg(unix)]
+const TERMINATE_GRACE_POLLS: u32 = 8;
+#[cfg(unix)]
+const TERMINATE_GRACE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -34,6 +42,9 @@ struct BackendProcess {
     pid_file: PathBuf,
     startup_detail: String,
     stderr_log: PathBuf,
+    /// 退出链路会重复触发(ExitRequested → Exit → Drop),没有这个闸门就会把
+    /// 「SIGTERM 等待 → SIGKILL」整套流程跑三遍,白白多堵住主线程好几秒。
+    stopped: AtomicBool,
 }
 
 impl BackendProcess {
@@ -48,10 +59,14 @@ impl BackendProcess {
             pid_file,
             startup_detail,
             stderr_log,
+            stopped: AtomicBool::new(false),
         }
     }
 
     fn stop(&self) {
+        if self.stopped.swap(true, Ordering::SeqCst) {
+            return;
+        }
         if let Ok(mut child_slot) = self.child.lock() {
             if let Some(child) = child_slot.as_mut() {
                 terminate_child(child);
@@ -64,12 +79,7 @@ impl BackendProcess {
 
 impl Drop for BackendProcess {
     fn drop(&mut self) {
-        if let Ok(mut child_slot) = self.child.lock() {
-            if let Some(child) = child_slot.as_mut() {
-                terminate_child(child);
-            }
-        }
-        cleanup_backend_processes(&self.pid_file);
+        self.stop();
     }
 }
 
@@ -208,11 +218,16 @@ fn terminate_pid(pid: u32) {
         .stderr(Stdio::null())
         .status();
 
-    for _ in 0..20 {
+    // Robyn 的 Rust 运行时压根不理会 SIGTERM(重启后端必须 kill -9),所以这里
+    // 的宽限期几乎注定要走完。这段等待是同步跑在主线程上的:macOS 从程序坞/
+    // Cmd+Q 退出时整个流程在 applicationWillTerminate: 里执行,等得越久 App
+    // 「点了退出却还杵在那」的时间就越长,用户越容易改用强制退出——而强制退出
+    // 会跳过这段清理,把后端彻底变成孤儿。给足够收尾时间即可,不必等满 2 秒。
+    for _ in 0..TERMINATE_GRACE_POLLS {
         if !process_is_running(pid) {
             return;
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(TERMINATE_GRACE_POLL_INTERVAL);
     }
 
     let _ = Command::new("kill")
@@ -407,6 +422,7 @@ fn start_backend(app: &tauri::App) -> (Option<Child>, String) {
             .env("KRONOS_PROJECT_ROOT", &project_root)
             .env("KRONOS_USER_DIR", &user_dir)
             .env("KRONOS_DESKTOP", "tauri")
+            .env("KRONOS_PARENT_PID", std::process::id().to_string())
             .env("KRONOS_SOURCE_CONFIG_DIR", &source_config_dir)
             .env("KRONOS_HOST", BACKEND_HOST)
             .env("KRONOS_PORT", BACKEND_PORT.to_string())
@@ -498,6 +514,7 @@ fn start_backend(app: &tauri::App) -> (Option<Child>, String) {
         .args(args)
         .current_dir(project_root)
         .env("KRONOS_DESKTOP", "tauri")
+        .env("KRONOS_PARENT_PID", std::process::id().to_string())
         .env("KRONOS_USER_DIR", &user_dir)
         .env("KRONOS_SOURCE_CONFIG_DIR", &source_config_dir)
         .env("KRONOS_HOST", BACKEND_HOST)
@@ -713,6 +730,33 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 统一的退出收尾:先让界面痕迹立刻消失,再杀后端。
+///
+/// 三条退出路径必须收敛到这里,否则「退出了但没退干净」:
+/// - 托盘菜单「退出」→ `app.exit(0)` → `ExitRequested`
+/// - 程序坞图标右键「退出」/ Cmd+Q / 应用菜单「退出」→ macOS `terminate:`
+///   → `applicationWillTerminate:` → `Exit`(注意这条**不会**跑到 `main()`
+///   的结尾,AppKit 直接 `exit()`,所以 `Drop` 指望不上)
+/// - 事件都没来得及跑的异常死亡 → 由后端侧 `parent_watchdog` 兜底
+///
+/// 先摘托盘图标 + 藏窗口的原因:杀后端是同步阻塞的(SIGTERM 宽限 + SIGKILL +
+/// `lsof`),期间主线程卡住,状态栏图标和窗口会一直杵在那儿,看起来就像「没退
+/// 干净」。先把可见部分摘掉,退出观感才和托盘菜单退出一致。
+fn shutdown(app_handle: &tauri::AppHandle) {
+    #[cfg(desktop)]
+    let _ = app_handle.remove_tray_by_id("kronos-tray");
+    for label in ["tray-popup", "main"] {
+        if let Some(window) = app_handle.get_webview_window(label) {
+            let _ = window.hide();
+        }
+    }
+    // try_state 而非 state:后端还没 manage 进来就退出(启动早期)时 state 会
+    // panic,而 release 是 panic=abort——外壳当场 abort 反而留下孤儿后端。
+    if let Some(backend) = app_handle.try_state::<BackendProcess>() {
+        backend.stop();
+    }
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
@@ -774,9 +818,10 @@ fn main() {
                     let _ = main.set_focus();
                 }
             }
-            // 仅「真正退出」（菜单退出 / Cmd+Q）才杀后端；关窗已改为隐藏常驻（见 D1）。
+            // 仅「真正退出」（菜单退出 / Cmd+Q / 程序坞右键退出）才杀后端；
+            // 关窗已改为隐藏常驻（见 D1）。
             RunEvent::ExitRequested { .. } | RunEvent::Exit => {
-                app_handle.state::<BackendProcess>().stop();
+                shutdown(app_handle);
             }
             _ => {}
         }

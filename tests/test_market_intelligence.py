@@ -212,6 +212,7 @@ def test_market_cloud_prefers_tushare_and_converts_units(monkeypatch):
     service = MarketIntelligenceService()
     service._request_json = lambda *args, **kwargs: pytest.fail("Eastmoney should not be called when TuShare has rows")
     service.fetch_sina_market_cloud_stocks = lambda *args, **kwargs: pytest.fail("Sina fallback should not be called")
+    service._fetch_tencent_cloud_quotes = lambda codes, **kwargs: {}  # 单位换算测试不联网,报价叠加空转
 
     rows = service.fetch_market_cloud_stocks(limit=100, force_refresh=False)
 
@@ -366,3 +367,142 @@ def test_market_cloud_trade_date_uses_tushare_history_only(monkeypatch):
     assert [row["trade_date"] for row in rows] == ["20260617", "20260617"]
     assert {row["source"] for row in rows} == {"tushare_market_cloud"}
     assert {row["code"] for row in rows} == {"600519", "300750"}
+
+
+def _stale_tushare_cloud_rows():
+    return [
+        {
+            "code": "600519", "name": "贵州茅台", "price": 1680.0, "change_pct": -0.56,
+            "amount": 211619600.0, "turnover_rate": 0.6, "market_cap": 2000000000000.0,
+            "main_net_inflow": 21161960.0, "main_net_inflow_text": "2116.20万",
+            "industry": "白酒", "trade_date": "20260727", "source": "tushare_market_cloud",
+        },
+        {
+            "code": "300750", "name": "宁德时代", "price": 388.1, "change_pct": -1.2,
+            "amount": 123450000.0, "turnover_rate": 1.5, "market_cap": 800000000000.0,
+            "main_net_inflow": -4444000.0, "main_net_inflow_text": "-444.40万",
+            "industry": "电池", "trade_date": "20260727", "source": "tushare_market_cloud",
+        },
+    ]
+
+
+def test_market_cloud_overlays_realtime_quotes_on_stale_tushare(monkeypatch):
+    """交易日盘中 TuShare 仅有上一交易日日线时,应叠加腾讯实时报价,而不是整天停在昨天。"""
+
+    monkeypatch.setattr(market_intelligence_module, "MARKET_CLOUD_FULL_COVERAGE", 1)
+    service = MarketIntelligenceService()
+    service.fetch_eastmoney_market_cloud_stocks = lambda *args, **kwargs: []
+    service.fetch_tushare_market_cloud_stocks = lambda *args, **kwargs: _stale_tushare_cloud_rows()
+    service.fetch_sina_market_cloud_stocks = lambda *args, **kwargs: []
+    service._cloud_quotes_overlay_due = lambda rows, today=None: bool(rows)  # 测试不依赖真实日期
+    requested = {}
+
+    def fake_quotes(codes, **kwargs):
+        requested["codes"] = list(codes)
+        return {
+            "600519": {
+                "price": 1701.5, "change_pct": 3.21, "amount": 1076340000.0,
+                "turnover_rate": 0.9, "quote_date": "20260728",
+            }
+        }
+
+    service._fetch_tencent_cloud_quotes = fake_quotes
+
+    rows = service.fetch_market_cloud_stocks(limit=100, force_refresh=True)
+
+    assert requested["codes"] == ["600519", "300750"]
+    quoted = rows[0]
+    assert quoted["price"] == 1701.5
+    assert quoted["change_pct"] == 3.21
+    assert quoted["amount"] == 1076340000.0
+    assert quoted["turnover_rate"] == 0.9
+    assert quoted["trade_date"] == "20260728"  # 数据日推进到报价日
+    assert quoted["quoted"] is True
+    assert "quote_date" not in quoted
+    assert quoted["market_cap"] == 2000000000000.0  # 市值/主力净流入保持日线口径
+    assert quoted["main_net_inflow"] == 21161960.0
+    untouched = rows[1]
+    assert untouched["price"] == 388.1
+    assert untouched["change_pct"] == -1.2
+    assert untouched["trade_date"] == "20260727"
+    assert "quoted" not in untouched
+
+
+def test_market_cloud_overlay_keeps_stale_rows_when_quotes_unavailable(monkeypatch):
+    """腾讯报价拉取失败时原样返回上一交易日日线(兜底不能整块变空)。"""
+
+    monkeypatch.setattr(market_intelligence_module, "MARKET_CLOUD_FULL_COVERAGE", 1)
+    service = MarketIntelligenceService()
+    service.fetch_eastmoney_market_cloud_stocks = lambda *args, **kwargs: []
+    service.fetch_tushare_market_cloud_stocks = lambda *args, **kwargs: _stale_tushare_cloud_rows()
+    service.fetch_sina_market_cloud_stocks = lambda *args, **kwargs: []
+    service._cloud_quotes_overlay_due = lambda rows, today=None: bool(rows)
+    service._fetch_tencent_cloud_quotes = lambda codes, **kwargs: {}
+
+    rows = service.fetch_market_cloud_stocks(limit=100, force_refresh=True)
+
+    assert len(rows) == 2
+    assert [row["trade_date"] for row in rows] == ["20260727", "20260727"]
+    assert all("quoted" not in row for row in rows)
+
+
+def test_cloud_quotes_overlay_due_rules():
+    """仅在「Tushare 日线源 + 数据日≠今日 + 今日为工作日」时才叠加实时报价。"""
+    import datetime as _dt
+
+    due = MarketIntelligenceService._cloud_quotes_overlay_due
+    stale = _stale_tushare_cloud_rows()
+    tuesday = _dt.date(2026, 7, 28)
+    saturday = _dt.date(2026, 7, 25)
+
+    assert due(stale, today=tuesday) is True
+    assert due([], today=tuesday) is False
+    assert due(stale, today=saturday) is False  # 周末休市:昨日=最新完整交易日,无需覆盖
+    assert due([dict(stale[0], trade_date="20260728")], today=tuesday) is False  # 当日日线已发布
+    assert due([dict(stale[0], source="sina_market_cloud")], today=tuesday) is False  # 实时源本身即当日
+    assert due([dict(stale[0], trade_date="")], today=tuesday) is False
+
+
+def test_fetch_tencent_cloud_quotes_parses_batches(monkeypatch):
+    """腾讯批量报价解析:sh/sz/bj(含920)前缀分流、字段位 3价/32涨跌/37成交额(万元→元)/38换手/30报价时间。"""
+
+    urls = []
+
+    def fake_request_text(url, headers=None, timeout=5, encoding="gbk", errors="ignore", retries=1):
+        urls.append(url)
+
+        def line(prefix, code, price, pct, amount_wan, turnover, quote_time):
+            fields = [""] * 50
+            fields[0] = "1"
+            fields[1] = "样本"
+            fields[2] = code
+            fields[3] = str(price)
+            fields[30] = quote_time
+            fields[32] = str(pct)
+            fields[37] = str(amount_wan)
+            fields[38] = str(turnover)
+            return f'v_{prefix}{code}="' + "~".join(fields) + '";'
+
+        return "\n".join([
+            line("sh", "600519", 1701.5, 3.21, 107634, 0.9, "20260728143000"),
+            line("sz", "000001", 11.2, 0.81, 107634, 0.5, "20260728143000"),
+            line("bj", "920002", 50.37, 4.42, 123, 1.1, "20260728143000"),
+        ])
+
+    monkeypatch.setattr(market_intelligence_module, "request_text", fake_request_text)
+
+    service = MarketIntelligenceService()
+    quotes = service._fetch_tencent_cloud_quotes(["600519", "000001", "920002", "430047", "bad"], batch=3)
+
+    # 其他测试遗留的行业映射守护线程也走 request_text,只统计腾讯报价请求
+    gtimg_urls = [url for url in urls if "qt.gtimg.cn" in url]
+    assert len(gtimg_urls) == 2  # 4 个有效代码按 batch=3 分两批
+    assert any("sh600519,sz000001,bj920002" in url for url in gtimg_urls)
+    assert any("bj430047" in url for url in gtimg_urls)
+    quote = quotes["600519"]
+    assert quote["price"] == 1701.5
+    assert quote["change_pct"] == 3.21
+    assert quote["amount"] == pytest.approx(1076340000.0)  # 万元 → 元
+    assert quote["turnover_rate"] == 0.9
+    assert quote["quote_date"] == "20260728"
+    assert "bad" not in quotes

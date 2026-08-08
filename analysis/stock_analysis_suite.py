@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -19,8 +21,11 @@ from analysis.llm_service import LLMAnalyzer
 from analysis.technical_analysis import QuantitativeModels, TechnicalAnalysis
 from analysis.analysis_overlay import build_overlay, merge_overlay
 from analysis.limit_up_patterns import RECENT_DAYS, backtest_all, bars_from_dataframe, detect_all
+from analysis import outcome_markers
 from data_store import kv_repo
 
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_TTL_SECONDS = 300  # 5 minutes per spec §3
 _OVERLAY_NS = "analysis_overlay"
@@ -30,6 +35,29 @@ _FETCH_LOOKBACK_DAYS = 730
 
 
 _REGIME_BASE = {"bull": 50, "sideways": 35, "bear": 15}
+
+# 「入选后表现标记」本地推导用的评分器:懒加载 + 全局缓存(构造要读运行时评分配置,
+# 每次个股分析都新建纯属浪费)。失败只降级为"技术分/追高风险缺失",绝不影响套件装配。
+_MARKER_SCORER: Any = None
+_MARKER_SCORER_UNAVAILABLE = False
+_MARKER_SCORER_LOCK = RLock()
+
+
+def _marker_scorer():
+    """返回共享的 OpportunityScorer 实例;不可用时返回 None。"""
+    global _MARKER_SCORER, _MARKER_SCORER_UNAVAILABLE
+    if _MARKER_SCORER is not None or _MARKER_SCORER_UNAVAILABLE:
+        return _MARKER_SCORER
+    with _MARKER_SCORER_LOCK:
+        if _MARKER_SCORER is not None or _MARKER_SCORER_UNAVAILABLE:
+            return _MARKER_SCORER
+        try:
+            from analysis.opportunity_scorer import OpportunityScorer
+            _MARKER_SCORER = OpportunityScorer()
+        except Exception as exc:  # noqa: BLE001
+            _MARKER_SCORER_UNAVAILABLE = True
+            logger.warning("标记因子评分器不可用，技术分/追高风险按缺失处理: %s", exc)
+        return _MARKER_SCORER
 
 
 def compute_main_force_phase_score(
@@ -428,9 +456,138 @@ class StockAnalysisSuite:
             "quant_matrix": quant_matrix,
             "limit_up_screening": limit_up_screening,
             "related_news": self._collect_related_news(code),
+            "outcome_markers": self._collect_outcome_markers(code, inputs),
             "panel": panel,
             "analysis_overlay": self._collect_analysis_overlay(code),
         }
+
+    def _collect_outcome_markers(self, code: str, inputs: dict | None) -> dict:
+        """入选后表现标记(见 analysis/outcome_markers.py)。
+
+        取数优先级:
+        1. 该股**最近一次机会挖掘入选**时已入库的标记 —— 与报告口径逐字一致, 不重算;
+        2. 从未入选(或旧版 run 未存标记)时, 用个股分析本地可得的因子现场计算。
+           技术分/追高风险由机会挖掘评分链路产出, 不在本链路, 故按缺失处理并在
+           ``missing_factors`` 中显式列出, 避免"没触发"被误读成"没风险"。
+        """
+        stored = None
+        try:
+            from data_store import opportunity_repo
+            stored = opportunity_repo.latest_item_for_code(code)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("读取 %s 最近入选标记失败: %s", code, exc)
+
+        if stored:
+            try:
+                signals = json.loads(stored.get("signals_json") or "{}")
+            except Exception:  # noqa: BLE001
+                signals = {}
+            markers = signals.get("markers")
+            if markers is not None:
+                constitution = signals.get("constitution") or outcome_markers.constitution([])
+                stored_description = signals.get("marker_description") or ""
+                return {
+                    "available": bool(markers),
+                    "source": "opportunity_run",
+                    "as_of": stored.get("run_date"),
+                    "partial": False,
+                    "missing_factors": [],
+                    "version": signals.get("markers_version") or outcome_markers.MARKERS_VERSION,
+                    "markers": markers,
+                    "constitution": constitution,
+                    "description": stored_description,
+                    # 入库标记是**入选当天**的口径,不能拿今天的走势去讲当天的标记,
+                    # 故沿用入库时的叙述;旧版 run 没存则退回逐条描述。
+                    "narrative": signals.get("marker_narrative") or stored_description,
+                    "baseline": outcome_markers.BASELINE,
+                    "note": f"复用 {stored.get('run_date')} 该股入选机会挖掘时的标记，与报告口径一致",
+                }
+
+        factors, context = self._local_marker_inputs(code, inputs)
+        missing = [label for label, key in (("技术分", "tech_score"), ("追高风险", "chase_risk"),
+                                            ("RSI", "rsi"), ("板块情绪分", "sector_score"),
+                                            ("卖出信号", "sell_signals"), ("5日涨幅", "change_5d"))
+                   if factors.get(key) is None]
+        payload = outcome_markers.marker_payload(factors, context)
+        base_note = "该股无机会挖掘入选记录，标记由个股分析本地因子按机会挖掘同口径推导"
+        return {
+            "available": bool(payload["markers"]),
+            "source": "local",
+            "as_of": None,
+            "partial": bool(missing),
+            "missing_factors": missing,
+            "version": payload["version"],
+            "markers": payload["markers"],
+            "constitution": payload["constitution"],
+            "description": payload["description"],
+            "narrative": payload["narrative"],
+            "baseline": outcome_markers.BASELINE,
+            "note": (f"{base_note}；缺失因子：{'、'.join(missing)}" if missing
+                     else f"{base_note}（因子完整）"),
+        }
+
+    def _local_marker_inputs(self, code: str, inputs: dict | None) -> tuple[dict, dict]:
+        """本地可得的标记因子 + 这只票的走势上下文(拿不到的一律留 None, 不伪造)。
+
+        技术分/追高风险/RSI/5日涨幅 与位置、涨幅、连涨节奏等走势明细都走
+        ``OpportunityScorer.marker_inputs_from_ohlcv``, 与机会挖掘同一套代码
+        同一套口径(标记阈值就是按那套分布标定的); 板块情绪分/卖出信号/板块名
+        沿用本链路已经取到的结果。
+        """
+        inputs = inputs or {}
+        factors: dict = {"tech_score": None, "chase_risk": None, "rsi": None,
+                         "sector_score": None, "sell_signals": None, "change_5d": None}
+        context: dict = {}
+
+        sector = inputs.get("sector") or {}
+        if sector.get("sentiment_score") is not None:
+            factors["sector_score"] = sector.get("sentiment_score")
+        sector_name = sector.get("name") or sector.get("sector") or inputs.get("industry")
+        if sector_name:
+            context["sector_name"] = sector_name
+        models = inputs.get("models") or {}
+        if models.get("total"):
+            factors["sell_signals"] = models.get("sell_signal_count")
+
+        df = inputs.get("ohlcv")
+        scorer = _marker_scorer()
+        if scorer is not None and df is not None and not getattr(df, "empty", True):
+            try:
+                derived = scorer.marker_inputs_from_ohlcv(code, df)
+                for key, value in (derived.get("factors") or {}).items():
+                    if value is not None:
+                        factors[key] = value
+                for key, value in (derived.get("context") or {}).items():
+                    if value is not None:
+                        context.setdefault(key, value)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("%s: 标记因子(评分器口径)计算失败: %s", code, exc)
+
+        # 评分器不可用/数据不足时的最后兜底: RSI 与 5 日涨幅本链路自己也能算。
+        if factors["rsi"] is None or factors["change_5d"] is None:
+            self._fallback_price_factors(factors, df)
+        context.setdefault("change_5d", factors.get("change_5d"))
+        return factors, context
+
+    def _local_marker_factors(self, code: str, inputs: dict | None) -> dict:
+        """只要因子时的薄封装, 见 ``_local_marker_inputs``。"""
+        return self._local_marker_inputs(code, inputs)[0]
+
+    def _fallback_price_factors(self, factors: dict, df) -> None:
+        """评分器拿不到时,用本链路自己的收盘价序列补 RSI / 5 日涨幅。"""
+        if df is None or "close" not in getattr(df, "columns", []) or len(df) < 15:
+            return
+        try:
+            close = df["close"]
+            if factors["rsi"] is None:
+                factors["rsi"] = self._last_indicator_value(
+                    TechnicalAnalysis.calculate_rsi(close))
+            if factors["change_5d"] is None:
+                base = float(close.iloc[-6])
+                if base > 0:
+                    factors["change_5d"] = (float(close.iloc[-1]) - base) / base * 100.0
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("本地标记因子计算失败: %s", exc)
 
     def _collect_limit_up_patterns(self, code: str, inputs: dict | None) -> dict:
         """Rule-based strong limit-up pattern section for the stock suite."""
@@ -1217,7 +1374,11 @@ class StockAnalysisSuite:
             "batch_analysis": _report_entry(batch),
         }
 
-    def compute_risk_control(self, code: str) -> Dict[str, Any]:
+    def compute_risk_control(
+        self,
+        code: str,
+        current_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
         try:
             df = self._load_ohlcv(code)
         except Exception as exc:  # noqa: BLE001
@@ -1227,11 +1388,29 @@ class StockAnalysisSuite:
             return {"available": False,
                     "reason": f"数据不足：风控需 ≥60 交易日，当前仅 {have} 日"}
 
-        close = df["close"].to_numpy()
-        high = df["high"].to_numpy()
-        low = df["low"].to_numpy()
-        current = float(close[-1])
-        atr_series = TechnicalAnalysis.calculate_atr(df["high"], df["low"], df["close"], period=20)
+        ohlcv_close = float(df["close"].iloc[-1])
+        price_scale = 1.0
+        price_source = "ohlcv"
+        try:
+            realtime_price = float(current_price) if current_price is not None else None
+        except (TypeError, ValueError):
+            realtime_price = None
+        if (
+            realtime_price is not None
+            and np.isfinite(realtime_price)
+            and realtime_price > 0
+            and np.isfinite(ohlcv_close)
+            and ohlcv_close > 0
+        ):
+            price_scale = realtime_price / ohlcv_close
+            price_source = "realtime_quote"
+
+        close_series = df["close"].astype(float) * price_scale
+        high_series = df["high"].astype(float) * price_scale
+        low_series = df["low"].astype(float) * price_scale
+        close = close_series.to_numpy()
+        current = float(realtime_price) if price_source == "realtime_quote" else float(close[-1])
+        atr_series = TechnicalAnalysis.calculate_atr(high_series, low_series, close_series, period=20)
         if hasattr(atr_series, "__len__") and len(atr_series) > 0:
             last_atr = atr_series.iloc[-1] if hasattr(atr_series, "iloc") else atr_series[-1]
             atr = float(last_atr) if not np.isnan(last_atr) else 0.0
@@ -1263,6 +1442,11 @@ class StockAnalysisSuite:
 
         return {
             "available": True,
+            "price_basis": {
+                "source": price_source,
+                "current_price": round(current, 2),
+                "ohlcv_close": round(ohlcv_close, 2),
+            },
             "execution_plan": {
                 "stop_loss": {"price": stop_price, "drop_pct": drop_pct, "basis": "ATR(20)×1.5 下沿"},
                 "risk_reward": {"ratio": f"1:{rr_ratio}", "expected_return_pct": expected_return_pct},
