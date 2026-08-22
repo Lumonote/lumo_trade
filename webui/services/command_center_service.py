@@ -3,16 +3,17 @@
 Pure orchestration: every data source is injected as a callable so the service
 is testable without I/O. Each source degrades independently — a failing source
 sets a `degraded[...]` flag and leaves its panel empty rather than crashing.
-"""
-import json
-from pathlib import Path
 
+机会 items 由 core 从 SQLite(``opportunity_run``/``opportunity_item``)取出,
+每条自带 ``signals``(风险信号 + 板块拥挤度分)。本服务不读任何报告文件。
+"""
 from analysis import risk_opportunity_engine as eng
 
 
 class CommandCenterService:
     def __init__(self, *, load_report, capital_rankings, market_env, holdings, quotes,
-                 hot_membership=None, news_index=None, hot_news=None):
+                 hot_membership=None, news_index=None, hot_news=None,
+                 market_pulse=None):
         self._load_report = load_report
         self._capital_rankings = capital_rankings
         self._market_env = market_env
@@ -23,6 +24,8 @@ class CommandCenterService:
         self._news_index = news_index or (lambda *a, **k: {})
         # 东财热点新闻源(纯注入)。缺省空源 → 撮合矩阵右栏显示占位文案,不崩。
         self._hot_news = hot_news or (lambda *a, **k: [])
+        # 指数风向 + 板块拐点(纯注入)。缺省空源 → 两个分区留空,不崩。
+        self._market_pulse = market_pulse or (lambda *a, **k: {})
 
     def _safe(self, fn, default):
         try:
@@ -30,40 +33,18 @@ class CommandCenterService:
         except Exception:
             return default, True
 
-    def _load_sidecar(self, report_path):
-        if not report_path:
-            return {}
-        side = Path(report_path).with_suffix("").with_suffix(".signals.json")
-        if not side.is_file():
-            return {}
-        try:
-            data = json.loads(side.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        out = {}
-        for row in data:
-            sig = dict(row.get("risk_signals") or {})
-            if row.get("sector_score") is not None:
-                sig["sector_score"] = row["sector_score"]
-            out[row.get("code")] = sig
-        return out
-
-    def _merge_sidecars(self, paths):
-        """Merge per-report signals sidecars(当日多份报告聚合)。先到先得。"""
-        merged = {}
-        for path in paths or []:
-            for code, sig in self._load_sidecar(path).items():
-                if code not in merged:
-                    merged[code] = sig
-        return merged
+    @staticmethod
+    def _item_signals(item):
+        sig = item.get("signals")
+        return dict(sig) if isinstance(sig, dict) else {}
 
     def overview(self, *, quotes_only=False, report=None, available_dates=None):
         degraded = {}
         if report is None:
-            report, d = self._safe(self._load_report, {"items": [], "report_path": None})
+            report, d = self._safe(self._load_report, {"items": []})
             degraded["opportunity"] = d or not report.get("items")
         else:
-            report = report or {"items": [], "report_path": None}
+            report = report or {"items": []}
             degraded["opportunity"] = not report.get("items")
         menv, d = self._safe(self._market_env, {})
         degraded["market_env"] = d
@@ -75,17 +56,13 @@ class CommandCenterService:
 
         market = eng.score_market_risk(menv)
         held_codes = {p.get("ts_code") for p in hold.get("positions", [])}
-        # 当日可能聚合多份报告:合并各自 signals sidecar
-        paths = report.get("report_paths")
-        if not paths:
-            rp = report.get("report_path")
-            paths = [rp] if rp else []
-        sidecar = self._merge_sidecars(paths)
 
         matrix = []
+        has_signals = False
         for item in report.get("items", []):
             code = item.get("code") or item.get("stock_code")
-            sig = sidecar.get(code, {})
+            sig = self._item_signals(item)
+            has_signals = has_signals or bool(sig)
             sector_crowd = eng.score_sector_crowding(sig)
             matrix.append(eng.build_target(
                 item, sig, sector_crowding=sector_crowd,
@@ -110,6 +87,9 @@ class CommandCenterService:
         )
         degraded["hot_news"] = dhn
 
+        pulse, dmp = self._safe(self._market_pulse, {})
+        degraded["market_pulse"] = dmp
+
         indices = {
             "market_risk": round(eng.market_risk_index(
                 market["risk"], menv.get("sentiment")), 0),
@@ -117,11 +97,12 @@ class CommandCenterService:
             "sentiment": round(float(menv.get("sentiment") or 50), 0),
         }
         return {
+            # ``sidecar`` 是前端状态条沿用的键名:结构化风险信号是否已加载。
             "as_of": {"report": report.get("file"), "count": len(matrix),
-                      "sidecar": bool(sidecar),
+                      "sidecar": has_signals,
                       "date": report.get("date"),
                       "report_count": report.get("report_count",
-                                                 len(paths) if paths else (1 if report.get("items") else 0))},
+                                                 1 if report.get("items") else 0)},
             "indices": indices,
             "market_env": menv,
             "matrix": matrix,
@@ -129,6 +110,7 @@ class CommandCenterService:
             "holdings_relevance": holdings_relevance,
             "hot_news": hot_news,
             "rankings": {"capital": cap.get("rows", [])},
+            "market_pulse": pulse,
             "available_dates": list(available_dates or []),
             "degraded": degraded,
         }

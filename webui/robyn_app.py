@@ -871,6 +871,13 @@ def command_center_recompute(request: Request) -> Response:
     return _json_response(webui_core.start_command_center_recompute())
 
 
+@_native_get("/api/market-pulse")
+def market_pulse(request: Request) -> Response:
+    """指数风向 + 板块机会与拐点(总览页两个分区;盘中 30s 一拍独立刷新)。"""
+    as_of = (_query_value(request, "as_of") or "").strip() or None
+    return _json_response(webui_core.market_pulse_payload(as_of=as_of))
+
+
 # ----------------------------- 模拟盘 paper trading -----------------------------
 
 @_native_get("/api/paper/account")
@@ -1458,12 +1465,30 @@ def hot_sector_snapshots(request: Request) -> Response:
 
 @_native_get("/api/opportunity-stock-pool")
 def opportunity_stock_pool(request: Request) -> Response:
-    """跨所有 run 聚合的股票池（入选次数/首末入选/重复入选日期/最佳分等）。"""
+    """跨 run 聚合的股票池（入选次数/首末入选/重复入选日期/最佳分等）。
+
+    ``since``/``until`` (YYYY-MM-DD, 闭区间) 限定统计的 run 日期区间;
+    缺省不过滤(全部历史)。前端默认传最近一个月。
+
+    「入选后涨幅」要按交易日取全市场开盘/收盘价,这里顺带触发一次**后台**补数
+    (见 data_store.market_daily_fetch),不阻塞本次响应:缺的日期会在随后几次
+    刷新里补齐,也可以直接跑 scripts/backfill_market_daily.py 一次补完。
+    """
     try:
-        from data_store import opportunity_repo
+        from data_store import market_daily_fetch, opportunity_repo
         limit = webui_core._safe_int(_query_value(request, "limit"), 300, minimum=1, maximum=2000) or 300
         since = str(_query_value(request, "since") or "").strip() or None
-        return _json_response({"stocks": opportunity_repo.stock_pool(limit=limit, since_date=since)})
+        until = str(_query_value(request, "until") or "").strip() or None
+        try:
+            market_daily_fetch.ensure_pool_dates_background(since)
+        except Exception:  # noqa: BLE001 — 补数是锦上添花,不能影响榜单返回
+            pass
+        return _json_response({
+            "stocks": opportunity_repo.stock_pool(limit=limit, since_date=since, until_date=until),
+            "since": since,
+            "until": until,
+            "price_date": market_daily_fetch.latest_filled_date(),
+        })
     except Exception as exc:  # noqa: BLE001
         return _json_response({"stocks": [], "error": str(exc)}, status_code=500)
 
@@ -1596,6 +1621,7 @@ def startup() -> None:
     webui_core.start_pattern_autorefresh()
     webui_core.start_paper_eod()
     quant_radar_service.start_autosave()
+    webui_core.start_sector_refresh()
 
 
 def configure_server_from_env() -> None:

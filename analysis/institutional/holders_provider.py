@@ -106,10 +106,10 @@ class HoldersProvider(BaseProvider):
                     "ts_code": ts_code,
                     "end_date": tushare_client.yyyymmdd_to_iso(getattr(r, "end_date", "")),
                     "holder_rank": i,
-                    "holder_name": getattr(r, "holder_name", "") or "",
+                    "holder_name": tushare_client.text_field(getattr(r, "holder_name", "")),
                     "hold_amount": getattr(r, "hold_amount", None),
                     "hold_ratio": ratio,
-                    "change_type": getattr(r, "holder_type", "") or "",
+                    "change_type": tushare_client.text_field(getattr(r, "holder_type", "")),
                     "change_amount": getattr(r, "hold_change", None),
                 })
             if rows:

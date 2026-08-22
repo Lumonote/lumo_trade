@@ -1689,6 +1689,16 @@
             <button class="canvas-view-tab" type="button" data-opportunity-data-tab="sectors">历史热门板块</button>
             <button class="canvas-view-tab" type="button" data-opportunity-data-tab="pattern">形态回测</button>
           </div>
+          <div id="opportunityDataRange" class="opportunity-data-range" hidden>
+            <span class="opportunity-data-range-label">统计区间</span>
+            <input id="opportunityPoolSince" type="date" aria-label="开始日期" />
+            <span class="opportunity-data-range-sep">至</span>
+            <input id="opportunityPoolUntil" type="date" aria-label="结束日期" />
+            <button id="opportunityPoolRangeApply" class="button secondary compact" type="button">统计</button>
+            <button class="button secondary compact" type="button" data-pool-range-preset="1m">近1月</button>
+            <button class="button secondary compact" type="button" data-pool-range-preset="3m">近3月</button>
+            <button class="button secondary compact" type="button" data-pool-range-preset="all">全部</button>
+          </div>
           <div class="opportunity-data-search">
             <input id="opportunityDataSearch" type="search" placeholder="搜索名称 / 代码 / 板块…" autocomplete="off" />
             <span id="opportunityDataSearchHint" class="opportunity-data-search-hint"></span>

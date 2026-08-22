@@ -1,24 +1,18 @@
-import json
 from webui.services.command_center_service import CommandCenterService
 
 
-def _report(tmp_path):
-    md = tmp_path / "opportunity_top10_20260608.md"
-    md.write_text("# r", encoding="utf-8")
-    (tmp_path / "opportunity_top10_20260608.signals.json").write_text(json.dumps([
-        {"code": "603986", "risk_signals": {"rsi": 58, "chase": 30, "change_3d": 6,
-         "sell_signals": 0, "quant_score": 62}, "sector_score": 50},
-    ]), encoding="utf-8")
-    return md
+# 风险信号随 item 从 SQLite(opportunity_item.signals_json + scores_json.sector)带下来,
+# 服务层不读任何文件。
+_SIGNALS = {"rsi": 58, "chase": 30, "change_3d": 6, "sell_signals": 0,
+            "quant_score": 62, "sector_score": 50}
 
 
-def test_overview_builds_matrix_from_report(tmp_path):
-    md = _report(tmp_path)
+def test_overview_builds_matrix_from_report():
     svc = CommandCenterService(
         load_report=lambda: {"items": [
             {"code": "603986", "name": "兆易创新", "score": 88, "rating": "S",
-             "sector": "半导体", "sector_code": "BK1036"}], "market_env": "暖", "file": md.name,
-            "report_path": str(md)},
+             "sector": "半导体", "sector_code": "BK1036", "signals": dict(_SIGNALS)}],
+            "market_env": "暖", "file": "opportunity_top10_20260608_150000.md"},
         capital_rankings=lambda: {"rows": []},
         market_env=lambda: {"hs300_ret_5d": 1, "advance": 3000, "decline": 1800,
                             "sentiment": 60},
@@ -36,7 +30,7 @@ def test_overview_builds_matrix_from_report(tmp_path):
 
 def test_overview_degrades_when_no_report():
     svc = CommandCenterService(
-        load_report=lambda: {"items": [], "market_env": "", "report_path": None},
+        load_report=lambda: {"items": [], "market_env": ""},
         capital_rankings=lambda: {"rows": []},
         market_env=lambda: {}, holdings=lambda: {"account": {}, "positions": [],
                                                  "max_drawdown": 0.0},
@@ -46,12 +40,11 @@ def test_overview_degrades_when_no_report():
     assert out["degraded"]["opportunity"] is True
 
 
-def test_overview_marks_held_positions(tmp_path):
-    md = _report(tmp_path)
+def test_overview_marks_held_positions():
     svc = CommandCenterService(
         load_report=lambda: {"items": [
-            {"code": "603986", "name": "兆易创新", "score": 88, "rating": "S"}],
-            "report_path": str(md)},
+            {"code": "603986", "name": "兆易创新", "score": 88, "rating": "S",
+             "signals": dict(_SIGNALS)}]},
         capital_rankings=lambda: {"rows": []},
         market_env=lambda: {"sentiment": 55},
         holdings=lambda: {"account": {"total_equity": 1_000_000},
@@ -67,7 +60,7 @@ def test_overview_marks_held_positions(tmp_path):
 
 def _svc_with_positions(positions, *, hot_membership=None, news_index=None):
     return CommandCenterService(
-        load_report=lambda: {"items": [], "report_path": None, "date": "2026-06-17"},
+        load_report=lambda: {"items": [], "date": "2026-06-17"},
         capital_rankings=lambda: {"rows": []},
         market_env=lambda: {"sentiment": 55},
         holdings=lambda: {"account": {"total_equity": 1_000_000},

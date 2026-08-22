@@ -1,12 +1,12 @@
 """Part C 投资机会画布按日 + Part D 作战大屏按日 后端行为。
 
 C: /api/opportunity-canvas 的核心 opportunity_canvas_payload + _hot_sector_snapshot_for_date。
-D: command_center_overview 按日聚合(当日全部报告去重)+ available_dates + sidecar 合并。
+D: command_center_overview 按日聚合 + available_dates。**数据源 = SQLite
+   opportunity_run/opportunity_item**(不再解析 markdown 报告与 .signals.json 旁挂文件)。
 纯逻辑用 monkeypatch 隔离 I/O;DB 相关走临时库。
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
 
@@ -18,30 +18,18 @@ from webui.services.command_center_service import CommandCenterService
 
 # --------------------------- Part D: CommandCenterService 层 ---------------------------
 
-def _write_report(tmp_path, name, signals):
-    md = tmp_path / name
-    md.write_text("# r", encoding="utf-8")
-    side = tmp_path / name.replace(".md", ".signals.json")
-    side.write_text(json.dumps(signals), encoding="utf-8")
-    return md
-
-
-def test_service_merges_multiple_sidecars_and_report_count(tmp_path):
-    r_am = _write_report(tmp_path, "opportunity_top10_20260610_090000.md", [
-        {"code": "600000", "risk_signals": {"rsi": 50, "chase": 20}, "sector_score": 40},
-    ])
-    r_pm = _write_report(tmp_path, "opportunity_top10_20260610_150000.md", [
-        {"code": "300750", "risk_signals": {"rsi": 70, "chase": 60}, "sector_score": 66},
-    ])
+def test_service_builds_matrix_from_item_signals():
+    """风险信号随 item 从 SQLite 带下来,服务层不再读任何旁挂文件。"""
     report = {
         "items": [
-            {"code": "600000", "name": "浦发银行", "score": 80, "rating": "A"},
-            {"code": "300750", "name": "宁德时代", "score": 88, "rating": "S"},
+            {"code": "600000", "name": "浦发银行", "score": 80, "rating": "A",
+             "signals": {"rsi": 50, "chase": 20, "sector_score": 40}},
+            {"code": "300750", "name": "宁德时代", "score": 88, "rating": "S",
+             "signals": {"rsi": 70, "chase": 60, "sector_score": 66}},
         ],
-        "report_paths": [str(r_pm), str(r_am)],
         "date": "2026-06-10",
         "report_count": 2,
-        "file": r_pm.name,
+        "file": "opportunity_top10_20260610_150000.md",
     }
     svc = CommandCenterService(
         load_report=lambda: {"items": []},
@@ -52,91 +40,135 @@ def test_service_merges_multiple_sidecars_and_report_count(tmp_path):
     out = svc.overview(report=report, available_dates=["2026-06-10", "2026-06-09"])
     assert out["as_of"]["date"] == "2026-06-10"
     assert out["as_of"]["report_count"] == 2
-    assert out["as_of"]["sidecar"] is True
+    assert out["as_of"]["sidecar"] is True          # 结构化信号已加载
     assert out["available_dates"] == ["2026-06-10", "2026-06-09"]
     by_code = {m["code"]: m for m in out["matrix"]}
-    assert set(by_code) == {"600000", "300750"}  # 两份报告各自的票都进了 matrix
+    assert set(by_code) == {"600000", "300750"}
+    # 信号真正参与打分:追高60+RSI70 的票风险必须高于 RSI50/追高20 的票
+    assert by_code["300750"]["risk"] > by_code["600000"]["risk"]
+    assert by_code["600000"]["risk_unknown"] is False
 
 
-def test_service_backward_compatible_single_report_path(tmp_path):
-    r = _write_report(tmp_path, "opportunity_top10_20260610_150000.md", [
-        {"code": "600000", "risk_signals": {"rsi": 50}, "sector_score": 40}])
+def test_service_marks_risk_unknown_without_signals():
+    """items 没带 signals(旧 run 未入库信号)→ 风险未知,不崩、不臆造。"""
     svc = CommandCenterService(
         load_report=lambda: {"items": [{"code": "600000", "name": "浦发银行", "score": 80}],
-                             "report_path": str(r), "file": r.name},
+                             "file": "x.md", "date": "2026-06-10"},
         capital_rankings=lambda: {"rows": []},
         market_env=lambda: {},
         holdings=lambda: {"account": {}, "positions": [], "max_drawdown": 0.0},
         quotes=lambda codes: {})
-    out = svc.overview()  # 旧调用法:不注入 report,走 load_report + 单 report_path
-    assert out["matrix"][0]["code"] == "600000"
-    assert out["as_of"]["sidecar"] is True
-    assert out["available_dates"] == []
+    out = svc.overview()
+    assert out["matrix"][0]["risk_unknown"] is True
+    assert out["as_of"]["sidecar"] is False
 
 
-# --------------------------- Part D: core 聚合层 ---------------------------
+# --------------------------- Part D: core 聚合层(SQLite) ---------------------------
 
-def test_command_center_report_aggregates_day(monkeypatch, tmp_path):
+@pytest.fixture
+def opp_conn(tmp_path, monkeypatch):
+    c = sqlite3.connect(tmp_path / "opp.sqlite", isolation_level=None)
+    c.row_factory = sqlite3.Row
+    migrate(c)
+    getter = lambda: c  # noqa: E731
+    from data_store import connection, opportunity_repo
+    monkeypatch.setattr(connection, "get_conn", getter)
+    monkeypatch.setattr(opportunity_repo, "get_conn", getter)
+    yield c
+    c.close()
+
+
+def _no_markdown(monkeypatch):
+    """守卫:大屏链路一旦回去解析 markdown 报告就让测试失败。"""
     import webui.core as core
-    files = [
-        tmp_path / "opportunity_top10_20260610_150000.md",
-        tmp_path / "opportunity_top10_20260610_090000.md",
-        tmp_path / "opportunity_top10_20260609_150000.md",
-    ]
-    monkeypatch.setattr(core, "_latest_primary_opportunity_reports", lambda limit=1: files[:limit])
-    parsed_map = {
-        "opportunity_top10_20260610_150000.md": {
-            "file": "opportunity_top10_20260610_150000.md", "market_env": "下午暖",
-            "items": [{"code": "600000", "score": 70}, {"code": "300750", "score": 88}]},
-        "opportunity_top10_20260610_090000.md": {
-            "file": "opportunity_top10_20260610_090000.md", "market_env": "上午",
-            "items": [{"code": "600000", "score": 85}, {"code": "002594", "score": 60}]},
-        "opportunity_top10_20260609_150000.md": {
-            "file": "opportunity_top10_20260609_150000.md", "market_env": "昨天",
-            "items": [{"code": "600000", "score": 99}]},
-    }
-    monkeypatch.setattr(core, "_parse_opportunity_report", lambda p: parsed_map[Path(p).name])
+    monkeypatch.setattr(core, "_parse_opportunity_report",
+                        lambda p: pytest.fail("大屏不应解析 markdown 报告,数据源是 SQLite"))
+    monkeypatch.setattr(core, "_latest_primary_opportunity_reports",
+                        lambda limit=1: pytest.fail("大屏不应扫描报告目录"))
+
+
+def _save_run(run_at, items, report_file=None):
+    from data_store import opportunity_repo
+    return opportunity_repo.save_run(
+        {"run_at": run_at, "run_date": run_at[:10], "source": "multi",
+         "report_file": report_file}, items)
+
+
+def _item(code, score, *, sector="半导体", sector_score=50.0, rsi=55.0, rating="A"):
+    return {"code": code, "name": f"股{code}", "total_score": score, "rating": rating,
+            "sector": sector, "sector_code": "BK1036",
+            "scores": {"sector": sector_score},
+            "signals": {"rsi": rsi, "chase": 20.0, "change_3d": 3.0,
+                        "sell_signals": 0.0, "quant_score": 60.0}}
+
+
+def test_command_center_report_aggregates_day_from_sqlite(opp_conn, monkeypatch):
+    import webui.core as core
+    _no_markdown(monkeypatch)
+    _save_run("2026-06-10T09:00:00", [_item("600000", 85), _item("002594", 60)],
+              report_file="opportunity_top10_20260610_090000.md")
+    _save_run("2026-06-10T15:00:00", [_item("600000", 70), _item("300750", 88)],
+              report_file="opportunity_top10_20260610_150000.md")
+    _save_run("2026-06-09T15:00:00", [_item("600000", 99)],
+              report_file="opportunity_top10_20260609_150000.md")
 
     rep = core._command_center_report()  # 默认最近一天 = 2026-06-10
+
     assert rep["date"] == "2026-06-10"
-    assert rep["report_count"] == 2
+    assert rep["report_count"] == 2                       # 当日两次 run
     by_code = {i["code"]: i for i in rep["items"]}
     assert set(by_code) == {"600000", "300750", "002594"}
-    assert by_code["600000"]["score"] == 85  # 同日去重取最高(09:00=85 > 15:00=70),不含昨日 99
-    assert rep["market_env"] == "下午暖"  # 取当日最新一份报告的 env
-    assert rep["items"][0]["code"] == "300750"  # 按分降序,88 居首
-    assert len(rep["report_paths"]) == 2
+    assert by_code["600000"]["score"] == 85               # 同日去重取最高,不含昨日 99
+    assert rep["items"][0]["code"] == "300750"            # 按分降序
+    assert rep["file"] == "opportunity_top10_20260610_150000.md"  # 当日最新一次 run
+    # 风险信号 + 板块拥挤度分随 item 下发(供 CommandCenterService 直接消费)
+    sig = by_code["300750"]["signals"]
+    assert sig["rsi"] == 55.0 and sig["sector_score"] == 50.0
 
 
-def test_command_center_report_specific_date_and_fallback(monkeypatch, tmp_path):
+def test_command_center_report_caps_at_top_n(opp_conn, monkeypatch):
+    """一次 run 存的是全量候选(数百只);大屏只取前 COMMAND_CENTER_TOP_N 名。"""
     import webui.core as core
-    files = [tmp_path / "opportunity_top10_20260610_150000.md",
-             tmp_path / "opportunity_top10_20260609_150000.md"]
-    monkeypatch.setattr(core, "_latest_primary_opportunity_reports", lambda limit=1: files[:limit])
-    monkeypatch.setattr(core, "_parse_opportunity_report",
-                        lambda p: {"file": Path(p).name, "market_env": "",
-                                   "items": [{"code": "600000", "score": 50}]})
+    _no_markdown(monkeypatch)
+    _save_run("2026-06-10T15:00:00",
+              [_item(f"60{i:04d}", 90 - i) for i in range(core.COMMAND_CENTER_TOP_N + 15)])
+
+    rep = core._command_center_report()
+
+    assert len(rep["items"]) == core.COMMAND_CENTER_TOP_N
+    assert rep["items"][0]["score"] == 90                  # 头部保留
+    assert rep["items"][-1]["score"] == 90 - (core.COMMAND_CENTER_TOP_N - 1)
+
+
+def test_command_center_report_specific_date_and_fallback(opp_conn, monkeypatch):
+    import webui.core as core
+    _no_markdown(monkeypatch)
+    _save_run("2026-06-09T15:00:00", [_item("600000", 50)])
+    _save_run("2026-06-10T15:00:00", [_item("300750", 80)])
+
     rep = core._command_center_report("2026-06-09")
     assert rep["date"] == "2026-06-09"
-    assert rep["report_count"] == 1
-    rep2 = core._command_center_report("2025-01-01")  # 不存在的日 → 回退最近一天
+    assert [i["code"] for i in rep["items"]] == ["600000"]
+
+    rep2 = core._command_center_report("2025-01-01")   # 无 run 的日 → 回退最近一天
     assert rep2["date"] == "2026-06-10"
 
 
-def test_available_dates_distinct_newest_first(monkeypatch, tmp_path):
+def test_command_center_report_empty_store(opp_conn, monkeypatch):
     import webui.core as core
-    files = [tmp_path / "opportunity_top10_20260610_150000.md",
-             tmp_path / "opportunity_top10_20260610_090000.md",
-             tmp_path / "opportunity_top10_20260609_150000.md"]
-    monkeypatch.setattr(core, "_latest_primary_opportunity_reports", lambda limit=1: files[:limit])
+    _no_markdown(monkeypatch)
+    rep = core._command_center_report()
+    assert rep["items"] == [] and rep["date"] is None and rep["report_count"] == 0
+
+
+def test_available_dates_from_sqlite_runs(opp_conn, monkeypatch):
+    import webui.core as core
+    _no_markdown(monkeypatch)
+    _save_run("2026-06-09T15:00:00", [_item("600000", 50)])
+    _save_run("2026-06-10T09:00:00", [_item("600000", 50)])
+    _save_run("2026-06-10T15:00:00", [_item("300750", 80)])
+
     assert core._command_center_available_dates() == ["2026-06-10", "2026-06-09"]
-
-
-def test_primary_report_date_parsing():
-    import webui.core as core
-    assert core._primary_report_date("opportunity_top10_20260610_153102.md") == "2026-06-10"
-    assert core._primary_report_date("opportunity_top10_xueqiu_20260610_153102.md") is None
-    assert core._primary_report_date("foo.md") is None
 
 
 # --------------------------- Part C: 画布按日 ---------------------------

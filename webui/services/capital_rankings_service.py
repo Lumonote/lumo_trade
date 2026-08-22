@@ -8,9 +8,13 @@ discovery 写入的正 top_n 快照。
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
+import os
 import re
+import threading
+import time
 from typing import Any, Callable, Optional
 
 import pandas as pd
@@ -23,6 +27,55 @@ SNAPSHOT_TOP_N = 0  # 资金榜全市场快照哨兵
 MONEYFLOW_AMOUNT_UNIT = "万元"
 _TS_INST_SIDE = {"0": "buy", "1": "sell", "buy": "buy", "sell": "sell"}
 _QUANT_KEYWORDS = ("量化", "DMA", "程序化", "算法")
+
+# ---------------------------------------------------------------------------
+# 按需自动补齐：查询路径上发现最近 max_days 个交易日有缺失(含中间被跳过的交易日、
+# 以及上次抓取被截断的残缺日)就自动回填,免得用户手动去点「补偿数据」。
+# 冷却按 kind 分桶——资金榜单页会同时打 moneyflow 与 dragon_tiger 两个接口,
+# 共用一个时间戳会让先到的那个独占补数机会、另一个永远补不上。
+# ---------------------------------------------------------------------------
+_auto_backfill_lock = threading.Lock()
+_auto_backfill_last_ts: dict[str, float] = {}   # kind -> 上次触发时刻
+AUTO_BACKFILL_COOLDOWN_SECS = 600.0
+AUTO_BACKFILL_MAX_DAYS = 10   # 检查最近 10 个交易日
+AUTO_BACKFILL_MAX_FETCH = 3   # 单次最多补几天(剩下的留给下次刷新,避免请求被整月回填拖死)
+
+# 当日资金流/龙虎榜要收盘后才由 Tushare 发布。该时刻之前把「今天」算成缺口的话,
+# 每次请求都会去拉一个注定拉不到的今天,还会吃掉冷却窗口,真正缺的历史交易日
+# 反而永远排不上队。
+AUTO_BACKFILL_PUBLISH_AFTER = "17:30"
+
+# 全市场资金流正常约 5500~6000 行/天。判「某天已补齐」只看有没有行是不够的：
+# 抓取被截断留下的残缺日(实测有过 550 行、1050 行的日子)会被永久当成已完成,
+# 榜单从此在残缺的全集上排名。改为与近期各日行数的中位数比,低于一半即判残缺；
+# 用相对值而非写死的行数,universe 增减不会让判据失准。
+MONEYFLOW_COVERAGE_RATIO = 0.5
+
+
+def _publish_cutoff_passed() -> bool:
+    """当日资金流/龙虎榜是否已过 Tushare 发布时刻(可用环境变量覆盖)。"""
+    cutoff = (os.environ.get("KRONOS_CAPITAL_PUBLISH_AFTER") or "").strip() \
+        or AUTO_BACKFILL_PUBLISH_AFTER
+    return _dt.datetime.now().strftime("%H:%M") >= cutoff
+
+
+def _covered_dates(kind: str, dates: list[str]) -> set[str]:
+    """``dates`` 中已经补齐的 ISO 日期。
+
+    moneyflow 是全市场快照,按行数判完整(见 MONEYFLOW_COVERAGE_RATIO);
+    龙虎榜每天上榜数天然只有几十条且逐日波动,套行数阈值会把正常日误判成
+    残缺,故有行即算已补。
+    """
+    if kind != "moneyflow":
+        return dragon_tiger_list_repo.existing_dates(dates)
+    counts = moneyflow_repo.date_counts(dates, SNAPSHOT_TOP_N)
+    if not counts:
+        return set()
+    ordered = sorted(counts.values())
+    median = ordered[len(ordered) // 2]
+    floor = max(1, int(median * MONEYFLOW_COVERAGE_RATIO))
+    return {d for d, n in counts.items() if n >= floor}
+
 
 
 def _bare_code(ts_code: str) -> str:
@@ -173,6 +226,116 @@ def backfill_outcome(summary: dict) -> dict:
     return {"rows": total, "errors": errors, "ok": not (total == 0 and bool(errors))}
 
 
+def auto_backfill_if_stale(kinds: tuple[str, ...] = ("moneyflow", "dragon_tiger"),
+                           max_days: int = AUTO_BACKFILL_MAX_DAYS,
+                           cooldown_secs: float = AUTO_BACKFILL_COOLDOWN_SECS,
+                           max_fetch: int = AUTO_BACKFILL_MAX_FETCH) -> dict:
+    """按需自动补齐：最近 ``max_days`` 个交易日里本地缺失的日期自动回填。
+
+    「缺失」包含三种：从没抓过的日期、中间被跳过的交易日、以及上次抓取被截断
+    只入库了零星几行的残缺日。每次最多补 ``max_fetch`` 天(最近的优先),剩下的
+    留给下次刷新,免得一次查询被整月回填拖死。
+
+    个股查看(stock_capital_summary / quant_radar stock_analysis)与榜单查询路径
+    调用,让「过了日期要手动补数据」自动完成。冷却按 kind 分桶 + 进程锁,避免
+    并发/频繁触发 Tushare 全市场拉取；Tushare 不可用 / 无缺失 / 拉取失败都静默
+    降级返回 ``{"triggered": False, ...}``,绝不阻断查询。
+
+    返回 ``{"triggered", "kinds", "missing", "remaining", "errors", "reason"}``。
+    """
+    idle = {"triggered": False, "kinds": [], "missing": {}, "remaining": 0, "errors": []}
+    from data_store import tushare_client
+    if not tushare_client.available():
+        return {**idle, "reason": "tushare_unavailable"}
+
+    now = time.time()
+    with _auto_backfill_lock:
+        due = [k for k in kinds
+               if (now - _auto_backfill_last_ts.get(k, 0.0)) >= cooldown_secs]
+    if not due:
+        return {**idle, "reason": "cooldown"}
+
+    trade_dates = tushare_client.recent_trade_dates(max_days) or []
+    if not trade_dates:
+        return {**idle, "reason": "no_cal"}
+    if not _publish_cutoff_passed():
+        today = _dt.date.today().strftime("%Y%m%d")
+        trade_dates = [d for d in trade_dates if str(d) != today]
+    if not trade_dates:
+        return {**idle, "reason": "pending_publish"}
+
+    # 逐个交易日检查缺口(YYYYMMDD 本地 ↔ ISO 入库)：不只比较「最新日期」,
+    # 中间被跳过的交易日与残缺日同样会被发现。
+    missing_by_kind: dict[str, list[str]] = {}
+    for kind in due:
+        covered = _covered_dates(kind, trade_dates)
+        missing = [d for d in trade_dates if _to_iso(d) not in covered]
+        if missing:
+            missing_by_kind[kind] = missing
+    if not missing_by_kind:
+        return {**idle, "reason": "fresh"}
+
+    budget = max(1, int(max_fetch))
+    with _auto_backfill_lock:
+        # 冷却在锁内再验一次(并发窗口保护),并按 kind 各自记账。
+        planned = {k: v[:budget] for k, v in missing_by_kind.items()
+                   if (now - _auto_backfill_last_ts.get(k, 0.0)) >= cooldown_secs}
+        for kind in planned:
+            _auto_backfill_last_ts[kind] = now
+    if not planned:
+        return {**idle, "reason": "cooldown"}
+
+    remaining = sum(len(missing_by_kind[k]) - len(v) for k, v in planned.items())
+    errors: list[str] = []
+    for kind, dates in planned.items():
+        try:
+            summary = CapitalRankingsService().backfill(kinds=(kind,), dates=dates)
+        except Exception as exc:  # noqa: BLE001 — 单个 kind 失败不阻断其余
+            logger.warning("auto backfill %s failed: %s", kind, exc)
+            errors.append(f"{kind}: {exc}")
+            continue
+        for item in (summary or {}).get(kind, {}).get("errors") or []:
+            msg = item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else str(item)
+            if msg:
+                errors.append(f"{kind}: {msg}")
+    return {"triggered": True, "kinds": list(planned), "missing": planned,
+            "remaining": remaining, "errors": errors, "reason": "backfilled"}
+
+
+_auto_backfill_bg_lock = threading.Lock()
+_auto_backfill_bg_running: set[str] = set()
+
+
+def auto_backfill_background(kinds: tuple[str, ...] = ("moneyflow", "dragon_tiger")) -> bool:
+    """在后台线程里做按需补齐,不阻塞当前请求。
+
+    榜单页用这个:补数是整批全市场拉取,同步做会把 HTTP 响应挂住十几秒;
+    本次请求照常返回本地已有的数据,补上的部分下次刷新可见。
+    返回是否真的起了线程(已有同类在跑 / Tushare 不可用时为 False)。
+    """
+    from data_store import tushare_client
+    if not tushare_client.available():
+        return False
+    with _auto_backfill_bg_lock:
+        todo = tuple(k for k in kinds if k not in _auto_backfill_bg_running)
+        if not todo:
+            return False
+        _auto_backfill_bg_running.update(todo)
+
+    def _work() -> None:
+        try:
+            auto_backfill_if_stale(kinds=todo)
+        except Exception as exc:  # noqa: BLE001 — 后台补数失败只影响「数据还是旧的」
+            logger.warning("background auto backfill failed: %s", exc)
+        finally:
+            with _auto_backfill_bg_lock:
+                _auto_backfill_bg_running.difference_update(todo)
+
+    threading.Thread(target=_work, name="capital-auto-backfill", daemon=True).start()
+    return True
+
+
+
 class CapitalRankingsService:
     def __init__(self, quote_provider: Optional[Callable[[list], dict]] = None,
                  quant_codes_fn: Optional[Callable[[], dict]] = None):
@@ -195,6 +358,11 @@ class CapitalRankingsService:
         end_date=None,
         no_quant=False,
     ) -> dict:
+        try:
+            # 后台补数:榜单响应不等待全市场拉取,补上的数据下次刷新可见
+            auto_backfill_background(("moneyflow",))
+        except Exception:  # noqa: BLE001 — 自动补齐失败不阻断榜单
+            logger.warning("moneyflow_ranking auto backfill skipped")
         fetch_n = self._fetch_limit(top_n, no_quant)
         if mode == "aggregate" and start_date and end_date:
             as_of = end_date
@@ -230,6 +398,11 @@ class CapitalRankingsService:
         end_date=None,
         no_quant=False,
     ) -> dict:
+        try:
+            # 后台补数:榜单响应不等待全市场拉取,补上的数据下次刷新可见
+            auto_backfill_background(("dragon_tiger",))
+        except Exception:  # noqa: BLE001 — 自动补齐失败不阻断榜单
+            logger.warning("dragon_tiger_ranking auto backfill skipped")
         fetch_n = self._fetch_limit(top_n, no_quant)
         if mode == "aggregate" and start_date and end_date:
             as_of = end_date
@@ -264,6 +437,9 @@ class CapitalRankingsService:
 
         默认按 date/end_date 之前最近 days 个有数据交易日聚合;传入
         start_date/end_date 时改用显式日期区间。rank 保留全市场同窗口名次。
+
+        查询前先按需自动补齐缺失交易日（auto_backfill_if_stale），让
+        「过日期后需手动补数据」自动完成；补齐失败不影响本次查询降级返回。
         """
         try:
             days = max(1, min(120, int(days or 5)))
@@ -272,6 +448,12 @@ class CapitalRankingsService:
         code = _bare_code(ts_code)
         use_range = bool(start_date and end_date)
         mode = "range" if use_range else "aggregate"
+        # 默认（近 N 日）视图：先按需补齐最近交易日；显式日期/区间由下面窗口补齐处理
+        if not use_range and not date:
+            try:
+                auto_backfill_if_stale()
+            except Exception:  # noqa: BLE001 — 自动补齐失败不阻断个股查询
+                logger.warning("stock_capital_summary auto backfill skipped: %s", code)
         moneyflow = self._stock_moneyflow_section(
             ts_code,
             date=date,
@@ -288,6 +470,33 @@ class CapitalRankingsService:
             end_date=end_date,
             with_quotes=with_quotes,
         )
+        # 显式指定日期/区间且本地无数据时，尝试按窗口补齐后重查一次
+        if not (moneyflow.get("row") or dragon_tiger.get("row")) and (
+            use_range or date
+        ):
+            try:
+                refreshed = self._auto_backfill_window(
+                    date=date, days=days, start_date=start_date, end_date=end_date,
+                )
+                if refreshed:
+                    moneyflow = self._stock_moneyflow_section(
+                        ts_code,
+                        date=date,
+                        days=days,
+                        start_date=start_date,
+                        end_date=end_date,
+                        with_quotes=with_quotes,
+                    )
+                    dragon_tiger = self._stock_dragon_tiger_section(
+                        ts_code,
+                        date=date,
+                        days=days,
+                        start_date=start_date,
+                        end_date=end_date,
+                        with_quotes=with_quotes,
+                    )
+            except Exception:  # noqa: BLE001 — 窗口补齐失败不影响降级展示
+                logger.warning("stock_capital_summary window backfill skipped: %s", code)
         has_rows = bool(moneyflow.get("row") or dragon_tiger.get("row"))
         latest_dates = [
             d for d in (moneyflow.get("latest_date"), dragon_tiger.get("latest_date")) if d
@@ -306,6 +515,76 @@ class CapitalRankingsService:
             "moneyflow": moneyflow,
             "dragon_tiger": dragon_tiger,
         }
+
+    def _auto_backfill_window(self, *, date=None, days=5, start_date=None, end_date=None) -> bool:
+        """按请求窗口补齐缺失交易日（显式日期/区间场景）。
+
+        与 auto_backfill_if_stale 共用冷却(按 kind 分桶)与锁:查询路径上自动补齐,
+        避免用户手动去资金榜单页点「补偿数据」。返回是否触发过补齐。
+        """
+        from data_store import tushare_client
+        if not tushare_client.available():
+            return False
+        window = self._request_window(days, date, start_date, end_date)
+        if not window:
+            return False
+        if not _publish_cutoff_passed():
+            today = _dt.date.today().strftime("%Y%m%d")
+            window = [d for d in window if str(d) != today]
+        if not window:
+            return False
+        now = time.time()
+        missing_by_kind: dict[str, list[str]] = {}
+        for kind in ("moneyflow", "dragon_tiger"):
+            if (now - _auto_backfill_last_ts.get(kind, 0.0)) < AUTO_BACKFILL_COOLDOWN_SECS:
+                continue
+            covered = _covered_dates(kind, window)
+            missing = [d for d in window if _to_iso(d) not in covered]
+            if missing:
+                missing_by_kind[kind] = missing
+        if not missing_by_kind:
+            return False
+        with _auto_backfill_lock:
+            # 冷却在锁内再验一次(并发窗口保护),并按 kind 各自记账。
+            planned = {k: v[:AUTO_BACKFILL_MAX_FETCH] for k, v in missing_by_kind.items()
+                       if (now - _auto_backfill_last_ts.get(k, 0.0)) >= AUTO_BACKFILL_COOLDOWN_SECS}
+            for kind in planned:
+                _auto_backfill_last_ts[kind] = now
+        if not planned:
+            return False
+        try:
+            for kind, missing in planned.items():
+                self.backfill(kinds=(kind,), dates=missing)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("window backfill failed: %s", exc)
+            return False
+
+    @staticmethod
+    def _request_window(days: int, date=None, start_date=None, end_date=None) -> list[str]:
+        """请求窗口对应的交易日列表（YYYYMMDD，最新在前，去重后截断到 days 个）。
+
+        返回 YYYYMMDD 与 tushare backfill 的 dates 参数口径一致
+        （fetcher 直接传给 pro.moneyflow_dc / top_list 的 trade_date）。
+        """
+        from data_store import tushare_client
+        as_of_iso = _to_iso(end_date or date or "")
+        start_iso = _to_iso(start_date) if start_date else ""
+        end_iso = _to_iso(end_date) if end_date else ""
+        # 取足够多的交易日，再按窗口过滤
+        raw = tushare_client.recent_trade_dates(max(days * 2 + 4, 30)) or []  # YYYYMMDD
+        if start_iso and end_iso:
+            window = [d for d in raw if start_iso <= _to_iso(d) <= end_iso]
+        else:
+            cutoff = as_of_iso or (_to_iso(raw[0]) if raw else "")
+            window = [d for d in raw if _to_iso(d) <= cutoff] if cutoff else []
+        seen: set[str] = set()
+        out: list[str] = []
+        for d in window:
+            if d not in seen:
+                seen.add(d)
+                out.append(d)
+        return out[: max(int(days), 1)]
 
     @staticmethod
     def _fetch_limit(top_n, no_quant) -> int:

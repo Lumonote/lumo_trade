@@ -322,11 +322,16 @@ def test_cyq_provider_tushare_fallback(conn, monkeypatch):
 
 
 class _FakeProSurvey:
+    """调研日期取相对今天，避免写死日期随时间滑出查询窗口（原写死 20260324，
+    2026-07 起已滑出 days=120 的窗口，该用例从那时起长期红）。"""
     def stk_surv(self, ts_code, **kw):
+        import datetime as _d
+        today = _d.date.today()
         return pd.DataFrame({
             "ts_code": [ts_code, ts_code],
             "name": ["平安银行", "平安银行"],
-            "surv_date": ["20260512", "20260324"],
+            "surv_date": [(today - _d.timedelta(days=5)).strftime("%Y%m%d"),
+                          (today - _d.timedelta(days=60)).strftime("%Y%m%d")],
             "fund_visitors": ["--", "--"],
             "rece_place": ["深圳", "广州、深圳"],
             "rece_mode": ["业绩说明会,电话会议", "路演活动,实地会议"],
@@ -337,6 +342,8 @@ class _FakeProSurvey:
 
 
 def test_survey_provider_tushare_fallback(conn, monkeypatch):
+    import datetime as _d
+    today = _d.date.today()
     from data_store import tushare_client
     monkeypatch.setattr(tushare_client, "get_pro", lambda: _FakeProSurvey())
     from analysis.institutional.survey_provider import SurveyProvider
@@ -344,9 +351,60 @@ def test_survey_provider_tushare_fallback(conn, monkeypatch):
     assert res.data_status == "stale"
     events = res.data["recent_90d"]
     assert len(events) == 2
-    e0 = next(e for e in events if e["survey_date"] == "2026-05-12")
+    recent = (today - _d.timedelta(days=5)).isoformat()
+    e0 = next(e for e in events if e["survey_date"] == recent)
     assert e0["inst_name"] == "境内外投资者"
     assert e0["reception"] == "业绩说明会,电话会议"
+
+
+class _FakeProSurveyNaN:
+    """真实 stk_surv 的缺失文本列返回 NaN(float) 而非空串。
+
+    300684 实测 163 行里 rece_place 有 6 行 NaN、org_type 有 4 行 NaN。
+    调研日期取相对今天，避免写死日期随时间滑出 90 日窗口。
+    """
+    def stk_surv(self, ts_code, **kw):
+        import datetime as _d
+        today = _d.date.today()
+        d0 = (today - _d.timedelta(days=5)).strftime("%Y%m%d")
+        d1 = (today - _d.timedelta(days=40)).strftime("%Y%m%d")
+        return pd.DataFrame({
+            "ts_code": [ts_code, ts_code],
+            "name": ["中石科技", "中石科技"],
+            "surv_date": [d0, d1],
+            "fund_visitors": ["--", "--"],
+            "rece_place": [float("nan"), "深圳"],          # 缺失接待地点
+            "rece_mode": ["路演活动,现场", float("nan")],   # 缺失接待方式
+            "rece_org": [float("nan"), "鹏华基金"],         # 缺失接待对象
+            "org_type": ["基金管理公司", float("nan")],
+            "comp_rece": ["--", "--"],
+        })
+
+
+def test_survey_provider_tolerates_nan_text_columns(conn, monkeypatch):
+    """NaN 是 truthy，``x or ""`` 拦不住它 —— 落库前必须归一成空串。
+
+    未归一时 ``float('nan').replace(...)`` 抛 AttributeError，该异常会一路冒到
+    _compute_full_payload 外，把整个个股分析套件(含综合总览)打成 success=False。
+    """
+    import datetime as _d
+    today = _d.date.today()
+    from data_store import tushare_client
+    monkeypatch.setattr(tushare_client, "get_pro", lambda: _FakeProSurveyNaN())
+    from analysis.institutional.survey_provider import SurveyProvider
+    res = SurveyProvider(akshare_adapter=_NullAdapter()).get("000001.SZ", days=90)
+    assert res.data_status == "stale"
+    events = {e["survey_date"]: e for e in res.data["recent_90d"]}
+    recent = events[(today - _d.timedelta(days=5)).isoformat()]
+    older = events[(today - _d.timedelta(days=40)).isoformat()]
+    # 缺失项落库为 NULL（读回是 None/NaN，API 边界的 _json_safe 统一收成 null）
+    assert pd.isna(recent["topic"])                 # rece_place NaN → 空
+    assert pd.isna(older["reception"])              # rece_mode NaN → 空
+    # 有值的项不能被误伤
+    assert recent["reception"] == "路演活动,现场"
+    assert recent["inst_name"] == "基金管理公司"      # rece_org NaN → 退 org_type
+    assert older["topic"] == "深圳"
+    assert older["inst_name"] == "鹏华基金"
 
 
 class _FakeProLhb:

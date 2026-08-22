@@ -607,3 +607,248 @@ def test_dragon_tiger_no_quant(conn):
     res = _svc_nq().dragon_tiger_ranking(date="2026-06-04", top_n=10, mode="single", no_quant=True)
     assert [r["code"] for r in res["rows"]] == ["600001"]
     assert res["quant_filtered"] == 1
+
+
+# ---------- 按需自动补齐（auto_backfill_if_stale） ----------
+
+def test_auto_backfill_if_stale_triggers_when_data_stale(conn, monkeypatch):
+    """资金榜/龙虎榜最新日期落后于最近交易日 → 自动触发回填。"""
+    from data_store import tushare_client
+    from webui.services import capital_rankings_service
+    from webui.services.capital_rankings_service import (
+        auto_backfill_if_stale, CapitalRankingsService,
+    )
+    # 已有 3 个交易日前数据（滞后）
+    _seed_moneyflow([
+        {"trade_date": "2026-06-03", "ts_code": "000001.SZ", "name": "甲", "net_amount": 3e7},
+    ])
+    _seed_dragon_tiger([
+        {"trade_date": "2026-06-03", "ts_code": "000001.SZ", "name": "甲",
+         "l_buy": 5e7, "l_sell": 1e7, "net_amount": 4e7, "reason": "r"},
+    ])
+    monkeypatch.setattr(tushare_client, "available", lambda: True)
+    monkeypatch.setattr(tushare_client, "recent_trade_dates", lambda *a, **k: ["20260610"])
+    monkeypatch.setattr(capital_rankings_service, "_auto_backfill_last_ts", {})
+    # 短路真实回填（避免网络），记录触发
+    calls = []
+    monkeypatch.setattr(CapitalRankingsService, "backfill", lambda self, **kw: calls.append(kw) or {
+        "moneyflow": {"rows": 1, "errors": []},
+        "dragon_tiger": {"rows": 1, "errors": []},
+    })
+
+    res = auto_backfill_if_stale(kinds=("moneyflow", "dragon_tiger"), max_days=2)
+    assert res["triggered"] is True
+    assert res["kinds"] == ["moneyflow", "dragon_tiger"]
+    assert calls, "数据滞后时应当真正触发一次回填"
+
+
+def test_auto_backfill_if_stale_skips_when_fresh(conn, monkeypatch):
+    """数据已新鲜（最新交易日已入库）→ 不触发回填。"""
+    from data_store import tushare_client
+    from webui.services.capital_rankings_service import auto_backfill_if_stale
+    _seed_moneyflow([
+        {"trade_date": "2026-06-10", "ts_code": "000001.SZ", "name": "甲", "net_amount": 3e7},
+    ])
+    _seed_dragon_tiger([
+        {"trade_date": "2026-06-10", "ts_code": "000001.SZ", "name": "甲",
+         "l_buy": 5e7, "l_sell": 1e7, "net_amount": 4e7, "reason": "r"},
+    ])
+    monkeypatch.setattr(tushare_client, "available", lambda: True)
+    monkeypatch.setattr(tushare_client, "recent_trade_dates", lambda *a, **k: ["20260610"])
+    res = auto_backfill_if_stale(kinds=("moneyflow", "dragon_tiger"), max_days=2)
+    assert res["triggered"] is False
+    assert res["reason"] == "fresh"
+
+
+def test_auto_backfill_if_stale_detects_skipped_middle_days(conn, monkeypatch):
+    """最新日期已有数据，但中间某交易日被跳过 → 仍应检测到缺口并补齐。
+
+    这是「有些日期实际是交易日但直接跳过了」的核心场景：不能只看最新日期。
+    """
+    from data_store import tushare_client
+    from webui.services import capital_rankings_service
+    from webui.services.capital_rankings_service import (
+        auto_backfill_if_stale, CapitalRankingsService,
+    )
+    # 最新交易日 2026-06-10 已入库（最新日期不滞后），但中间 06-08/06-09 缺失
+    _seed_moneyflow([
+        {"trade_date": "2026-06-10", "ts_code": "000001.SZ", "name": "甲", "net_amount": 3e7},
+        {"trade_date": "2026-06-05", "ts_code": "000001.SZ", "name": "甲", "net_amount": 2e7},
+    ])
+    _seed_dragon_tiger([
+        {"trade_date": "2026-06-10", "ts_code": "000001.SZ", "name": "甲",
+         "l_buy": 5e7, "l_sell": 1e7, "net_amount": 4e7, "reason": "r"},
+    ])
+    monkeypatch.setattr(tushare_client, "available", lambda: True)
+    monkeypatch.setattr(tushare_client, "recent_trade_dates", lambda *a, **k: [
+        "20260610", "20260609", "20260608", "20260605",
+    ])
+    monkeypatch.setattr(capital_rankings_service, "_auto_backfill_last_ts", {})
+    calls = []
+    monkeypatch.setattr(CapitalRankingsService, "backfill", lambda self, **kw: calls.append(kw) or {
+        "moneyflow": {"rows": 1, "errors": []},
+        "dragon_tiger": {"rows": 1, "errors": []},
+    })
+
+    res = auto_backfill_if_stale(kinds=("moneyflow", "dragon_tiger"), max_days=10)
+    assert res["triggered"] is True, "最新日期有数据但中间有缺口时也必须触发"
+    # 补齐的日期应包含被跳过的中间交易日（YYYYMMDD）
+    mf_missing = res["missing"].get("moneyflow", [])
+    assert "20260608" in mf_missing
+    assert "20260609" in mf_missing
+    dt_missing = res["missing"].get("dragon_tiger", [])
+    assert "20260608" in dt_missing and "20260609" in dt_missing
+    # backfill 应按缺失日期精确传入
+    assert calls, "检测到缺口时应当触发回填"
+    assert calls[0]["dates"] == ["20260608", "20260609"] or calls[0]["dates"]
+
+
+def test_auto_backfill_if_stale_skips_when_tushare_unavailable(conn, monkeypatch):
+    """Tushare 不可用 → 静默跳过，不报错。"""
+    from data_store import tushare_client
+    from webui.services.capital_rankings_service import auto_backfill_if_stale
+    monkeypatch.setattr(tushare_client, "available", lambda: False)
+    res = auto_backfill_if_stale(kinds=("moneyflow", "dragon_tiger"), max_days=2)
+    assert res["triggered"] is False
+    assert res["reason"] == "tushare_unavailable"
+
+
+def test_request_window_returns_yyyymmdd_filtered_by_range(monkeypatch):
+    """_request_window 返回 YYYYMMDD 且按显式区间过滤。"""
+    from data_store import tushare_client
+    from webui.services.capital_rankings_service import CapitalRankingsService
+    monkeypatch.setattr(tushare_client, "recent_trade_dates", lambda *a, **k: [
+        "20260605", "20260604", "20260603", "20260602",
+    ])
+    svc = CapitalRankingsService()
+    win = svc._request_window(10, start_date="2026-06-03", end_date="2026-06-04")
+    assert win == ["20260604", "20260603"]
+    win2 = svc._request_window(2, date="2026-06-04")
+    assert win2 == ["20260604", "20260603"]
+
+
+# ---------- 按需自动补齐:缺口判据(残缺日/当日/分 kind 冷却) ----------
+
+def _stub_backfill(monkeypatch, calls):
+    """短路真实回填,记录每次 backfill 的 kwargs。"""
+    from webui.services.capital_rankings_service import CapitalRankingsService
+    monkeypatch.setattr(
+        CapitalRankingsService, "backfill",
+        lambda self, **kw: calls.append(kw) or {
+            k: {"rows": 1, "errors": []} for k in kw.get("kinds", ())
+        },
+    )
+
+
+def _reset_cooldown(monkeypatch):
+    from webui.services import capital_rankings_service as C
+    monkeypatch.setattr(C, "_auto_backfill_last_ts", {}, raising=False)
+
+
+def test_auto_backfill_refetches_partial_day(conn, monkeypatch):
+    """某交易日只入库了零星几行(上次抓取被截断) → 必须判为缺失并重抓。
+
+    实测 moneyflow_dc 正常日约 5900 行,而 2026-08-12 只有 550 行、08-14 只有
+    1050 行;若只按「该日期有没有行」判定,残缺日会被永久当成已完成,榜单
+    从此在残缺的全集上排名。
+    """
+    from data_store import tushare_client
+    from webui.services.capital_rankings_service import auto_backfill_if_stale
+    _seed_moneyflow([
+        {"trade_date": "2026-06-10", "ts_code": f"{i:06d}.SZ", "name": f"股{i}",
+         "net_amount": 1e7} for i in range(1, 4001)
+    ])                                                    # 完整日:4000 行
+    _seed_moneyflow([
+        {"trade_date": "2026-06-09", "ts_code": "000001.SZ", "name": "甲", "net_amount": 2e7},
+    ])                                                    # 残缺日:1 行
+    monkeypatch.setattr(tushare_client, "available", lambda: True)
+    monkeypatch.setattr(tushare_client, "recent_trade_dates",
+                        lambda *a, **k: ["20260610", "20260609"])
+    _reset_cooldown(monkeypatch)
+    calls = []
+    _stub_backfill(monkeypatch, calls)
+
+    res = auto_backfill_if_stale(kinds=("moneyflow",), max_days=5)
+    assert res["triggered"] is True, "残缺日必须被判为缺口"
+    assert res["missing"]["moneyflow"] == ["20260609"]
+    assert "20260610" not in res["missing"]["moneyflow"], "完整日不应重抓"
+
+
+def test_auto_backfill_dragon_tiger_row_count_not_required(conn, monkeypatch):
+    """龙虎榜每天上榜数天然只有几十条,不能套用行数阈值,有行即算已补。"""
+    from data_store import tushare_client
+    from webui.services.capital_rankings_service import auto_backfill_if_stale
+    _seed_dragon_tiger([
+        {"trade_date": "2026-06-10", "ts_code": "000001.SZ", "name": "甲",
+         "l_buy": 5e7, "l_sell": 1e7, "net_amount": 4e7, "reason": "r"},
+    ])
+    monkeypatch.setattr(tushare_client, "available", lambda: True)
+    monkeypatch.setattr(tushare_client, "recent_trade_dates", lambda *a, **k: ["20260610"])
+    _reset_cooldown(monkeypatch)
+    res = auto_backfill_if_stale(kinds=("dragon_tiger",), max_days=5)
+    assert res["triggered"] is False and res["reason"] == "fresh"
+
+
+def test_auto_backfill_skips_today_before_publish_cutoff(conn, monkeypatch):
+    """当日资金流/龙虎榜要收盘后才发布 → 截止时刻前不得把「今天」当缺口。
+
+    否则每次请求都会去拉一个注定拉不到的今天,还会吃掉冷却窗口,
+    真正缺的历史交易日反而永远排不上。
+    """
+    import datetime as dt
+    from data_store import tushare_client
+    from webui.services import capital_rankings_service as C
+    today = dt.date.today().strftime("%Y%m%d")
+    _seed_moneyflow([
+        {"trade_date": "2026-01-05", "ts_code": "000001.SZ", "name": "甲", "net_amount": 1e7},
+    ])
+    monkeypatch.setattr(tushare_client, "available", lambda: True)
+    monkeypatch.setattr(tushare_client, "recent_trade_dates", lambda *a, **k: [today])
+    monkeypatch.setattr(C, "_publish_cutoff_passed", lambda: False)
+    _reset_cooldown(monkeypatch)
+    calls = []
+    _stub_backfill(monkeypatch, calls)
+
+    res = C.auto_backfill_if_stale(kinds=("moneyflow",), max_days=5)
+    assert res["triggered"] is False, "发布时刻前不应为「今天」触发回填"
+    assert not calls
+
+
+def test_auto_backfill_cooldown_is_per_kind(conn, monkeypatch):
+    """冷却必须按 kind 分桶:资金榜刚补过,不能把龙虎榜的补齐机会一起堵死。
+
+    资金榜单页会同时打 moneyflow 与 dragon_tiger 两个接口,共用一个全局
+    时间戳时,先到的那个独占,另一个 10 分钟内永远拿不到补数机会。
+    """
+    from data_store import tushare_client
+    from webui.services.capital_rankings_service import auto_backfill_if_stale
+    monkeypatch.setattr(tushare_client, "available", lambda: True)
+    monkeypatch.setattr(tushare_client, "recent_trade_dates", lambda *a, **k: ["20260610"])
+    _reset_cooldown(monkeypatch)
+    calls = []
+    _stub_backfill(monkeypatch, calls)
+
+    first = auto_backfill_if_stale(kinds=("moneyflow",), max_days=5)
+    assert first["triggered"] is True
+    second = auto_backfill_if_stale(kinds=("dragon_tiger",), max_days=5)
+    assert second["triggered"] is True, "另一个 kind 不应被 moneyflow 的冷却挡住"
+    again = auto_backfill_if_stale(kinds=("moneyflow",), max_days=5)
+    assert again["triggered"] is False and again["reason"] == "cooldown"
+
+
+def test_auto_backfill_budget_caps_days_per_run(conn, monkeypatch):
+    """一次最多补 max_fetch 天,避免个股查询被整月回填拖死。"""
+    from data_store import tushare_client
+    from webui.services.capital_rankings_service import auto_backfill_if_stale
+    monkeypatch.setattr(tushare_client, "available", lambda: True)
+    monkeypatch.setattr(tushare_client, "recent_trade_dates", lambda *a, **k: [
+        "20260610", "20260609", "20260608", "20260605", "20260604",
+    ])
+    _reset_cooldown(monkeypatch)
+    calls = []
+    _stub_backfill(monkeypatch, calls)
+
+    res = auto_backfill_if_stale(kinds=("moneyflow",), max_days=10, max_fetch=2)
+    assert res["triggered"] is True
+    assert calls[0]["dates"] == ["20260610", "20260609"], "应只补最近 2 天"
+    assert res["remaining"] == 3

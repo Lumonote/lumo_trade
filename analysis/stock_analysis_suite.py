@@ -32,6 +32,14 @@ _OVERLAY_NS = "analysis_overlay"
 # 按需补偿日线时的回溯窗口（~2 年）。覆盖 MA60 / 120 日回撤 / 60 日年化波动率所需历史，
 # Eastmoney 一次请求即返回，命中后写库缓存，后续读取不再触网。
 _FETCH_LOOKBACK_DAYS = 730
+# 新股/次新股自动拉取成功但历史天然不足 min_rows 时的放行下限：
+# 上市不足 35 个交易日的股票（如 688825 仅 13 天）也能进入下游降级计算，
+# 量化模型基于短历史仍可产出信号，面板标注低置信而非整页「数据不足」。
+_NEW_IPO_MIN_ROWS = 5
+
+# 行数够但最后一根 K 线过期时的补偿退避窗口(秒)。停牌/退市/长假补不动是常态,
+# 没有退避就会每次打开个股分析都空打一次网络。
+_STALE_REFRESH_TTL = 1800
 
 
 _REGIME_BASE = {"bull": 50, "sideways": 35, "bear": 15}
@@ -321,6 +329,10 @@ class StockAnalysisSuite:
         # code → 上次补偿尝试的 monotonic 时刻，用于去重：同一 payload 内 _load_ohlcv 被
         # _collect_inputs + compute_risk_control 调两次，且失败时避免逐请求反复打网络。
         self._fetch_attempts: Dict[str, float] = {}
+        # code → 上次「因数据陈旧」发起补偿的时刻。行数够但日期旧时也要补，
+        # 但停牌/退市/长假会永远补不动，故按 _STALE_REFRESH_TTL 退避，避免每次
+        # 打开个股分析都空打一次网络。
+        self._stale_refreshes: Dict[str, float] = {}
 
     def get_full_payload(self, code: str) -> Dict[str, Any]:
         now = time.monotonic()
@@ -420,12 +432,26 @@ class StockAnalysisSuite:
             warnings_.append(f"cached_reports 读取失败：{exc}")
         # 机构深度挖掘顶层 key。chip_control 透传本地已算的控盘度（spec §0.1）；
         # main_force_deep / institutional_holdings 经 provider 自动拉取 akshare 写库。
-        main_force_deep = self._collect_main_force_deep(code)
-        institutional_holdings = self._collect_institutional_holdings(code)
-        chip_control = self._collect_chip_control(code, chip=inputs.get("chip"))
-        quant_matrix = self._collect_quant_matrix(code, models=inputs.get("models"))
-        limit_up_screening = self._collect_limit_up_patterns(code, inputs)
-        panel = self._collect_panel(code, inputs, {
+        # 逐块隔离：任一 section 取数失败只降级它自己并在 warnings 留痕，不能把整个
+        # 套件打成 success=False —— 那样用户在默认的「综合总览」tab 上只剩一条报错
+        # （实测 300684：机构调研 provider 遇 Tushare NaN 抛 AttributeError 吃掉整页）。
+        def _section(key: str, fn, *args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                warnings_.append(f"{key} 装配失败：{exc}")
+                return _unavailable_section(f"{key} 装配失败：{exc}")
+
+        main_force_deep = _section("main_force_deep", self._collect_main_force_deep, code)
+        institutional_holdings = _section(
+            "institutional_holdings", self._collect_institutional_holdings, code)
+        chip_control = _section(
+            "chip_control", self._collect_chip_control, code, chip=inputs.get("chip"))
+        quant_matrix = _section(
+            "quant_matrix", self._collect_quant_matrix, code, models=inputs.get("models"))
+        limit_up_screening = _section(
+            "limit_up_screening", self._collect_limit_up_patterns, code, inputs)
+        panel = _section("panel", self._collect_panel, code, inputs, {
             "main_force_deep": main_force_deep,
             "institutional_holdings": institutional_holdings,
             "chip_control": chip_control,
@@ -455,54 +481,113 @@ class StockAnalysisSuite:
             "chip_control": chip_control,
             "quant_matrix": quant_matrix,
             "limit_up_screening": limit_up_screening,
-            "related_news": self._collect_related_news(code),
-            "outcome_markers": self._collect_outcome_markers(code, inputs),
+            "related_news": _section("related_news", self._collect_related_news, code),
+            "outcome_markers": _section(
+                "outcome_markers", self._collect_outcome_markers, code, inputs),
             "panel": panel,
-            "analysis_overlay": self._collect_analysis_overlay(code),
+            "analysis_overlay": _section(
+                "analysis_overlay", self._collect_analysis_overlay, code),
         }
 
     def _collect_outcome_markers(self, code: str, inputs: dict | None) -> dict:
         """入选后表现标记(见 analysis/outcome_markers.py)。
 
         取数优先级:
-        1. 该股**最近一次机会挖掘入选**时已入库的标记 —— 与报告口径逐字一致, 不重算;
+        1. 该股**上一次机会挖掘入选**时已入库的标记 —— 与报告口径逐字一致, 不重算;
         2. 从未入选(或旧版 run 未存标记)时, 用个股分析本地可得的因子现场计算。
            技术分/追高风险由机会挖掘评分链路产出, 不在本链路, 故按缺失处理并在
            ``missing_factors`` 中显式列出, 避免"没触发"被误读成"没风险"。
+
+        有入库标记时**不止回放历史**: 同时按当前数据现场推导一份挂在 ``current``,
+        并给出两份之间的标记增减(``current['gained']`` / ``current['lost']``),
+        让"上次入选那天什么样"和"现在什么样"并排可比。顶层各字段仍是那次入选当天
+        的口径, 以保持与当时的机会挖掘报告逐字一致。
+
+        「上一次」的边界取 ``current`` 的截止日(最后一根 K 线): 挖掘几乎每个交易日
+        都跑, 拿不带边界的"最近一次入选"会命中**当天**那行, 两侧就是同一天的数据,
+        gained/lost 恒空、体质分毫厘不差 —— 比较退化成自己跟自己比。当天入选且再无
+        更早记录时, 只回放当天那份, 不再并排一份同日的自己。
         """
-        stored = None
+        current = self._current_marker_block(code, inputs)
+        boundary = current.get("as_of") or _dt.date.today().isoformat()
+
+        previous = self._stored_item(code, before_date=boundary)
+        block = self._stored_marker_block(previous) if previous else None
+        if block:
+            stored_keys = {m.get("key") for m in block["markers"] if isinstance(m, dict)}
+            current_keys = {m.get("key") for m in (current["markers"] or [])}
+            current["gained"] = [m for m in current["markers"]
+                                 if m.get("key") not in stored_keys]
+            current["lost"] = [m for m in block["markers"]
+                               if isinstance(m, dict) and m.get("key") not in current_keys]
+            block["current"] = current
+            block["note"] = (f"复用 {block['as_of']} 该股上一次入选机会挖掘时的标记，"
+                             f"与当日报告口径一致；"
+                             f"另附截至 {current['as_of'] or '最新'} 的现时标记对照")
+            return block
+
+        # 没有更早的入选可对照: 当天那次就只回放一份, 不跟同日的自己并排。
+        latest = self._stored_item(code)
+        block = self._stored_marker_block(latest) if latest else None
+        if block and (not current.get("as_of") or block["as_of"] == current["as_of"]):
+            block["note"] = (f"该股于 {block['as_of']} 当日入选机会挖掘，"
+                             f"复用当日报告口径的标记；此前无入选记录，暂无可对照的上一次")
+            return block
+        if block:
+            # 入选记录全都晚于当前数据截止日(日线滞后时会这样), 无从对照;
+            # 此时套 _current_marker_block 的"从未入选"说辞是谎报, 得改口。
+            current["note"] = (f"该股最近入选为 {block['as_of']}，晚于当前数据截止日 "
+                               f"{current['as_of'] or '未知'}，暂无可对照的上一次入选；"
+                               f"以下为按机会挖掘同口径现算的现时标记")
+        return current
+
+    @staticmethod
+    def _stored_item(code: str, before_date: Optional[str] = None) -> Optional[dict]:
+        """该股入选行(``before_date`` 限定只看早于该日的)。读不到一律 None ——
+        标记是增值信息, 任何库层异常都不该拖垮整个套件。"""
         try:
             from data_store import opportunity_repo
-            stored = opportunity_repo.latest_item_for_code(code)
+            return opportunity_repo.latest_item_for_code(code, before_date=before_date)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("读取 %s 最近入选标记失败: %s", code, exc)
+            logger.debug("读取 %s 入选标记失败(before_date=%s): %s", code, before_date, exc)
+            return None
 
-        if stored:
-            try:
-                signals = json.loads(stored.get("signals_json") or "{}")
-            except Exception:  # noqa: BLE001
-                signals = {}
-            markers = signals.get("markers")
-            if markers is not None:
-                constitution = signals.get("constitution") or outcome_markers.constitution([])
-                stored_description = signals.get("marker_description") or ""
-                return {
-                    "available": bool(markers),
-                    "source": "opportunity_run",
-                    "as_of": stored.get("run_date"),
-                    "partial": False,
-                    "missing_factors": [],
-                    "version": signals.get("markers_version") or outcome_markers.MARKERS_VERSION,
-                    "markers": markers,
-                    "constitution": constitution,
-                    "description": stored_description,
-                    # 入库标记是**入选当天**的口径,不能拿今天的走势去讲当天的标记,
-                    # 故沿用入库时的叙述;旧版 run 没存则退回逐条描述。
-                    "narrative": signals.get("marker_narrative") or stored_description,
-                    "baseline": outcome_markers.BASELINE,
-                    "note": f"复用 {stored.get('run_date')} 该股入选机会挖掘时的标记，与报告口径一致",
-                }
+    @staticmethod
+    def _stored_marker_block(stored: dict) -> Optional[dict]:
+        """入库那次入选的标记块(不含 ``current`` 对照与 ``note``)。
 
+        旧版 run 的 signals_json 没有 markers 键 / JSON 损坏 → None, 由调用方兜底。
+        """
+        try:
+            signals = json.loads(stored.get("signals_json") or "{}")
+        except Exception:  # noqa: BLE001
+            signals = {}
+        markers = signals.get("markers")
+        if markers is None:
+            return None
+        description = signals.get("marker_description") or ""
+        return {
+            "available": bool(markers),
+            "source": "opportunity_run",
+            "as_of": stored.get("run_date"),
+            "partial": False,
+            "missing_factors": [],
+            "version": signals.get("markers_version") or outcome_markers.MARKERS_VERSION,
+            "markers": markers,
+            "constitution": signals.get("constitution") or outcome_markers.constitution([]),
+            "description": description,
+            # 入库标记是**那次入选当天**的口径,不能拿今天的走势去讲当天的标记,
+            # 故沿用入库时的叙述;旧版 run 没存则退回逐条描述。
+            "narrative": signals.get("marker_narrative") or description,
+            "baseline": outcome_markers.BASELINE,
+        }
+
+    def _current_marker_block(self, code: str, inputs: dict | None) -> dict:
+        """按**当前**可得因子现场推导的一份标记(与入库历史标记同结构)。
+
+        ``as_of`` 取 OHLCV 最后一根 K 线的日期(拿不到才退回今天), 因为标记讲的是
+        这只票"到那根 K 线为止"的状态, 写今天会把停牌/数据滞后说成实时。
+        """
         factors, context = self._local_marker_inputs(code, inputs)
         missing = [label for label, key in (("技术分", "tech_score"), ("追高风险", "chase_risk"),
                                             ("RSI", "rsi"), ("板块情绪分", "sector_score"),
@@ -513,7 +598,7 @@ class StockAnalysisSuite:
         return {
             "available": bool(payload["markers"]),
             "source": "local",
-            "as_of": None,
+            "as_of": self._marker_as_of(inputs),
             "partial": bool(missing),
             "missing_factors": missing,
             "version": payload["version"],
@@ -525,6 +610,17 @@ class StockAnalysisSuite:
             "note": (f"{base_note}；缺失因子：{'、'.join(missing)}" if missing
                      else f"{base_note}（因子完整）"),
         }
+
+    @staticmethod
+    def _marker_as_of(inputs: dict | None) -> Optional[str]:
+        """现时标记的截止日期:最后一根日线的日期,取不到返回 None(不编造今天)。"""
+        df = (inputs or {}).get("ohlcv")
+        if df is None or getattr(df, "empty", True) or "timestamps" not in getattr(df, "columns", []):
+            return None
+        try:
+            return pd.to_datetime(df["timestamps"].iloc[-1]).strftime("%Y-%m-%d")
+        except Exception:  # noqa: BLE001
+            return None
 
     def _local_marker_inputs(self, code: str, inputs: dict | None) -> tuple[dict, dict]:
         """本地可得的标记因子 + 这只票的走势上下文(拿不到的一律留 None, 不伪造)。
@@ -1295,15 +1391,62 @@ class StockAnalysisSuite:
         except Exception:  # noqa: BLE001 — 补偿尽力而为，失败回退到分级降级路径
             return False
 
+    @staticmethod
+    def _expected_latest_trading_day(now: Optional[_dt.datetime] = None) -> _dt.date:
+        """最近**应该**已有日线的那个交易日。
+
+        没有可用的交易日历（App 库里 trade_calendar 是空的），故按周末 + 收盘时间
+        推：收盘（15:00）前当天的日线还没出，期望值落到上一个工作日。法定长假期间
+        本地数据会被判为陈旧从而触发一次补偿，靠 ``_STALE_REFRESH_TTL`` 退避兜住。
+        """
+        now = now or _dt.datetime.now()
+        day = now.date()
+        if day.weekday() < 5 and now.hour < 15:
+            day -= _dt.timedelta(days=1)
+        while day.weekday() >= 5:
+            day -= _dt.timedelta(days=1)
+        return day
+
+    @classmethod
+    def _ohlcv_is_stale(cls, df, now: Optional[_dt.datetime] = None) -> bool:
+        """最后一根 K 线是否早于最近应有的交易日（判不出来时按不陈旧处理）。"""
+        if df is None or getattr(df, "empty", True) or "timestamps" not in getattr(df, "columns", []):
+            return False
+        try:
+            last = pd.to_datetime(df["timestamps"].iloc[-1]).date()
+        except Exception:  # noqa: BLE001
+            return False
+        return last < cls._expected_latest_trading_day(now)
+
+    def _stale_refresh_allowed(self, code: str) -> bool:
+        """陈旧数据的补偿限流：同一只票 ``_STALE_REFRESH_TTL`` 内只尝试一次。"""
+        now = time.monotonic()
+        with self._lock:
+            last = self._stale_refreshes.get(code)
+            if last is not None and (now - last) < _STALE_REFRESH_TTL:
+                return False
+            self._stale_refreshes[code] = now
+        return True
+
     def _load_ohlcv(self, code: str, min_rows: int = 35) -> pd.DataFrame:
         """Load OHLCV from data_store.ohlcv_repo (SQLite)，按需补偿 + 分级降级（E6/§6.7）。
 
-        读取顺序：优先返回 ≥60 行的频率（指标充足，保留旧的 1d→5m 偏好）。本地不足 60
-        行时**立即按需补偿**（``_ensure_ohlcv_daily`` 走 Eastmoney 免 token 拉日线写库），
-        再重扫一次；补偿后仍 <60 才回到分级降级：返回最长且 ≥``min_rows`` 行的序列
+        读取顺序：优先返回 ≥60 行**且不过期**的频率（指标充足，保留旧的 1d→5m 偏好）。
+        本地不足 60 行、**或最后一根 K 线早于最近应有的交易日**时立即按需补偿
+        （``_ensure_ohlcv_daily`` 走 Eastmoney/Tushare/Sina 拉日线写库），再重扫一次。
+        行数够但日期旧的必须也补：库里存着几个月前的 692 只票，只看行数会让整页
+        分析（筹码/资金/量化/RSI/表现标记）静默跑在过期数据上，且用户无从察觉。
+        补偿后仍 <60 才回到分级降级：返回最长且 ≥``min_rows`` 行的序列
         （35–59 日为「短历史降级」，指标交由下游 + 标注低置信）；都 <``min_rows`` 才抛
         FileNotFoundError，message 带「当前行数 + 需 ≥N 交易日」并给出补齐数据的操作指引
         （仅在确实补偿无果时显示），避免级联多面板泛化「数据不足」。
+
+        补不动就用旧的（停牌/退市/长假是常态），但绝不假装它是新的：日期照实透传给
+        下游，陈旧的补偿尝试按 ``_STALE_REFRESH_TTL`` 退避。
+
+        新股/次新股特例：自动拉取已成功（数据源确实有该股）但上市时间短导致历史
+        天然不足 min_rows（如上市 13 天）→ 只要 ≥``_NEW_IPO_MIN_ROWS`` 行即放行给
+        下游降级计算（量化模型等基于短历史仍可产出信号，面板标注低置信），不再抛错。
         """
         from data_store import ohlcv_repo
 
@@ -1314,20 +1457,32 @@ class StockAnalysisSuite:
                 df = ohlcv_repo.load_dataframe(code, frequency)
                 if df is not None and len(df) >= 60:
                     return df, best
-                if df is not None and (best is None or len(df) > len(best)):
+                if df is not None and (best is None or len(best) < len(df)):
                     best = df
             return None, best
 
         ideal, best = _scan()
+        stale = ideal is not None and self._ohlcv_is_stale(ideal)
+        if ideal is not None and not stale:
+            return ideal
+        # 行数不足、或数据过期 → 补偿后重扫（补偿成功则此处拿到足量且最新的序列）。
+        fetched = False
+        if self._auto_fetch and (not stale or self._stale_refresh_allowed(code)):
+            if self._ensure_ohlcv_daily(code):
+                fetched = True
+                refreshed_ideal, refreshed_best = _scan()
+                if refreshed_ideal is not None:
+                    return refreshed_ideal
+                if refreshed_best is not None and (best is None or len(best) < len(refreshed_best)):
+                    best = refreshed_best
+        # 补不动的过期数据仍然可用（停牌/退市/长假），日期照实透传给下游。
         if ideal is not None:
             return ideal
-        # 本地 <60 行 → 立即补偿，再重扫一次（补偿成功则此处命中 ≥60）。
-        if self._auto_fetch and self._ensure_ohlcv_daily(code):
-            ideal, best = _scan()
-            if ideal is not None:
-                return ideal
         # 补偿后（或未开启补偿）仍 <60：短历史降级（≥min_rows 可算指标，下游标注低置信）。
         if best is not None and len(best) >= min_rows:
+            return best
+        # 新股/次新股：自动拉取成功但历史天然不足 → 放行给下游（量化模型仍可产出信号）。
+        if fetched and best is not None and len(best) >= _NEW_IPO_MIN_ROWS:
             return best
         have = len(best) if best is not None else 0
         msg = f"OHLCV 历史不足：{code} 最长仅 {have} 行（需 ≥{min_rows} 交易日）"

@@ -164,7 +164,17 @@ class OpportunityFilter:
             'final_score': stock_data.get('scoring_result', {}).get('combined_score', stock_data.get('scoring_result', {}).get('total_score', 0)),
             'rating': stock_data.get('scoring_result', {}).get('combined_rating', stock_data.get('scoring_result', {}).get('rating', 'C')),
             'source': stock_data.get('source', ''),
-            'source_detail': stock_data.get('source_detail', '')
+            'source_detail': stock_data.get('source_detail', ''),
+            # 候选阶段带来的行情/板块字段必须透传:此处不透传的字段会在
+            # filter_results 里彻底丢失(本函数返回的是新 dict,不是 stock_data),
+            # 导致 opportunity_repo.build_items 入库时 change_pct/sector_code/
+            # sector_rank 恒为 NULL(股票池「平均涨跌」列因此长期为空)。
+            'change_pct': stock_data.get('change_pct'),
+            'popularity_score': stock_data.get('popularity_score'),
+            'sector_name': stock_data.get('sector_name', ''),
+            'sector_code': stock_data.get('sector_code', ''),
+            'sector_rank': stock_data.get('sector_rank'),
+            'sector_stock_rank': stock_data.get('sector_stock_rank'),
         }
 
         scoring_result = stock_data.get('scoring_result', {})

@@ -220,6 +220,46 @@ def test_stock_pool_uses_aggregate_aliases_for_ordering(conn):
     assert stocks[0]["days"] == ["2026-06-09", "2026-06-10"]
 
 
+def test_stock_pool_filters_by_since_and_until_closed_interval(conn):
+    """since/until 闭区间过滤:区间外 run 完全不参与聚合(次数/日期/最新值)。"""
+    from data_store import opportunity_repo as repo
+
+    mk = lambda score, rating: [{  # noqa: E731
+        "code": "000001", "name": "平安银行", "total_score": score,
+        "rating": rating, "degraded": False, "sector": "银行", "change_pct": 1.0,
+    }]
+    repo.save_run(_meta(run_at="2026-05-01T10:00:00"), mk(60.0, "C") + [
+        {"code": "600999", "name": "只在窗外", "total_score": 95.0, "rating": "S",
+         "degraded": False, "sector": "券商", "change_pct": 2.0},
+    ])
+    repo.save_run(_meta(run_at="2026-06-09T10:00:00"), mk(70.0, "B"))
+    repo.save_run(_meta(run_at="2026-06-10T15:00:00"), mk(80.0, "A"))
+    repo.save_run(_meta(run_at="2026-07-01T10:00:00"), mk(90.0, "S"))
+
+    # 双边闭区间: 只统计 06-09 ~ 06-10 两天
+    stocks = repo.stock_pool(limit=10, since_date="2026-06-09", until_date="2026-06-10")
+    assert [s["code"] for s in stocks] == ["000001"]  # 窗外股票整只消失
+    row = stocks[0]
+    assert row["selections"] == 2
+    assert row["distinct_days"] == 2
+    assert row["days"] == ["2026-06-09", "2026-06-10"]
+    assert row["first_seen"] == "2026-06-09T10:00:00"  # 05-01 不算首次
+    assert row["last_seen"] == "2026-06-10T15:00:00"   # 07-01 不算最近
+    assert row["best_score"] == pytest.approx(80.0)    # 95/90 均在窗外
+    assert row["last_rating"] == "A"                   # 最新值取窗口内最近 run
+
+    # 单边 until: 只统计 05-01
+    early = repo.stock_pool(limit=10, until_date="2026-05-31")
+    assert {s["code"] for s in early} == {"000001", "600999"}
+    assert next(s for s in early if s["code"] == "000001")["distinct_days"] == 1
+
+    # 单边 since: 与既有行为一致
+    late = repo.stock_pool(limit=10, since_date="2026-07-01")
+    assert [s["code"] for s in late] == ["000001"]
+    assert late[0]["days"] == ["2026-07-01"]
+    assert late[0]["last_rating"] == "S"
+
+
 def test_stock_pool_reads_moneyflow_snapshot_at_top_n_0(conn):
     """资金流向列取自全市场快照哨兵 top_n=0(而非历史误用的 top_n=1)。
 
@@ -285,3 +325,132 @@ def test_stock_pool_post_selection_return_none_without_prices(conn):
     stocks = repo.stock_pool(limit=10)
     row = next(s for s in stocks if s["code"] == "000001")
     assert row["post_select_return_pct"] is None
+
+
+def test_build_items_change_pct_falls_back_to_change_1d(conn):
+    """上游漏透传 change_pct 时,回退评分明细的 change_1d(同口径的当日涨跌幅)。
+
+    回归:apply_all_filters 曾把候选阶段的 change_pct 整个丢掉,导致入库整列
+    NULL、股票池「平均涨跌」恒为空。"""
+    from data_store import opportunity_repo as repo
+
+    items = repo.build_items([
+        {  # 有 change_pct: 原样用
+            "stock_code": "000001", "name": "平安银行", "change_pct": 5.2,
+            "scoring_result": {"details": {"price_changes": {"change_1d": 1.2}}},
+        },
+        {  # 没有 change_pct: 回退 change_1d
+            "stock_code": "000002", "name": "万科A",
+            "scoring_result": {"details": {"price_changes": {"change_1d": -3.4}}},
+        },
+        {  # 两者都没有: None(不写 0,免得把「无数据」算进平均)
+            "stock_code": "000003", "name": "无数据", "scoring_result": {"details": {}},
+        },
+    ])
+    assert items[0]["change_pct"] == pytest.approx(5.2)
+    assert items[1]["change_pct"] == pytest.approx(-3.4)
+    assert items[2]["change_pct"] is None
+
+
+def test_stock_pool_average_change_pct(conn):
+    """平均涨跌 = 窗口内每次入选当日涨跌幅的均值;无数据时为 None。"""
+    from data_store import opportunity_repo as repo
+
+    repo.save_run(_meta(run_at="2026-06-09T10:00:00"), [
+        {"code": "000001", "name": "平安银行", "total_score": 80.0, "change_pct": 2.0},
+        {"code": "600999", "name": "无涨幅", "total_score": 70.0},
+    ])
+    repo.save_run(_meta(run_at="2026-06-10T10:00:00"), [
+        {"code": "000001", "name": "平安银行", "total_score": 82.0, "change_pct": -1.0},
+    ])
+
+    stocks = {s["code"]: s for s in repo.stock_pool(limit=10)}
+    assert stocks["000001"]["avg_change_pct"] == pytest.approx(0.5)
+    assert stocks["000001"]["last_change_pct"] == pytest.approx(-1.0)
+    assert stocks["600999"]["avg_change_pct"] is None
+
+
+def test_stock_pool_post_selection_return_prefers_market_daily(conn):
+    """有全市场日线时走 market_daily,并带出买入基准日/现价日期。"""
+    from data_store import opportunity_repo as repo
+
+    repo.save_run(_meta(run_at="2026-06-09T10:00:00"), [
+        {"code": "000001", "name": "平安银行", "total_score": 88.0, "change_pct": 1.5},
+    ])
+    _seed_market_daily(conn, "20260610", extra=[("000001.SZ", 10.0, 10.2)])
+    _seed_market_daily(conn, "20260612", extra=[("000001.SZ", 11.5, 12.0)])
+
+    row = next(s for s in repo.stock_pool(limit=10) if s["code"] == "000001")
+    assert row["post_select_return_pct"] == pytest.approx(20.0)  # 10.0 开盘 → 12.0 收盘
+    assert row["entry_date"] == "2026-06-10"
+    assert row["price_date"] == "2026-06-12"
+    assert row["price_source"] == "market_daily"
+
+
+def test_stock_pool_post_selection_return_ignores_index_rows(conn):
+    """market_daily 里混着指数日 K(000001.SH 上证指数),不能被当成个股 000001。"""
+    from data_store import opportunity_repo as repo
+
+    repo.save_run(_meta(run_at="2026-06-09T10:00:00"), [
+        {"code": "000001", "name": "平安银行", "total_score": 88.0, "change_pct": 1.5},
+    ])
+    # 只有指数行 + 凑数个股行,真正的 000001.SZ 缺席 → 不该拿指数价算涨幅
+    _seed_market_daily(conn, "20260610", extra=[("000001.SH", 3000.0, 3010.0)])
+    _seed_market_daily(conn, "20260612", extra=[("000001.SH", 3300.0, 3600.0)])
+
+    row = next(s for s in repo.stock_pool(limit=10) if s["code"] == "000001")
+    assert row["post_select_return_pct"] is None
+
+
+def test_stock_pool_post_selection_return_falls_back_to_ohlcv(conn):
+    """全市场日线覆盖不到的股票(如退市/停牌)回退本地 ohlcv,并标注来源。"""
+    from data_store import opportunity_repo as repo
+
+    repo.save_run(_meta(run_at="2026-06-09T10:00:00"), [
+        {"code": "000001", "name": "平安银行", "total_score": 88.0, "change_pct": 1.5},
+    ])
+    _seed_market_daily(conn, "20260610")   # 全市场有行情,但没有 000001
+    _seed_market_daily(conn, "20260612")
+    for ts, op, cl in [("2026-06-10 00:00:00", 10.0, 10.4),
+                       ("2026-06-12 00:00:00", 10.8, 11.0)]:
+        conn.execute(
+            "INSERT INTO ohlcv (code, frequency, ts, open, close) VALUES (?, '1d', ?, ?, ?)",
+            ("000001", ts, op, cl),
+        )
+
+    row = next(s for s in repo.stock_pool(limit=10) if s["code"] == "000001")
+    assert row["post_select_return_pct"] == pytest.approx(10.0)
+    assert row["price_source"] == "ohlcv"
+
+
+def _seed_market_daily(conn, trade_date: str, extra=()):
+    """造一天「全市场」日线:凑够行数门槛的填充行 + 指定的个股/指数行。"""
+    rows = [(f"{600000 + i:06d}.SH", trade_date, 10.0, 10.0) for i in range(1200)]
+    rows += [(ts_code, trade_date, open_, close) for ts_code, open_, close in extra]
+    conn.executemany(
+        "INSERT OR REPLACE INTO market_daily(ts_code, trade_date, open, close) VALUES(?,?,?,?)",
+        rows,
+    )
+
+
+def test_latest_item_for_code_can_exclude_recent_runs(conn):
+    """``before_date`` 只回看该日期**之前**的入选行。
+
+    个股分析要拿「上一次入选」与当前并排, 当天刚入选过时必须跳过当天那行,
+    否则两侧是同一天的数据, 比较退化成自己跟自己比。
+    """
+    from data_store import opportunity_repo as repo
+
+    for day in ("2026-06-09", "2026-06-10", "2026-06-12"):
+        repo.save_run(_meta(run_at=f"{day}T15:00:00"), [
+            {"code": "000001", "name": "平安银行", "total_score": 80.0,
+             "signals": {"rsi": 50.0}},
+        ])
+
+    assert repo.latest_item_for_code("000001")["run_date"] == "2026-06-12"
+    assert repo.latest_item_for_code(
+        "000001", before_date="2026-06-12")["run_date"] == "2026-06-10"
+    assert repo.latest_item_for_code(
+        "000001", before_date="2026-06-10")["run_date"] == "2026-06-09"
+    # 早于全部入选记录 → 没有「上一次」
+    assert repo.latest_item_for_code("000001", before_date="2026-06-09") is None

@@ -78,6 +78,7 @@ from webui.services.notification_events import NotificationEventService
 from webui.services.scoring_health_service import ScoringHealthService
 from webui.services.db_backup_service import DbBackupService
 from webui.services.command_center_service import CommandCenterService
+from webui.services.market_pulse_service import MarketPulseService
 from data_store import opportunity_repo
 
 logger = logging.getLogger(__name__)
@@ -144,83 +145,177 @@ def _cc_holdings():
     return {"account": account, "positions": positions, "max_drawdown": mdd}
 
 
-def _primary_report_date(path):
-    """Extract YYYY-MM-DD from a primary opportunity report filename, or None."""
-    m = re.match(r"^opportunity_top10_(\d{8})_\d{6}\.md$", Path(path).name)
-    if not m:
-        return None
-    d = m.group(1)
-    return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
-
-
 def _command_center_available_dates(limit=60):
-    """Distinct days(newest-first)that have primary opportunity reports,用于大屏选日。"""
-    seen = []
-    for path in _latest_primary_opportunity_reports(limit=200):
-        d = _primary_report_date(path)
-        if d and d not in seen:
-            seen.append(d)
-        if len(seen) >= limit:
-            break
-    return seen
+    """有机会挖掘 run 的日期(新→旧),用于大屏选日。数据源:SQLite ``opportunity_run``。"""
+    try:
+        from data_store import opportunity_repo
+        rows = opportunity_repo.runs_by_day(limit=limit)
+    except Exception as exc:
+        logger.debug(f"读取机会挖掘按天列表失败: {exc}")
+        return []
+    dates = []
+    for row in rows or []:
+        d = str((row or {}).get('run_date') or '')[:10]
+        if d and d not in dates:
+            dates.append(d)
+    return dates[:limit]
+
+
+# 大屏撮合矩阵取当日 run 的前 N 名(与报告「综合排名 TOP20」同口径)。
+# 一次 run 入库的是全量候选(数百只),全铺进矩阵会被低分噪声淹没。
+COMMAND_CENTER_TOP_N = 20
+
+
+def _command_center_item_from_row(row):
+    """``opportunity_item`` 行 → 大屏矩阵 item(自带风险信号,供撮合直接消费)。"""
+    row = dict(row or {})
+    scores = _json_obj(row.get('scores_json'), {})
+    signals = _json_obj(row.get('signals_json'), {})
+    sig = dict(signals) if isinstance(signals, dict) else {}
+    # 板块拥挤度用七维里的板块分(sidecar 时代由 sector_score 字段承载)
+    sector_score = _safe_float(scores.get('sector'), None) if isinstance(scores, dict) else None
+    if sector_score is not None and 'sector_score' not in sig:
+        sig['sector_score'] = sector_score
+    code = _stock_code_key(row.get('code'))
+    return {
+        'code': code,
+        'stock_code': code,
+        'name': row.get('name'),
+        'stock_name': row.get('name'),
+        'score': _safe_float(row.get('total_score'), 0.0) or 0.0,
+        'rating': row.get('rating'),
+        'sector': row.get('sector'),
+        'sector_code': row.get('sector_code'),
+        'change_pct': _safe_float(row.get('change_pct'), None),
+        'degraded': bool(row.get('degraded')),
+        'signals': sig,
+        'scores': scores if isinstance(scores, dict) else {},
+    }
 
 
 def _command_center_report(date=None):
-    """Aggregate ALL of a day's primary opportunity reports into one item set.
+    """当日机会挖掘结果(数据源:**SQLite** ``opportunity_run``/``opportunity_item``)。
 
-    显示「当日全部相关内容」:同日多份报告的 items 按 code 去重(保留最高综合分),
-    并透传当日全部报告路径供 signals sidecar 合并。``date`` 为空 → 最近一天。
+    同日多次 run 按 code 去重保留最高综合分,按分降序取前 ``COMMAND_CENTER_TOP_N`` 名。
+    ``date`` 为空 → 最近一个有 run 的日子;指定日无 run → 回退最近一天。
+    每条 item 自带 ``signals``(风险信号 + 板块分),大屏不再依赖 markdown 报告与
+    ``.signals.json`` 旁挂文件。
     """
-    reports = _latest_primary_opportunity_reports(limit=200)
-    if not reports:
-        return {"items": [], "market_env": "", "file": None, "report_path": None,
-                "report_paths": [], "date": None, "report_count": 0}
-    target = str(date or "").strip()[:10]
-    if not target:
-        target = _primary_report_date(reports[0])
-    day_reports = [p for p in reports if _primary_report_date(p) == target]
-    if not day_reports:  # 指定日无报告 → 回退最近一天
-        target = _primary_report_date(reports[0])
-        day_reports = [p for p in reports if _primary_report_date(p) == target]
+    empty = {"items": [], "file": None, "date": None, "report_count": 0, "run_ids": []}
+    try:
+        from data_store import opportunity_repo
+    except Exception as exc:
+        logger.debug(f"opportunity_repo 不可用: {exc}")
+        return empty
 
-    merged = {}
-    market_env = ""
+    try:
+        target = str(date or "").strip()[:10]
+        runs = opportunity_repo.list_runs(run_date=target, limit=50) if target else []
+        if not runs:  # 未指定日 / 该日无 run → 回退最近一次 run 所在的那天
+            latest = opportunity_repo.latest_run()
+            if not latest:
+                return empty
+            target = str(latest.get('run_date') or latest.get('run_at') or '')[:10]
+            runs = opportunity_repo.list_runs(run_date=target, limit=50) or [latest]
+    except Exception as exc:
+        logger.debug(f"读取当日机会挖掘 run 失败: {exc}")
+        return empty
+
+    # list_runs 已按时间倒序:最新一次 run 的报告名用于 as_of 展示
     newest_file = None
-    paths = []
-    for path in day_reports:  # day_reports 已是新→旧
-        try:
-            parsed = _parse_opportunity_report(path)
-        except Exception as exc:
-            logger.debug(f"大屏聚合解析报告失败 {path}: {exc}")
+    merged = {}
+    run_ids = []
+    for run in runs:
+        rid = run.get('id')
+        if rid is None:
             continue
-        paths.append(str(path))
+        run_ids.append(int(rid))
         if newest_file is None:
-            newest_file = parsed.get("file")
-            market_env = parsed.get("market_env") or ""
-        for item in parsed.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            code = _stock_code_key(item.get("code") or item.get("stock_code"))
+            newest_file = Path(str(run.get('report_file') or '')).name or None
+        try:
+            rows = opportunity_repo.items_for_run(int(rid))
+        except Exception as exc:
+            logger.debug(f"读取 run {rid} 明细失败: {exc}")
+            continue
+        for row in rows:
+            item = _command_center_item_from_row(row)
+            code = item['code']
             if not code:
                 continue
-            score = _safe_float(item.get("score"), 0.0) or 0.0
             prev = merged.get(code)
-            if prev is None or score > (_safe_float(prev.get("score"), 0.0) or 0.0):
+            if prev is None or item['score'] > prev['score']:
                 merged[code] = item
-    items = sorted(
-        merged.values(),
-        key=lambda i: _safe_float(i.get("score"), 0.0) or 0.0,
-        reverse=True,
-    )
+
+    items = sorted(merged.values(), key=lambda i: i['score'], reverse=True)
     return {
-        "items": items,
-        "market_env": market_env,
+        "items": items[:COMMAND_CENTER_TOP_N],
         "file": newest_file,
-        "report_path": paths[0] if paths else None,
-        "report_paths": paths,
-        "date": target,
-        "report_count": len(paths),
+        "date": target or None,
+        "report_count": len(run_ids),
+        "run_ids": run_ids,
     }
+
+
+def _market_pulse_index_bars(symbols, datalen=160):
+    from analysis import market_regime
+
+    return market_regime.get_index_bars(symbols, datalen=datalen)
+
+
+def _market_pulse_index_quotes(symbols):
+    from data_store.index_quote_fetch import fetch_index_quotes
+
+    quotes = fetch_index_quotes(symbols)
+    # ⚠️ core.py 用的是 `import datetime`(模块),不是 `from datetime import datetime`,
+    # 因此这里必须写 datetime.datetime.now(),与本文件其余调用一致。
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    return {sym: {**q, "date": today} for sym, q in quotes.items()}
+
+
+def _market_pulse_series(end_date=None, limit=60):
+    from analysis import sector_series
+
+    return sector_series.load_all_series(end_date=end_date, limit=limit)
+
+
+def _market_pulse_rules(series_by_sector, weights=None, enabled=None):
+    from analysis import sector_turning
+
+    return sector_turning.evaluate_universe(series_by_sector, weights=weights,
+                                            enabled=enabled)
+
+
+def _market_pulse_rule_stats():
+    """判据校验结果(scripts/validate_turning_rules.py 写入)。缺失 → 空,不放行任何判据。"""
+    from data_store import kv_repo
+
+    hit = kv_repo.get("market_pulse", "rule_stats")
+    return (hit[0] or {}) if hit else {}
+
+
+MARKET_PULSE_SERVICE = MarketPulseService(
+    index_bars=_market_pulse_index_bars,
+    index_quotes=_market_pulse_index_quotes,
+    sector_series=_market_pulse_series,
+    turning_rules=_market_pulse_rules,
+    rule_stats=_market_pulse_rule_stats,
+)
+
+
+def market_pulse_payload(as_of=None):
+    """总览页「指数风向 + 板块机会与拐点」payload(见 MarketPulseService.payload)。"""
+    return MARKET_PULSE_SERVICE.payload(as_of=as_of)
+
+
+def start_sector_refresh():
+    """板块日序列盘中重算 / 收盘定稿守护线程(见 sector_series.start_finalize_daemon)。"""
+    try:
+        from analysis import sector_series
+
+        return sector_series.start_finalize_daemon()
+    except Exception as exc:  # noqa: BLE001 — 守护线程启动失败不阻塞服务
+        logger.debug(f"启动板块序列守护线程失败: {exc}")
+        return None
 
 
 COMMAND_CENTER_SERVICE = CommandCenterService(
@@ -234,6 +329,7 @@ COMMAND_CENTER_SERVICE = CommandCenterService(
     news_index=lambda positions: _holdings_news_index(positions, _load_market_intelligence()),
     hot_news=lambda date=None, report_file=None: opportunity_repo.latest_hot_news(
         date, limit=10, report_file=report_file, latest_run_only=True),
+    market_pulse=lambda: MARKET_PULSE_SERVICE.payload(),
 )
 
 
@@ -1350,7 +1446,7 @@ def _html_table_rows(markdown):
         cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row_html, flags=re.I | re.S)
         if len(cells) < 5:
             continue
-        cleaned = [_strip_markup(cell) for cell in cells[:5]]
+        cleaned = [_strip_markup(cell) for cell in cells]
         if cleaned[0] in {'排名', '#'} or cleaned[1] in {'代码', '股票代码'}:
             continue
         rows.append(cleaned)
@@ -1366,7 +1462,7 @@ def _markdown_table_rows(markdown):
         cells = [_strip_markup(cell) for cell in line.strip('|').split('|')]
         if len(cells) < 5 or cells[0] in {'排名', '#'} or cells[1] in {'代码', '股票代码'}:
             continue
-        rows.append(cells[:5])
+        rows.append(cells)
     return rows
 
 
@@ -1380,11 +1476,12 @@ def _parse_opportunity_report(path):
     rows = _html_table_rows(content) or _markdown_table_rows(content)
     items = []
     for cells in rows:
-        rank_raw, code, name, score_raw, detail = cells
-        # Only ranking rows carry a packed 【…】 detail cell. This excludes the
-        # 昨日复盘 / 置信度 tables that share the same 5-column shape but whose 5th
-        # cell is a price / description rather than the opportunity detail.
-        if '【' not in (detail or ''):
+        rank_raw, code, name, score_raw = cells[0], cells[1], cells[2], cells[3]
+        # 详细分析是第 5 列起唯一带 【…】 的那格 —— 2026-07-29 起排名表在
+        # 「综合得分」与「详细分析」之间插入了「表现标记」列,列位不再固定。
+        # 昨日复盘 / 置信度表同为 5+ 列但没有 【…】(第 5 格是价格/描述),整行跳过。
+        detail = next((cell for cell in cells[4:] if '【' in (cell or '')), '')
+        if not detail:
             continue
         code_match = re.search(r'\d{6}', code)
         if not code_match:

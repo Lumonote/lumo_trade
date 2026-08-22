@@ -134,17 +134,87 @@ def get_day(trade_date: str, limit: int = 200, q: str = "",
     return [_row_to_item(r) for r in get_conn().execute(sql, params)]
 
 
+def _trade_days(limit: int) -> List[str]:
+    """最近 ``limit`` 个交易日 YYYYMMDD(最新在前)。
+
+    本地交易日历优先;日历最新日落后今天超过 14 个自然日视为过期(历史上
+    dev 库日历停在 5 月,直接取会把历史窗口拖回几个月前),退化为工作日近似。
+    """
+    try:
+        from data_store import calendar_repo
+
+        today = _dt.date.today()
+        today_key = today.strftime("%Y%m%d")
+        opens = [d for d in calendar_repo.open_days() if str(d) <= today_key]
+        if opens:
+            latest = str(opens[-1])
+            try:
+                stale = (today - _dt.date(int(latest[:4]), int(latest[4:6]), int(latest[6:8]))).days > 14
+            except (TypeError, ValueError):
+                stale = True
+            if not stale:
+                return [str(d) for d in opens[-limit:][::-1]]
+    except Exception:
+        pass
+    day, out = _dt.date.today(), []
+    while len(out) < limit:
+        if day.weekday() < 5:
+            out.append(day.strftime("%Y%m%d"))
+        day -= _dt.timedelta(days=1)
+    return out
+
+
 def get_stock_history(code: str, days: int = 60) -> List[Dict[str, Any]]:
-    """个股逐日量化行为历史(最新在前)。"""
+    """个股逐日量化行为历史,按交易日历连续合成(最新在前)。
+
+    按日表只落当天有盘口异动/活跃的股票,直接查表会把「无异动日」和「整个
+    量化雷达当天没运行的日子」都显示成空白,看起来像数据缺失。这里按交易日
+    历补全三态:表内有行 → 原样;页面运行过但该股无异动 → ``status="no_activity"``
+    占位行;当天没运行 → ``status="unrecorded"`` 占位行。占位行的涨跌%从
+    moneyflow_dc 补当天真实值(无则空)。
+    """
     core = str(code or "").split(".")[0].strip()
     if not core:
         return []
-    rows = get_conn().execute(
+    limit = max(1, min(int(days or 60), 365))
+    rows = {_row_to_item(r)["trade_date"]: _row_to_item(r) for r in get_conn().execute(
         f"SELECT {','.join(_FIELDS)} FROM quant_radar_stock_daily "
         "WHERE code=? ORDER BY trade_date DESC LIMIT ?",
-        (core, max(1, min(int(days or 60), 365))),
-    )
-    return [_row_to_item(r) for r in rows]
+        (core, limit),
+    )}
+    calendar = _trade_days(limit)
+    if not calendar:
+        return [rows[d] for d in sorted(rows, reverse=True)]
+    recorded = {str(r[0]) for r in get_conn().execute(
+        "SELECT DISTINCT trade_date FROM quant_radar_stock_daily")}
+    # 涨跌%回填:无异动/未运行日也从 moneyflow_dc 拿当天真实涨跌,占位行不显空
+    pct_by_day: Dict[str, Any] = {}
+    try:
+        placeholders = ",".join("?" * len(calendar))
+        for r in get_conn().execute(
+            f"SELECT trade_date, pct_change FROM moneyflow_dc "
+            f"WHERE top_n=0 AND (ts_code=? OR ts_code LIKE ?) "
+            f"AND trade_date IN ({placeholders})",
+            (core, f"{core}.%", *[_date_key(d) for d in calendar]),
+        ):
+            pct_by_day[str(r[0])] = r[1]
+    except Exception:
+        pass
+    out: List[Dict[str, Any]] = []
+    for day in calendar:
+        iso = _date_key(day)
+        if iso in rows:
+            out.append(rows[iso])
+            continue
+        status = "no_activity" if iso in recorded else "unrecorded"
+        out.append({
+            "code": core, "trade_date": iso, "status": status,
+            "activity": 0, "level": "", "level_rank": 0, "scores": {},
+            "badges": [], "reasons": [], "changes_total": 0, "changes_bull": 0,
+            "changes_bear": 0, "quant_seat": False, "direction": "", "smash": 0,
+            "change_pct": pct_by_day.get(iso),
+        })
+    return out
 
 
 def list_dates(limit: int = 120) -> List[str]:

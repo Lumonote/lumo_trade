@@ -2,6 +2,7 @@ import time
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from analysis.stock_analysis_suite import StockAnalysisSuite
 
@@ -481,6 +482,50 @@ def test_compute_full_payload_assembles_overview_and_risk(monkeypatch, tmp_path)
     assert payload["risk_control"]["available"] is True
     assert "stub_tabs" in payload
     assert "warnings" in payload
+
+
+_OPTIONAL_SECTIONS = {
+    "_collect_main_force_deep": "main_force_deep",
+    "_collect_institutional_holdings": "institutional_holdings",
+    "_collect_chip_control": "chip_control",
+    "_collect_quant_matrix": "quant_matrix",
+    "_collect_limit_up_patterns": "limit_up_screening",
+    "_collect_related_news": "related_news",
+    "_collect_outcome_markers": "outcome_markers",
+    "_collect_analysis_overlay": "analysis_overlay",
+}
+
+
+@pytest.mark.parametrize("failing", sorted(_OPTIONAL_SECTIONS))
+def test_single_section_failure_does_not_kill_whole_payload(failing):
+    """任一子模块抛异常只能降级它自己，不能把整个套件(含综合总览)打没。
+
+    实测回归：机构调研 provider 遇 Tushare NaN 抛 AttributeError，异常从
+    _collect_institutional_holdings 一路冒到 get_suite，整页只剩
+    {success: False, error}，用户在「综合总览」tab 上看到一条报错。
+    """
+    suite = StockAnalysisSuite.__new__(StockAnalysisSuite)
+    suite._collect_inputs = lambda code: {}  # type: ignore[attr-defined]
+    suite.compute_overview = lambda code, inputs=None: {"radar": {}}  # type: ignore[attr-defined]
+    suite.compute_risk_control = lambda code: {"available": False}  # type: ignore[attr-defined]
+    suite.collect_cached_reports = lambda code: {}  # type: ignore[attr-defined]
+    suite._collect_panel = lambda code, inputs, sections: {"personas": []}  # type: ignore[attr-defined]
+    for name in _OPTIONAL_SECTIONS:
+        setattr(suite, name, (lambda *a, **kw: {"data_status": "stale"}))
+
+    def _boom(*a, **kw):
+        raise AttributeError("'float' object has no attribute 'replace'")
+
+    setattr(suite, failing, _boom)
+
+    payload = suite._compute_full_payload("300684")
+
+    # 综合总览仍在
+    assert payload["overview"] == {"radar": {}}
+    # 失败的那块降级成不可用，并在 warnings 里留痕
+    section_key = _OPTIONAL_SECTIONS[failing]
+    assert payload[section_key].get("data_status") == "unavailable"
+    assert any(section_key in w for w in payload["warnings"])
 
 
 def test_build_llm_payload_contains_required_sections():

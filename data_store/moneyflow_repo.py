@@ -350,18 +350,28 @@ def latest_date(top_n: int = None):
 
 def existing_dates(dates, snapshot_top_n: int = 0) -> set[str]:
     """Return ISO trade dates already stored for the given snapshot bucket."""
+    return set(date_counts(dates, snapshot_top_n))
+
+
+def date_counts(dates, snapshot_top_n: int = 0) -> dict[str, int]:
+    """Rows stored per ISO trade date (dates with no rows are absent).
+
+    Callers that need to tell a *complete* day from one whose fetch was
+    truncated compare these counts; presence alone can't distinguish them.
+    """
     normalized = [_date_key(d) for d in (dates or []) if _date_key(d)]
     if not normalized:
-        return set()
+        return {}
     placeholders = ",".join("?" for _ in normalized)
     rows = get_conn().execute(
         f"""
-        SELECT DISTINCT trade_date FROM moneyflow_dc
+        SELECT trade_date, COUNT(*) FROM moneyflow_dc
         WHERE top_n=? AND trade_date IN ({placeholders})
+        GROUP BY trade_date
         """,
         (int(snapshot_top_n), *normalized),
     ).fetchall()
-    return {str(row[0]) for row in rows}
+    return {str(row[0]): int(row[1] or 0) for row in rows}
 
 
 def count() -> int:

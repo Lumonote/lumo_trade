@@ -3110,6 +3110,15 @@ body[data-page="market_cloud"] .toolbar a.button.secondary {
 }
 .suite-summary-key { font-weight: 700; color: var(--ink); margin-right: 4px; }
 .suite-summary-row.concl .suite-summary-key { color: var(--blue-dark); }
+/* 强势形态在总结行内联展示（原先是总结卡下面一叠各占一行的卡片，太占纵向空间），
+   名称保留点击跳「涨停筛选」的入口。 */
+.suite-summary-pattern {
+  font-weight: 600;
+  color: var(--blue-dark);
+  border-bottom: 1px dashed currentColor;
+  cursor: pointer;
+}
+.suite-summary-pattern:hover { opacity: .75; }
 
 /* Risk control */
 .suite-risk-grid {
@@ -3784,6 +3793,42 @@ body[data-page="market_cloud"] .toolbar a.button.secondary {
   align-items: center;
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.opportunity-data-range {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.opportunity-data-range-label,
+.opportunity-data-range-sep {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.opportunity-data-range input[type="date"] {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  font-size: 12px;
+}
+
+.opportunity-data-range input[type="date"]:focus {
+  outline: none;
+  border-color: #b8cef4;
+  background: #fff;
+}
+
+.opportunity-data-range .button.active {
+  border-color: #b8cef4;
+  background: #eef4ff;
+  color: #2b5cb8;
 }
 
 .opportunity-data-search input {
@@ -7042,3 +7087,115 @@ body[data-page="market_cloud"] .mc-empty {
 .wl-pin-btn { min-width: 0; padding: 2px 5px; font-size: 0.8rem; line-height: 1; border: 1px solid var(--line); background: transparent; border-radius: 4px; cursor: pointer; opacity: 0.35; transition: opacity 0.15s; }
 .wl-pin-btn:hover,.wl-pin-btn.wl-pinned { opacity: 1; }
 .wl-pin-btn.wl-pinned { background: #fff7e6; border-color: #f5d08c; }
+
+/* 量化行为历史三态:未运行日 / 无异动日 */
+.quant-hist-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: rgba(150,150,150,.16); border: 1px solid var(--line); color: var(--ink-2); font-size: 0.68rem; }
+.quant-hist-tag.quiet { background: rgba(90,160,220,.10); border-color: rgba(90,160,220,.28); }
+.quant-hist-muted td { color: var(--ink-3, #999); }
+
+/* ===== 总览页:指数风向 + 板块机会与拐点(spec 2026-08-21)=====
+   浅色主题,复用 .panel/.pill 体系;A股涨红跌绿(--red / --green)。 */
+#marketPulseHost { display: grid; gap: 14px; margin-bottom: 14px; }
+
+.mp-head-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mp-tag {
+  display: inline-flex; align-items: center; border-radius: 999px;
+  padding: 2px 8px; background: var(--surface-tint); color: var(--ink-2);
+  font-size: 11px; font-weight: 650; white-space: nowrap;
+}
+.mp-tag.live { background: #e6f4ec; color: var(--green); }
+.mp-tag.prov { background: #fdf3e0; color: var(--amber); }
+.mp-tag.warn { background: #fbeceb; color: var(--red); }
+
+/* --- 指数卡片 */
+.mp-index-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.mp-index-card {
+  padding: 12px 14px; border-radius: 8px;
+  background: var(--surface-soft); border: 1px solid var(--line);
+}
+.mp-index-card .mp-name {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 650; color: var(--ink-2);
+}
+.mp-index-card .mp-close {
+  font-size: 22px; font-weight: 740; color: var(--ink);
+  margin: 4px 0 8px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+}
+.mp-index-card .mp-row {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 12px; padding: 2px 0; color: var(--muted);
+}
+.mp-index-card .mp-row b { font-weight: 650; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.mp-index-card .mp-row b.change-up { color: var(--red); }
+.mp-index-card .mp-row b.change-down { color: var(--green); }
+.mp-pulse {
+  display: inline-flex; align-items: center; margin-top: 10px;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 700;
+}
+.mp-pulse.strong   { background: #fbeceb; color: var(--red); }
+.mp-pulse.mild_up  { background: #fdf1ef; color: #d1594f; }
+.mp-pulse.range    { background: var(--surface-tint); color: var(--ink-2); }
+.mp-pulse.pullback { background: #eaf0fb; color: var(--blue); }
+.mp-pulse.risk     { background: #e6f4ec; color: var(--green); }
+.mp-pulse.unknown  { background: var(--bg-subtle); color: var(--faint); }
+
+/* --- 风格轴 / 仓位建议条 */
+.mp-style {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 12px; padding: 10px 12px; border-radius: 8px;
+  background: var(--surface-tint); border: 1px solid var(--line);
+  font-size: 13px; color: var(--ink-2);
+}
+.mp-style b { color: var(--ink); font-weight: 740; }
+.mp-style .mp-advice { color: var(--muted); }
+
+/* --- 板块双列 */
+.mp-sector-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.mp-col-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  font-size: 13px; font-weight: 740; color: var(--ink);
+}
+.mp-col-head .mp-count { font-weight: 650; color: var(--muted); font-size: 12px; }
+.mp-sector-list { display: flex; flex-direction: column; gap: 8px; }
+.mp-sector-row {
+  padding: 10px 12px; border-radius: 8px;
+  background: var(--surface-soft); border: 1px solid var(--line);
+}
+.mp-sector-row.fired { border-left: 3px solid var(--red); }
+.mp-sector-row.watch { border-left: 3px solid var(--amber); }
+.mp-sec-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mp-sec-name { font-size: 14px; font-weight: 740; color: var(--ink); }
+.mp-sec-score {
+  margin-left: auto; font-size: 12px; font-weight: 700;
+  color: var(--purple); font-variant-numeric: tabular-nums;
+}
+.mp-sec-rules { margin-top: 6px; font-size: 12px; color: var(--muted); }
+.mp-sec-rules b { color: var(--ink-2); font-weight: 650; }
+.mp-sec-rules .change-up { color: var(--red); font-weight: 650; }
+.mp-sec-rules .change-down { color: var(--green); font-weight: 650; }
+.mp-sec-gap {
+  margin-top: 6px; padding: 5px 8px; border-radius: 6px;
+  background: #fdf3e0; color: var(--amber);
+  font-size: 12px; line-height: 1.5;
+}
+
+.mp-empty {
+  padding: 16px; border-radius: 8px; text-align: center;
+  background: var(--surface-soft); border: 1px dashed var(--line-strong);
+  font-size: 12px; color: var(--muted);
+}
+.mp-note {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+  font-size: 11px; line-height: 1.6; color: var(--faint);
+}
+
+@media (max-width: 1200px) {
+  .mp-index-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mp-sector-cols { grid-template-columns: 1fr; }
+}
+.mp-sec-evid {
+  margin-top: 6px; padding: 5px 8px; border-radius: 6px;
+  background: var(--surface-tint); color: var(--ink-2);
+  font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums;
+}

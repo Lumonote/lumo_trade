@@ -11,6 +11,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from analysis import outcome_markers
+from data_store import opportunity_prices
 from data_store.connection import get_conn
 
 
@@ -244,7 +245,9 @@ def build_items(filter_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "sector_code": stock.get("sector_code") or sector.get("sector_code"),
             "sector_rank": _num(stock.get("sector_rank")),
             "sector_stock_rank": _num(stock.get("sector_stock_rank")),
-            "change_pct": _num(stock.get("change_pct")),
+            # 当日涨跌幅: 优先候选源的实时涨跌幅, 缺失时回退评分明细的 change_1d
+            # (同一口径也写进 signals.day_change), 避免上游漏透传时整列为空。
+            "change_pct": _first_num(stock.get("change_pct"), pc.get("change_1d")),
             "scores": scores,
             "signals": {
                 "chase": _num(chase),
@@ -358,30 +361,44 @@ def run_for_hot_sector_snapshot(snapshot_id) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
-def latest_item_for_code(code: str) -> Optional[Dict[str, Any]]:
+def latest_item_for_code(code: str,
+                         before_date: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """某只个股最近一次入选的 item 行(含 run_date/run_at)。从未入选 → None。
 
     供个股分析复用「入选后表现标记」: 直接读该股上次入选时已入库的标记,
     与机会挖掘报告口径完全一致, 不重算因子。
+
+    ``before_date`` 形如 ``YYYY-MM-DD``, 给定时只回看**严格早于**该日的入选行。
+    个股分析要的是「上一次入选 vs 当前」, 而挖掘几乎每个交易日都跑, 不排除掉
+    当天那行就会拿今天跟今天比(见 StockAnalysisSuite._collect_outcome_markers)。
     """
     key = str(code or "").strip()
     if not key:
         return None
+    where = "WHERE i.code = ?"
+    params: List[Any] = [key]
+    if before_date:
+        where += " AND r.run_date < ?"
+        params.append(str(before_date))
     row = get_conn().execute(
-        """
+        f"""
         SELECT i.*, r.run_date, r.run_at, r.ruleset_version
         FROM opportunity_item i
         JOIN opportunity_run r ON r.id = i.run_id
-        WHERE i.code = ?
+        {where}
         ORDER BY r.run_at DESC, r.id DESC
         LIMIT 1
         """,
-        (key,),
+        params,
     ).fetchone()
     return dict(row) if row else None
 
 
-def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[str, Any]]:
+def stock_pool(
+    limit: int = 300,
+    since_date: Optional[str] = None,
+    until_date: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """跨所有 run 聚合的「股票池」:每只曾入选股票一行,含入选次数、首次/最近入选
     时间、重复入选的日期列表、最佳/平均评分等。
 
@@ -390,10 +407,23 @@ def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[
     - ``days_csv``:去重后的入选日期(逗号分隔,升序),前端展开为重复入选时间线。
     - 名称/评级/板块/分数等「最新值」取该股最近一次 run 的行(window rn=1)。
     - 资金流向取自 moneyflow_dc 最近一个交易日:主力净流入/散户流入/总流入/资金日期。
-    ``since_date`` 形如 ``YYYY-MM-DD``,只统计该日期(含)之后的 run。
+    - ``avg_change_pct``/``last_change_pct``:入选当日涨跌幅的均值/最新值。
+    - ``post_select_return_pct``:入选后涨幅,连带 ``entry_date``/``entry_open``/
+      ``price_date``/``price_source``(价格口径见 data_store.opportunity_prices)。
+    ``since_date``/``until_date`` 形如 ``YYYY-MM-DD``,闭区间过滤 run:只统计
+    ``since_date``(含)之后、``until_date``(含)之前的 run;二者均可单独使用。
+    区间外的入选记录完全不参与聚合(次数/日期/最新值/首次入选均按区间内口径)。
     """
-    where = "WHERE r.run_date >= ?" if since_date else ""
-    params: tuple = (str(since_date), int(limit)) if since_date else (int(limit),)
+    conds = []
+    cond_params: List[str] = []
+    if since_date:
+        conds.append("r.run_date >= ?")
+        cond_params.append(str(since_date))
+    if until_date:
+        conds.append("r.run_date <= ?")
+        cond_params.append(str(until_date))
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    params: tuple = (*cond_params, int(limit))
     rows = get_conn().execute(
         f"""
         WITH joined AS (
@@ -407,51 +437,9 @@ def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[
           JOIN opportunity_run r ON r.id = i.run_id
           {where}
         ),
-        latest_mf AS (
-          SELECT code,
-                 trade_date   AS flow_date,
-                 net_amount   AS main_net_inflow,
-                 buy_sm_amount AS retail_flow,
-                 COALESCE(buy_elg_amount,0) + COALESCE(buy_lg_amount,0)
-                   + COALESCE(buy_md_amount,0) + COALESCE(buy_sm_amount,0) AS total_inflow,
-                 amount_unit  AS flow_unit
-          FROM (
-            SELECT SUBSTR(mf.ts_code, 1, 6) AS code,
-                   mf.trade_date, mf.net_amount, mf.buy_sm_amount,
-                   mf.buy_elg_amount, mf.buy_lg_amount, mf.buy_md_amount,
-                   mf.amount_unit,
-                   ROW_NUMBER() OVER (
-                     PARTITION BY SUBSTR(mf.ts_code, 1, 6) ORDER BY mf.trade_date DESC
-                   ) AS mf_rn
-            FROM moneyflow_dc mf
-            WHERE mf.top_n = 0   -- 资金榜全市场快照哨兵(SNAPSHOT_TOP_N);
-                                 -- top_n=1 是历史误用、几乎无行,会让资金流向列恒为空
-          ) WHERE mf_rn = 1
-        ),
-        pool_codes AS (SELECT DISTINCT code FROM joined),
         first_select AS (
           -- 每只股票的首次入选交易日(用于「入选后涨幅」的买入基准日)
           SELECT code, MIN(run_date) AS first_date FROM joined GROUP BY code
-        ),
-        entry_px AS (
-          -- 买入价 = 首次入选之后第一个交易日的开盘价(与报告口径一致:次日开盘买入)
-          SELECT code, entry_open FROM (
-            SELECT o.code AS code, o.open AS entry_open,
-                   ROW_NUMBER() OVER (PARTITION BY o.code ORDER BY o.ts ASC) AS rn
-            FROM ohlcv o
-            JOIN first_select fs ON fs.code = o.code
-            WHERE o.frequency = '1d' AND SUBSTR(o.ts, 1, 10) > fs.first_date
-          ) WHERE rn = 1
-        ),
-        latest_px AS (
-          -- 现价 = 该股最近一个交易日的收盘价
-          SELECT code, latest_close FROM (
-            SELECT o.code AS code, o.close AS latest_close,
-                   ROW_NUMBER() OVER (PARTITION BY o.code ORDER BY o.ts DESC) AS rn
-            FROM ohlcv o
-            JOIN pool_codes pc ON pc.code = o.code
-            WHERE o.frequency = '1d'
-          ) WHERE rn = 1
         )
         SELECT
           j.code,
@@ -470,17 +458,9 @@ def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[
           MAX(CASE WHEN j.rn=1 THEN j.sector_code END) AS last_sector_code,
           MAX(CASE WHEN j.rn=1 THEN j.total_score END) AS last_score,
           MAX(CASE WHEN j.rn=1 THEN j.change_pct END)  AS last_change_pct,
-          mf.flow_date,
-          mf.main_net_inflow,
-          mf.retail_flow,
-          mf.total_inflow,
-          mf.flow_unit,
-          ep.entry_open,
-          lp.latest_close
+          fs.first_date
         FROM joined j
-        LEFT JOIN latest_mf mf ON mf.code = j.code
-        LEFT JOIN entry_px ep ON ep.code = j.code
-        LEFT JOIN latest_px lp ON lp.code = j.code
+        LEFT JOIN first_select fs ON fs.code = j.code
         GROUP BY j.code
         ORDER BY distinct_days DESC, last_seen DESC, best_score DESC
         LIMIT ?
@@ -492,27 +472,75 @@ def stock_pool(limit: int = 300, since_date: Optional[str] = None) -> List[Dict[
         d = dict(row)
         days = [s for s in str(d.pop("days_csv", "") or "").split(",") if s]
         d["days"] = sorted(days)
-        # 资金流向: Tushare moneyflow_dc 原始单位为万元,统一格式化为 +N.MM万
-        unit = str(d.get("flow_unit") or "")
-        if "万" in unit:
-            scale = 1.0
-        else:
-            scale = 0.0001  # 元 → 万
-        for key in ("main_net_inflow", "retail_flow", "total_inflow"):
-            val = d.get(key)
-            if val is not None:
-                d[f"{key}_text"] = f"{val * scale:+.2f}万"
-            else:
-                d[f"{key}_text"] = None
-        # 入选后涨幅: (最新收盘 - 首次入选次日开盘) / 次日开盘 * 100。
-        # 与报告口径一致(次日开盘买入)。任一价格缺失则为 None,前端显示 --。
-        entry_open = _num(d.pop("entry_open", None))
-        latest_close = _num(d.pop("latest_close", None))
-        if entry_open and latest_close is not None:
-            d["post_select_return_pct"] = round((latest_close - entry_open) / entry_open * 100, 2)
-        else:
-            d["post_select_return_pct"] = None
         out.append(d)
+    # 资金流向 / 价格都按「先聚合再补维度」的方式在 Python 里合并:两者都是
+    # 每只股票一行的旁挂数据,放进 SQL 做 LEFT JOIN 会让 SQLite 对上面这个
+    # 分组结果做嵌套循环(实测整条查询 5.8s,拆出来后 0.4s)。
+    flows = _latest_moneyflow({d["code"] for d in out})
+    for d in out:
+        d.update(flows.get(d["code"]) or _EMPTY_FLOW)
+    # 入选后涨幅: (最新收盘 - 首次入选次日开盘) / 次日开盘 * 100,价格面见
+    # data_store.opportunity_prices(全市场日线优先,本地 ohlcv 兜底,同股同源)。
+    prices = opportunity_prices.post_selection_returns(
+        {d["code"]: d.get("first_date") for d in out if d.get("first_date")}
+    )
+    for d in out:
+        px = prices.get(d.get("code")) or {}
+        d["post_select_return_pct"] = px.get("post_select_return_pct")
+        d["entry_date"] = px.get("entry_date")
+        d["entry_open"] = px.get("entry_open")
+        d["price_date"] = px.get("price_date")
+        d["price_source"] = px.get("price_source")
+    return out
+
+
+_EMPTY_FLOW: Dict[str, Any] = {
+    "flow_date": None, "flow_unit": None,
+    "main_net_inflow": None, "retail_flow": None, "total_inflow": None,
+    "main_net_inflow_text": None, "retail_flow_text": None, "total_inflow_text": None,
+}
+
+
+def _latest_moneyflow(codes: Any) -> Dict[str, Dict[str, Any]]:
+    """``{code: 该股最近一个交易日的资金流向}``(只返回 ``codes`` 里的股票)。
+
+    取数走 (ts_code, MAX(trade_date)) 自连接 + idx_mf_code_date 索引;此前的
+    ROW_NUMBER() 窗口要把 110 万行全排一遍(实测 4.6s),换法后 0.2s。
+    """
+    wanted = {str(c) for c in (codes or set())}
+    if not wanted:
+        return {}
+    rows = get_conn().execute(
+        """
+        SELECT SUBSTR(mf.ts_code, 1, 6) AS code,
+               mf.trade_date    AS flow_date,
+               mf.net_amount    AS main_net_inflow,
+               mf.buy_sm_amount AS retail_flow,
+               COALESCE(mf.buy_elg_amount,0) + COALESCE(mf.buy_lg_amount,0)
+                 + COALESCE(mf.buy_md_amount,0) + COALESCE(mf.buy_sm_amount,0) AS total_inflow,
+               mf.amount_unit   AS flow_unit
+        FROM moneyflow_dc mf
+        JOIN (
+          SELECT ts_code, MAX(trade_date) AS d FROM moneyflow_dc
+          WHERE top_n = 0        -- 资金榜全市场快照哨兵(SNAPSHOT_TOP_N);
+                                 -- top_n=1 是历史误用、几乎无行,会让资金流向列恒为空
+          GROUP BY ts_code
+        ) m ON m.ts_code = mf.ts_code AND m.d = mf.trade_date
+        WHERE mf.top_n = 0
+        """
+    ).fetchall()
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        d = dict(row)
+        code = str(d.pop("code"))
+        if code not in wanted:
+            continue
+        # Tushare moneyflow_dc 原始单位为万元,统一格式化为 +N.MM万
+        scale = 1.0 if "万" in str(d.get("flow_unit") or "") else 0.0001
+        for key in ("main_net_inflow", "retail_flow", "total_inflow"):
+            val = _num(d.get(key))
+            d[f"{key}_text"] = f"{val * scale:+.2f}万" if val is not None else None
+        out[code] = d
     return out
 
 
@@ -538,6 +566,15 @@ def _num(v) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _first_num(*values) -> Optional[float]:
+    """返回第一个可转成 float 的值(跳过 None/空串/不可转)。"""
+    for v in values:
+        num = _num(v)
+        if num is not None:
+            return num
+    return None
 
 
 def _json_or_none(v) -> Optional[str]:

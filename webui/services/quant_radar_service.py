@@ -1797,10 +1797,33 @@ def stock_analysis(code: str,
     upper_shadow = features["upper_shadow_ratio"] if features else None
 
     flow = _stock_flow(code)
-    if flow is None:
-        notes.append("无个股资金流数据(moneyflow_dc 未覆盖)")
     seats_map = _quant_seats_window(30)
     seats = seats_map.get(code) or []
+    if flow is None or not seats:
+        # 本地资金流 / 龙虎榜席位缺失(moneyflow_dc / dragon_tiger 未回填或滞后)→
+        # 同步按需补齐后再取一次,让「过了日期需手动补数据」在个股查看时自动完成
+        # (个股完全没有数据时响应本来就缺这块,值得等一次补齐)
+        try:
+            from webui.services.capital_rankings_service import auto_backfill_if_stale
+            kinds = tuple(k for k, missing in (("moneyflow", flow is None),
+                                               ("dragon_tiger", not seats)) if missing)
+            auto_backfill_if_stale(kinds=kinds)
+            if flow is None:
+                flow = _stock_flow(code)
+            if not seats:
+                seats = (_quant_seats_window(30) or {}).get(code) or []
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        # 个股数据齐了,但整库可能滞后(例如 App 几天没开,资金流停在几天前):
+        # 后台按需补齐,冷却与补数上限由 auto_backfill 内部兜住,本次响应不等待。
+        try:
+            from webui.services.capital_rankings_service import auto_backfill_background
+            auto_backfill_background(("moneyflow", "dragon_tiger"))
+        except Exception:  # noqa: BLE001
+            pass
+    if flow is None:
+        notes.append("无个股资金流数据(moneyflow_dc 未覆盖)")
     quote = None
     if fetch_changes is None:  # 在线模式:腾讯实时报价(量比进高频评分,亦作无日K时的涨跌兜底)
         quote = (_with_deadline(8, _fetch_tencent_quotes, [code]) or {}).get(code)
@@ -1904,16 +1927,55 @@ _autosave_thread: Optional[threading.Thread] = None
 _autosave_lock = threading.Lock()
 
 
+def _day_closed(date_key: str) -> bool:
+    """当日量化雷达是否已保存过收盘态快照(kv 标记 ``closed:YYYYMMDD``)。"""
+    try:
+        from data_store import kv_repo
+
+        return kv_repo.get("quant_radar", f"closed:{date_key}") is not None
+    except Exception:
+        return False
+
+
+def _mark_day_closed(date_key: str) -> None:
+    try:
+        from data_store import kv_repo
+
+        kv_repo.set_("quant_radar", f"closed:{date_key}", 1)
+    except Exception:
+        pass
+
+
+def _autosave_once(now: Optional[_dt.datetime] = None) -> bool:
+    """收盘后把当日量化雷达榜单落库一次;当日已存过收盘态则跳过。
+
+    判据必须是「收盘态标记」而不是「当日按日表是否为空」:盘中打开过雷达页
+    就会留下盘中态的按日行,若把盘中态当成已保存,收盘态将永远缺席,个股
+    「量化行为历史」里的当日数据会停在打开页面的那个时刻。返回是否执行了
+    落库(没拿到当日 live 数据不打标,留待下次轮询重试)。
+    """
+    now = now or _dt.datetime.now()
+    if now.weekday() >= 5:
+        return False
+    today_key = now.strftime("%Y%m%d")
+    if _current_trade_date_key() != today_key or _day_closed(today_key):
+        return False
+    try:
+        payload = overview(force=True)  # live 路径内部完成 kv + 按日表双写
+        if payload.get("live"):
+            _mark_day_closed(today_key)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _autosave_loop(after_hhmm: str, interval: float) -> None:
     while True:
         try:
             now = _dt.datetime.now()
-            if now.weekday() < 5 and now.strftime("%H:%M") >= after_hhmm \
-                    and _current_trade_date_iso() == now.date().isoformat():
-                from data_store import quant_radar_repo
-
-                if not quant_radar_repo.get_day(_current_trade_date_iso(), limit=1):
-                    overview(force=True)  # live 路径内部完成 kv + 按日表双写
+            if now.weekday() < 5 and now.strftime("%H:%M") >= after_hhmm:
+                _autosave_once(now)
         except Exception:
             pass
         time.sleep(interval)
@@ -1922,7 +1984,8 @@ def _autosave_loop(after_hhmm: str, interval: float) -> None:
 def start_autosave() -> Optional[threading.Thread]:
     """启动『收盘后自动保存当日量化雷达榜单』守护线程(进程内只启一次)。
 
-    保证页面当天没被打开也按天落库(按日表空才补跑一次)。环境变量:
+    保证页面当天没被打开(或盘中打开过、只有盘中态)也能把当日收盘态按天落库
+    (收盘态标记 closed:YYYYMMDD 不存在才补跑一次)。环境变量:
     - KRONOS_DISABLE_QUANT_RADAR_AUTOSAVE=1  关闭
     - KRONOS_QUANT_RADAR_SAVE_AFTER=15:05    收盘保存时刻(HH:MM)
     - KRONOS_QUANT_RADAR_SAVE_INTERVAL=1800  轮询间隔秒(最低 300)

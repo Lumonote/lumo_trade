@@ -206,6 +206,48 @@ def test_parse_opportunity_report_excludes_review_and_confidence_tables(tmp_path
     assert [field["label"] for field in item["fields"]][:2] == ["概览", "涨幅"]
 
 
+def test_parse_opportunity_report_handles_outcome_marker_column(tmp_path, monkeypatch):
+    """2026-07-29 起排名表在「综合得分」与「详细分析」之间插入了「表现标记」列。
+
+    解析器不能再把第 5 格当作详细分析(否则整张排名表被 '【' 过滤器丢光,
+    风险·机遇大屏的撮合矩阵/行业热力全空)。
+    """
+    module = _load_webui_core(tmp_path, monkeypatch)
+    results_dir = tmp_path / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    report = results_dir / "opportunity_top10_20260810_193543.md"
+    report.write_text(
+        "## 📅 昨日选股复盘\n"
+        "<table>\n"
+        "<thead><tr><th>原排名</th><th>代码</th><th>股票</th><th>原评分</th><th>买入价</th>"
+        "<th>最新价</th><th>持有N日</th><th>累计涨跌</th></tr></thead>\n"
+        "<tbody>\n"
+        "<tr><td>#2</td><td>301239</td><td>普瑞眼科</td><td>89.39</td><td>33.32</td>"
+        "<td>38.00</td><td>1</td><td>+14.05%</td></tr>\n"
+        "</tbody></table>\n"
+        "## 综合排名 TOP20\n"
+        "<table>\n"
+        "<thead><tr><th>排名</th><th>代码</th><th>股票名称</th><th>综合得分</th>"
+        "<th>表现标记</th><th>详细分析</th></tr></thead>\n"
+        "<tbody>\n"
+        "<tr><td>1</td><td>688111</td><td>金山办公</td><td>87.08</td>"
+        f"<td>偏弱体质📉技术乏力</td><td>{_RICH_DETAIL}</td></tr>\n"
+        "</tbody></table>\n",
+        encoding="utf-8",
+    )
+
+    parsed = module._parse_opportunity_report(report)
+
+    codes = [item["code"] for item in parsed["items"]]
+    assert codes == ["688111"]  # 复盘行 301239 仍须排除
+    item = parsed["items"][0]
+    assert item["rank"] == 1
+    assert item["score"] == 87.08
+    assert item["rating"] == "S"
+    assert item["sector"] == "软件服务"
+    assert [field["label"] for field in item["fields"]][:2] == ["概览", "涨幅"]
+
+
 def test_parse_opportunity_report_prefers_market_env_line_over_review_heading(tmp_path, monkeypatch):
     """market_env should surface the 市场环境 blockquote, not the first 复盘 heading."""
     module = _load_webui_core(tmp_path, monkeypatch)

@@ -40,6 +40,24 @@ BACKTEST_SCORE_BINS = [
     (0, 70, 'C 级 (<70分)', '#757575'),
 ]
 
+
+def backtest_annualized_return(subset) -> Optional[float]:
+    """分档子集 → 年化估算(%)。与桌面「报告与健康」滚动年化同一口径。
+
+    同一报告日的多只推荐取算术均值(等权组合的 5 日收益),跨报告日几何链乘复利
+    并按当日可评估样本数加权;实现见 ``analysis.backtest_metrics``。
+    """
+    from analysis.backtest_metrics import annualize_chained
+
+    if subset is None or len(subset) == 0 or 'return_5d' not in subset.columns:
+        return None
+    valid = subset.dropna(subset=['return_5d'])
+    if valid.empty:
+        return None
+    by_day = valid.groupby(valid['report_date'].astype(str), sort=True)['return_5d']
+    return annualize_chained(by_day.mean().tolist(), by_day.count().tolist())
+
+
 def _fmt_money(num):
     try:
         val = float(num)
@@ -1727,14 +1745,12 @@ class OpportunityReportGenerator:
                             f"\n**统计窗口**: {_window_start_dt.strftime('%Y-%m-%d')} ~ {_cutoff_dt.strftime('%Y-%m-%d')}"
                             f"（先预留最近10个交易日，再向前回看1个月）\n"
                         )
-                    lines.append("\n**样本口径**: 历史每日Top10推荐（不是全量候选池），因此高分样本占比会明显更高。\n**交易规则**: 报告次日开盘价买入，第5个交易日收盘价卖出（年化按 252/5≈50.4 次复利估算）。\n**分档口径**: 与桌面「报告与健康」页一致（S≥85 / A 78-85 / B 70-78 / C<70）；健康页「报告同口径」表可与本表直接对数。")
+                    lines.append("\n**样本口径**: 历史每日Top10推荐（不是全量候选池），因此高分样本占比会明显更高。\n**交易规则**: 报告次日开盘价买入，第5个交易日收盘价卖出。\n**年化口径**: 同一报告日的多只推荐视为等权组合取均值，跨报告日按几何复利链乘，再折算 252/5≈50.4 次/年；与桌面「报告与健康」页滚动年化同一实现。相邻报告日的5日持仓有重叠，故年化仅为估算。\n**分档口径**: 与桌面「报告与健康」页一致（S≥85 / A 78-85 / B 70-78 / C<70）；健康页「报告同口径」表可与本表直接对数。")
                     lines.append('<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-size: 13px;">')
                     lines.append('<thead><tr><th>评分区间</th><th>数量</th><th>5日均收益</th><th>5日超额(vs上证)</th><th>5日胜率</th><th>10日均收益</th><th>盈亏比</th><th>年化估算</th></tr></thead>')
                     lines.append('<tbody>')
 
                     score_bins = BACKTEST_SCORE_BINS
-
-                    _ANN_CYCLES = 252.0 / 5.0  # 5日持仓 → 一年约 50.4 次复利
 
                     for low, high, label, color in score_bins:
                         if high == 999:
@@ -1759,11 +1775,8 @@ class OpportunityReportGenerator:
                             losses = r5[r5 < 0].sum()
                             pf = abs(wins / losses) if losses != 0 else float('inf')
                             pf_str = f"{pf:.2f}" if pf != float('inf') else "∞"
-                            try:
-                                ann = ((1 + avg5 / 100.0) ** _ANN_CYCLES - 1) * 100
-                                ann_str = f"{ann:+.1f}%"
-                            except Exception:
-                                ann_str = "—"
+                            ann = backtest_annualized_return(subset)
+                            ann_str = f"{ann:+.1f}%" if ann is not None else "—"
                             lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td style="text-align: center;">{avg5:+.2f}%</td><td style="text-align: center;">{_excess_str}</td><td style="text-align: center;">{wr:.1f}%</td><td style="text-align: center;">{avg10_str}</td><td style="text-align: center;">{pf_str}</td><td style="text-align: center; font-weight: bold;">{ann_str}</td></tr>')
                         else:
                             lines.append(f'<tr><td style="font-weight: bold; color: {color};">{label}</td><td style="text-align: center;">{len(subset)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>')
@@ -1773,11 +1786,8 @@ class OpportunityReportGenerator:
                     _above80 = bt_with_returns[bt_with_returns[_score_col] >= 78]
                     _r5_80 = _above80['return_5d'].dropna()
                     if len(_r5_80) > 0:
-                        try:
-                            _ann80 = ((1 + _r5_80.mean() / 100.0) ** _ANN_CYCLES - 1) * 100
-                            _ann80_str = f" | 年化估算: {_ann80:+.1f}%"
-                        except Exception:
-                            _ann80_str = ""
+                        _ann80 = backtest_annualized_return(_above80)
+                        _ann80_str = f" | 年化估算: {_ann80:+.1f}%" if _ann80 is not None else ""
                         lines.append(f"\n**核心统计(S+A, 评分≥78)**: {len(_above80)}条 | "
                                     f"已验证{len(_r5_80)}条 | "
                                     f"5日胜率: {(_r5_80 > 0).mean()*100:.1f}% | "
@@ -1793,11 +1803,8 @@ class OpportunityReportGenerator:
                     if len(total_r5) > 0:
                         _pending = _total_rows - _verified_rows
                         _pending_str = f"(其中{_pending}条待验证)" if _pending > 0 else ""
-                        try:
-                            _ann_total = ((1 + total_r5.mean() / 100.0) ** _ANN_CYCLES - 1) * 100
-                            _ann_total_str = f" | 年化估算: {_ann_total:+.1f}%"
-                        except Exception:
-                            _ann_total_str = ""
+                        _ann_total = backtest_annualized_return(bt_with_returns)
+                        _ann_total_str = f" | 年化估算: {_ann_total:+.1f}%" if _ann_total is not None else ""
                         lines.append(f"\n**全样本**: {_total_rows}条{_pending_str} | "
                                     f"已验证{_verified_rows}条 | "
                                     f"5日均收益: {total_r5.mean():+.2f}% | "

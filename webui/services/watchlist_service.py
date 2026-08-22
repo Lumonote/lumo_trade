@@ -123,13 +123,31 @@ class WatchlistService:
             Path(tmp_name).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
+    # 排序：置顶优先；置顶组内按加入时间升序，非置顶组按加入时间降序
+    # （非置顶最新加入的紧跟置顶之后，不会被压到列表底）
+    # 磁盘仅保存纯加入顺序，排序只在读取时进行；排序键附带原索引，
+    # 使同一秒加入的多只股票也保持稳定（后加入在前）。
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _sort_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        indexed = list(enumerate(items))
+        pinned = sorted(
+            (it for _, it in indexed if it.get("pinned")),
+            key=lambda it: it.get("added_at", ""),
+        )
+        unpinned = sorted(
+            ((i, it) for i, it in indexed if not it.get("pinned")),
+            key=lambda pair: (pair[1].get("added_at", ""), pair[0]),
+            reverse=True,
+        )
+        return pinned + [it for _, it in unpinned]
+
+    # ------------------------------------------------------------------
     # 增删查
     # ------------------------------------------------------------------
     def list_items(self) -> list[dict[str, Any]]:
         with self._lock:
-            items = self._read()
-        items.sort(key=lambda it: (not bool(it.get("pinned")), it.get("added_at", "")))
-        return items
+            return self._sort_items(self._read())
 
     def pin(self, code: Any, pinned: bool = True) -> tuple[dict[str, Any], int]:
         norm = normalize_code(code)
@@ -138,9 +156,8 @@ class WatchlistService:
             for it in items:
                 if it["code"] == norm:
                     it["pinned"] = bool(pinned)
-                    items.sort(key=lambda it: (not bool(it.get("pinned")), it.get("added_at", "")))
                     self._write(items)
-                    return {"items": items, "pinned": bool(pinned), "code": norm}, 200
+                    return {"items": self._sort_items(items), "pinned": bool(pinned), "code": norm}, 200
             return {"error": "代码不在自选列表中"}, 404
 
     def add(self, code: Any, name: Any = "") -> tuple[dict[str, Any], int]:
@@ -150,12 +167,13 @@ class WatchlistService:
         with self._lock:
             items = self._read()
             if any(it["code"] == norm for it in items):
-                return {"items": items, "added": False, "code": norm}, 200
+                return {"items": self._sort_items(items), "added": False, "code": norm}, 200
             if len(items) >= _MAX_ITEMS:
                 return {"error": f"自选数量已达上限 {_MAX_ITEMS}"}, 400
-            items.insert(0, {"code": norm, "name": str(name or "").strip(), "added_at": _now()})
+            # 磁盘保持纯加入顺序；展示排序在读取时统一做（置顶优先、新加入紧随置顶）
+            items.append({"code": norm, "name": str(name or "").strip(), "added_at": _now()})
             self._write(items)
-            return {"items": items, "added": True, "code": norm}, 200
+            return {"items": self._sort_items(items), "added": True, "code": norm}, 200
 
     def remove(self, code: Any) -> tuple[dict[str, Any], int]:
         norm = normalize_code(code)
@@ -393,7 +411,7 @@ class WatchlistService:
 
     def list_with_quotes(self) -> dict[str, Any]:
         with self._lock:
-            items = self._read()
+            items = self._sort_items(self._read())
         quote_map = self.quotes([it["code"] for it in items]) if items else {}
         merged: list[dict[str, Any]] = []
         for it in items:

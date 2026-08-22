@@ -228,3 +228,57 @@ def test_load_ohlcv_no_fetch_when_auto_fetch_disabled(monkeypatch):
 
     with pytest.raises(FileNotFoundError):
         StockAnalysisSuite(auto_fetch=False)._load_ohlcv("688111")
+
+
+# ---- 新股/次新股：自动拉取成功但历史天然不足 → 放行给下游降级计算 ----
+
+def test_load_ohlcv_returns_ipo_short_history_when_fetched(monkeypatch):
+    """新股（上市 13 天，<35 行）自动拉取成功后 → 放行返回短历史，不抛错。
+
+    这是「新股出现很多数据不足」的核心修复：数据源确实有该股（fetch 成功），
+    只是上市时间短导致历史不足，应让量化模型基于短历史降级产出信号，
+    而不是整页「M4: OHLCV 不足或加载失败」。
+    """
+    from data_store import ohlcv_repo
+
+    _patch_repo(monkeypatch, {"1d": _ohlcv(13), "5m": pd.DataFrame()})
+    suite = StockAnalysisSuite(auto_fetch=True)
+    # 数据源确实返回了数据（ensure_daily 有结果）→ 触发新股放行分支
+    monkeypatch.setattr(suite, "_ensure_ohlcv_daily", lambda code: True)
+    df = suite._load_ohlcv("688825")
+    assert len(df) == 13
+    # 量化模型基于短历史仍能产出信号（非 0 总数）
+    from analysis.stock_analysis_suite import count_quant_signals
+    res = count_quant_signals(df)
+    assert res["total"] == 30
+
+
+def test_load_ohlcv_ipo_still_raises_when_source_has_no_data(monkeypatch):
+    """新股但数据源确实无数据（补偿无果）→ 仍抛错（避免伪造行情）。"""
+    from data_store import ohlcv_repo
+
+    _patch_repo(monkeypatch, {"1d": pd.DataFrame(), "5m": pd.DataFrame()})
+    suite = StockAnalysisSuite(auto_fetch=True)
+    monkeypatch.setattr(suite, "_ensure_ohlcv_daily", lambda code: False)
+    with pytest.raises(FileNotFoundError):
+        suite._load_ohlcv("688825")
+
+
+def test_fetch_daily_sina_filters_by_window():
+    """新浪兜底：按 start/end 窗口过滤（YYYYMMDD 与 ISO 均兼容）。"""
+    from data_store.ohlcv_fetch import fetch_daily_sina
+    # 用真实新浪接口拉取新股（网络可用时）；不可用则跳过断言
+    df = fetch_daily_sina("688825", "20260101", "20260812")
+    if df.empty:
+        pytest.skip("新浪接口不可达，跳过在线断言")
+    assert len(df) > 0
+    assert all("2026-01-01" <= str(ts)[:10] <= "2026-08-12" for ts in df["timestamps"])
+
+
+def test_sina_symbol_mapping():
+    """新浪 symbol 前缀：沪/深/北（含 92 新段）。"""
+    from data_store.ohlcv_fetch import _sina_symbol
+    assert _sina_symbol("688825") == "sh688825"
+    assert _sina_symbol("000001") == "sz000001"
+    assert _sina_symbol("920161") == "bj920161"
+    assert _sina_symbol("830799") == "bj830799"

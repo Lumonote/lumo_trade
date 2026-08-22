@@ -61,3 +61,43 @@ def test_list_with_quotes_includes_sector_and_return_summary(tmp_path, monkeypat
     assert ret["main_net_inflow"] == 80000000.0
     sectors = out["summary"]["sector_summary"]["top_sectors"]
     assert {s["name"] for s in sectors} == {"白酒", "银行"}
+
+
+def test_new_add_goes_after_pinned_items(tmp_path):
+    """置顶后再添加新股票：新股票应排在置顶之后（不压过置顶）。"""
+    svc = WatchlistService(tmp_path / "watchlist.json")
+    svc.add("600519", "贵州茅台")
+    svc.add("000001", "平安银行")
+    # 置顶 600519
+    svc.pin("600519", True)
+    # 添加新股票
+    svc.add("300750", "宁德时代")
+    codes = [it["code"] for it in svc.list_items()]
+    assert codes[0] == "600519", "置顶股票应保持在最上"
+    assert codes[1] == "300750", "新添加股票应紧跟置顶之后"
+    assert codes[2] == "000001"
+
+
+def test_pin_then_unpin_restores_order(tmp_path):
+    """取消置顶后回到普通排序（非置顶按加入时间倒序）。"""
+    svc = WatchlistService(tmp_path / "watchlist.json")
+    svc.add("600519", "贵州茅台")
+    svc.add("000001", "平安银行")
+    svc.pin("600519", True)
+    svc.pin("600519", False)  # 取消置顶
+    codes = [it["code"] for it in svc.list_items()]
+    assert codes == ["000001", "600519"], "取消置顶后按加入时间倒序（后加入在前）"
+
+
+def test_multiple_pinned_stay_on_top_in_add_order(tmp_path):
+    """多个置顶股票保持在最上，新添加股票始终排在其后。"""
+    svc = WatchlistService(tmp_path / "watchlist.json")
+    svc.add("600519", "贵州茅台")
+    svc.add("000001", "平安银行")
+    svc.pin("600519", True)
+    svc.pin("000001", True)
+    svc.add("300750", "宁德时代")
+    svc.add("002594", "比亚迪")
+    codes = [it["code"] for it in svc.list_items()]
+    assert codes[:2] == ["600519", "000001"], "置顶组保持在最上"
+    assert codes[2:] == ["002594", "300750"], "新添加的按加入时间倒序排在置顶之后"

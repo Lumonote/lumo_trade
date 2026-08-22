@@ -38,15 +38,16 @@ class SurveyProvider(BaseProvider):
             return
         rows = []
         for r in df.itertuples(index=False):
-            inst = (getattr(r, "rece_org", "") or getattr(r, "org_type", "") or "机构调研").strip()
+            _t = tushare_client.text_field                      # 缺失文本列是 NaN(float)
+            inst = _t(getattr(r, "rece_org", "")) or _t(getattr(r, "org_type", "")) or "机构调研"
             if inst in ("--", ""):
                 inst = "机构调研"
             rows.append({
                 "ts_code": ts_code,
                 "survey_date": tushare_client.yyyymmdd_to_iso(getattr(r, "surv_date", "")),
                 "inst_name": inst,
-                "reception": (getattr(r, "rece_mode", "") or "").replace("--", "").strip() or None,
-                "topic": (getattr(r, "rece_place", "") or "").replace("--", "").strip() or None,
+                "reception": _t(getattr(r, "rece_mode", "")).replace("--", "").strip() or None,
+                "topic": _t(getattr(r, "rece_place", "")).replace("--", "").strip() or None,
             })
         if rows:
             survey_repo.upsert_rows(rows)

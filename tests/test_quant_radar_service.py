@@ -365,7 +365,12 @@ def test_repo_day_roundtrip_search_and_history(tmp_db):
     assert [r["code"] for r in repo.get_day("2026-07-10", q="半导体")] == ["600000"]
     assert [r["code"] for r in repo.get_day("2026-07-10", min_activity=70)] == ["600000"]
     hist = repo.get_stock_history("600000", days=30)
-    assert [h["trade_date"] for h in hist] == ["2026-07-13", "2026-07-10"]  # 新在前
+    by_day = {h["trade_date"]: h for h in hist}
+    assert by_day["2026-07-13"]["activity"] == 55 and "status" not in by_day["2026-07-13"]
+    assert by_day["2026-07-10"]["activity"] == 80
+    idx = next(i for i, h in enumerate(hist) if h["trade_date"] == "2026-07-13")
+    assert hist[idx + 1]["trade_date"] == "2026-07-10"  # 日历连续,周末不占位
+    assert hist[0]["trade_date"] > "2026-07-13"  # 其余日历日补了三态占位行
     assert repo.list_dates() == ["2026-07-13", "2026-07-10"]
 
 
@@ -490,8 +495,9 @@ def test_stock_analysis_includes_daily_history(tmp_db):
                                 kline_fetcher=lambda code, limit: [],
                                 fetch_changes=lambda: [])
     assert payload["history"]
-    assert payload["history"][0]["trade_date"] == "2026-07-10"
-    assert payload["history"][0]["activity"] == 80
+    assert "2026-07-10" in [h["trade_date"] for h in payload["history"]]
+    row = next(h for h in payload["history"] if h["trade_date"] == "2026-07-10")
+    assert row["activity"] == 80
 
 
 # ----------------------------- 砸盘识别(方向维度) -----------------------------
@@ -991,3 +997,115 @@ def test_payload_bars_sorts_filters_and_trims():
             ]
     out = qr._payload_bars(rows, limit=2)
     assert [b["date"] for b in out] == ["2026-06-01", "2026-06-03"]
+
+
+# ----------------------------- 收盘后自动落库(收盘态标记) -----------------------------
+
+def test_autosave_once_marks_closed_after_intraday_rows(tmp_db, monkeypatch):
+    """当日按日表已有盘中态但无收盘标记 → 收盘后必须重跑并打标记。
+
+    盘中打开过雷达页就会留下盘中态的按日行;若以「当日表是否为空」作判据,
+    收盘态将永远缺席,个股「量化行为历史」的当日数据停在打开页面的时刻。
+    """
+    import datetime as dt
+    from data_store import calendar_repo, quant_radar_repo
+
+    day = dt.date(2026, 8, 18)  # 周二
+    key = day.strftime("%Y%m%d")
+    calendar_repo.upsert([key], is_open=1)
+    quant_radar_repo.upsert_day(day.isoformat(), [{
+        "code": "000001", "name": "甲", "industry": "银行",
+        "activity": 62, "level": "中度", "level_rank": 2,
+        "changes_total": 5, "changes_bull": 3, "changes_bear": 2,
+    }])
+    monkeypatch.setattr(qr, "_trade_date_memo", {"day": "", "key": ""})
+    monkeypatch.setattr(qr, "overview", lambda force=False: {"live": True})
+
+    now = dt.datetime(2026, 8, 18, 15, 30)
+    assert qr._autosave_once(now=now) is True
+    assert qr._day_closed(key) is True
+    assert qr._autosave_once(now=now) is False, "已存过收盘态后不应再跑"
+
+
+def test_autosave_once_skips_when_not_a_trade_day(tmp_db, monkeypatch):
+    """周末/节假日不落库(交易日历优先,周末重放会产生幻影日期)。"""
+    import datetime as dt
+    from data_store import calendar_repo
+
+    calendar_repo.upsert(["20260817"], is_open=1)  # 最近开市日 = 周一
+    monkeypatch.setattr(qr, "_trade_date_memo", {"day": "", "key": ""})
+    monkeypatch.setattr(qr, "overview", lambda force=False: {"live": True})
+
+    sunday = dt.datetime(2026, 8, 16, 15, 30)  # 周日
+    assert qr._autosave_once(now=sunday) is False
+    assert qr._day_closed("20260816") is False
+
+
+def test_autosave_once_no_mark_when_live_fails(tmp_db, monkeypatch):
+    """盘后抓不到当日异动(live=False)→ 不打收盘标记,留待下次轮询重试。"""
+    import datetime as dt
+    from data_store import calendar_repo
+
+    day = dt.date(2026, 8, 18)
+    key = day.strftime("%Y%m%d")
+    calendar_repo.upsert([key], is_open=1)
+    monkeypatch.setattr(qr, "_trade_date_memo", {"day": "", "key": ""})
+    monkeypatch.setattr(qr, "overview", lambda force=False: {"live": False})
+
+    now = dt.datetime(2026, 8, 18, 15, 30)
+    assert qr._autosave_once(now=now) is False
+    assert qr._day_closed(key) is False, "抓不到当日数据不能谎称已保存收盘态"
+
+
+# ----------------------------- 个股历史三态合成 -----------------------------
+
+def _seed_day_row(date_iso, code, activity=60, changes=5, pct=None):
+    from data_store import quant_radar_repo
+    quant_radar_repo.upsert_day(date_iso, [{
+        "code": code, "name": "甲", "industry": "软件",
+        "activity": activity, "level": "中度", "level_rank": 2,
+        "changes_total": changes, "changes_bull": 3, "changes_bear": 2,
+        "change_pct": pct,
+    }])
+
+
+def _seed_moneyflow_day(date_iso, code, pct):
+    import pandas as pd
+    from data_store import moneyflow_repo
+    moneyflow_repo.upsert_df(pd.DataFrame([{
+        "trade_date": date_iso, "ts_code": f"{code}.SZ", "name": "甲",
+        "net_amount": 1e7, "pct_change": pct,
+    }]), top_n=0)
+
+
+def test_get_stock_history_three_states(tmp_db):
+    """按日表只落有异动的股票,历史要按交易日历补全并区分三态:
+    有异动(正常行)/页面运行过但无异动(no_activity,补真实涨跌)/当天未运行(unrecorded)。"""
+    from data_store import calendar_repo
+    from data_store.quant_radar_repo import get_stock_history
+
+    for d in ("20260818", "20260817", "20260814", "20260813"):
+        calendar_repo.upsert([d], is_open=1)
+    _seed_day_row("2026-08-18", "300339", activity=34, changes=4, pct=1.2)  # 有异动
+    _seed_day_row("2026-08-17", "000001", activity=50, changes=8)          # 别的股活跃 → 300339 无异动
+    _seed_day_row("2026-08-14", "000002", activity=40, changes=6)          # 同理
+    _seed_moneyflow_day("2026-08-17", "300339", 3.2)                       # 无异动日补真实涨跌
+    _seed_moneyflow_day("2026-08-13", "300339", -1.1)                      # 未运行日也补
+
+    hist = get_stock_history("300339", days=10)
+    assert [h["trade_date"] for h in hist] == [
+        "2026-08-18", "2026-08-17", "2026-08-14", "2026-08-13"]
+    assert hist[0]["activity"] == 34 and "status" not in hist[0]
+    assert hist[1]["status"] == "no_activity" and hist[1]["change_pct"] == 3.2
+    assert hist[2]["status"] == "no_activity" and hist[2]["change_pct"] is None
+    assert hist[3]["status"] == "unrecorded" and hist[3]["change_pct"] == -1.1
+    assert hist[1]["changes_total"] == 0 and hist[1]["badges"] == []
+
+
+def test_get_stock_history_weekday_fallback_without_calendar(tmp_db):
+    """本地无交易日历 → 工作日近似,全部标 unrecorded,不抛错。"""
+    from data_store.quant_radar_repo import get_stock_history
+
+    hist = get_stock_history("000001", days=5)
+    assert len(hist) == 5
+    assert all(h["status"] == "unrecorded" for h in hist)

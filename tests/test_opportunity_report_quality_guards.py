@@ -1,6 +1,8 @@
 import importlib
 import sys
 
+import pytest
+
 
 def _stock(code, name, score, degraded=False):
     quant = {"buy_count": 0, "sell_count": 0, "total_count": 0, "top_buy_models": []}
@@ -100,3 +102,39 @@ def test_backtest_score_bins_match_health_tiers():
     bins = [(low, high) for low, high, _label, _color in mod.BACKTEST_SCORE_BINS]
     assert bins == [(85, 999), (78, 85), (70, 78), (0, 70)]
     assert health.TIER_THRESHOLDS == ((85.0, "S"), (78.0, "A"), (70.0, "B"))
+
+
+def test_backtest_annualized_chains_report_days_geometrically():
+    """报告「年化估算」与健康页「滚动年化」同口径:
+    同一报告日的多只推荐取算术均值(等权组合),跨报告日几何链乘复利。
+    旧实现把跨日样本混在一起取算术均值再 ^50.4,会系统性高估。
+    """
+    import math
+
+    import pandas as pd
+
+    from analysis.backtest_metrics import ANNUAL_CYCLES, annualize_cycle_return
+    from scripts import opportunity_report_generator as mod
+
+    subset = pd.DataFrame([
+        {"report_date": "2026-05-06", "return_5d": 12.0},
+        {"report_date": "2026-05-06", "return_5d": 8.0},   # 当日组合 = +10%
+        {"report_date": "2026-05-07", "return_5d": -10.0},  # 当日组合 = -10%
+    ])
+
+    got = mod.backtest_annualized_return(subset)
+
+    log_g = (2 * math.log(1.10) + 1 * math.log(0.90)) / 3
+    assert got == pytest.approx((math.exp(log_g * ANNUAL_CYCLES) - 1) * 100, abs=1e-2)
+    # 旧算术口径:mean(12,8,-10)=3.33% → 年化 +420%,必须已被淘汰
+    assert got < annualize_cycle_return(10.0 / 3)
+
+
+def test_backtest_annualized_handles_empty_and_missing_returns():
+    import pandas as pd
+
+    from scripts import opportunity_report_generator as mod
+
+    assert mod.backtest_annualized_return(pd.DataFrame(columns=["report_date", "return_5d"])) is None
+    frame = pd.DataFrame([{"report_date": "2026-05-06", "return_5d": None}])
+    assert mod.backtest_annualized_return(frame) is None

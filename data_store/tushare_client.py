@@ -169,9 +169,30 @@ def recent_trade_dates(n: int = 20, exchange: str = "SSE") -> List[str]:
     return days[-n:][::-1]
 
 
+_NULLISH_TEXT = {"nan", "none", "nat", "<na>"}
+
+
+def text_field(value, default: str = "") -> str:
+    """Tushare 帧里的**文本列缺失值是 NaN(float)**，不是空串 —— 归一成 str。
+
+    坑：``NaN`` 是 truthy，``value or ""`` 拦不住它，后面一个 ``.strip()`` /
+    ``.replace()`` 就是 ``AttributeError: 'float' object has no attribute ...``。
+    实测 300684 的 ``stk_surv`` 163 行里 ``rece_place`` 有 6 行 NaN，整个个股分析
+    套件因此被打成 success=False。数值列另有 ``_to_optional_float`` 一路，不走这里。
+    """
+    if value is None:
+        return default
+    if isinstance(value, float) and value != value:  # NaN
+        return default
+    s = str(value).strip()
+    if not s or s.lower() in _NULLISH_TEXT:          # pd.NaT / pd.NA 的字符串形态
+        return default
+    return s
+
+
 def yyyymmdd_to_iso(value: Optional[str]) -> str:
     """``20260601`` → ``2026-06-01``; passes through other shapes defensively."""
-    s = str(value or "").strip()
+    s = text_field(value)
     if len(s) == 8 and s.isdigit():
         return f"{s[:4]}-{s[4:6]}-{s[6:]}"
     return s

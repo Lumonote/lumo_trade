@@ -78,6 +78,66 @@ class TestReuseStoredMarkers:
         assert "sector_overheat" in {m["key"] for m in out["markers"]}
 
 
+class TestCurrentAlongsideStored:
+    """入选当天的标记要与「当前」并排展示(2026-08-16)。"""
+
+    def _out(self, suite, ohlcv, inputs=None, run_date="2026-07-28"):
+        from analysis.outcome_markers import marker_payload
+        payload = marker_payload({"tech_score": 70, "sector_score": 45, "sell_signals": 0})
+        with patch("data_store.opportunity_repo.latest_item_for_code",
+                   return_value=_stored_row(payload, run_date=run_date)):
+            return suite._collect_outcome_markers("600000", inputs=inputs or {"ohlcv": ohlcv})
+
+    def test_stored_path_also_returns_current_block(self, suite, ohlcv):
+        out = self._out(suite, ohlcv)
+        assert out["source"] == "opportunity_run"
+        assert out["as_of"] == "2026-07-28"
+        current = out["current"]
+        assert current["source"] == "local"
+        assert isinstance(current["markers"], list)
+        assert current["missing_factors"] == ["板块情绪分", "卖出信号"]  # 本次 inputs 只给了日线
+
+    def test_current_as_of_is_last_bar_date_not_today(self, suite, ohlcv):
+        out = self._out(suite, ohlcv)
+        expected = pd.to_datetime(ohlcv["timestamps"].iloc[-1]).strftime("%Y-%m-%d")
+        assert out["current"]["as_of"] == expected
+
+    def test_current_as_of_is_none_without_ohlcv(self, suite):
+        """拿不到日线时不编造"今天"。"""
+        out = self._out(suite, None, inputs={})
+        assert out["current"]["as_of"] is None
+
+    def test_gained_and_lost_diff_against_stored(self, suite, ohlcv):
+        """当前多出来/已消失的标记要分别列出，供 UI 高亮变化。"""
+        out = self._out(suite, ohlcv, inputs={"ohlcv": ohlcv,
+                                              "sector": {"sentiment_score": 98.0}})
+        stored_keys = {m["key"] for m in out["markers"]}
+        current_keys = {m["key"] for m in out["current"]["markers"]}
+        assert {m["key"] for m in out["current"]["gained"]} == current_keys - stored_keys
+        assert {m["key"] for m in out["current"]["lost"]} == stored_keys - current_keys
+        # 板块过热是本地因子现算出来的，入选当天那份没有
+        assert "sector_overheat" in {m["key"] for m in out["current"]["gained"]}
+
+    def test_stored_top_level_unchanged_by_current(self, suite, ohlcv):
+        """顶层仍是入选当天口径，与机会挖掘报告逐字一致。"""
+        from analysis.outcome_markers import marker_payload
+        payload = marker_payload({"tech_score": 70, "sector_score": 45, "sell_signals": 0})
+        out = self._out(suite, ohlcv)
+        assert out["markers"] == payload["markers"]
+        assert out["description"] == payload["description"]
+
+    def test_local_only_path_has_no_current_duplicate(self, suite, ohlcv):
+        """从未入选时只有一份，不要自己跟自己并排。"""
+        with patch("data_store.opportunity_repo.latest_item_for_code", return_value=None):
+            out = suite._collect_outcome_markers("600000", inputs={"ohlcv": ohlcv})
+        assert out["source"] == "local"
+        assert "current" not in out
+
+    def test_still_json_serializable(self, suite, ohlcv):
+        out = self._out(suite, ohlcv)
+        json.dumps(out, ensure_ascii=False)
+
+
 class TestLocalFallback:
     def test_local_factors_drive_markers(self, suite):
         inputs = {
@@ -198,3 +258,86 @@ class TestPayloadWiring:
         import inspect
         src = inspect.getsource(StockAnalysisSuite._compute_full_payload)
         assert "outcome_markers" in src
+
+
+class TestSkipsSameDaySelection:
+    """并排的两侧不能是同一天(2026-08-17)。
+
+    机会挖掘几乎每个交易日都跑, 该股当天刚入选时 ``latest_item_for_code`` 返回的
+    就是今天那行, 与「当前」现算的是同一天数据 —— 两块一模一样、gained/lost 恒空。
+    正确口径是拿**上一次**入选与当前对比。
+    """
+
+    @staticmethod
+    def _repo_stub(rows):
+        """按 run_date 倒序 + ``before_date`` 严格早于 过滤, 复刻仓储行为。"""
+        def _fn(code, before_date=None):
+            pool = [r for r in rows
+                    if before_date is None or r["run_date"] < before_date]
+            return max(pool, key=lambda r: r["run_date"]) if pool else None
+        return _fn
+
+    @staticmethod
+    def _payload():
+        from analysis.outcome_markers import marker_payload
+        return marker_payload({"tech_score": 70, "sector_score": 45, "sell_signals": 0})
+
+    @staticmethod
+    def _days(ohlcv):
+        """(最后一根K线日, 更早的一天) —— 入选日期必须相对日线取, 不能写死。"""
+        last = pd.to_datetime(ohlcv["timestamps"].iloc[-1])
+        return last.strftime("%Y-%m-%d"), (last - pd.Timedelta(days=20)).strftime("%Y-%m-%d")
+
+    def test_uses_previous_selection_when_selected_again_today(self, suite, ohlcv):
+        today, prev = self._days(ohlcv)
+        rows = [_stored_row(self._payload(), run_date=prev),
+                _stored_row(self._payload(), run_date=today)]
+        with patch("data_store.opportunity_repo.latest_item_for_code",
+                   side_effect=self._repo_stub(rows)):
+            out = suite._collect_outcome_markers("600000", inputs={"ohlcv": ohlcv})
+        assert out["source"] == "opportunity_run"
+        assert out["as_of"] == prev                # 上一次, 不是当天那行
+        assert out["current"]["as_of"] == today    # 当前
+        assert out["as_of"] != out["current"]["as_of"]
+
+    def test_no_current_block_when_only_selection_is_today(self, suite, ohlcv):
+        """只在当天入选过 → 没有「上一次」, 就别再并排一份同日的自己。"""
+        today, _ = self._days(ohlcv)
+        rows = [_stored_row(self._payload(), run_date=today)]
+        with patch("data_store.opportunity_repo.latest_item_for_code",
+                   side_effect=self._repo_stub(rows)):
+            out = suite._collect_outcome_markers("600000", inputs={"ohlcv": ohlcv})
+        assert out["source"] == "opportunity_run"
+        assert out["as_of"] == today
+        assert "current" not in out
+
+    def test_queries_repo_with_current_as_of_boundary(self, suite, ohlcv):
+        """必须把「当前」的截止日作为边界传给仓储, 而不是自己事后过滤。"""
+        today, _ = self._days(ohlcv)
+        with patch("data_store.opportunity_repo.latest_item_for_code") as mocked:
+            mocked.return_value = None
+            suite._collect_outcome_markers("600000", inputs={"ohlcv": ohlcv})
+        assert mocked.call_args_list[0].kwargs.get("before_date") == today
+
+    def test_older_selection_still_compared_untouched(self, suite, ohlcv):
+        """上次入选本来就不是今天时, 行为与之前一致(仍是上一次 vs 当前)。"""
+        _, prev = self._days(ohlcv)
+        rows = [_stored_row(self._payload(), run_date=prev)]
+        with patch("data_store.opportunity_repo.latest_item_for_code",
+                   side_effect=self._repo_stub(rows)):
+            out = suite._collect_outcome_markers("600000", inputs={"ohlcv": ohlcv})
+        assert out["as_of"] == prev
+        assert out["current"]["markers"] is not None
+
+    def test_note_is_honest_when_all_selections_postdate_current_data(self, suite, ohlcv):
+        """日线滞后到入选之前时(库里确有这种票), 不能谎报「该股无入选记录」。"""
+        today, _ = self._days(ohlcv)
+        later = (pd.to_datetime(today) + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
+        rows = [_stored_row(self._payload(), run_date=later)]
+        with patch("data_store.opportunity_repo.latest_item_for_code",
+                   side_effect=self._repo_stub(rows)):
+            out = suite._collect_outcome_markers("600000", inputs={"ohlcv": ohlcv})
+        assert out["source"] == "local"          # 无从对照, 只出现时口径
+        assert "current" not in out
+        assert "无机会挖掘入选记录" not in out["note"]
+        assert later in out["note"]              # 说清最近入选其实在数据截止日之后

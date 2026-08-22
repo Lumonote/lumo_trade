@@ -10,6 +10,8 @@
 - S/A/B/C 分档样本数、5 日胜率、平均收益(全量 + 最近 20 个交易日两组)
 - 降级 run 占比(quant_score==0 或 score<50;降级=取数失败封顶,污染样本)
 - 数据日期范围 / 基线胜率
+- 逐日与滚动年化收益:口径见 ``analysis.backtest_metrics``(与报告「年化估算」
+  同一实现——当日等权组合取算术均值,跨报告日几何链乘复利)
 
 两处都无数据时返回 ``{"available": False}`` 的明确空态,前端显示「暂无回测数据」。
 """
@@ -20,6 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from analysis.backtest_metrics import annualize_chained, annualize_cycle_return
 from webui.services.paths import results_dir
 
 TIER_ORDER = ("S", "A", "B", "C")
@@ -56,18 +59,6 @@ def _clean_code(value) -> str:
     if 1 <= len(digits) <= 6:
         return digits.zfill(6)
     return text
-
-
-def _annualized_from_5d_return(value) -> float | None:
-    if value is None or pd.isna(value):
-        return None
-    try:
-        ret = float(value) / 100.0
-    except (TypeError, ValueError):
-        return None
-    if ret <= -1:
-        return None
-    return round((((1 + ret) ** (252 / 5)) - 1) * 100, 2)
 
 
 def _stats(frame: pd.DataFrame) -> dict:
@@ -280,19 +271,21 @@ class ScoringHealthService:
                     "evaluable": stats["evaluable"],
                     "win_rate": stats["win_rate"],
                     "avg_return": avg_return,
-                    "annualized_return": _annualized_from_5d_return(avg_return),
+                    "annualized_return": annualize_cycle_return(avg_return),
                     "avg_score": round(float(group["score"].mean()), 2) if len(group) else None,
                 })
-            rolling_values: list[float] = []
-            for row in rows:
-                value = row.get("avg_return")
-                if value is not None:
-                    rolling_values.append(float(value))
-                if rolling_values:
-                    window = rolling_values[-RECENT_DAYS:]
-                    row["rolling_annualized_return"] = _annualized_from_5d_return(sum(window) / len(window))
-                else:
+            # 滚动年化:窗口取最近 RECENT_DAYS 个「报告日」(无样本的空天照样占位,
+            # 旧值不会因为中间空天而赖在窗口里),窗口内按可评估样本数加权几何链乘。
+            # 当日 5 日收益尚未走完时不出数,否则前端会把上一日的陈旧值画成假平线。
+            for index, row in enumerate(rows):
+                if row["avg_return"] is None:
                     row["rolling_annualized_return"] = None
+                    continue
+                window = rows[max(0, index + 1 - RECENT_DAYS):index + 1]
+                row["rolling_annualized_return"] = annualize_chained(
+                    [item["avg_return"] for item in window],
+                    [item["evaluable"] for item in window],
+                )
             return rows
 
         top_rows = (
@@ -338,6 +331,7 @@ class ScoringHealthService:
             },
             "recent_window_days": int(recent["report_date"].nunique()) if len(recent) else 0,
             "recent_window_label": "所选区间" if explicit_range else "最近1个月",
+            "rolling_window_days": RECENT_DAYS,
             "filter": {
                 "start_date": filter_start.strftime("%Y-%m-%d") if filter_start is not None else "",
                 "end_date": filter_end.strftime("%Y-%m-%d") if filter_end is not None else "",

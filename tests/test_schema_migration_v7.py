@@ -5,7 +5,9 @@ from __future__ import annotations
 import sqlite3
 import pytest
 
-from data_store.schema import migrate
+from data_store.schema import _MIGRATIONS, migrate
+
+LATEST = max(v for v, _ in _MIGRATIONS)  # 版本号写死会在每次 schema 升版时假报错
 
 
 @pytest.fixture
@@ -29,7 +31,7 @@ def _cols(conn, table: str) -> set:
 
 
 def test_migrate_reaches_latest_version(conn):
-    assert migrate(conn) == 16  # v16: stock_related_news 个股关联热点新闻缓存
+    assert migrate(conn) == LATEST
 
 
 def test_v7_creates_all_tables(conn):
@@ -48,7 +50,7 @@ def test_v7_creates_all_tables(conn):
 
 def test_v7_idempotent(conn):
     migrate(conn)
-    assert migrate(conn) == 16  # 二次运行不报错、不重复推进
+    assert migrate(conn) == LATEST  # 二次运行不报错、不重复推进
 
 
 def test_opportunity_item_sector_columns(conn):

@@ -282,6 +282,84 @@ def test_report_window_parity_block(tmp_path, monkeypatch):
     assert rw["baseline"]["n"] == 11
 
 
+def _daily_map(health):
+    return {r["date"]: r for r in health["daily"]}
+
+
+def test_rolling_annualized_chains_report_days_geometrically(tmp_path):
+    """滚动年化 = 逐个报告日的组合 5 日收益几何链乘,而不是先取算术均值再 ^50.4。"""
+    import math
+
+    from analysis.backtest_metrics import ANNUAL_CYCLES
+
+    rows = [
+        {"date": "2026-05-06", "score": 72, "quant": 60, "ret": 10.0},
+        {"date": "2026-05-07", "score": 72, "quant": 60, "ret": -10.0},
+    ]
+    _write_csv(tmp_path, "backtest_rebuilt_20260507_000000.csv", rows)
+
+    daily = _daily_map(ScoringHealthService([tmp_path]).health())
+
+    expected = (math.prod([1.10, 0.90]) ** (ANNUAL_CYCLES / 2) - 1) * 100
+    assert daily["2026-05-07"]["rolling_annualized_return"] == pytest.approx(expected, abs=1e-2)
+    # 算术口径下 mean(+10,-10)=0 → 年化 0%,几何口径必须为负
+    assert daily["2026-05-07"]["rolling_annualized_return"] < -20.0
+    # 首日只有一笔,链乘退化为单周期
+    assert daily["2026-05-06"]["rolling_annualized_return"] == pytest.approx(
+        daily["2026-05-06"]["annualized_return"]
+    )
+
+
+def test_rolling_annualized_is_none_on_days_without_evaluable_samples(tmp_path):
+    """5 日收益尚未走完的报告日不得挂上一日的陈旧值(前端会画成假平线)。"""
+    rows = [
+        {"date": "2026-05-06", "score": 72, "quant": 60, "ret": 4.0},
+        {"date": "2026-05-07", "score": 72, "quant": 60, "ret": None},
+        {"date": "2026-05-08", "score": 72, "quant": 60, "ret": None},
+    ]
+    _write_csv(tmp_path, "backtest_rebuilt_20260508_000000.csv", rows)
+
+    daily = _daily_map(ScoringHealthService([tmp_path]).health())
+
+    assert daily["2026-05-06"]["rolling_annualized_return"] is not None
+    assert daily["2026-05-07"]["evaluable"] == 0
+    assert daily["2026-05-07"]["rolling_annualized_return"] is None
+    assert daily["2026-05-08"]["rolling_annualized_return"] is None
+
+
+def test_rolling_window_spans_report_days_not_only_valued_days(tmp_path):
+    """窗口按最近 20 个报告日取(空天照样占位),旧值不能因为中间空天而赖在窗口里。"""
+    rows = [{"date": "2026-05-01", "score": 72, "quant": 60, "ret": 30.0}]
+    # 中间 20 个报告日无可评估样本 → 05-01 应被挤出窗口
+    for i in range(2, 22):
+        rows.append({"date": f"2026-05-{i:02d}", "score": 72, "quant": 60, "ret": None})
+    rows.append({"date": "2026-05-22", "score": 72, "quant": 60, "ret": 1.0})
+    _write_csv(tmp_path, "backtest_rebuilt_20260522_000000.csv", rows)
+
+    daily = _daily_map(ScoringHealthService([tmp_path]).health())
+    last = daily["2026-05-22"]
+
+    # 窗口只剩 05-22 自己 → 等于单周期年化;若 05-01 仍在窗口内会被 +30% 顶高
+    assert last["rolling_annualized_return"] == pytest.approx(last["annualized_return"])
+
+
+def test_rolling_annualized_weights_days_by_evaluable_count(tmp_path):
+    """样本 1 只的天不应与 10 只的天等权。"""
+    import math
+
+    from analysis.backtest_metrics import ANNUAL_CYCLES
+
+    rows = [{"date": "2026-05-06", "score": 72, "quant": 60, "ret": 10.0}]
+    rows += [{"date": "2026-05-07", "score": 72, "quant": 60, "ret": -10.0} for _ in range(10)]
+    _write_csv(tmp_path, "backtest_rebuilt_20260507_000000.csv", rows)
+
+    daily = _daily_map(ScoringHealthService([tmp_path]).health())
+
+    log_g = (1 * math.log(1.10) + 10 * math.log(0.90)) / 11
+    expected = (math.exp(log_g * ANNUAL_CYCLES) - 1) * 100
+    assert daily["2026-05-07"]["rolling_annualized_return"] == pytest.approx(expected, abs=1e-2)
+
+
 def test_report_window_absent_when_history_too_short(tmp_path, monkeypatch):
     """样本日不足以预留 10 个交易日时不产出 report_window(与报告行为一致)。"""
     import webui.services.scoring_health_service as svc_mod

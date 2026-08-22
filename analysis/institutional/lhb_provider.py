@@ -126,8 +126,8 @@ class LhbProvider(BaseProvider):
                     continue
                 rows = []
                 for r in df.itertuples(index=False):
-                    exalter = (getattr(r, "exalter", "") or "").strip()
-                    code = (getattr(r, "ts_code", "") or "").strip()
+                    exalter = tushare_client.text_field(getattr(r, "exalter", ""))
+                    code = tushare_client.text_field(getattr(r, "ts_code", ""))
                     if not exalter or not code:
                         continue
                     is_q, conf = self._registry.classify(exalter)
@@ -144,7 +144,7 @@ class LhbProvider(BaseProvider):
                         "sell_amount": _to_f(getattr(r, "sell", None)),
                         "is_quant": 1 if is_q else 0,
                         "quant_confidence": _CONF_SCORE.get(conf, 0.6 if is_q else 0.0),
-                        "reason": (getattr(r, "reason", "") or "").strip(),
+                        "reason": tushare_client.text_field(getattr(r, "reason", "")),
                     })
                 if rows:
                     dragon_tiger_repo.upsert_rows(rows)

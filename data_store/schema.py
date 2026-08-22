@@ -659,6 +659,70 @@ _MIGRATIONS: List[Tuple[int, str]] = [
         # _migrate_v19_quant_radar_direction 幂等补列,新库在 v18 建表时已含。
         "",
     ),
+    (
+        20,
+        """
+        -- 存量 opportunity_item.change_pct 回填(历史入库时上游漏透传 change_pct,
+        -- 整列 NULL → 股票池「平均涨跌」恒为空)。同口径的当日涨跌幅一直写在
+        -- signals_json.day_change 里,直接回填即可,新数据由 build_items 写入。
+        UPDATE opportunity_item
+           SET change_pct = json_extract(signals_json, '$.day_change')
+         WHERE change_pct IS NULL
+           AND signals_json IS NOT NULL
+           AND json_valid(signals_json)
+           AND json_extract(signals_json, '$.day_change') IS NOT NULL;
+
+        -- 全市场日线(market_daily)按日期查询:入选后涨幅要按交易日取开盘/收盘。
+        CREATE INDEX IF NOT EXISTS idx_market_daily_date
+          ON market_daily(trade_date);
+
+        -- 按股票取「最近一个交易日」的资金流(股票池/榜单):PK 是
+        -- (trade_date, ts_code, top_n),按 ts_code 找最新日期原本要全表扫 110 万行。
+        CREATE INDEX IF NOT EXISTS idx_mf_code_date
+          ON moneyflow_dc(ts_code, trade_date);
+        """,
+    ),
+    (
+        21,
+        """
+        -- 板块×日序列(spec 2026-08-21):moneyflow_dc 全市场行按板块预聚合。
+        -- 每次请求现场聚合要扫 115 万行,不可接受;这里按日增量落表。
+        -- sector_type 区分行业/概念:个股属于 1 个行业 + N 个概念,两条线独立成序列。
+        -- provisional=1 表示盘中未定稿数据,收盘守护线程重算后改写为 0。
+        CREATE TABLE IF NOT EXISTS sector_daily_metrics (
+          trade_date        TEXT NOT NULL,           -- ISO YYYY-MM-DD
+          sector            TEXT NOT NULL,
+          sector_type       TEXT NOT NULL,           -- 行业 | 概念
+          member_count      INTEGER,                 -- 参与聚合的成分股数
+          net_amount        REAL,                    -- 主力净流入合计(万元)
+          net_rate_median   REAL,                    -- 净流入率中位数(%)
+          pct_chg_mean      REAL,                    -- 等权涨跌幅(%)
+          breadth           REAL,                    -- 上涨家数占比 0~1
+          amount_median     REAL,                    -- 成交额中位数(万元)
+          excess_vs_market  REAL,                    -- 相对全市场等权超额(百分点)
+          seat_count        INTEGER,                 -- 量化异动席位数 + 龙虎榜上榜数
+          provisional       INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (trade_date, sector, sector_type)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_sdm_sector
+          ON sector_daily_metrics(sector, sector_type, trade_date);
+
+        -- 按日拐点信号:既供页面读取,也作为事后校验与历史回看的数据源。
+        CREATE TABLE IF NOT EXISTS sector_turning_signal (
+          trade_date    TEXT NOT NULL,
+          sector        TEXT NOT NULL,
+          sector_type   TEXT NOT NULL,
+          rule          TEXT NOT NULL,               -- T1..T5
+          state         TEXT NOT NULL,               -- fired | watch
+          score         REAL,
+          evidence_json TEXT,
+          provisional   INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (trade_date, sector, sector_type, rule)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_sts_date_state
+          ON sector_turning_signal(trade_date, state);
+        """,
+    ),
 ]
 
 
