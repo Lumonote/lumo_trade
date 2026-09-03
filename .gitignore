@@ -32,7 +32,6 @@ wheels/
 *.egg
 MANIFEST
 AGENTS.md
-CLAUDE.md
 # Jupyter Notebook
 .ipynb_checkpoints
 
