@@ -227,7 +227,7 @@ OHLCV 数据量化为分层离散 token，再由自回归 **Transformer** 在 to
 | 文档 | 说明 |
 |------|------|
 | [docs/00_文档导航索引.md](docs/00_文档导航索引.md) | 全项目文档导航 |
-| [docs/wechat/lumo-trade-desktop-complete-guide.md](docs/wechat/lumo-trade-desktop-complete-guide.md) | **Lumo Trade 桌面端完整指南** |
+| [docs/Lumo_Trade_桌面端完整指南.md](docs/Lumo_Trade_桌面端完整指南.md) | **Lumo Trade 桌面端完整指南** |
 | [docs/01_投资机会挖掘系统完整文档.md](docs/01_投资机会挖掘系统完整文档.md) | 机会挖掘系统功能与架构 |
 | [docs/03_系统架构技术文档.md](docs/03_系统架构技术文档.md) | 系统总体架构 |
 | [docs/04_因子打分体系与回测优化完整技术文档.md](docs/04_因子打分体系与回测优化完整技术文档.md) | 打分系统技术细节 |
