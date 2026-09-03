@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="0 0 1600 1600">
+<rect width="1600" height="1600" fill="#f5f7fb"/>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f7fbff"/><stop offset="100%" stop-color="#eef2fa"/></linearGradient>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#4a5d7a"/></marker>
+</defs>
+<rect x="36" y="34" width="1528" height="1528" rx="34" fill="url(#bg)" stroke="#d7deeb" stroke-width="2"/>
+<text x="80" y="120" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="54" font-weight="800" fill="#152033">60 位多空评审团</text>
+<text x="82" y="176" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="28" fill="#5d6b82">7 大流派、12 个旗舰手写规则、48 个默认规则 persona，输出共识与大分歧</text>
+<rect x="80" y="335" width="235" height="155" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="80" y="335" width="10" height="155" rx="5" fill="#2d6cdf"/>
+<text x="197.5" y="377" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">标准化特征</text>
+<text x="197.5" y="409" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">基本面</text>
+<text x="197.5" y="432" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">资金流</text>
+<text x="197.5" y="455" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">技术指标</text>
+<text x="197.5" y="478" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">机构筹码</text>
+<rect x="390" y="335" width="235" height="155" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="390" y="335" width="10" height="155" rx="5" fill="#7656d6"/>
+<text x="507.5" y="377" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">60 persona</text>
+<text x="507.5" y="409" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">价值/成长/宏观</text>
+<text x="507.5" y="432" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">技术/中国价投</text>
+<text x="507.5" y="455" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">游资/量化</text>
+<rect x="700" y="335" width="235" height="155" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="700" y="335" width="10" height="155" rx="5" fill="#2f9e5a"/>
+<text x="817.5" y="377" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">规则裁决</text>
+<text x="817.5" y="409" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">旗舰手写规则</text>
+<text x="817.5" y="432" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">流派默认规则</text>
+<text x="817.5" y="455" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">key_metrics微调</text>
+<rect x="1010" y="335" width="235" height="155" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1010" y="335" width="10" height="155" rx="5" fill="#d9822b"/>
+<text x="1127.5" y="377" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">Panel输出</text>
+<text x="1127.5" y="409" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">共识温度</text>
+<text x="1127.5" y="432" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">最强多头</text>
+<text x="1127.5" y="455" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">最强空头</text>
+<text x="1127.5" y="478" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">7流派倾向</text>
+<rect x="1300" y="335" width="210" height="155" rx="20" fill="#fff9f1" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1300" y="335" width="10" height="155" rx="5" fill="#c93f55"/>
+<text x="1405.0" y="377" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">LLM Overlay</text>
+<text x="1405.0" y="409" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">金句</text>
+<text x="1405.0" y="432" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">风险点</text>
+<text x="1405.0" y="455" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">个人点评</text>
+<text x="1405.0" y="478" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">买点分桶</text>
+<line x1="315" y1="412" x2="390" y2="412" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="625" y1="412" x2="700" y2="412" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="935" y1="412" x2="1010" y2="412" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1245" y1="412" x2="1300" y2="412" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="170" y="760" width="245" height="52" rx="26" fill="#eaf1ff" stroke="#d3dae8" stroke-width="1"/>
+<text x="292.5" y="793.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">A 价值派 9</text>
+<rect x="485" y="760" width="245" height="52" rx="26" fill="#eafaf0" stroke="#d3dae8" stroke-width="1"/>
+<text x="607.5" y="793.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">B 成长派 9</text>
+<rect x="800" y="760" width="245" height="52" rx="26" fill="#fff4e7" stroke="#d3dae8" stroke-width="1"/>
+<text x="922.5" y="793.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">C 宏观派 9</text>
+<rect x="1115" y="760" width="245" height="52" rx="26" fill="#f3f6fb" stroke="#d3dae8" stroke-width="1"/>
+<text x="1237.5" y="793.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">D 技术派 9</text>
+<rect x="170" y="836" width="245" height="52" rx="26" fill="#f4efff" stroke="#d3dae8" stroke-width="1"/>
+<text x="292.5" y="869.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">E 中国价投 8</text>
+<rect x="485" y="836" width="245" height="52" rx="26" fill="#fff0f2" stroke="#d3dae8" stroke-width="1"/>
+<text x="607.5" y="869.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">F 游资派 8</text>
+<rect x="800" y="836" width="245" height="52" rx="26" fill="#eefafa" stroke="#d3dae8" stroke-width="1"/>
+<text x="922.5" y="869.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">G 量化派 8</text>
+<rect x="410" y="1040" width="330" height="130" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="410" y="1040" width="10" height="130" rx="5" fill="#7656d6"/>
+<text x="575.0" y="1082" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">12个旗舰规则</text>
+<text x="575.0" y="1114" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">Buffett /</text>
+<text x="575.0" y="1137" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">Soros / Zhao 等</text>
+<text x="575.0" y="1160" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">手写裁决逻辑</text>
+<rect x="860" y="1040" width="330" height="130" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="860" y="1040" width="10" height="130" rx="5" fill="#2f9e5a"/>
+<text x="1025.0" y="1082" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">48个默认规则</text>
+<text x="1025.0" y="1114" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">流派基准分</text>
+<text x="1025.0" y="1137" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">再按 key_metrics</text>
+<text x="1025.0" y="1160" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">微调</text>
+<text x="80" y="1508" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="22" fill="#7b8798">Kronos 项目深度分析配图 · PNG 可直接用于公众号</text>
+</svg>

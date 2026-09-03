@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="0 0 1600 1600">
+<rect width="1600" height="1600" fill="#f5f7fb"/>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f7fbff"/><stop offset="100%" stop-color="#eef2fa"/></linearGradient>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#4a5d7a"/></marker>
+</defs>
+<rect x="36" y="34" width="1528" height="1528" rx="34" fill="url(#bg)" stroke="#d7deeb" stroke-width="2"/>
+<text x="80" y="120" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="54" font-weight="800" fill="#152033">同类图形回测</text>
+<text x="82" y="176" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="28" fill="#5d6b82">用归一化曲线和 Pearson 相似度统计历史相似形态后的前向收益</text>
+<rect x="90" y="430" width="230" height="150" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="90" y="430" width="10" height="150" rx="5" fill="#7656d6"/>
+<text x="205.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">查询形态</text>
+<text x="205.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">手绘曲线</text>
+<text x="205.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">或选股形态</text>
+<rect x="390" y="430" width="230" height="150" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="390" y="430" width="10" height="150" rx="5" fill="#2d6cdf"/>
+<text x="505.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">历史窗口</text>
+<text x="505.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">候选股票</text>
+<text x="505.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">近250交易日</text>
+<text x="505.0" y="550" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">滑动窗口</text>
+<rect x="690" y="430" width="230" height="150" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="690" y="430" width="10" height="150" rx="5" fill="#2f9e5a"/>
+<text x="805.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">相似度匹配</text>
+<text x="805.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">归一化</text>
+<text x="805.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">Pearson&gt;=0.85</text>
+<text x="805.0" y="550" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">跳过重叠样本</text>
+<rect x="990" y="430" width="230" height="150" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="990" y="430" width="10" height="150" rx="5" fill="#d9822b"/>
+<text x="1105.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">前向收益</text>
+<text x="1105.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">5/10/20日</text>
+<text x="1105.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">胜率</text>
+<text x="1105.0" y="550" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">平均/中位收益</text>
+<rect x="1290" y="430" width="220" height="150" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1290" y="430" width="10" height="150" rx="5" fill="#c93f55"/>
+<text x="1400.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">输出</text>
+<text x="1400.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">样本数</text>
+<text x="1400.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">Top命中股票</text>
+<text x="1400.0" y="550" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">错误留痕</text>
+<line x1="320" y1="505" x2="390" y2="505" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="620" y1="505" x2="690" y2="505" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="920" y1="505" x2="990" y2="505" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1220" y1="505" x2="1290" y2="505" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="310" y="820" width="320" height="58" rx="29" fill="#fff4e7" stroke="#d3dae8" stroke-width="1"/>
+<text x="470.0" y="856.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">不是完整交易策略回测</text>
+<rect x="660" y="820" width="320" height="58" rx="29" fill="#eafaf0" stroke="#d3dae8" stroke-width="1"/>
+<text x="820.0" y="856.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">回答类似形态之后怎么走</text>
+<rect x="1010" y="820" width="320" height="58" rx="29" fill="#eaf1ff" stroke="#d3dae8" stroke-width="1"/>
+<text x="1170.0" y="856.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">fetch 可注入，便于离线测试</text>
+<rect x="470" y="1070" width="660" height="140" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="470" y="1070" width="10" height="140" rx="5" fill="#c93f55"/>
+<text x="800.0" y="1112" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">方法边界</text>
+<text x="800.0" y="1144" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">它统计相似图形后的前向收益，</text>
+<text x="800.0" y="1167" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">不负责仓位、止损和组合约束</text>
+<text x="80" y="1508" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="22" fill="#7b8798">Kronos 项目深度分析配图 · PNG 可直接用于公众号</text>
+</svg>

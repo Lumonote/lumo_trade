@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="0 0 1600 1600">
+<rect width="1600" height="1600" fill="#f5f7fb"/>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f7fbff"/><stop offset="100%" stop-color="#eef2fa"/></linearGradient>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#4a5d7a"/></marker>
+</defs>
+<rect x="36" y="34" width="1528" height="1528" rx="34" fill="url(#bg)" stroke="#d7deeb" stroke-width="2"/>
+<text x="80" y="120" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="54" font-weight="800" fill="#152033">单股工作台 Payload 装配</text>
+<text x="82" y="176" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="28" fill="#5d6b82">StockAnalysisSuite 把行情、机构、量化、评审团和 AI 解读装成多 Tab 研究台</text>
+<rect x="90" y="430" width="230" height="150" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="90" y="430" width="10" height="150" rx="5" fill="#2d6cdf"/>
+<text x="205.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">股票代码</text>
+<text x="205.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">输入代码</text>
+<text x="205.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">读取缓存</text>
+<text x="205.0" y="550" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">必要时补数</text>
+<rect x="390" y="335" width="250" height="140" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="390" y="335" width="10" height="140" rx="5" fill="#2f9e5a"/>
+<text x="515.0" y="377" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">基础分析</text>
+<text x="515.0" y="409" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">概要</text>
+<text x="515.0" y="432" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">风险控制</text>
+<text x="515.0" y="455" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">历史报告</text>
+<rect x="390" y="555" width="250" height="140" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="390" y="555" width="10" height="140" rx="5" fill="#d9822b"/>
+<text x="515.0" y="597" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">机构筹码</text>
+<text x="515.0" y="629" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">龙虎榜</text>
+<text x="515.0" y="652" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">筹码控盘</text>
+<text x="515.0" y="675" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">机构持仓</text>
+<rect x="730" y="445" width="250" height="150" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="730" y="445" width="10" height="150" rx="5" fill="#7656d6"/>
+<text x="855.0" y="487" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">量化矩阵</text>
+<text x="855.0" y="519" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">30模型信号</text>
+<text x="855.0" y="542" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">多/空/中性</text>
+<text x="855.0" y="565" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">当前姿态</text>
+<rect x="1060" y="445" width="250" height="150" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1060" y="445" width="10" height="150" rx="5" fill="#c93f55"/>
+<text x="1185.0" y="487" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">Panel</text>
+<text x="1185.0" y="519" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">60评审团</text>
+<text x="1185.0" y="542" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">16指标</text>
+<text x="1185.0" y="565" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">大分歧</text>
+<rect x="1340" y="445" width="180" height="150" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1340" y="445" width="10" height="150" rx="5" fill="#206b6f"/>
+<text x="1430.0" y="487" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">WebUI</text>
+<text x="1430.0" y="519" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">多Tab展示</text>
+<text x="1430.0" y="542" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">AI解读</text>
+<text x="1430.0" y="565" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">报告生成</text>
+<line x1="320" y1="505" x2="390" y2="405" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="320" y1="505" x2="390" y2="625" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="640" y1="405" x2="730" y2="505" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="640" y1="625" x2="730" y2="520" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="980" y1="520" x2="1060" y2="520" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1310" y1="520" x2="1340" y2="520" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="330" y="835" width="310" height="58" rx="29" fill="#eaf1ff" stroke="#d3dae8" stroke-width="1"/>
+<text x="485.0" y="871.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">5分钟 LRU 缓存</text>
+<rect x="680" y="835" width="310" height="58" rx="29" fill="#eafaf0" stroke="#d3dae8" stroke-width="1"/>
+<text x="835.0" y="871.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">section 独立降级</text>
+<rect x="1030" y="835" width="330" height="58" rx="29" fill="#fff4e7" stroke="#d3dae8" stroke-width="1"/>
+<text x="1195.0" y="871.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">LLM 只消费结构化数据</text>
+<rect x="460" y="1070" width="680" height="140" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="460" y="1070" width="10" height="140" rx="5" fill="#206b6f"/>
+<text x="800.0" y="1112" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">单股研究台的核心</text>
+<text x="800.0" y="1144" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">不是重新采集一切，而是把已有</text>
+<text x="800.0" y="1167" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">结构化数据装配成可解释</text>
+<text x="800.0" y="1190" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">payload</text>
+<text x="80" y="1508" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="22" fill="#7b8798">Kronos 项目深度分析配图 · PNG 可直接用于公众号</text>
+</svg>

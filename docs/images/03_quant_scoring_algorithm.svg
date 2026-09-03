@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="0 0 1600 1600">
+<rect width="1600" height="1600" fill="#f5f7fb"/>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f7fbff"/><stop offset="100%" stop-color="#eef2fa"/></linearGradient>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#4a5d7a"/></marker>
+</defs>
+<rect x="36" y="34" width="1528" height="1528" rx="34" fill="url(#bg)" stroke="#d7deeb" stroke-width="2"/>
+<text x="80" y="120" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="54" font-weight="800" fill="#152033">多因子评分与 30 模型算法</text>
+<text x="82" y="176" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="28" fill="#5d6b82">30 模型先产出信号，再按位置、量价、风险和动态权重合成评级</text>
+<rect x="95" y="335" width="270" height="165" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="95" y="335" width="10" height="165" rx="5" fill="#7656d6"/>
+<text x="230.0" y="377" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">30量化模型</text>
+<text x="230.0" y="409" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">趋势类</text>
+<text x="230.0" y="432" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">量价类</text>
+<text x="230.0" y="455" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">震荡类</text>
+<text x="230.0" y="478" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">高级量化</text>
+<rect x="445" y="335" width="270" height="165" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="445" y="335" width="10" height="165" rx="5" fill="#2d6cdf"/>
+<text x="580.0" y="377" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">信号重打分</text>
+<text x="580.0" y="409" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">买/卖/持有</text>
+<text x="580.0" y="432" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">分组去相关</text>
+<text x="580.0" y="455" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">位置条件调整</text>
+<rect x="795" y="335" width="270" height="165" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="795" y="335" width="10" height="165" rx="5" fill="#2f9e5a"/>
+<text x="930.0" y="377" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">多因子评分</text>
+<text x="930.0" y="409" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">量化30%</text>
+<text x="930.0" y="432" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">量价24%</text>
+<text x="930.0" y="455" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">位置12%</text>
+<text x="930.0" y="478" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">技术12%</text>
+<rect x="1145" y="335" width="270" height="165" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1145" y="335" width="10" height="165" rx="5" fill="#c93f55"/>
+<text x="1280.0" y="377" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">风险修正</text>
+<text x="1280.0" y="409" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">RSI/短涨幅</text>
+<text x="1280.0" y="432" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">板块死区</text>
+<text x="1280.0" y="455" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">过度共识</text>
+<text x="1280.0" y="478" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">单调性约束</text>
+<line x1="365" y1="418" x2="445" y2="418" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="715" y1="418" x2="795" y2="418" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1065" y1="418" x2="1145" y2="418" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="260" y="760" width="260" height="140" rx="20" fill="#fff9f1" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="260" y="760" width="10" height="140" rx="5" fill="#d9822b"/>
+<text x="390.0" y="802" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">动态权重</text>
+<text x="390.0" y="834" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">bottom_start</text>
+<text x="390.0" y="857" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">趋势接力</text>
+<text x="390.0" y="880" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">news_driven</text>
+<text x="390.0" y="903" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">base</text>
+<rect x="670" y="760" width="260" height="140" rx="20" fill="#f7f4ff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="670" y="760" width="10" height="140" rx="5" fill="#7656d6"/>
+<text x="800.0" y="802" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">最终分数</text>
+<text x="800.0" y="834" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">0-100</text>
+<text x="800.0" y="857" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">S/A+/A/B/C</text>
+<text x="800.0" y="880" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">置信度标签</text>
+<rect x="1080" y="760" width="260" height="140" rx="20" fill="#f5fff8" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1080" y="760" width="10" height="140" rx="5" fill="#2f9e5a"/>
+<text x="1210.0" y="802" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">报告排序</text>
+<text x="1210.0" y="834" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">Top推荐</text>
+<text x="1210.0" y="857" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">风险提示</text>
+<text x="1210.0" y="880" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">评分明细</text>
+<line x1="520" y1="830" x2="670" y2="830" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="930" y1="830" x2="1080" y2="830" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1280" y1="500" x2="1210" y2="760" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1175.0" y="608.0" width="140" height="32" rx="16" fill="#ffffff" stroke="#d8deeb"/>
+<text x="1245.0" y="630.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="16" fill="#46576f">扣分/封顶</text>
+<line x1="930" y1="500" x2="800" y2="760" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="795.0" y="608.0" width="140" height="32" rx="16" fill="#ffffff" stroke="#d8deeb"/>
+<text x="865.0" y="630.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="16" fill="#46576f">加权</text>
+<rect x="260" y="1090" width="330" height="58" rx="29" fill="#eaf1ff" stroke="#d3dae8" stroke-width="1"/>
+<text x="425.0" y="1126.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">纯评分无淘汰</text>
+<rect x="635" y="1090" width="330" height="58" rx="29" fill="#fff4e7" stroke="#d3dae8" stroke-width="1"/>
+<text x="800.0" y="1126.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">风险转 warning</text>
+<rect x="1010" y="1090" width="330" height="58" rx="29" fill="#eafaf0" stroke="#d3dae8" stroke-width="1"/>
+<text x="1175.0" y="1126.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">回测驱动删改规则</text>
+<text x="80" y="1508" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="22" fill="#7b8798">Kronos 项目深度分析配图 · PNG 可直接用于公众号</text>
+</svg>

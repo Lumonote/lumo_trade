@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="0 0 1600 1600">
+<rect width="1600" height="1600" fill="#f5f7fb"/>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f7fbff"/><stop offset="100%" stop-color="#eef2fa"/></linearGradient>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#4a5d7a"/></marker>
+</defs>
+<rect x="36" y="34" width="1528" height="1528" rx="34" fill="url(#bg)" stroke="#d7deeb" stroke-width="2"/>
+<text x="80" y="120" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="54" font-weight="800" fill="#152033">Kronos 基础模型流程</text>
+<text x="82" y="176" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="28" fill="#5d6b82">把连续 OHLCV 序列变成层级 token，再自回归生成未来 K 线</text>
+<rect x="80" y="430" width="190" height="175" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="80" y="430" width="10" height="175" rx="5" fill="#2d6cdf"/>
+<text x="175.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">原始K线</text>
+<text x="175.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">open/high/low</text>
+<text x="175.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">close/volume</text>
+<text x="175.0" y="550" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">amount</text>
+<rect x="320" y="430" width="190" height="175" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="320" y="430" width="10" height="175" rx="5" fill="#2f9e5a"/>
+<text x="415.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">归一化</text>
+<text x="415.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">均值方差标准化</text>
+<text x="415.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">clip裁剪</text>
+<rect x="560" y="430" width="190" height="175" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="560" y="430" width="10" height="175" rx="5" fill="#7656d6"/>
+<text x="655.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">Tokenizer</text>
+<text x="655.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">Encoder</text>
+<text x="655.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">BSQuantizer</text>
+<text x="655.0" y="550" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">Decoder</text>
+<rect x="800" y="430" width="190" height="175" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="800" y="430" width="10" height="175" rx="5" fill="#d9822b"/>
+<text x="895.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">层级Token</text>
+<text x="895.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">s1 token</text>
+<text x="895.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">s2 token</text>
+<text x="895.0" y="550" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">时间特征</text>
+<rect x="1040" y="430" width="190" height="175" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1040" y="430" width="10" height="175" rx="5" fill="#c93f55"/>
+<text x="1135.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">Transformer</text>
+<text x="1135.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">时间嵌入</text>
+<text x="1135.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">DualHead</text>
+<text x="1135.0" y="550" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">自回归采样</text>
+<rect x="1280" y="430" width="190" height="175" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1280" y="430" width="10" height="175" rx="5" fill="#206b6f"/>
+<text x="1375.0" y="472" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">未来预测</text>
+<text x="1375.0" y="504" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">反归一化</text>
+<text x="1375.0" y="527" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">未来OHLCV</text>
+<text x="1375.0" y="550" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">多路径均值</text>
+<line x1="270" y1="518" x2="320" y2="518" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="510" y1="518" x2="560" y2="518" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="750" y1="518" x2="800" y2="518" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="990" y1="518" x2="1040" y2="518" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<line x1="1230" y1="518" x2="1280" y2="518" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="190" y="810" width="270" height="58" rx="29" fill="#eaf1ff" stroke="#d3dae8" stroke-width="1"/>
+<text x="325.0" y="846.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">max_context: 512/2048</text>
+<rect x="510" y="810" width="270" height="58" rx="29" fill="#eafaf0" stroke="#d3dae8" stroke-width="1"/>
+<text x="645.0" y="846.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">temperature / top_p</text>
+<rect x="830" y="810" width="270" height="58" rx="29" fill="#f4efff" stroke="#d3dae8" stroke-width="1"/>
+<text x="965.0" y="846.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">sample_count 多路径</text>
+<rect x="1150" y="810" width="270" height="58" rx="29" fill="#fff4e7" stroke="#d3dae8" stroke-width="1"/>
+<text x="1285.0" y="846.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">预测进入投研层</text>
+<rect x="460" y="1050" width="680" height="145" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="460" y="1050" width="10" height="145" rx="5" fill="#2d6cdf"/>
+<text x="800.0" y="1092" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">工程含义</text>
+<text x="800.0" y="1124" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">基础模型只负责序列预测</text>
+<text x="800.0" y="1147" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">真正的投资判断还要进入数据、</text>
+<text x="800.0" y="1170" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">评分、评审团与回测层</text>
+<text x="80" y="1508" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="22" fill="#7b8798">Kronos 项目深度分析配图 · PNG 可直接用于公众号</text>
+</svg>

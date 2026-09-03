@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="0 0 1600 1600">
+<rect width="1600" height="1600" fill="#f5f7fb"/>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f7fbff"/><stop offset="100%" stop-color="#eef2fa"/></linearGradient>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#4a5d7a"/></marker>
+</defs>
+<rect x="36" y="34" width="1528" height="1528" rx="34" fill="url(#bg)" stroke="#d7deeb" stroke-width="2"/>
+<text x="80" y="120" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="54" font-weight="800" fill="#152033">从候选池到投资报告</text>
+<text x="82" y="176" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="28" fill="#5d6b82">Kronos 投资机会挖掘的端到端业务流程</text>
+<rect x="120" y="330" width="320" height="160" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="120" y="330" width="10" height="160" rx="5" fill="#2d6cdf"/>
+<text x="280.0" y="372" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">候选池</text>
+<text x="280.0" y="404" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">热股 / 超跌 / 资金 /</text>
+<text x="280.0" y="427" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">低位放量</text>
+<line x1="440" y1="410" x2="590" y2="410" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="590" y="330" width="320" height="160" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="590" y="330" width="10" height="160" rx="5" fill="#2f9e5a"/>
+<text x="750.0" y="372" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">数据补齐</text>
+<text x="750.0" y="404" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">K线 / 基本面 / 资金</text>
+<text x="750.0" y="427" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">/ 龙虎榜 / 新闻情绪</text>
+<line x1="910" y1="410" x2="1060" y2="410" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1060" y="330" width="320" height="160" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1060" y="330" width="10" height="160" rx="5" fill="#7656d6"/>
+<text x="1220.0" y="372" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">模型运行</text>
+<text x="1220.0" y="404" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">Kronos预测 /</text>
+<text x="1220.0" y="427" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">30量化模型 / 技术指标</text>
+<rect x="120" y="690" width="320" height="160" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="120" y="690" width="10" height="160" rx="5" fill="#d9822b"/>
+<text x="280.0" y="732" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">多因子打分</text>
+<text x="280.0" y="764" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">动态权重 / 风险修正 /</text>
+<text x="280.0" y="787" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">S-A-B-C评级</text>
+<line x1="440" y1="770" x2="590" y2="770" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="590" y="690" width="320" height="160" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="590" y="690" width="10" height="160" rx="5" fill="#c93f55"/>
+<text x="750.0" y="732" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">评审解释</text>
+<text x="750.0" y="764" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">60评审团 / 16指标 /</text>
+<text x="750.0" y="787" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">大分歧 / LLM覆盖层</text>
+<line x1="910" y1="770" x2="1060" y2="770" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1060" y="690" width="320" height="160" rx="20" fill="#ffffff" stroke="#b9c5d8" stroke-width="2"/>
+<rect x="1060" y="690" width="10" height="160" rx="5" fill="#206b6f"/>
+<text x="1220.0" y="732" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="24" font-weight="800" fill="#172033">报告与验证</text>
+<text x="1220.0" y="764" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">Markdown/HTML/</text>
+<text x="1220.0" y="787" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">JSON / 自动回测 /</text>
+<text x="1220.0" y="810" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="18" fill="#506070">配置优化</text>
+<line x1="1220" y1="490" x2="1220" y2="690" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1150.0" y="568.0" width="140" height="32" rx="16" fill="#ffffff" stroke="#d8deeb"/>
+<text x="1220.0" y="590.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="16" fill="#46576f">进入决策层</text>
+<line x1="590" y1="850" x2="590" y2="930" stroke="#4a5d7a" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="520.0" y="868.0" width="140" height="32" rx="16" fill="#ffffff" stroke="#d8deeb"/>
+<text x="590.0" y="890.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="16" fill="#46576f">结果沉淀</text>
+<rect x="490" y="1155" width="620" height="58" rx="29" fill="#f7f4ff" stroke="#d3dae8" stroke-width="1"/>
+<text x="800.0" y="1191.0" text-anchor="middle" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="19" font-weight="700" fill="#172033">核心闭环: 数据 -&gt; 判断 -&gt; 报告 -&gt; 回测 -&gt; 改进</text>
+<text x="80" y="1508" font-family="Hiragino Sans GB, STHeiti, Arial Unicode MS, PingFang SC, sans-serif" font-size="22" fill="#7b8798">Kronos 项目深度分析配图 · PNG 可直接用于公众号</text>
+</svg>
