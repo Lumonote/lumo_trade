@@ -255,6 +255,15 @@ Copyright (c) 2025 Lumonote. See [LICENSE](LICENSE) for full text.
 
 ---
 
+## 🤝 社区约定
+
+- [贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md) — 如何提交代码、Commit 规范、Pull Request 流程
+- [行为准则 (CODE_OF_CONDUCT.md)](CODE_OF_CONDUCT.md) — 社区成员行为规范
+- [安全策略 (SECURITY.md)](SECURITY.md) — 漏洞报告渠道与响应流程
+- [更新日志 (CHANGELOG.md)](CHANGELOG.md) — 版本历史与变更记录
+
+---
+
 ## 📖 Citing Kronos
 
 If you use the underlying Kronos model in your research, please cite its [paper](https://arxiv.org/abs/2508.02739):
