@@ -19,9 +19,11 @@ on:
     branches: [V2.1.4]
   workflow_dispatch:
 
-# 同一分支的新推送取消旧 run，省 CI 额度。
+# 同一 ref 的新推送取消旧 run，省 CI 额度。
+# ⚠️ workflow 级 concurrency 不支持 matrix 上下文（会报 Unrecognized named-value: 'matrix'），
+# 所以只按 ref 分组；要按平台分别取消就得把这段挪进 build job 里。
 concurrency:
-  group: build-${{ github.ref }}-${{ matrix.os }}
+  group: build-${{ github.ref }}
   cancel-in-progress: true
 
 env:
