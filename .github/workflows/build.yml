@@ -143,7 +143,9 @@ jobs:
           KRONOS_BACKEND_BUNDLE_MODE: lite
           KRONOS_WEB_SERVER: robyn
           # CI 环境无签名凭证，跳过 macOS 公证（仅打 ad-hoc 包）。
-          APPLE_SIGNING_IDENTITY: ""
+          # 注意：必须是 "-"（ad-hoc 签名，无需任何证书）；"" 会被当作真实 identity 名，
+          # codesign 报 "no identity found" 导致 bundle 失败。
+          APPLE_SIGNING_IDENTITY: "-"
 
       - name: Collect artifacts
         if: always()
