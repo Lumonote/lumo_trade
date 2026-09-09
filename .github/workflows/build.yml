@@ -1,8 +1,8 @@
 name: Build Desktop App
 
-# 跨平台桌面打包：macOS / Windows / Linux 三平台矩阵。
-# 之前「只有 macOS 成功」的根因：Win/Linux 缺系统依赖（webkit2gtk 等）、
-# 缺 Python/Node/Rust 统一安装、缺 KRONOS_BACKEND_BUNDLE_MODE 等编译期 env。
+# 跨平台桌面打包：macOS / Windows 双平台矩阵（Linux 因构建 exit 100 已临时下线）。
+# 之前「只有 macOS 成功」的根因：Windows 缺 Python/Node/Rust 统一安装、
+# 缺 KRONOS_BACKEND_BUNDLE_MODE 等编译期 env。
 # 本工作流对每个平台独立 setup 并产出 Tauri 安装包。
 #
 # 交付方式（由 PACKAGE_KIND 区分）：
@@ -43,8 +43,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 三平台并行；任一平台失败不取消其它。
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # 双平台并行；任一平台失败不取消其它。
+        # 恢复 Linux 时：把 ubuntu-latest 加回下面的 os 列表、补 include 条目，
+        # 并把「Install Linux system deps」步骤一起加回来。
+        os: [macos-latest, windows-latest]
         include:
           - os: macos-latest
             artifact-name: macOS
@@ -56,12 +58,6 @@ jobs:
             artifact-glob: |
               src-tauri/target/release/bundle/nsis/*.exe
               src-tauri/target/release/bundle/msi/*.msi
-          - os: ubuntu-latest
-            artifact-name: Linux
-            artifact-glob: |
-              src-tauri/target/release/bundle/deb/*.deb
-              src-tauri/target/release/bundle/appimage/*.AppImage
-              src-tauri/target/release/bundle/rpm/*.rpm
 
     env:
       # 非 main、非 tag 的分支推送 = 测试包；main / v* tag = 正式包。
@@ -93,16 +89,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-
-      # Linux: Tauri 需要 webkit2gtk 等系统库。
-      - name: Install Linux system deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-            patchelf libssl-dev libgtk-3-dev libayatana-appindicator3-dev
-        shell: bash
 
       - name: Install Python deps
         run: |
