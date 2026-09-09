@@ -1,4 +1,4 @@
-"""SQLite connection management for kronos_data.sqlite.
+"""SQLite connection management for lumo_data.sqlite.
 
 Single thread-local connection per process. WAL mode + 5s busy timeout so
 concurrent readers don't block on the importer.
@@ -6,34 +6,61 @@ concurrent readers don't block on the importer.
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Optional
 
 
-_DEFAULT_REL_PATH = Path("data") / "kronos_data.sqlite"
+_DEFAULT_REL_PATH = Path("data") / "lumo_data.sqlite"
+# 旧版库名：首次启动时若检测到，自动拷贝一份为 lumo_data.sqlite，实现平滑迁移。
+_LEGACY_DB_NAME = "kronos_data.sqlite"
 _local = threading.local()
 _schema_lock = threading.Lock()
 _schema_applied: bool = False
 
 
+def _migrate_legacy_db(target: Path) -> None:
+    """If the target DB doesn't exist but a legacy kronos_data.sqlite does,
+    copy it to the new lumo_data.sqlite name (the legacy file is left intact so
+    any older entry point that still references it keeps working)."""
+    if target.exists():
+        return
+    legacy = target.parent / _LEGACY_DB_NAME
+    if not legacy.exists():
+        return
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(legacy, target)
+        print(f"[migrate] copied {_LEGACY_DB_NAME} -> {target.name}", flush=True)
+    except OSError as exc:
+        print(f"[migrate] failed to copy {_LEGACY_DB_NAME}: {exc}", flush=True)
+
+
 def db_path() -> Path:
-    """Resolve the kronos_data.sqlite path.
+    """Resolve the lumo_data.sqlite path.
 
     Order:
     1. `KRONOS_SQLITE_PATH` — explicit file path override (tests, custom installs).
-    2. `KRONOS_DATA_DIR/kronos_data.sqlite` — packaged app sets this to the user's
+    2. `KRONOS_DATA_DIR/lumo_data.sqlite` — packaged app sets this to the user's
        app-data directory, so the DB lands in a writable, persistent location.
-    3. Relative `data/kronos_data.sqlite` — dev mode default (cwd = project root).
+    3. Relative `data/lumo_data.sqlite` — dev mode default (cwd = project root).
+
+    On first resolution, if the target does not exist but a legacy
+    `kronos_data.sqlite` does, it is copied across so existing users keep their
+    data after the rename.
     """
     explicit = os.environ.get("KRONOS_SQLITE_PATH")
     if explicit:
         return Path(explicit)
     data_dir = os.environ.get("KRONOS_DATA_DIR")
     if data_dir:
-        return Path(data_dir).expanduser() / "kronos_data.sqlite"
-    return _DEFAULT_REL_PATH
+        target = Path(data_dir).expanduser() / "lumo_data.sqlite"
+    else:
+        target = _DEFAULT_REL_PATH
+    _migrate_legacy_db(target)
+    return target
 
 
 def get_conn() -> sqlite3.Connection:

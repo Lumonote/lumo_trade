@@ -20,7 +20,7 @@ print(f"🔍 Spec文件目录: {spec_dir}")
 block_cipher = None
 
 a = Analysis(
-    [os.path.join(project_root, 'tools/launchers/kronos_modern_gui.py')],
+    [os.path.join(project_root, 'tools/launchers/lumo_modern_gui.py')],
     pathex=[project_root],
     binaries=[],
     datas=[
@@ -100,17 +100,17 @@ a = Analysis(
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 _dist_dir = Path('dist')
-_default_name = 'Kronos_Ultra'
+_default_name = 'Lumo_Ultra'
 _default_path = _dist_dir / f'{_default_name}.exe'
 
-# 尝试删除已存在的同名EXE（保持统一命名 Kronos.exe）
+# 尝试删除已存在的同名EXE（保持统一命名 Lumo.exe）
 _exe_name = _default_name
 try:
     if _default_path.exists():
         print(f"⚠️ 检测到已存在EXE: {_default_path}，尝试删除以覆盖...")
         _default_path.unlink()
 except Exception as _e:
-    print(f"⚠️ 无法删除旧EXE（可能被占用）：{_e}，请确保未运行 Kronos.exe")
+    print(f"⚠️ 无法删除旧EXE（可能被占用）：{_e}，请确保未运行 Lumo.exe")
 
 exe = EXE(
     pyz,
@@ -132,10 +132,10 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version=os.path.join(project_root, 'docs/version_info.txt') if os.path.exists(os.path.join(project_root, 'docs/version_info.txt')) else None,
-    icon=os.path.join(project_root, 'assets/kronos_ai_stock.ico') if os.path.exists(os.path.join(project_root, 'assets/kronos_ai_stock.ico')) else None,
+    icon=os.path.join(project_root, 'assets/lumo_ai_stock.ico') if os.path.exists(os.path.join(project_root, 'assets/lumo_ai_stock.ico')) else None,
 )
 
 # 打印构建完成信息
 print(f"🎉 Windows EXE构建完成!")
 print(f"📁 输出文件: dist/{_exe_name}.exe")
-print(f"📊 预期最终位置: packaging/builds/Kronos_Ultra_v<version>_Windows_<timestamp>.zip")
+print(f"📊 预期最终位置: packaging/builds/Lumo_Ultra_v<version>_Windows_<timestamp>.zip")

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 源码保护（务实级）：打包前压缩混淆前端静态资源。
 #
-# webui/static/kronos_desktop_app.js（~633KB）是明文开发格式，原样打进 app
+# webui/static/lumo_desktop_app.js（~633KB）是明文开发格式，原样打进 app
 # 后既能被直接阅读，也暴露了大量符号/逻辑。本脚本用 terser 做压缩 + 混淆
 # (mangle) + 去注释，原地替换 webui/static 下的 .js（dev 文件由 git 保留原版，
 # 这里仅作用于打包产物的源；如需还原创原版 `git checkout -- webui/static/`）。

@@ -14,7 +14,7 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def user_root(app_name: str = "com.kronos.app") -> Path:
+def user_root(app_name: str = "com.lumo.trade") -> Path:
     configured = os.environ.get("KRONOS_USER_DIR")
     if configured:
         root = Path(configured).expanduser()

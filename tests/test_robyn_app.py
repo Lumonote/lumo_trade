@@ -102,7 +102,7 @@ def test_robyn_native_template_static_and_path_params(robyn_module):
     with TestClient(robyn_module.app) as client:
         desktop_response = client.get("/desktop")
         missing_page_response = client.get("/desktop/missing")
-        static_response = client.get("/static/kronos_desktop.css")
+        static_response = client.get("/static/lumo_desktop.css")
         bad_kline_response = client.get("/api/stock-kline/bad")
         bad_context_response = client.get("/api/stock-context/bad")
         missing_job_response = client.get("/api/jobs/missing")

@@ -133,7 +133,7 @@ if include_ml:
 
 
 a = Analysis(
-    [str(project_root / "packaging" / "scripts" / "kronos_webui_backend.py")],
+    [str(project_root / "packaging" / "scripts" / "lumo_webui_backend.py")],
     pathex=[str(project_root)],
     binaries=[],
     datas=datas,
@@ -173,7 +173,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="kronos_webui_backend",
+    name="lumo_webui_backend",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -189,5 +189,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="kronos_webui_backend",
+    name="lumo_webui_backend",
 )

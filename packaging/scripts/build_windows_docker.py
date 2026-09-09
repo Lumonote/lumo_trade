@@ -47,7 +47,7 @@ project_root = 'C:/kronos'
 block_cipher = None
 
 a = Analysis(
-    [os.path.join(project_root, 'tools/launchers/kronos_modern_gui.py')],
+    [os.path.join(project_root, 'tools/launchers/lumo_modern_gui.py')],
     pathex=[project_root],
     binaries=[],
     datas=[
@@ -106,11 +106,11 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/kronos_ai_stock.ico' if os.path.exists('assets/kronos_ai_stock.ico') else None,
+    icon='assets/lumo_ai_stock.ico' if os.path.exists('assets/lumo_ai_stock.ico') else None,
 )
 '''
 
-        spec_file = self.project_root / 'kronos_windows_docker.spec'
+        spec_file = self.project_root / 'lumo_windows_docker.spec'
         with open(spec_file, 'w', encoding='utf-8') as f:
             f.write(spec_content)
 
@@ -178,7 +178,7 @@ exe = EXE(
         shutil.copy2(exe_file, portable_dir / 'Kronos.exe')
 
         # 创建启动脚本
-        batch_script = portable_dir / 'start_kronos.bat'
+        batch_script = portable_dir / 'start_lumo.bat'
         with open(batch_script, 'w', encoding='utf-8') as f:
             f.write('''@echo off
 echo 🚀 Starting Kronos...
@@ -195,7 +195,7 @@ pause
 
 使用说明:
 1. 双击 Kronos.exe 启动应用
-2. 或者双击 start_kronos.bat 启动（会显示控制台输出）
+2. 或者双击 start_lumo.bat 启动（会显示控制台输出）
 
 系统要求:
 - Windows 10/11 (x64)

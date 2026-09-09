@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Kronos 跨平台GUI应用程序
+Lumo 跨平台GUI应用程序
 支持 Windows、macOS、Linux
 """
 
@@ -206,9 +206,9 @@ class LicenseValidator:
     def _get_cache_path(self):
         """获取缓存文件路径"""
         if current_os == 'Windows':
-            cache_dir = Path.home() / '.kronos'
+            cache_dir = Path.home() / '.lumo'
         else:
-            cache_dir = Path.home() / '.kronos'
+            cache_dir = Path.home() / '.lumo'
 
         cache_dir.mkdir(exist_ok=True)
         return cache_dir / '.license_cache'
@@ -237,7 +237,7 @@ class LicenseValidator:
         """激活授权码"""
         import re
 
-        pattern = r'^KRONOS-[A-F0-9]{5}-[A-F0-9]{5}-[A-F0-9]{5}-[A-F0-9]{5}$'
+        pattern = r'^LUMO-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$'
         if not re.match(pattern, license_code.upper()):
             return False, "授权码格式错误"
 
@@ -273,8 +273,8 @@ class LicenseValidator:
             return None
 
 
-class KronosApp:
-    """Kronos主应用程序"""
+class LumoApp:
+    """Lumo主应用程序"""
 
     def __init__(self):
         self.validator = LicenseValidator()
@@ -301,15 +301,15 @@ class KronosApp:
 
         while True:
             choice = self.dialog.show_choice(
-                "🔐 Kronos 授权验证",
-                f"欢迎使用 Kronos 金融预测系统！\\n\\n设备ID: {device_id}\\n状态: {message}\\n\\n请选择操作：",
+                "🔐 Lumo 授权验证",
+                f"欢迎使用 Lumo 金融预测系统！\\n\\n设备ID: {device_id}\\n状态: {message}\\n\\n请选择操作：",
                 ["🔑 激活授权码", "📱 查看设备信息", "❌ 退出程序"]
             )
 
             if choice == "🔑 激活授权码":
                 license_code = self.dialog.get_input(
                     "🔑 激活授权码",
-                    "请输入您的授权码\\n\\n格式: KRONOS-XXXXX-XXXXX-XXXXX-XXXXX\\n\\n💡 授权码区分大小写，请准确输入",
+                    "请输入您的授权码\\n\\n格式: LUMO-XXXXX-XXXXX-XXXXX-XXXXX\\n\\n💡 授权码区分大小写，请准确输入",
                     ""
                 )
 
@@ -317,7 +317,7 @@ class KronosApp:
                     success, msg = self.validator.activate_license(license_code)
                     if success:
                         self.dialog.show_info("✅ 激活成功",
-                                              f"恭喜！{msg}\\n\\n🎉 Kronos系统已成功激活！\\n现在您可以使用所有功能。")
+                                              f"恭喜！{msg}\\n\\n🎉 Lumo系统已成功激活！\\n现在您可以使用所有功能。")
                         return True
                     else:
                         self.dialog.show_error("❌ 激活失败",
@@ -330,14 +330,14 @@ class KronosApp:
                 continue
 
             else:  # 退出程序
-                self.dialog.show_info("👋 再见", "感谢您对 Kronos 的关注！\\n如需授权码，请联系管理员。")
+                self.dialog.show_info("👋 再见", "感谢您对 Lumo 的关注！\\n如需授权码，请联系管理员。")
                 return False
 
     def show_gui_interface(self):
         """显示GUI界面"""
         try:
-            from .gui_interface import KronosGUI
-            gui = KronosGUI(self.validator)
+            from .gui_interface import LumoGUI
+            gui = LumoGUI(self.validator)
             gui.run()
         except:
             self.show_native_interface()
@@ -346,7 +346,7 @@ class KronosApp:
         """显示原生界面"""
         while True:
             choice = self.dialog.show_choice(
-                "🚀 Kronos 金融预测系统",
+                "🚀 Lumo 金融预测系统",
                 "✅ 系统已授权，欢迎使用！\\n\\n请选择您需要的功能：",
                 [
                     "⚙️ 系统管理",
@@ -372,7 +372,7 @@ class KronosApp:
             elif choice == "📖 使用帮助":
                 self.show_help()
             else:
-                self.dialog.show_info("👋 感谢使用", "感谢使用 Kronos 金融预测系统！\\n祝您投资顺利！")
+                self.dialog.show_info("👋 感谢使用", "感谢使用 Lumo 金融预测系统！\\n祝您投资顺利！")
                 break
 
     def show_system_menu(self):
@@ -605,7 +605,7 @@ class KronosApp:
         is_valid, message = self.validator.validate_license()
         device_id = self.validator.device_fp.get_device_id()
 
-        status_text = f"🔐 Kronos 授权状态\\n\\n"
+        status_text = f"🔐 Lumo 授权状态\\n\\n"
         status_text += f"📱 设备ID: {device_id}\\n"
         status_text += f"💻 操作系统: {platform.system()} {platform.release()}\\n"
         status_text += f"⏰ 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\\n\\n"
@@ -629,7 +629,7 @@ class KronosApp:
     def activate_new_license(self):
         """激活新授权码"""
         license_code = self.dialog.get_input("🔑 激活授权码",
-                                             "请输入新的授权码\\n\\n格式: KRONOS-XXXXX-XXXXX-XXXXX-XXXXX\\n\\n💡 授权码区分大小写",
+                                             "请输入新的授权码\\n\\n格式: LUMO-XXXXX-XXXXX-XXXXX-XXXXX\\n\\n💡 授权码区分大小写",
                                              "")
 
         if license_code:
@@ -655,7 +655,7 @@ class KronosApp:
 
     def show_help(self):
         """显示帮助信息"""
-        help_text = """📖 Kronos 使用指南
+        help_text = """📖 Lumo 使用指南
 
 🚀 快速开始：
 1️⃣ 首次使用请执行"系统管理" → "一键安装依赖"
@@ -718,7 +718,7 @@ class KronosApp:
 def main():
     """主程序入口"""
     try:
-        app = KronosApp()
+        app = LumoApp()
     except KeyboardInterrupt:
         pass
     except Exception as e:

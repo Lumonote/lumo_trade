@@ -2404,10 +2404,10 @@ try:
                 scoring_result = None
 
             # 从HTML报告生成器导入新的生成函数
-            from scripts.html_report_generator import KronosHTMLReportGenerator
+            from scripts.html_report_generator import LumoHTMLReportGenerator
 
             # 创建报告生成器并设置控制台数据
-            generator = KronosHTMLReportGenerator()
+            generator = LumoHTMLReportGenerator()
             console_data = {
                 'data_count': f'{len(complete_df):,}',
                 'prediction_time': '42',  # 实际预测时间可以动态计算

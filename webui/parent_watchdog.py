@@ -26,7 +26,7 @@ ENV_DISABLE = "KRONOS_DISABLE_PARENT_WATCHDOG"
 ENV_INTERVAL = "KRONOS_PARENT_WATCHDOG_INTERVAL"
 
 DEFAULT_INTERVAL = 2.0
-THREAD_NAME = "kronos-parent-watchdog"
+THREAD_NAME = "lumo-parent-watchdog"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 

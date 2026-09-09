@@ -31,7 +31,7 @@ def test_windows_native_build_uses_same_tauri_pipeline_as_macos():
     assert "vcvarsall.bat" in batch
     assert "Microsoft.VisualStudio.Workload.VCTools" in batch
     assert batch.index("where link") < batch.index("build_backend.py")
-    assert "kronos_windows.spec" not in batch
+    assert "lumo_windows.spec" not in batch
     assert "Kronos_Ultra" not in batch
     assert "windows-docker" not in shell
     assert "windows-wine" not in shell
@@ -53,7 +53,7 @@ def test_desktop_binary_and_artifact_names_use_lumo_trade():
 
 def test_rust_desktop_process_helpers_are_platform_gated():
     source = (ROOT / "src-tauri/src/main.rs").read_text(encoding="utf-8")
-    spec = (ROOT / "packaging/scripts/kronos_webui_backend.spec").read_text(encoding="utf-8")
+    spec = (ROOT / "packaging/scripts/lumo_webui_backend.spec").read_text(encoding="utf-8")
 
     assert "#[cfg(unix)]\nuse std::thread;" in source
     assert "#[cfg(windows)]\nuse std::os::windows::process::CommandExt;" in source
@@ -65,14 +65,14 @@ def test_rust_desktop_process_helpers_are_platform_gated():
 
 
 def test_bundled_backend_excludes_conflicting_postgres_ssl_libraries():
-    spec = (ROOT / "packaging/scripts/kronos_webui_backend.spec").read_text(encoding="utf-8")
+    spec = (ROOT / "packaging/scripts/lumo_webui_backend.spec").read_text(encoding="utf-8")
 
     excludes = spec[spec.index("    excludes=[") : spec.index("    noarchive=False")]
     assert '"psycopg2"' in excludes
 
 
 def test_bundled_backend_import_check_covers_the_active_robyn_stack():
-    source = (ROOT / "packaging/scripts/kronos_webui_backend.py").read_text(encoding="utf-8")
+    source = (ROOT / "packaging/scripts/lumo_webui_backend.py").read_text(encoding="utf-8")
 
     assert '("finetune.license_system.license_codec"' in source
     assert '("webui.app"' not in source
@@ -151,7 +151,7 @@ def test_license_configs_use_lumo_trade_protocol():
 
 
 def test_legacy_gui_activation_surface_uses_lumo_protocol():
-    source = (ROOT / "tools/launchers/kronos_modern_gui.py").read_text(encoding="utf-8")
+    source = (ROOT / "tools/launchers/lumo_modern_gui.py").read_text(encoding="utf-8")
 
     assert "KRONOS-" not in source
     assert "generate_device_license" in source

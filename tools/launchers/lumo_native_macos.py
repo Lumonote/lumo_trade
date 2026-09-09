@@ -1,6 +1,6 @@
 #!/usr/local/bin/python3.11
 """
-Kronos macOS原生GUI - 使用AppleScript实现原生体验
+Lumo macOS原生GUI - 使用AppleScript实现原生体验
 专为macOS Big Sur/Monterey设计的原生界面
 """
 
@@ -128,7 +128,7 @@ class LicenseValidator:
 
     def _get_cache_path(self):
         """获取缓存文件路径"""
-        cache_dir = Path.home() / '.kronos'
+        cache_dir = Path.home() / '.lumo'
         cache_dir.mkdir(exist_ok=True)
         return cache_dir / '.license_cache'
 
@@ -156,7 +156,7 @@ class LicenseValidator:
         """激活授权码"""
         import re
 
-        pattern = r'^KRONOS-[A-F0-9]{5}-[A-F0-9]{5}-[A-F0-9]{5}-[A-F0-9]{5}$'
+        pattern = r'^LUMO-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$'
         if not re.match(pattern, license_code.upper()):
             return False, "授权码格式错误"
 
@@ -181,15 +181,15 @@ class LicenseValidator:
             return False, f"激活失败: {e}"
 
 
-class KronosNativeMacOSApp:
-    """Kronos macOS原生应用"""
+class LumoNativeMacOSApp:
+    """Lumo macOS原生应用"""
 
     def __init__(self):
         self.ui = MacOSNativeUI()
         self.validator = LicenseValidator()
 
         # 显示启动画面
-        self.ui.show_notification("🚀 Kronos", "金融预测系统", "正在启动...")
+        self.ui.show_notification("🚀 Lumo", "金融预测系统", "正在启动...")
 
         # 检查授权
         if not self.check_authorization():
@@ -210,24 +210,24 @@ class KronosNativeMacOSApp:
         while True:
             # 授权界面
             choice = self.ui.show_list_dialog(
-                "🔐 Kronos 授权验证",
-                f"欢迎使用 Kronos 金融预测系统！\\n\\n🆔 设备ID: {device_id}\\n📋 状态: {message}\\n\\n请选择操作：",
+                "🔐 Lumo 授权验证",
+                f"欢迎使用 Lumo 金融预测系统！\\n\\n🆔 设备ID: {device_id}\\n📋 状态: {message}\\n\\n请选择操作：",
                 ["🔑 激活授权码", "📱 查看设备信息", "❌ 退出程序"]
             )
 
             if choice == "🔑 激活授权码":
                 license_code = self.ui.get_input(
                     "🔑 激活授权码",
-                    "请输入您的授权码\\n\\n📝 格式: KRONOS-XXXXX-XXXXX-XXXXX-XXXXX\\n\\n💡 授权码区分大小写，请准确输入"
+                    "请输入您的授权码\\n\\n📝 格式: LUMO-XXXXX-XXXXX-XXXXX-XXXXX\\n\\n💡 授权码区分大小写，请准确输入"
                 )
 
                 if license_code:
                     success, msg = self.validator.activate_license(license_code)
                     if success:
                         self.ui.show_dialog("✅ 激活成功",
-                                            f"🎉 恭喜！{msg}\\n\\n✨ Kronos系统已成功激活！\\n现在您可以使用所有功能。",
+                                            f"🎉 恭喜！{msg}\\n\\n✨ Lumo系统已成功激活！\\n现在您可以使用所有功能。",
                                             icon="note")
-                        self.ui.show_notification("✅ 激活成功", "Kronos专业版", "所有功能已解锁！")
+                        self.ui.show_notification("✅ 激活成功", "Lumo专业版", "所有功能已解锁！")
                         return True
                     else:
                         self.ui.show_dialog("❌ 激活失败",
@@ -239,16 +239,16 @@ class KronosNativeMacOSApp:
                 self.ui.show_dialog("📱 设备信息", info)
 
             else:  # 退出程序
-                self.ui.show_dialog("👋 再见", "感谢您对 Kronos 的关注！\\n如需授权码，请联系管理员。")
+                self.ui.show_dialog("👋 再见", "感谢您对 Lumo 的关注！\\n如需授权码，请联系管理员。")
                 return False
 
     def show_main_interface(self):
         """显示主界面"""
-        self.ui.show_notification("🎉 欢迎", "Kronos专业版", "系统已就绪，欢迎使用！")
+        self.ui.show_notification("🎉 欢迎", "Lumo专业版", "系统已就绪，欢迎使用！")
 
         while True:
             choice = self.ui.show_list_dialog(
-                "🚀 Kronos 金融预测系统",
+                "🚀 Lumo 金融预测系统",
                 "✅ 系统已授权，欢迎使用！\\n\\n📊 选择您需要的功能：",
                 [
                     "⚙️ 系统管理",
@@ -274,7 +274,7 @@ class KronosNativeMacOSApp:
             elif choice == "📖 使用帮助":
                 self.show_help()
             else:
-                self.ui.show_dialog("👋 感谢使用", "感谢使用 Kronos 金融预测系统！\\n祝您投资顺利！")
+                self.ui.show_dialog("👋 感谢使用", "感谢使用 Lumo 金融预测系统！\\n祝您投资顺利！")
                 break
 
     def show_system_menu(self):
@@ -486,19 +486,19 @@ class KronosNativeMacOSApp:
 
         if is_valid:
             info = self.validator.get_license_info()
-            status_text = f"🔐 Kronos 授权状态\\n\\n✅ 状态: {message}\\n\\n📱 设备ID: {device_id}\\n💻 系统: {platform.system()} {platform.release()}"
+            status_text = f"🔐 Lumo 授权状态\\n\\n✅ 状态: {message}\\n\\n📱 设备ID: {device_id}\\n💻 系统: {platform.system()} {platform.release()}"
 
             if info:
                 status_text += f"\\n\\n📄 授权详情:\\n🔑 授权码: {info['license_code']}\\n📅 激活时间: {info['activation_time'][:19].replace('T', ' ')}"
         else:
-            status_text = f"🔐 Kronos 授权状态\\n\\n❌ 状态: {message}\\n\\n📱 设备ID: {device_id}\\n💡 请联系管理员获取授权码"
+            status_text = f"🔐 Lumo 授权状态\\n\\n❌ 状态: {message}\\n\\n📱 设备ID: {device_id}\\n💡 请联系管理员获取授权码"
 
         self.ui.show_dialog("🔐 授权状态", status_text)
 
     def activate_new_license(self):
         """激活新授权码"""
         license_code = self.ui.get_input("🔑 激活授权码",
-                                         "请输入新的授权码\\n\\n📝 格式: KRONOS-XXXXX-XXXXX-XXXXX-XXXXX")
+                                         "请输入新的授权码\\n\\n📝 格式: LUMO-XXXXX-XXXXX-XXXXX-XXXXX")
 
         if license_code:
             success, message = self.validator.activate_license(license_code)
@@ -517,7 +517,7 @@ class KronosNativeMacOSApp:
 
     def show_help(self):
         """显示帮助信息"""
-        help_text = """📖 Kronos 使用指南
+        help_text = """📖 Lumo 使用指南
 
 🚀 快速开始：
 1️⃣ 系统管理 → 一键安装依赖
@@ -574,7 +574,7 @@ class KronosNativeMacOSApp:
 def main():
     """主程序入口"""
     try:
-        app = KronosNativeMacOSApp()
+        app = LumoNativeMacOSApp()
     except KeyboardInterrupt:
         pass
     except Exception as e:
@@ -585,7 +585,7 @@ def main():
 请尝试以下解决方案:
 1. 检查系统权限
 2. 重新安装程序
-3. 联系技术支持" with title "Kronos启动错误" buttons {{"确定"}} default button 1 with icon stop
+3. 联系技术支持" with title "Lumo启动错误" buttons {{"确定"}} default button 1 with icon stop
         '''], check=False)
 
 

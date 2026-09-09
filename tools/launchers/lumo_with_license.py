@@ -1,6 +1,6 @@
 #!/usr/local/bin/python3.11
 """
-Kronos 简化GUI主程序
+Lumo 简化GUI主程序
 直接调用现有的授权系统，无需额外依赖
 """
 
@@ -42,7 +42,7 @@ def check_license_status():
         return validator.validate_license()
     except ImportError:
         # 简化检查
-        license_file = os.path.expanduser("~/.kronos_license")
+        license_file = os.path.expanduser("~/.lumo_license")
         if os.path.exists(license_file):
             return True, "授权已激活"
         return False, "需要激活授权"
@@ -52,7 +52,7 @@ def check_license_status():
 
 def activate_license_interactive():
     """交互式授权激活"""
-    print("\n🔐 Kronos 授权激活")
+    print("\n🔐 Lumo 授权激活")
     print("=" * 30)
 
     device_id = get_device_id()
@@ -64,8 +64,8 @@ def activate_license_interactive():
         if license_code.lower() == 'q':
             return False
 
-        if not license_code.startswith("KRONOS-"):
-            print("❌ 授权码格式错误，应以 'KRONOS-' 开头")
+        if not license_code.startswith("LUMO-"):
+            print("❌ 授权码格式错误，应以 'LUMO-' 开头")
             continue
 
         try:
@@ -77,7 +77,7 @@ def activate_license_interactive():
         except ImportError:
             # 简化版本激活
             if len(license_code) >= 10:  # 基本长度检查
-                license_file = os.path.expanduser("~/.kronos_license")
+                license_file = os.path.expanduser("~/.lumo_license")
                 with open(license_file, 'w') as f:
                     json.dump({
                         'device_id': device_id,
@@ -102,7 +102,7 @@ def show_main_menu():
     is_licensed, status_message = check_license_status()
     device_id = get_device_id()
 
-    print("\n🚀 Kronos 金融预测系统")
+    print("\n🚀 Lumo 金融预测系统")
     print("=" * 40)
     print(f"📱 设备ID: {device_id}")
     print(f"🖥️  系统: {platform.system()} {platform.release()}")
@@ -191,7 +191,7 @@ def handle_unlicensed_menu(choice):
         print(f"  设备ID: {get_device_id()}")
         print(f"  操作系统: {platform.system()} {platform.release()}")
         print(f"  Python版本: {sys.version.split()[0]}")
-        print(f"  程序版本: Kronos v1.0")
+        print(f"  程序版本: Lumo v1.0")
 
     elif choice == '0':
         return False
@@ -219,7 +219,7 @@ def run_license_manager():
 
 def main():
     """主程序入口"""
-    print("🚀 正在启动 Kronos 金融预测系统...")
+    print("🚀 正在启动 Lumo 金融预测系统...")
 
     # 检查Python版本
     if sys.version_info < (3, 6):
@@ -236,7 +236,7 @@ def main():
     except Exception as e:
         print(f"❌ 程序出错: {e}")
     finally:
-        print("\n👋 感谢使用 Kronos 金融预测系统！")
+        print("\n👋 感谢使用 Lumo 金融预测系统！")
 
 
 if __name__ == "__main__":

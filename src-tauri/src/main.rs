@@ -124,24 +124,24 @@ fn bundled_backend_candidates(app: &tauri::App) -> Vec<PathBuf> {
         return Vec::new();
     };
     let executable_name = if cfg!(windows) {
-        "kronos_webui_backend.exe"
+        "lumo_webui_backend.exe"
     } else {
-        "kronos_webui_backend"
+        "lumo_webui_backend"
     };
     vec![
         resource_dir
             .join("_up_")
             .join("packaging")
             .join("backend")
-            .join("kronos_webui_backend")
+            .join("lumo_webui_backend")
             .join(executable_name),
         resource_dir
             .join("packaging")
             .join("backend")
-            .join("kronos_webui_backend")
+            .join("lumo_webui_backend")
             .join(executable_name),
         resource_dir
-            .join("kronos_webui_backend")
+            .join("lumo_webui_backend")
             .join(executable_name),
     ]
 }
@@ -266,7 +266,7 @@ fn cleanup_backend_processes(pid_file: &Path) {
     }
 
     for pid in backend_port_pids() {
-        if is_kronos_backend_process(pid) {
+        if is_lumo_backend_process(pid) {
             terminate_pid(pid);
         }
     }
@@ -300,7 +300,7 @@ fn backend_port_pids() -> Vec<u32> {
 }
 
 #[cfg(unix)]
-fn is_kronos_backend_process(pid: u32) -> bool {
+fn is_lumo_backend_process(pid: u32) -> bool {
     let pid_arg = pid.to_string();
     Command::new("ps")
         .args(["-p", &pid_arg, "-o", "command="])
@@ -309,7 +309,7 @@ fn is_kronos_backend_process(pid: u32) -> bool {
         .output()
         .map(|output| {
             let command = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            command.contains("kronos_webui_backend")
+            command.contains("lumo_webui_backend")
                 || command.contains("webui/run_robyn.py")
                 || command.contains("webui/run.py")
                 || command.contains("webui.robyn_app")
@@ -319,7 +319,7 @@ fn is_kronos_backend_process(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn is_kronos_backend_process(_pid: u32) -> bool {
+fn is_lumo_backend_process(_pid: u32) -> bool {
     false
 }
 
@@ -698,7 +698,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .item(&quit)
         .build()?;
 
-    let mut builder = TrayIconBuilder::with_id("kronos-tray")
+    let mut builder = TrayIconBuilder::with_id("lumo-tray")
         .tooltip("Lumo Trade 行情台")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -744,7 +744,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 /// 干净」。先把可见部分摘掉,退出观感才和托盘菜单退出一致。
 fn shutdown(app_handle: &tauri::AppHandle) {
     #[cfg(desktop)]
-    let _ = app_handle.remove_tray_by_id("kronos-tray");
+    let _ = app_handle.remove_tray_by_id("lumo-tray");
     for label in ["tray-popup", "main"] {
         if let Some(window) = app_handle.get_webview_window(label) {
             let _ = window.hide();

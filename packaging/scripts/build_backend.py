@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SPEC_PATH = PROJECT_ROOT / "packaging" / "scripts" / "kronos_webui_backend.spec"
+SPEC_PATH = PROJECT_ROOT / "packaging" / "scripts" / "lumo_webui_backend.spec"
 DIST_PATH = PROJECT_ROOT / "packaging" / "backend"
 WORK_PATH = PROJECT_ROOT / "build" / "pyinstaller_backend"
 CONFIG_PATH = PROJECT_ROOT / "build" / "pyinstaller_config"
@@ -44,7 +44,7 @@ TORCH_DYLIBS = {
 
 # PyInstaller only warns when a hidden import is unavailable and can still
 # produce an unusable executable. Keep this list aligned with requirements.txt
-# and the modules collected by kronos_webui_backend.spec so the build fails (or
+# and the modules collected by lumo_webui_backend.spec so the build fails (or
 # installs the missing wheel) before spending minutes creating the bundle.
 _LITE_BUILD_REQUIREMENTS = (
     ("PyInstaller", "pyinstaller"),
@@ -164,7 +164,7 @@ def _adhoc_codesign_macos(bundle_dir: Path) -> None:
     if sys.platform != "darwin" or not shutil.which("codesign"):
         return
     targets = list(bundle_dir.rglob("*.dylib")) + list(bundle_dir.rglob("*.so"))
-    main_exe = bundle_dir / "kronos_webui_backend"
+    main_exe = bundle_dir / "lumo_webui_backend"
     if main_exe.exists():
         targets.append(main_exe)
     for target in targets:
@@ -262,7 +262,7 @@ def main() -> int:
     _ensure_build_dependencies(args.mode)
 
     if args.clean:
-        shutil.rmtree(DIST_PATH / "kronos_webui_backend", ignore_errors=True)
+        shutil.rmtree(DIST_PATH / "lumo_webui_backend", ignore_errors=True)
         shutil.rmtree(WORK_PATH, ignore_errors=True)
         shutil.rmtree(CONFIG_PATH, ignore_errors=True)
 
@@ -292,7 +292,7 @@ def main() -> int:
 
     subprocess.check_call(cmd, cwd=str(PROJECT_ROOT), env=env)
 
-    bundle_dir = DIST_PATH / "kronos_webui_backend"
+    bundle_dir = DIST_PATH / "lumo_webui_backend"
     if args.mode == "full":
         _fix_macos_torch_rpaths(bundle_dir)
     _adhoc_codesign_macos(bundle_dir)
@@ -304,7 +304,7 @@ def main() -> int:
         print(f"安全清理: 移除明文/开发文件 {removed_src} 个, 清空敏感字段 {removed_secret} 处")
 
     executable = bundle_dir / (
-        "kronos_webui_backend.exe" if sys.platform == "win32" else "kronos_webui_backend"
+        "lumo_webui_backend.exe" if sys.platform == "win32" else "lumo_webui_backend"
     )
     if not executable.exists():
         raise FileNotFoundError(f"backend executable was not produced: {executable}")

@@ -324,11 +324,11 @@ def normalize_with_sips(path: Path) -> None:
 
 def generate_assets(project_root: Path) -> None:
     assets_dir = project_root / "assets"
-    iconset_dir = assets_dir / "kronos_ai_stock.iconset"
+    iconset_dir = assets_dir / "lumo_ai_stock.iconset"
     base = make_icon(size=1024, scale=2)
     high = make_icon(size=2048, scale=1)
 
-    write_png(assets_dir / "kronos_ai_stock.png", base)
+    write_png(assets_dir / "lumo_ai_stock.png", base)
 
     iconset_dir.mkdir(parents=True, exist_ok=True)
     for filename, target_size in ICONSET_SIZES.items():
@@ -337,12 +337,12 @@ def generate_assets(project_root: Path) -> None:
         normalize_with_sips(png_path)
 
     write_ico(
-        assets_dir / "kronos_ai_stock.ico",
+        assets_dir / "lumo_ai_stock.ico",
         {size: area_resize(high, size) for size in ICO_SIZES},
     )
 
     write_icns(
-        assets_dir / "kronos_ai_stock.icns",
+        assets_dir / "lumo_ai_stock.icns",
         {size: area_resize(high, size) for size in ICNS_TYPES},
     )
 

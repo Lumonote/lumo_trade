@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-使用Wine在Linux容器中构建Windows版本的Kronos
+使用Wine在Linux容器中构建Windows版本的Lumo
 当无法使用原生Windows容器时的备选方案
 """
 
@@ -102,7 +102,7 @@ project_root = '/kronos'
 block_cipher = None
 
 a = Analysis(
-    [os.path.join(project_root, 'tools/launchers/kronos_modern_gui.py')],
+    [os.path.join(project_root, 'tools/launchers/lumo_modern_gui.py')],
     pathex=[project_root],
     binaries=[],
     datas=[
@@ -164,7 +164,7 @@ exe = EXE(
 )
 '''
 
-        spec_file = self.project_root / 'kronos_wine.spec'
+        spec_file = self.project_root / 'lumo_wine.spec'
         with open(spec_file, 'w', encoding='utf-8') as f:
             f.write(spec_content)
 
@@ -237,7 +237,7 @@ exe = EXE(
         shutil.copy2(exe_file, portable_dir / 'Kronos_Ultra.exe')
 
         # 创建启动脚本
-        batch_script = portable_dir / 'start_kronos.bat'
+        batch_script = portable_dir / 'start_lumo.bat'
         with open(batch_script, 'w', encoding='utf-8') as f:
             f.write('''@echo off
 echo 🚀 Starting Kronos_Ultra...
@@ -254,7 +254,7 @@ pause
 
 使用说明:
 1. 双击 Kronos_Ultra.exe 启动应用
-2. 或者双击 start_kronos.bat 启动（会显示控制台输出）
+2. 或者双击 start_lumo.bat 启动（会显示控制台输出）
 
 系统要求:
 - Windows 10/11 (x64)
@@ -277,7 +277,7 @@ pause
 
     def run_build(self):
         """执行完整的构建流程"""
-        print("🍷 Kronos Wine Windows 构建器启动")
+        print("🍷 Lumo Wine Windows 构建器启动")
         print("=" * 50)
 
         try:

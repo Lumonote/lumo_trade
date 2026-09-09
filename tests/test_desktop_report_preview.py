@@ -6,7 +6,7 @@ EXTERNAL_LINK_JS = (
     Path(__file__).resolve().parents[1]
     / "webui"
     / "static"
-    / "kronos_open_external.js"
+    / "lumo_open_external.js"
 )
 
 

@@ -8,7 +8,7 @@
 
 修复：``collect_data_files`` 按包内相对路径收集这些数据文件，还原成
 ``_internal/akshare/file_fold/calendar.json``。本 hook 位于 ``packaging/hooks``，
-凡 hookspath 含该目录的 spec（kronos_webui_backend.spec / kronos_windows.spec）
+凡 hookspath 含该目录的 spec（lumo_webui_backend.spec / lumo_windows.spec）
 导入 akshare 时自动生效。
 """
 from PyInstaller.utils.hooks import collect_data_files

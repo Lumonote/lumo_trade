@@ -1031,7 +1031,7 @@ async def main():
     """主函数"""
     import argparse
 
-    parser = argparse.ArgumentParser(description='Kronos 爬虫系统')
+    parser = argparse.ArgumentParser(description='Lumo 爬虫系统')
     parser.add_argument('--symbol', '-s', required=True, help='股票代码')
     parser.add_argument('--action', '-a', choices=['realtime', 'kline', 'minute', 'info'],
                         default='realtime', help='操作类型')

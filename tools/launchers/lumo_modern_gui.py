@@ -1,7 +1,7 @@
 #!/usr/local/bin/python3.11
 # -*- coding: utf-8 -*-
 """
-Kronos macOS现代化GUI - Big Sur/Monterey风格
+Lumo macOS现代化GUI - Big Sur/Monterey风格
 采用Apple最新设计语言：毛玻璃效果、圆角、阴影和现代化控件
 使用具有完整tkinter支持的系统Python环境
 """
@@ -139,7 +139,7 @@ def detect_python_command():
     except Exception as e:
         print(f"pyenv检测失败: {e}")
 
-    # 在应用包内部，sys.executable指向的是Kronos应用本身，不是Python
+    # 在应用包内部，sys.executable指向的是Lumo应用本身，不是Python
     # 所以我们需要跳过sys.executable检测，直接检测系统Python
 
     # 动态检测系统中的Python
@@ -313,7 +313,7 @@ class LicenseValidator:
 
     def _get_cache_path(self):
         """获取缓存文件路径"""
-        cache_dir = Path.home() / '.kronos'
+        cache_dir = Path.home() / '.lumo'
         cache_dir.mkdir(exist_ok=True)
         return cache_dir / '.license_cache'
 
@@ -878,7 +878,7 @@ class LicenseActivationSheet:
 
         # 创建模态窗口
         self.sheet = tk.Toplevel(parent)
-        self.sheet.title("Kronos 授权激活")
+        self.sheet.title("Lumo 授权激活")
         self.sheet.geometry("600x500")
         self.sheet.resizable(False, False)
         self.sheet.transient(parent)
@@ -915,7 +915,7 @@ class LicenseActivationSheet:
         icon_label.pack(pady=(0, 16))
 
         # 主标题
-        title_label = tk.Label(header_frame, text="激活 Kronos 专业版",
+        title_label = tk.Label(header_frame, text="激活 Lumo 专业版",
                                font=("SF Pro Display", 20, "bold"),
                                fg="#1F2937", bg="#FFFFFF")
         title_label.pack()
@@ -1119,7 +1119,7 @@ class LLMConfigDialog:
 
         if platform.system() == "Windows":
             try:
-                venv_python = Path(os.environ.get('LOCALAPPDATA', '')) / 'Kronos' / 'venv' / 'Scripts' / 'python.exe'
+                venv_python = Path(os.environ.get('LOCALAPPDATA', '')) / 'Lumo' / 'venv' / 'Scripts' / 'python.exe'
                 if venv_python.exists():
                     return str(venv_python)
             except Exception:
@@ -1812,7 +1812,7 @@ class LLMConfigDialog:
         if env_dir:
             return Path(env_dir)
         if getattr(sys, 'frozen', False):
-            return Path.home() / "Documents" / "Kronos" / "config"
+            return Path.home() / "Documents" / "Lumo" / "config"
         return project_root / 'config'
 
     # ============ 新版 LLM Provider 配置方法 ============
@@ -2442,8 +2442,8 @@ class LLMConfigDialog:
             messagebox.showerror("错误", f"保存配置失败：{e}", parent=self.dialog)
 
 
-class KronosMacOSGUI:
-    """Kronos macOS现代化GUI主程序"""
+class LumoMacOSGUI:
+    """Lumo macOS现代化GUI主程序"""
 
     def __init__(self):
         self.root = tk.Tk()
@@ -2490,7 +2490,7 @@ class KronosMacOSGUI:
 
     def setup_main_window(self):
         """设置主窗口"""
-        self.root.title("Kronos 专业版")
+        self.root.title("Lumo 专业版")
         self.root.geometry("1000x650")
         self.root.minsize(900, 600)
         self.root.configure(bg=MacOSTheme.PRIMARY_BG)
@@ -2506,10 +2506,10 @@ class KronosMacOSGUI:
         # 设置窗口图标
         try:
             # 优先使用新的AI股票分析图标
-            icon_path = project_root / 'assets' / 'kronos_ai_stock.icns'
+            icon_path = project_root / 'assets' / 'lumo_ai_stock.icns'
             if not icon_path.exists():
                 # 备用图标
-                icon_path = project_root / 'assets' / 'kronos.icns'
+                icon_path = project_root / 'assets' / 'lumo.icns'
 
             if icon_path.exists():
                 self.root.iconbitmap(str(icon_path))
@@ -2540,18 +2540,18 @@ class KronosMacOSGUI:
             return True
         else:
             # 优雅的退出提示
-            result = messagebox.askyesno("Kronos",
-                                         "感谢您对 Kronos 的关注！\n\n是否希望了解如何获取授权码？",
+            result = messagebox.askyesno("Lumo",
+                                         "感谢您对 Lumo 的关注！\n\n是否希望了解如何获取授权码？",
                                          parent=self.root)
             if result:
-                webbrowser.open("https://kronos.ai/license")
+                webbrowser.open("https://lumo.ai/license")
             self.root.destroy()
             return False
 
     def create_main_interface(self):
         """创建主界面"""
         # 窗口框架
-        self.main_frame = MacOSWidget.create_window_frame(self.root, "Kronos 金融预测系统", closable=True)
+        self.main_frame = MacOSWidget.create_window_frame(self.root, "Lumo 金融预测系统", closable=True)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
         # 创建导航栏
@@ -2584,7 +2584,7 @@ class KronosMacOSGUI:
         app_icon.pack(side=tk.LEFT, padx=(0, 12))
 
         # 应用名称
-        app_name = tk.Label(left_frame, text="Kronos",
+        app_name = tk.Label(left_frame, text="Lumo",
                             font=("SF Pro Display", 18, "bold"),
                             fg="#1A1A1A", bg="#FFFFFF")
         app_name.pack(side=tk.LEFT, anchor="w")
@@ -3044,7 +3044,7 @@ class KronosMacOSGUI:
         # 显示确认对话框
         result = self._mb_askyesno(
             "安装依赖",
-            "即将安装 Kronos 所需的所有依赖包\n\n"
+            "即将安装 Lumo 所需的所有依赖包\n\n"
             "包括:\n"
             "• 核心依赖: numpy, pandas, torch\n"
             "• 数据采集: requests, playwright, tushare\n"
@@ -3123,7 +3123,7 @@ class KronosMacOSGUI:
         # 显示授权信息对话框
         self._mb_showinfo(
             "授权信息",
-            "Kronos 授权系统\n\n"
+            "Lumo 授权系统\n\n"
             "本软件采用订阅制授权模式。\n\n"
             "功能限制：\n"
             "  - 基础预测功能：无限制\n"
@@ -3728,9 +3728,9 @@ class KronosMacOSGUI:
 
                 # 检测是否在应用包内，设置用户目录环境变量
                 if str(work_dir).find('.app/Contents') != -1:
-                    user_dir = Path.home() / "Documents" / "Kronos"
+                    user_dir = Path.home() / "Documents" / "Lumo"
                     user_dir.mkdir(parents=True, exist_ok=True)
-                    # 设置Kronos专用环境变量
+                    # 设置Lumo专用环境变量
                     os.environ['KRONOS_USER_DIR'] = str(user_dir)
                     os.environ['KRONOS_IS_APP_BUNDLE'] = 'true'
                     os.environ['KRONOS_DATA_DIR'] = str(user_dir / "data")
@@ -3834,7 +3834,7 @@ class KronosMacOSGUI:
 
                 # 智能Python路径检测
                 def detect_python():
-                    # 动态检测系统中的Python，而不使用sys.executable（应用包内会指向Kronos本身）
+                    # 动态检测系统中的Python，而不使用sys.executable（应用包内会指向Lumo本身）
                     python_names = ['python3.11', 'python3', 'python']
                     if os.name == 'nt':
                         python_names = ['python3.11.exe', 'python3.exe', 'python.exe'] + python_names
@@ -3956,8 +3956,8 @@ class KronosMacOSGUI:
                     if results_dir_env:
                         results_dir = Path(results_dir_env)
                     else:
-                        # 检查用户文档目录中的Kronos/results
-                        user_results_dir = Path.home() / "Documents" / "Kronos" / "results"
+                        # 检查用户文档目录中的Lumo/results
+                        user_results_dir = Path.home() / "Documents" / "Lumo" / "results"
                         if user_results_dir.exists():
                             results_dir = user_results_dir
                         else:
@@ -4264,9 +4264,9 @@ class KronosMacOSGUI:
 
                 # 检测是否在应用包内，设置用户目录环境变量
                 if str(work_dir).find('.app/Contents') != -1:
-                    user_dir = Path.home() / "Documents" / "Kronos"
+                    user_dir = Path.home() / "Documents" / "Lumo"
                     user_dir.mkdir(parents=True, exist_ok=True)
-                    # 设置Kronos专用环境变量
+                    # 设置Lumo专用环境变量
                     os.environ['KRONOS_USER_DIR'] = str(user_dir)
                     os.environ['KRONOS_IS_APP_BUNDLE'] = 'true'
                     os.environ['KRONOS_DATA_DIR'] = str(user_dir / "data")
@@ -4393,7 +4393,7 @@ class KronosMacOSGUI:
 
                 # 智能检测Python路径 - 动态检测而非硬编码
                 def detect_python():
-                    # 动态检测系统中的Python，而不使用sys.executable（应用包内会指向Kronos本身）
+                    # 动态检测系统中的Python，而不使用sys.executable（应用包内会指向Lumo本身）
                     python_names = ['python3.11', 'python3', 'python']
                     if os.name == 'nt':  # Windows
                         python_names = ['python3.11.exe', 'python3.exe', 'python.exe'] + python_names
@@ -4548,11 +4548,11 @@ def main():
             # 不同平台的回退策略
             if platform.system() == "Darwin":
                 print("tkinter不可用，启动原生macOS界面...")
-                from kronos_native_macos import main as native_main
+                from lumo_native_macos import main as native_main
                 native_main()
             else:
                 print("tkinter不可用，回退到基础GUI/命令行界面...")
-                from kronos_app import main as fallback_main
+                from lumo_app import main as fallback_main
                 fallback_main()
             return
 
@@ -4564,15 +4564,15 @@ def main():
             print(f"tkinter 初始化失败: {e}")
             if platform.system() == "Darwin":
                 print("启动原生macOS界面...")
-                from kronos_native_macos import main as native_main
+                from lumo_native_macos import main as native_main
                 native_main()
             else:
                 print("回退到基础GUI/命令行界面...")
-                from kronos_app import main as fallback_main
+                from lumo_app import main as fallback_main
                 fallback_main()
             return
 
-        app = KronosMacOSGUI()
+        app = LumoMacOSGUI()
         app.run()
 
     except ImportError as e:
@@ -4580,7 +4580,7 @@ def main():
         if platform.system() == "Darwin":
             print("启动原生macOS界面...")
             try:
-                from kronos_native_macos import main as native_main
+                from lumo_native_macos import main as native_main
                 native_main()
             except Exception as e2:
                 print(f"原生界面也启动失败: {e2}")
@@ -4589,14 +4589,14 @@ def main():
                         [
                             'osascript',
                             '-e',
-                            f'display dialog "Kronos GUI启动失败: {str(e)}" with title "Kronos" buttons {{"确定"}} default button 1 with icon note',
+                            f'display dialog "Lumo GUI启动失败: {str(e)}" with title "Lumo" buttons {{"确定"}} default button 1 with icon note',
                         ],
                         check=False,
                     )
                 except Exception:
                     pass
                 try:
-                    from kronos_app import main as fallback_main
+                    from lumo_app import main as fallback_main
                     fallback_main()
                 except Exception:
                     try:
@@ -4604,7 +4604,7 @@ def main():
                             [
                                 'osascript',
                                 '-e',
-                                'display dialog "所有界面都启动失败，请检查系统环境" with title "Kronos错误" buttons {"确定"} default button 1 with icon stop',
+                                'display dialog "所有界面都启动失败，请检查系统环境" with title "Lumo错误" buttons {"确定"} default button 1 with icon stop',
                             ],
                             check=False,
                         )
@@ -4612,7 +4612,7 @@ def main():
                         pass
         else:
             print("回退到基础GUI/命令行界面...")
-            from kronos_app import main as fallback_main
+            from lumo_app import main as fallback_main
             fallback_main()
 
     except Exception as e:
@@ -4623,7 +4623,7 @@ def main():
                     [
                         'osascript',
                         '-e',
-                        f'display dialog "程序启动失败: {str(e)}" with title "Kronos错误" buttons {{"确定"}} default button 1 with icon stop',
+                        f'display dialog "程序启动失败: {str(e)}" with title "Lumo错误" buttons {{"确定"}} default button 1 with icon stop',
                     ],
                     check=False,
                 )

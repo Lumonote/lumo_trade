@@ -77,7 +77,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-BUILD_LOCK_DIR="$PROJECT_ROOT/.kronos-build.lock"
+BUILD_LOCK_DIR="$PROJECT_ROOT/.lumo-build.lock"
 
 release_build_lock() {
     if [ -n "${BUILD_LOCK_DIR:-}" ] && [ -d "$BUILD_LOCK_DIR" ]; then
@@ -237,7 +237,7 @@ build_bundled_backend() {
     export KRONOS_WEB_SERVER="${KRONOS_WEB_SERVER:-robyn}"
     "$PYTHON_CMD" "$PROJECT_ROOT/packaging/scripts/build_backend.py" --clean --mode "${KRONOS_BACKEND_BUNDLE_MODE:-lite}"
 
-    local backend_exe="$PROJECT_ROOT/packaging/backend/kronos_webui_backend/kronos_webui_backend"
+    local backend_exe="$PROJECT_ROOT/packaging/backend/lumo_webui_backend/lumo_webui_backend"
     if [ "$CURRENT_OS" = "windows" ]; then
         backend_exe="${backend_exe}.exe"
     fi
@@ -384,7 +384,7 @@ codesign_macos_app() {
         # inside-out：先签内嵌 Mach-O（dylib/so/后端 exe），最后签外层 .app
         find "$app_path/Contents/Resources" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 2>/dev/null \
             | xargs -0 -I {} codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" {} >/dev/null 2>&1 || true
-        local backend="$app_path/Contents/Resources/packaging/backend/kronos_webui_backend/kronos_webui_backend"
+        local backend="$app_path/Contents/Resources/packaging/backend/lumo_webui_backend/lumo_webui_backend"
         [ -f "$backend" ] && codesign --force --timestamp --options runtime "${ent_arg[@]}" --sign "$APPLE_SIGNING_IDENTITY" "$backend" >/dev/null 2>&1 || true
         if codesign --force --timestamp --options runtime "${ent_arg[@]}" --sign "$APPLE_SIGNING_IDENTITY" "$app_path" >/dev/null 2>&1; then
             echo -e "${GREEN}✅ Developer ID 签名完成${NC}"

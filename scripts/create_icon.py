@@ -225,18 +225,18 @@ def create_kronos_icon():
         images.append(img)
 
     # 保存为ICO文件 (Windows)
-    ico_path = assets_dir / "kronos_ai_stock.ico"
+    ico_path = assets_dir / "lumo_ai_stock.ico"
     images[0].save(ico_path, format='ICO', sizes=[(s, s) for s in sizes])
     print(f"✅ Windows图标已创建: {ico_path}")
 
     # 保存为PNG文件 (各种用途)
-    png_path = assets_dir / "kronos_ai_stock.png"
+    png_path = assets_dir / "lumo_ai_stock.png"
     images[-1].save(png_path, format='PNG')
     print(f"✅ PNG图标已创建: {png_path}")
 
     # 创建macOS ICNS文件需要使用iconutil工具
     # 首先创建iconset目录结构
-    iconset_dir = assets_dir / "kronos_ai_stock.iconset"
+    iconset_dir = assets_dir / "lumo_ai_stock.iconset"
     iconset_dir.mkdir(exist_ok=True)
 
     # macOS iconset文件命名规范
@@ -267,8 +267,8 @@ def create_kronos_icon():
 def create_icns_file():
     """使用iconutil创建ICNS文件"""
     assets_dir = Path(__file__).parent.parent / "assets"
-    iconset_dir = assets_dir / "kronos_ai_stock.iconset"
-    icns_path = assets_dir / "kronos_ai_stock.icns"
+    iconset_dir = assets_dir / "lumo_ai_stock.iconset"
+    icns_path = assets_dir / "lumo_ai_stock.icns"
 
     if iconset_dir.exists():
         import subprocess
@@ -286,7 +286,7 @@ def create_icns_file():
             print("💡 将PNG文件重命名为ICNS作为备用方案")
 
             # 备用方案：将最大的PNG文件复制为ICNS
-            png_path = assets_dir / "kronos_ai_stock.png"
+            png_path = assets_dir / "lumo_ai_stock.png"
             if png_path.exists():
                 import shutil
                 shutil.copy2(png_path, icns_path)
@@ -295,7 +295,7 @@ def create_icns_file():
         except FileNotFoundError:
             print("⚠️  iconutil工具未找到，使用备用方案")
             # 备用方案
-            png_path = assets_dir / "kronos_ai_stock.png"
+            png_path = assets_dir / "lumo_ai_stock.png"
             if png_path.exists():
                 import shutil
                 shutil.copy2(png_path, icns_path)

@@ -1,4 +1,4 @@
-"""DDL + version-tracked migrations for kronos_data.sqlite.
+"""DDL + version-tracked migrations for lumo_data.sqlite.
 
 Each migration is an (version, sql) pair. `migrate()` applies any version
 strictly greater than the current `schema_version.MAX(version)` and records

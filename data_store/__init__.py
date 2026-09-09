@@ -9,7 +9,7 @@ Public surface:
 - opportunity runs: opportunity_repo
 - hot-sector snapshots: hot_sector_repo
 
-DB path defaults to `data/kronos_data.sqlite`; override with `KRONOS_SQLITE_PATH`.
+DB path defaults to `data/lumo_data.sqlite`; override with `KRONOS_SQLITE_PATH`.
 """
 from data_store.connection import get_conn, close_conn, db_path
 from data_store.schema import migrate

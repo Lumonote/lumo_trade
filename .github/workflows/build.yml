@@ -4,13 +4,19 @@ name: Build Desktop App
 # 之前「只有 macOS 成功」的根因：Win/Linux 缺系统依赖（webkit2gtk 等）、
 # 缺 Python/Node/Rust 统一安装、缺 KRONOS_BACKEND_BUNDLE_MODE 等编译期 env。
 # 本工作流对每个平台独立 setup 并产出 Tauri 安装包。
+#
+# 交付方式（由 PACKAGE_KIND 区分）：
+#   · 任意分支 push        → 三平台构建，产物名带 -test 后缀，Artifacts 保留 7 天（测试包）
+#   · main 分支 push       → 同上但产物名带 -release 后缀，保留 14 天（正式包）
+#   · push v* tag          → 正式包 + release job，把安装包附到 GitHub Release
 
 on:
   push:
-    branches: [V2.1.2, main]
+    # 所有分支都构建：main 出正式包，其余分支出测试包。
+    branches: ["**"]
     tags: ["v*"]
   pull_request:
-    branches: [V2.1.2]
+    branches: [V2.1.4]
   workflow_dispatch:
 
 # 同一分支的新推送取消旧 run，省 CI 额度。
@@ -54,6 +60,12 @@ jobs:
               src-tauri/target/release/bundle/deb/*.deb
               src-tauri/target/release/bundle/appimage/*.AppImage
               src-tauri/target/release/bundle/rpm/*.rpm
+
+    env:
+      # 非 main、非 tag 的分支推送 = 测试包；main / v* tag = 正式包。
+      # PR 事件 ref_name 是 "<n>/merge"，同样落进 test。
+      PACKAGE_KIND: ${{ (github.ref_type == 'tag' || github.ref_name == 'main') && 'release' || 'test' }}
+      ARTIFACT_RETENTION: ${{ (github.ref_type == 'tag' || github.ref_name == 'main') && '14' || '7' }}
 
     steps:
       - name: Checkout
@@ -150,7 +162,43 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Kronos-${{ matrix.artifact-name }}
+          name: Lumo-${{ matrix.artifact-name }}-${{ env.PACKAGE_KIND }}
           path: artifacts/*
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: ${{ env.ARTIFACT_RETENTION }}
+
+  # 仅在 push v* tag 时运行：把三平台安装包附到 GitHub Release。
+  # 测试包（非 main 分支）不会进入这里，只留在 Actions Artifacts。
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Show collected files
+        run: ls -la dist
+
+      # 只附文件：.app 是目录（Release 不接受），其内容已包含在 .dmg 里。
+      # fail_on_unmatched_files 保持默认 false —— 某个平台没产出该格式不应让发布失败。
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.msi
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.rpm

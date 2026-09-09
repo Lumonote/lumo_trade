@@ -3,7 +3,7 @@
   "productName": "Lumo Trade",
   "mainBinaryName": "lumo_trade",
   "version": "1.1.6",
-  "identifier": "com.kronos.app",
+  "identifier": "com.lumo.trade",
   "build": {
     "frontendDist": "../desktop"
   },
@@ -41,12 +41,12 @@
     "active": true,
     "targets": "all",
     "icon": [
-      "../assets/kronos_ai_stock.png",
-      "../assets/kronos_ai_stock.icns",
-      "../assets/kronos_ai_stock.ico"
+      "../assets/lumo_ai_stock.png",
+      "../assets/lumo_ai_stock.icns",
+      "../assets/lumo_ai_stock.ico"
     ],
     "resources": {
-      "../packaging/backend/kronos_webui_backend": "packaging/backend/kronos_webui_backend",
+      "../packaging/backend/lumo_webui_backend": "packaging/backend/lumo_webui_backend",
       "../webui/templates": "webui/templates",
       "../webui/static": "webui/static",
       "../assets": "assets",

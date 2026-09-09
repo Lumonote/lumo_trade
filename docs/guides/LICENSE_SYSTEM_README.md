@@ -1,13 +1,13 @@
-# Kronos 独立授权系统
+# Lumo 独立授权系统
 
 ## 📋 系统概述
 
-这是一个为Kronos金融预测系统设计的独立授权系统，支持一次性永久授权，设备硬件绑定，防止多设备使用和拷贝传播。
+这是一个为Lumo金融预测系统设计的独立授权系统，支持一次性永久授权，设备硬件绑定，防止多设备使用和拷贝传播。
 
 ## 🏗️ 目录结构
 
 ```
-Kronos/
+Lumo/
 ├── license_admin/                 # 🔧 管理端（仅开发者使用）
 │   ├── license_generator.py      # 授权码生成工具
 │   ├── json_storage.py           # 数据存储工具
@@ -65,7 +65,7 @@ python finetune/license_system/activate.py
 ### 3. 程序集成
 
 ```python
-# 在Kronos主程序中添加授权检查
+# 在Lumo主程序中添加授权检查
 from finetune.license_system.license_validator import LicenseValidator
 
 

@@ -167,7 +167,7 @@ def test_desktop_configuration_bootstraps_user_secrets_from_source_config(tmp_pa
     source_config = source_root / "config"
     packaged_config.mkdir(parents=True)
     source_config.mkdir(parents=True)
-    (source_root / "kronos_app.py").write_text("", encoding="utf-8")
+    (source_root / "lumo_app.py").write_text("", encoding="utf-8")
     (packaged_config / "llm_provider_config.json").write_text(
         json.dumps(
             {

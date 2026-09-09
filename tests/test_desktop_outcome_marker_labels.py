@@ -11,7 +11,7 @@
 from pathlib import Path
 
 
-APP_JS = Path(__file__).resolve().parents[1] / "webui" / "static" / "kronos_desktop_app.js"
+APP_JS = Path(__file__).resolve().parents[1] / "webui" / "static" / "lumo_desktop_app.js"
 
 
 def test_diff_label_says_previous_selection_not_selection_day():

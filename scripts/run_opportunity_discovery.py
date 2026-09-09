@@ -167,7 +167,7 @@ class OpportunityDiscovery:
 
         thread = threading.Thread(
             target=_target,
-            name=f"kronos-cleanup-{label}",
+            name=f"lumo-cleanup-{label}",
             daemon=True,
         )
         thread.start()
@@ -2354,7 +2354,7 @@ class OpportunityDiscovery:
 
             thread = threading.Thread(
                 target=worker,
-                name=f"kronos-stock-{stock_code or 'unknown'}",
+                name=f"lumo-stock-{stock_code or 'unknown'}",
                 daemon=True
             )
             thread.start()

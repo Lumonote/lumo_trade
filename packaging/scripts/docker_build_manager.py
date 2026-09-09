@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Kronos 跨平台 Docker 构建管理器
+Lumo 跨平台 Docker 构建管理器
 支持 Windows 和 Linux 容器构建
 """
 
@@ -117,7 +117,7 @@ class DockerBuildManager:
         """构建Windows Docker镜像"""
         print("🔨 构建Windows Docker镜像...")
 
-        image_name = "kronos-windows-builder"
+        image_name = "lumo-windows-builder"
         dockerfile_path = self.docker_dir / "Dockerfile.windows"
 
         if not dockerfile_path.exists():
@@ -152,8 +152,8 @@ class DockerBuildManager:
         """运行Windows构建容器"""
         print("🚀 运行Windows构建...")
 
-        container_name = "kronos-windows-build"
-        image_name = "kronos-windows-builder"
+        container_name = "lumo-windows-build"
+        image_name = "lumo-windows-builder"
         output_dir = self.builds_dir / "windows"
 
         # 创建输出目录
@@ -195,7 +195,7 @@ class DockerBuildManager:
 
         try:
             # 尝试从运行中的容器复制
-            cmd = ['docker', 'cp', f'{container_name}:/kronos/dist/.', str(output_dir)]
+            cmd = ['docker', 'cp', f'{container_name}:/lumo/dist/.', str(output_dir)]
             result = subprocess.run(cmd, capture_output=True)
 
             if result.returncode == 0:
@@ -213,7 +213,7 @@ class DockerBuildManager:
 
                 if result.stdout.strip():
                     stopped_container = result.stdout.strip()
-                    cmd = ['docker', 'cp', f'{stopped_container}:/kronos/dist/.', str(output_dir)]
+                    cmd = ['docker', 'cp', f'{stopped_container}:/lumo/dist/.', str(output_dir)]
                     result = subprocess.run(cmd)
 
                     # 清理容器
@@ -290,7 +290,7 @@ class DockerBuildManager:
 
     def build_windows(self):
         """完整的Windows构建流程"""
-        print("🚀 Kronos Windows Docker 构建器")
+        print("🚀 Lumo Windows Docker 构建器")
         print("=" * 50)
 
         # 1. 检查Docker环境
@@ -334,7 +334,7 @@ class DockerBuildManager:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Kronos Docker 构建管理器')
+    parser = argparse.ArgumentParser(description='Lumo Docker 构建管理器')
     parser.add_argument('action', choices=['build', 'clean'],
                         help='执行的操作 (build: 构建Windows版本, clean: 清理Docker资源)')
     parser.add_argument('--platform', choices=['windows'], default='windows',

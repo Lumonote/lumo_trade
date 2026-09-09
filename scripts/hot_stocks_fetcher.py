@@ -50,7 +50,7 @@ class HotStocksFetcher:
             os.makedirs(cache_dir, exist_ok=True)
         except Exception as e:
             # 在极端情况下（目录不可写）回退到用户家目录临时缓存
-            fallback_dir = os.path.join(os.path.expanduser("~"), "Kronos", "cache")
+            fallback_dir = os.path.join(os.path.expanduser("~"), "Lumo", "cache")
             try:
                 os.makedirs(fallback_dir, exist_ok=True)
                 self.cache_dir = fallback_dir

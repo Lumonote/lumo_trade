@@ -112,8 +112,8 @@ def test_desktop_html_has_market_cloud_sidebar_menu():
 
     repo_root = Path(__file__).resolve().parents[1]
     html = (repo_root / "webui" / "templates" / "desktop.html").read_text(encoding="utf-8")
-    css = (repo_root / "webui" / "static" / "kronos_desktop.css").read_text(encoding="utf-8")
-    js = (repo_root / "webui" / "static" / "kronos_market_cloud.js").read_text(encoding="utf-8")
+    css = (repo_root / "webui" / "static" / "lumo_desktop.css").read_text(encoding="utf-8")
+    js = (repo_root / "webui" / "static" / "lumo_market_cloud.js").read_text(encoding="utf-8")
     core_text = (repo_root / "webui" / "core.py").read_text(encoding="utf-8")
 
     assert 'class="market-cloud-menu' in html
@@ -122,7 +122,7 @@ def test_desktop_html_has_market_cloud_sidebar_menu():
     assert "marketCloudRoot" in html
     assert "大盘云图" in html
     assert "market-cloud-points" in html
-    assert "kronos_market_cloud.js" in html
+    assert "lumo_market_cloud.js" in html
     assert "'market_cloud':" in core_text
     assert "'title': '大盘云图'" in core_text
     assert "tushare_market_cloud" in js

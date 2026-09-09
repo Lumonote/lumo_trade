@@ -150,7 +150,7 @@ class RuntimeConfigurationService:
             config_dir = parent / "config"
             if parent == self.project_root:
                 continue
-            if (parent / "kronos_app.py").exists() and config_dir.exists():
+            if (parent / "lumo_app.py").exists() and config_dir.exists():
                 return config_dir
         return None
 

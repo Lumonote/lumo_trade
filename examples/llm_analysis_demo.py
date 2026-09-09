@@ -91,7 +91,7 @@ def demo_llm_analysis():
     if not llm_config.is_configured():
         print("\n❌ LLM 未配置")
         print("请先在 GUI 中配置通义千问或 DeepSeek API")
-        print("运行：python tools/launchers/kronos_modern_gui.py")
+        print("运行：python tools/launchers/lumo_modern_gui.py")
         return
 
     print(f"\n✅ LLM 已配置：{llm_config.get_enabled_llm()}")

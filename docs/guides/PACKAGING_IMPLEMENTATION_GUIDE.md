@@ -1,8 +1,8 @@
-# 🎯 Kronos 打包方案完整实施指南
+# 🎯 Lumo 打包方案完整实施指南
 
 ## 📋 方案概述
 
-Kronos项目现在支持打包成Windows/macOS可执行文件，完全隐藏源码的同时保持授权系统的完整功能。
+Lumo项目现在支持打包成Windows/macOS可执行文件，完全隐藏源码的同时保持授权系统的完整功能。
 
 ## 🔧 核心技术栈
 
@@ -24,10 +24,10 @@ Kronos项目现在支持打包成Windows/macOS可执行文件，完全隐藏源�
 ## 📁 文件结构
 
 ```
-Kronos/
+Lumo/
 ├── 📱 打包主程序
 │   ├── kronos_gui_main.py        # GUI主程序（集成授权）
-│   ├── kronos.spec              # PyInstaller配置
+│   ├── lumo.spec              # PyInstaller配置
 │   ├── version_info.txt         # Windows版本信息
 │   ├── build_windows.bat        # Windows打包脚本
 │   └── build_macos.sh           # macOS打包脚本
@@ -37,12 +37,12 @@ Kronos/
 │   └── finetune/license_system/ # 客户端（集成到主程序）
 │
 ├── 📦 打包输出
-│   ├── dist/Kronos.exe          # Windows单文件
-│   ├── dist/Kronos.app          # macOS应用包  
+│   ├── dist/Lumo.exe          # Windows单文件
+│   ├── dist/Lumo.app          # macOS应用包  
 │   ├── Kronos_v1.0_Windows_Portable.zip
 │   └── Kronos_v1.0_macOS.dmg
 │
-└── 📚 原有Kronos功能
+└── 📚 原有Lumo功能
     ├── model/                   # 预测模型
     ├── analysis/               # 技术分析
     ├── examples/               # 示例脚本
@@ -163,14 +163,14 @@ def start_background_tasks(self):
 
 ### Windows版本
 
-- **文件**: `Kronos.exe` (单文件)
+- **文件**: `Lumo.exe` (单文件)
 - **大小**: 约20-50MB
 - **兼容**: Windows 7+
 - **特性**: 无需Python环境，双击即运行
 
 ### macOS版本
 
-- **文件**: `Kronos.app` (应用包)
+- **文件**: `Lumo.app` (应用包)
 - **大小**: 约20-50MB
 - **兼容**: macOS 10.13+
 - **特性**: 原生.app格式，支持Intel和Apple Silicon
@@ -180,7 +180,7 @@ def start_background_tasks(self):
 ### 首次使用
 
 ```
-1. 用户获得 Kronos.exe 或 Kronos.app
+1. 用户获得 Lumo.exe 或 Lumo.app
 2. 双击运行程序
 3. 显示授权激活界面
 4. 输入授权码: KRONOS-XXXXX-XXXXX-XXXXX-XXXXX
@@ -246,7 +246,7 @@ BUILD_HASH=$(git rev-parse --short HEAD)
 
 ## 🎉 总结
 
-通过PyInstaller打包方案，Kronos项目实现了：
+通过PyInstaller打包方案，Lumo项目实现了：
 
 ✅ **完全隐藏源码** - 用户无法查看Python代码
 ✅ **保持授权功能** - 硬件绑定验证完整工作  
@@ -255,4 +255,4 @@ BUILD_HASH=$(git rev-parse --short HEAD)
 ✅ **简化分发** - 单文件或安装包形式
 ✅ **提高安全性** - 多重保护，难以破解
 
-现在Kronos可以作为真正的商业软件产品进行分发，既保护了知识产权，又提供了优秀的用户体验！
+现在Lumo可以作为真正的商业软件产品进行分发，既保护了知识产权，又提供了优秀的用户体验！

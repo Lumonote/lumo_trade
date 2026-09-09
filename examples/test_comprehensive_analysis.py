@@ -15,7 +15,7 @@ from analysis.fundamental_data_collector import FundamentalDataCollector
 from analysis.news_sentiment_collector import NewsSentimentCollector
 from analysis.investor_sentiment import InvestorSentimentAnalyzer
 from analysis.event_analyzer import EventAnalyzer
-from scripts.html_report_generator import KronosHTMLReportGenerator
+from scripts.html_report_generator import LumoHTMLReportGenerator
 
 
 def test_comprehensive_analysis(stock_code):
@@ -93,7 +93,7 @@ def test_comprehensive_analysis(stock_code):
     }
 
     # 创建报告生成器
-    generator = KronosHTMLReportGenerator()
+    generator = LumoHTMLReportGenerator()
 
     # 设置控制台数据
     console_data = {

@@ -169,14 +169,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "%PROJECT_ROOT%\packaging\backend\kronos_webui_backend\kronos_webui_backend.exe" (
+if not exist "%PROJECT_ROOT%\packaging\backend\lumo_webui_backend\lumo_webui_backend.exe" (
     echo [ERROR] Bundled backend executable is missing.
     exit /b 1
 )
 
 echo [BACKEND] Verifying bundled imports...
 set "KRONOS_USER_DIR=%TEMP%\lumo_trade_backend_import_check"
-"%PROJECT_ROOT%\packaging\backend\kronos_webui_backend\kronos_webui_backend.exe" --import-check
+"%PROJECT_ROOT%\packaging\backend\lumo_webui_backend\lumo_webui_backend.exe" --import-check
 if errorlevel 1 (
     echo [ERROR] Bundled backend import check failed. The installer was not built.
     exit /b 1

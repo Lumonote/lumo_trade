@@ -1,5 +1,5 @@
 """
-Kronos 股票分析HTML报告生成器 - 重构版
+Lumo 股票分析HTML报告生成器 - 重构版
 提供单页面完整分析报告、PNG图片嵌入、控制台数据展示和历史时间线功能
 """
 
@@ -15,8 +15,8 @@ import io
 from typing import Dict, List, Any, Optional
 
 
-class KronosHTMLReportGenerator:
-    """Kronos HTML报告生成器 - 单页面版本"""
+class LumoHTMLReportGenerator:
+    """Lumo HTML报告生成器 - 单页面版本"""
 
     def __init__(self, results_dir: str = "results"):
         """
@@ -117,7 +117,7 @@ class KronosHTMLReportGenerator:
         """
         timestamp = datetime.datetime.now()
         timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
-        report_filename = f"kronos_analysis_{stock_code}_{timestamp_str}.html"
+        report_filename = f"lumo_analysis_{stock_code}_{timestamp_str}.html"
         report_path = self.results_dir / report_filename
 
         # 生成HTML内容
@@ -269,7 +269,7 @@ class KronosHTMLReportGenerator:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kronos 股票分析报告 - {stock_code}</title>
+    <title>Lumo 股票分析报告 - {stock_code}</title>
     <style>
         {self._get_css_styles()}
     </style>
@@ -374,7 +374,7 @@ class KronosHTMLReportGenerator:
         
         <!-- 页脚 -->
         <footer class="footer">
-            <p>🚀 Powered by Kronos AI Stock Analysis System</p>
+            <p>🚀 Powered by Lumo AI Stock Analysis System</p>
             <p>📅 Generated on {timestamp}</p>
         </footer>
     </div>
@@ -413,7 +413,7 @@ class KronosHTMLReportGenerator:
                     </div>
                 </div>
                 <div style="text-align: right;">
-                    <div style="font-size: 12px; color: #bdc3c7;">Kronos 多维度打分系统</div>
+                    <div style="font-size: 12px; color: #bdc3c7;">Lumo 多维度打分系统</div>
                 </div>
             </div>
             
@@ -4685,7 +4685,7 @@ def generate_comprehensive_report(stock_code: str, analysis_data: Dict,
     Returns:
         生成的HTML报告文件路径
     """
-    generator = KronosHTMLReportGenerator()
+    generator = LumoHTMLReportGenerator()
 
     # 设置控制台数据（可以从外部传入）
     console_data = {

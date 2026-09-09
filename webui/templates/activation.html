@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>设备验证 - Kronos</title>
+<title>设备验证 - Lumo</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
@@ -82,7 +82,7 @@
 </head>
 <body>
   <div class="card">
-    <div class="brand"><span class="dot"></span><h1>Kronos 设备验证</h1></div>
+    <div class="brand"><span class="dot"></span><h1>Lumo 设备验证</h1></div>
     <div class="subtitle">本设备需要激活授权后才能使用全部功能</div>
 
     {% if status.activated %}
@@ -93,7 +93,7 @@
         授权码：{{ status.license_code }}<br>
         激活时间：{{ status.activated_at }}
       </div>
-      <button class="btn-activate" onclick="window.location.href='/desktop'">进入 Kronos</button>
+      <button class="btn-activate" onclick="window.location.href='/desktop'">进入 Lumo</button>
     </div>
     {% else %}
     <div class="section-label">本机设备ID（发送给管理员获取授权码）</div>

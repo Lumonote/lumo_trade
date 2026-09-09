@@ -1,6 +1,6 @@
 #!/usr/local/bin/python3.11
 """
-Kronos 无GUI版本 - 解决tkinter不可用的问题
+Lumo 无GUI版本 - 解决tkinter不可用的问题
 使用纯命令行界面，集成所有 quick_start.sh 功能
 """
 
@@ -14,7 +14,7 @@ import hashlib
 from pathlib import Path
 
 
-class KronosConsoleApp:
+class LumoConsoleApp:
     def __init__(self):
         self.project_root = Path(__file__).parent.parent.parent.absolute()
         self.setup_colors()
@@ -42,7 +42,7 @@ class KronosConsoleApp:
         """显示启动横幅"""
         os.system('clear' if platform.system() != 'Windows' else 'cls')
         self.print_colored("=" * 50, 'BLUE')
-        self.print_colored("    Kronos 金融预测系统 🚀", 'CYAN')
+        self.print_colored("    Lumo 金融预测系统 🚀", 'CYAN')
         self.print_colored("=" * 50, 'BLUE')
         self.print_colored(f"系统: {platform.system()} {platform.release()}", 'WHITE')
         self.print_colored(f"Python: {sys.version.split()[0]}", 'WHITE')
@@ -234,7 +234,7 @@ try:
     validator = LicenseValidator(data_dir)
     
     print("=" * 60)
-    print("           Kronos 授权状态检查")
+    print("           Lumo 授权状态检查")
     print("=" * 60)
     
     is_valid, message = validator.validate_license()
@@ -263,7 +263,7 @@ except Exception as e:
 
     def activate_license(self):
         """激活授权码"""
-        print("请输入授权码 (格式: KRONOS-XXXXX-XXXXX-XXXXX-XXXXX):")
+        print("请输入授权码 (格式: LUMO-XXXXX-XXXXX-XXXXX-XXXXX):")
         license_code = input("授权码: ").strip().upper()
 
         if not license_code:
@@ -272,7 +272,7 @@ except Exception as e:
 
         # 验证格式
         import re
-        pattern = r'^KRONOS-[A-F0-9]{5}-[A-F0-9]{5}-[A-F0-9]{5}-[A-F0-9]{5}$'
+        pattern = r'^LUMO-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$'
         if not re.match(pattern, license_code):
             self.print_colored("❌ 授权码格式错误", 'RED')
             return
@@ -295,9 +295,9 @@ except Exception as e:
 
             # 创建缓存目录
             if platform.system() == 'Windows':
-                cache_dir = os.path.expandvars('%APPDATA%\\.kronos')
+                cache_dir = os.path.expandvars('%APPDATA%\\.lumo')
             else:
-                cache_dir = os.path.expanduser('~/.kronos')
+                cache_dir = os.path.expanduser('~/.lumo')
 
             os.makedirs(cache_dir, exist_ok=True)
             cache_file = os.path.join(cache_dir, '.license_cache')
@@ -367,7 +367,7 @@ except Exception as e:
                 elif choice == 10:
                     self.test_crawler()
                 elif choice == 11:
-                    self.print_colored("👋 感谢使用 Kronos 系统！", 'GREEN')
+                    self.print_colored("👋 感谢使用 Lumo 系统！", 'GREEN')
                     break
 
                 if choice != 11:
@@ -381,7 +381,7 @@ except Exception as e:
 
 def main():
     """主程序入口"""
-    app = KronosConsoleApp()
+    app = LumoConsoleApp()
     app.run()
 
 

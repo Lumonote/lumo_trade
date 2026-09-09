@@ -44,8 +44,8 @@ def activate_license(validator):
     """激活授权码"""
     print("\n🔑 授权码激活")
     print("-" * 40)
-    print("授权码格式: KRONOS-XXXXX-XXXXX-XXXXX-XXXXX")
-    print("示例: KRONOS-A1B21-C3D4E-F5G6H-7I8J9")
+    print("授权码格式: LUMO-XXXXX-XXXXX-XXXXX-XXXXX")
+    print("示例: LUMO-A1B21-C3D4E-F5G6H-7I8J9")
 
     while True:
         license_code = input("\n请输入授权码 (输入 'q' 退出): ").strip()

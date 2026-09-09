@@ -336,7 +336,7 @@ def build_xueqiu_article(md_path: str) -> str:
     if market_line:
         lines.append(market_line)
         lines.append("")
-    lines.append("> 本文由 Kronos 多因子量化引擎(v5.6 / v20参数)自动生成,基于 30 个量化模型 + 技术面 / 基本面 / 情绪 / 资金 / 消息 多维打分,仅供参考,不构成投资建议。")
+    lines.append("> 本文由 Lumo 多因子量化引擎(v5.6 / v20参数)自动生成,基于 30 个量化模型 + 技术面 / 基本面 / 情绪 / 资金 / 消息 多维打分,仅供参考,不构成投资建议。")
     lines.append("")
     lines.append("---")
     lines.append("")

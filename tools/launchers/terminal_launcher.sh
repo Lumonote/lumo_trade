@@ -1,5 +1,5 @@
 #!/bin/bash
-# Kronos macOS 终端启动脚本
+# Lumo macOS 终端启动脚本
 
 # 获取脚本所在目录
 SCRIPT_DIR="$(dirname "$0")"
@@ -12,9 +12,9 @@ if [ -z "$TERM" ]; then
     exit 0
 fi
 
-echo "🚀 启动 Kronos 金融预测系统..."
+echo "🚀 启动 Lumo 金融预测系统..."
 echo "按 Ctrl+C 退出程序"
 echo ""
 
 # 运行主程序
-exec "$APP_DIR/Kronos"
+exec "$APP_DIR/Lumo"

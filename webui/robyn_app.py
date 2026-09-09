@@ -48,7 +48,7 @@ TEMPLATE_ENV = Environment(
 )
 
 # 静态资源版本号(文件 mtime)：桌面页 HTML 走 no-store 始终最新，但其 ~250KB 的内联 JS 拆成
-# /static/kronos_desktop_app.js 后用 ?v=<mtime> 做强缓存——内容不变则 WKWebView 复用已解析的脚本，
+# /static/lumo_desktop_app.js 后用 ?v=<mtime> 做强缓存——内容不变则 WKWebView 复用已解析的脚本，
 # 切换左侧菜单不再每次重新下载+解析整份 JS；文件一改 mtime 变化，URL 即自动失效。
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -248,7 +248,7 @@ def _env_int(name: str, default: int) -> int:
 
 # ---------------------------------------------------------------------------
 # 设备验证门禁：打包态(或 KRONOS_LICENSE_REQUIRED=1)下，激活通过前拦截全部功能。
-# 老启动器 kronos_modern_gui 的验证从未接入 Tauri 打包链，这里在 HTTP 层补上：
+# 老启动器 lumo_modern_gui 的验证从未接入 Tauri 打包链，这里在 HTTP 层补上：
 # 页面 302 → /activate，API 403，激活面(激活页/授权API/静态资源)放行。
 # ---------------------------------------------------------------------------
 
@@ -429,7 +429,7 @@ def assets(request: Request, filename=None) -> Response:
 
 @_native_get("/favicon.ico")
 def favicon(request: Request) -> Response:
-    return _file_response(_safe_child_path(webui_core.PROJECT_ROOT / "assets", "kronos_ai_stock.ico"))
+    return _file_response(_safe_child_path(webui_core.PROJECT_ROOT / "assets", "lumo_ai_stock.ico"))
 
 
 @_native_get("/particles")

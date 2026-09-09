@@ -1,7 +1,7 @@
 """设备验证授权服务(桌面打包版功能门禁).
 
-历史: 设备验证原先只活在老启动器 tools/launchers/kronos_modern_gui.py 里,
-Tauri + PyInstaller(kronos_webui_backend) 新打包链换了入口后从未接入,
+历史: 设备验证原先只活在老启动器 tools/launchers/lumo_modern_gui.py 里,
+Tauri + PyInstaller(lumo_webui_backend) 新打包链换了入口后从未接入,
 打包 App 因此完全无门禁。本模块把同一套授权算法移植进 webui 服务层,
 由 robyn_app 的全局 before_request 门禁消费。
 

@@ -9,7 +9,7 @@ import types
 from importlib import metadata
 from pathlib import Path
 
-CANONICAL_USER_DIR_NAME = "com.kronos.app"
+CANONICAL_USER_DIR_NAME = "com.lumo.trade"
 
 
 def _torch_disabled() -> bool:
@@ -110,17 +110,35 @@ def _configure_runtime() -> Path:
 
 
 def _seed_sqlite_if_missing(resource_root: Path, user_dir: Path) -> None:
-    """Copy the bundled kronos_data.sqlite to user_dir on first launch.
+    """Copy the bundled lumo_data.sqlite to user_dir on first launch.
 
     The packaged app ships a snapshot of the analyzed database under
-    `<bundle>/data/kronos_data.sqlite`. The user-facing DB lives under
-    `<user_dir>/data/kronos_data.sqlite`. We copy the bundle copy once if the
+    `<bundle>/data/lumo_data.sqlite`. The user-facing DB lives under
+    `<user_dir>/data/lumo_data.sqlite`. We copy the bundle copy once if the
     destination is missing or empty so a fresh install has data to render.
     Subsequent launches keep whatever the user has accumulated.
+
+    If a legacy `<user_dir>/data/kronos_data.sqlite` exists (from before the
+    rename), copy it across as lumo_data.sqlite so existing users keep their
+    data; the legacy file is left untouched.
     """
     dest_dir = user_dir / "data"
-    dest = dest_dir / "kronos_data.sqlite"
-    src = resource_root / "data" / "kronos_data.sqlite"
+    dest = dest_dir / "lumo_data.sqlite"
+    src = resource_root / "data" / "lumo_data.sqlite"
+
+    # Migration: user already has a legacy kronos_data.sqlite in place.
+    if not dest.exists():
+        legacy = dest_dir / "kronos_data.sqlite"
+        if legacy.exists() and legacy.stat().st_size >= 4096:
+            try:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                import shutil
+
+                shutil.copy2(legacy, dest)
+                print(f"[migrate] copied {legacy.name} -> {dest.name}", flush=True)
+                return
+            except Exception as exc:
+                print(f"[migrate] copy failed: {exc}", flush=True)
 
     if not src.exists():
         return
@@ -134,7 +152,7 @@ def _seed_sqlite_if_missing(resource_root: Path, user_dir: Path) -> None:
         import shutil
 
         shutil.copy2(src, dest)
-        print(f"[seed] kronos_data.sqlite -> {dest}", flush=True)
+        print(f"[seed] lumo_data.sqlite -> {dest}", flush=True)
     except Exception as exc:
         print(f"[seed] copy failed: {exc}", flush=True)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Kronos 数据处理模块
+Lumo 数据处理模块
 统一不同数据源的数据格式转换
 """
 

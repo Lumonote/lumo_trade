@@ -2,7 +2,7 @@ from pathlib import Path
 import re
 
 
-APP_JS = Path(__file__).resolve().parents[1] / "webui" / "static" / "kronos_desktop_app.js"
+APP_JS = Path(__file__).resolve().parents[1] / "webui" / "static" / "lumo_desktop_app.js"
 
 
 def test_dashboard_refresh_requests_fresh_market_data():

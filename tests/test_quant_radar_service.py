@@ -686,7 +686,7 @@ def test_desktop_js_wires_accumulation_panel():
     from pathlib import Path
 
     js = (Path(__file__).resolve().parents[1] / "webui" / "static"
-          / "kronos_desktop_app.js").read_text(encoding="utf-8")
+          / "lumo_desktop_app.js").read_text(encoding="utf-8")
     assert "/api/quant-radar/accumulation" in js
     assert "function loadQuantAccum" in js
     assert "function renderQuantAccum" in js
@@ -700,11 +700,11 @@ def test_desktop_js_wires_sector_rows_to_the_stock_list():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    js = (root / "webui" / "static" / "kronos_quant_sector_clicks.js").read_text(
+    js = (root / "webui" / "static" / "lumo_quant_sector_clicks.js").read_text(
         encoding="utf-8")
     template = (root / "webui" / "templates" / "desktop.html").read_text(encoding="utf-8")
 
-    assert 'src="/static/kronos_quant_sector_clicks.js' in template
+    assert 'src="/static/lumo_quant_sector_clicks.js' in template
     # 发布资源会被压缩并重命名局部函数；全局入口才是稳定契约。
     assert "window.quantShowSectorStocks" in js
     assert 'closest("[data-quant-board]")' in js

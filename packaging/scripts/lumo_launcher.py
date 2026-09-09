@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Kronos macOS 应用启动器
+Lumo macOS 应用启动器
 """
 
 import sys
@@ -33,9 +33,9 @@ os.chdir(str(bundle_dir))
 if __name__ == "__main__":
     try:
         # 导入并运行现代化GUI
-        from tools.launchers import kronos_modern_gui
+        from tools.launchers import lumo_modern_gui
 
-        kronos_modern_gui.main()
+        lumo_modern_gui.main()
     except Exception as e:
         import traceback
 
@@ -47,7 +47,7 @@ if __name__ == "__main__":
             import subprocess
 
             subprocess.run(['osascript', '-e', f'''
-                display dialog "Kronos 启动失败:\\n\\n{str(e)}" with title "错误" buttons {{"确定"}} default button 1 with icon stop
+                display dialog "Lumo 启动失败:\\n\\n{str(e)}" with title "错误" buttons {{"确定"}} default button 1 with icon stop
             '''], check=False)
         except:
             pass

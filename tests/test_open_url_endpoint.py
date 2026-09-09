@@ -88,9 +88,9 @@ def test_desktop_template_marks_desktop_mode_and_loads_interceptor(robyn_module,
         home_html = client.get("/").text
 
     assert 'data-desktop-mode="1"' in desktop_html
-    assert "kronos_open_external.js" in desktop_html
+    assert "lumo_open_external.js" in desktop_html
     assert 'data-desktop-mode="1"' in home_html
-    assert "kronos_open_external.js" in home_html
+    assert "lumo_open_external.js" in home_html
 
 
 def test_desktop_template_unmarked_in_browser_mode(robyn_module, monkeypatch):
@@ -102,7 +102,7 @@ def test_desktop_template_unmarked_in_browser_mode(robyn_module, monkeypatch):
 
     assert 'data-desktop-mode="0"' in desktop_html
     # 拦截脚本始终加载,由 data-desktop-mode 决定是否生效
-    assert "kronos_open_external.js" in desktop_html
+    assert "lumo_open_external.js" in desktop_html
 
 
 def test_open_url_route_registered_in_manifest(robyn_module):

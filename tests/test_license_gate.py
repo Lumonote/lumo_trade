@@ -189,7 +189,7 @@ def test_gate_whitelists_activation_surface(lic_env, monkeypatch):
         assert payload["activated"] is False
         assert payload["device_id"] == DEVICE_ID
 
-        asset = client.get("/static/kronos_desktop.css")
+        asset = client.get("/static/lumo_desktop.css")
         assert asset.status_code == 200
 
         favicon = client.get("/favicon.ico")

@@ -1,6 +1,6 @@
 #!/usr/local/bin/python3.11
 """
-Kronos macOS GUI 测试 - 验证美观的界面
+Lumo macOS GUI 测试 - 验证美观的界面
 """
 
 import tkinter as tk
@@ -20,14 +20,14 @@ class MacOSTheme:
     SEPARATOR = "#C6C6C8"  # 分隔线
 
 
-class KronosTestGUI:
+class LumoTestGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.setup_window()
         self.create_interface()
 
     def setup_window(self):
-        self.root.title("Kronos 专业版 - macOS风格")
+        self.root.title("Lumo 专业版 - macOS风格")
         self.root.geometry("800x600")
         self.root.configure(bg=MacOSTheme.PRIMARY_BG)
 
@@ -65,7 +65,7 @@ class KronosTestGUI:
         maximize_btn.pack(side=tk.LEFT, padx=2)
 
         # 标题
-        title_label = tk.Label(header_frame, text="Kronos 金融预测系统",
+        title_label = tk.Label(header_frame, text="Lumo 金融预测系统",
                                font=("SF Pro Display", 22, "bold"),
                                fg=MacOSTheme.PRIMARY_LABEL,
                                bg=MacOSTheme.SECONDARY_BG)
@@ -85,7 +85,7 @@ class KronosTestGUI:
         welcome_card.configure(highlightbackground=MacOSTheme.SEPARATOR, highlightthickness=1)
 
         # 欢迎文字
-        welcome_title = tk.Label(welcome_card, text="🚀 欢迎使用 Kronos 专业版",
+        welcome_title = tk.Label(welcome_card, text="🚀 欢迎使用 Lumo 专业版",
                                  font=("SF Pro Display", 28, "bold"),
                                  fg=MacOSTheme.PRIMARY_LABEL,
                                  bg=MacOSTheme.CARD_BG)
@@ -134,13 +134,13 @@ class KronosTestGUI:
 
     def show_success(self):
         messagebox.showinfo("成功",
-                            "🎉 恭喜！\n\nKronos macOS 现代化界面工作完美！\n" +
+                            "🎉 恭喜！\n\nLumo macOS 现代化界面工作完美！\n" +
                             "所有GUI功能都正常运行，界面美观现代。",
                             parent=self.root)
 
     def show_help(self):
         messagebox.showinfo("帮助",
-                            "📖 Kronos 使用指南\n\n" +
+                            "📖 Lumo 使用指南\n\n" +
                             "• 使用原生 macOS Big Sur/Monterey 设计语言\n" +
                             "• 支持完整的 tkinter GUI 功能\n" +
                             "• 现代化界面，符合 Apple 设计规范",
@@ -154,9 +154,9 @@ class KronosTestGUI:
 
 def main():
     print(f"🐍 使用 Python: {sys.executable}")
-    print("🚀 启动 Kronos macOS 现代化 GUI 测试...")
+    print("🚀 启动 Lumo macOS 现代化 GUI 测试...")
 
-    app = KronosTestGUI()
+    app = LumoTestGUI()
     app.run()
 
     print("✅ GUI 测试完成")

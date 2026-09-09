@@ -39,7 +39,7 @@ class SmartEnvDetector:
     def __init__(self):
         self.system = platform.system()
         self.detected_envs: List[PythonEnv] = []
-        self.cache_file = Path.home() / '.kronos' / 'env_cache.json'
+        self.cache_file = Path.home() / '.lumo' / 'env_cache.json'
 
     def detect_all_environments(self) -> List[PythonEnv]:
         """检测所有可用的Python环境"""
@@ -47,8 +47,8 @@ class SmartEnvDetector:
 
         envs = []
 
-        # 1. 检测Kronos虚拟环境(最高优先级)
-        envs.extend(self._detect_kronos_venv())
+        # 1. 检测Lumo虚拟环境(最高优先级)
+        envs.extend(self._detect_lumo_venv())
 
         # 2. 检测当前激活的虚拟环境
         envs.extend(self._detect_active_venv())
@@ -71,39 +71,39 @@ class SmartEnvDetector:
         print(f"✅ 发现 {len(self.detected_envs)} 个Python环境")
         return self.detected_envs
 
-    def _detect_kronos_venv(self) -> List[PythonEnv]:
-        """检测Kronos专用虚拟环境"""
+    def _detect_lumo_venv(self) -> List[PythonEnv]:
+        """检测Lumo专用虚拟环境"""
         envs = []
 
         if self.system == 'Windows':
-            # Windows: %LocalAppData%\Kronos\venv
+            # Windows: %LocalAppData%\Lumo\venv
             local_app_data = os.environ.get('LocalAppData', '')
             if local_app_data:
-                venv_path = Path(local_app_data) / 'Kronos' / 'venv'
+                venv_path = Path(local_app_data) / 'Lumo' / 'venv'
                 python_exe = venv_path / 'Scripts' / 'python.exe'
 
                 if python_exe.exists():
-                    env = self._get_env_info(str(python_exe), 'venv', 'Kronos-venv', str(venv_path))
+                    env = self._get_env_info(str(python_exe), 'venv', 'Lumo-venv', str(venv_path))
                     if env:
                         env.score = 1000  # 最高优先级
                         envs.append(env)
-                        print(f"  ✓ Kronos虚拟环境: {python_exe}")
+                        print(f"  ✓ Lumo虚拟环境: {python_exe}")
         else:
-            # macOS/Linux: ~/Library/Application Support/Kronos/venv 或 ~/.kronos/venv
+            # macOS/Linux: ~/Library/Application Support/Lumo/venv 或 ~/.lumo/venv
             for base_dir in [
-                Path.home() / 'Library' / 'Application Support' / 'Kronos',
-                Path.home() / '.kronos',
-                Path.home() / 'Documents' / 'Kronos'
+                Path.home() / 'Library' / 'Application Support' / 'Lumo',
+                Path.home() / '.lumo',
+                Path.home() / 'Documents' / 'Lumo'
             ]:
                 venv_path = base_dir / 'venv'
                 python_exe = venv_path / 'bin' / 'python'
 
                 if python_exe.exists():
-                    env = self._get_env_info(str(python_exe), 'venv', 'Kronos-venv', str(venv_path))
+                    env = self._get_env_info(str(python_exe), 'venv', 'Lumo-venv', str(venv_path))
                     if env:
                         env.score = 1000
                         envs.append(env)
-                        print(f"  ✓ Kronos虚拟环境: {python_exe}")
+                        print(f"  ✓ Lumo虚拟环境: {python_exe}")
                         break
 
         return envs
@@ -439,7 +439,7 @@ class SmartEnvDetector:
 
 def main():
     """主函数"""
-    print("🔍 Kronos 智能Python环境检测器\n")
+    print("🔍 Lumo 智能Python环境检测器\n")
 
     detector = SmartEnvDetector()
 

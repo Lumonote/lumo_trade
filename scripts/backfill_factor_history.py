@@ -12,7 +12,7 @@
   namespace ``futures_rank``;kv 命中即跳过,幂等。
 
 用法(token 在用户配置目录,CLI 需显式指定):
-    KRONOS_CONFIG_DIR="$HOME/Library/Application Support/com.kronos.app/config" \
+    KRONOS_CONFIG_DIR="$HOME/Library/Application Support/com.lumo.app/config" \
         python scripts/backfill_factor_history.py --start 20251105 --only all
 """
 from __future__ import annotations

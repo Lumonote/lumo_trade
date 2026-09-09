@@ -50,7 +50,7 @@ def _get_user_root() -> Path:
     env_user_dir = os.environ.get('KRONOS_USER_DIR')
     if env_user_dir:
         return Path(env_user_dir)
-    home_docs = Path.home() / 'Documents' / 'Kronos'
+    home_docs = Path.home() / 'Documents' / 'Lumo'
     return home_docs if home_docs.exists() else Path.cwd()
 
 

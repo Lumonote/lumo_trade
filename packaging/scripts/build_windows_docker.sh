@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Kronos Windows Docker 构建脚本
-# 用于在Docker中构建Windows版本的Kronos应用
+# Lumo Windows Docker 构建脚本
+# 用于在Docker中构建Windows版本的Lumo应用
 
 set -e
 
@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DOCKER_DIR="$PROJECT_ROOT/packaging/docker"
 
-echo "🚀 Kronos Windows Docker 构建器"
+echo "🚀 Lumo Windows Docker 构建器"
 echo "================================"
 echo "📁 项目根目录: $PROJECT_ROOT"
 echo "🐳 Docker文件: $DOCKER_DIR"
@@ -35,8 +35,8 @@ if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
 fi
 
 # 构建Docker镜像
-IMAGE_NAME="kronos-windows-builder"
-CONTAINER_NAME="kronos-windows-build"
+IMAGE_NAME="lumo-windows-builder"
+CONTAINER_NAME="lumo-windows-build"
 
 echo "🔨 构建Docker镜像: $IMAGE_NAME"
 cd "$PROJECT_ROOT"
@@ -95,14 +95,14 @@ if [ -d "$OUTPUT_DIR" ]; then
     # 计算文件大小
     if [ -f "$OUTPUT_DIR/Kronos.exe" ]; then
         SIZE=$(du -sh "$OUTPUT_DIR/Kronos.exe" | cut -f1)
-        echo "💾 Kronos.exe 大小: $SIZE"
+        echo "💾 Lumo.exe 大小: $SIZE"
     fi
 fi
 
 echo ""
 echo "🎯 使用说明:"
 echo "1. 将 $OUTPUT_DIR 中的文件传输到Windows机器"
-echo "2. 双击 Kronos.exe 启动应用"
-echo "3. 或使用 start_kronos.bat 查看控制台输出"
+echo "2. 双击 Lumo.exe 启动应用"
+echo "3. 或使用 start_lumo.bat 查看控制台输出"
 echo ""
 echo "✅ 构建完成!"

@@ -18,7 +18,7 @@
 
 ### 测试版本 (完全工作)
 
-- 文件: `dist/KronosTest.app` (7.6MB)
+- 文件: `dist/LumoTest.app` (7.6MB)
 - 功能: 设备指纹识别、授权系统基础验证
 - 状态: ✅ 完全可用，双击启动正常
 
@@ -29,16 +29,16 @@
 ./build_simple_test.sh
 
 # 双击启动
-open dist/KronosTest.app
+open dist/LumoTest.app
 ```
 
 **运行效果**:
 
 ```
-🚀 Kronos 金融预测系统
+🚀 Lumo 金融预测系统
 版本: 1.0.0 (测试版)
 
-🔐 Kronos 授权系统测试
+🔐 Lumo 授权系统测试
 ========================================
 📱 设备ID: 88B919F27B06EB88
 🖥️  系统: Darwin 23.5.0
@@ -88,7 +88,7 @@ brew install python-tk
 
 **立即可用**:
 
-- `KronosTest.app` 已经可以验证授权系统和打包流程
+- `LumoTest.app` 已经可以验证授权系统和打包流程
 - 所有核心功能(设备指纹、授权验证)都正常工作
 
 **完整方案**:

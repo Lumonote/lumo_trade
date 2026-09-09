@@ -15,7 +15,7 @@ from analysis.integrated_discovery_engine import IntegratedDiscoveryEngine
 
 def main():
     print("\n" + "=" * 80)
-    print("🚀 Kronos 一体化深度发现引擎")
+    print("🚀 Lumo 一体化深度发现引擎")
     print("=" * 80)
     
     try:

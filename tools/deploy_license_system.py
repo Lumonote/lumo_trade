@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Kronos 授权系统部署脚本
+Lumo 授权系统部署脚本
 准备客户端分发包，移除敏感信息
 """
 
@@ -11,7 +11,7 @@ import shutil
 def create_client_package():
     """创建客户端分发包"""
     print("=" * 60)
-    print("        Kronos 客户端分发包创建工具")
+    print("        Lumo 客户端分发包创建工具")
     print("=" * 60)
 
     # 客户端需要的文件
@@ -24,7 +24,7 @@ def create_client_package():
         'finetune/license_system/keys/public.pem': '公钥文件',
         'quick_start.sh': '启动脚本（已包含授权检查）',
         'quick_start.bat': 'Windows启动脚本',
-        'tools/launchers/kronos_with_license.py': '集成示例'
+        'tools/launchers/lumo_with_license.py': '集成示例'
     }
 
     print("📋 客户端分发清单:")

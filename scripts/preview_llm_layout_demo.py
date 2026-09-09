@@ -2,7 +2,7 @@ import datetime
 from pathlib import Path
 import pandas as pd
 
-from html_report_generator import KronosHTMLReportGenerator
+from html_report_generator import LumoHTMLReportGenerator
 
 
 def make_demo_predictions(start_date: str, days: int = 5, base: float = 28.7) -> list:
@@ -27,7 +27,7 @@ def make_demo_predictions(start_date: str, days: int = 5, base: float = 28.7) ->
 
 
 def generate_demo_reports():
-    gen = KronosHTMLReportGenerator()
+    gen = LumoHTMLReportGenerator()
 
     analysis_data = {
         "indicators": {},

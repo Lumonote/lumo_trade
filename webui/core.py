@@ -2012,7 +2012,7 @@ def stock_financial_statements(code, force_refresh=False):
 
 
 def _format_score_parts(scores):
-    # 评分分项 EN→CN(与 kronos_desktop_app.js 维度字典 / _SCORE_PART_COLUMNS 对齐),
+    # 评分分项 EN→CN(与 lumo_desktop_app.js 维度字典 / _SCORE_PART_COLUMNS 对齐),
     # 覆盖全部分项,避免 momentum/volume_health/liquidity/events/dragon_tiger 等裸键
     # 直接以英文显示在「个股机会」快速信息里(用户看不懂)。
     labels = {
@@ -3960,7 +3960,7 @@ def _report_history_candidates(limit=12):
     patterns = [
         ('机会挖掘HTML', RESULTS_DIR, 'opportunity_discovery_*.html'),
         ('机会Top榜', RESULTS_DIR, 'opportunity_top10_*.md'),
-        ('个股分析报告', RESULTS_DIR, 'kronos_analysis_*.html'),
+        ('个股分析报告', RESULTS_DIR, 'lumo_analysis_*.html'),
         ('重大利好挖掘', PROJECT_ROOT / 'integrated_results', 'major_positive_news_*.html'),
     ]
     reports = []
