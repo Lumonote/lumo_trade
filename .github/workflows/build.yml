@@ -1,6 +1,6 @@
 name: Build Desktop App
 
-# 跨平台桌面打包：macOS / Windows 双平台矩阵（Linux 因构建 exit 100 已临时下线）。
+# 跨平台桌面打包：macOS(arm64 + x64) / Windows 矩阵（Linux 因构建 exit 100 已临时下线）。
 # 之前「只有 macOS 成功」的根因：Windows 缺 Python/Node/Rust 统一安装、
 # 缺 KRONOS_BACKEND_BUNDLE_MODE 等编译期 env。
 # 本工作流对每个平台独立 setup 并产出 Tauri 安装包。
@@ -43,13 +43,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 双平台并行；任一平台失败不取消其它。
+        # 各平台并行；任一平台失败不取消其它。
+        # macOS 两个芯片版本各出一个原生包：
+        #   macos-latest   = Apple Silicon(arm64)
+        #   macos-15-intel = Intel(x64)（macos-13 已退役，Intel 现用这个标签）
         # 恢复 Linux 时：把 ubuntu-latest 加回下面的 os 列表、补 include 条目，
         # 并把「Install Linux system deps」步骤一起加回来。
-        os: [macos-latest, windows-latest]
+        os: [macos-latest, macos-15-intel, windows-latest]
         include:
           - os: macos-latest
-            artifact-name: macOS
+            artifact-name: macOS-arm64
+            artifact-glob: |
+              src-tauri/target/release/bundle/dmg/*.dmg
+              src-tauri/target/release/bundle/macos/*.app
+          - os: macos-15-intel
+            artifact-name: macOS-x64
             artifact-glob: |
               src-tauri/target/release/bundle/dmg/*.dmg
               src-tauri/target/release/bundle/macos/*.app
