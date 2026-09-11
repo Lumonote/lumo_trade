@@ -1,5 +1,9 @@
 """设备验证门禁测试:授权码算法 + kv 持久化 + robyn before_request 门禁.
 
+[2026-09-11] 桌面端设备验证已按需求注释关闭:
+license_service.license_required() 恒返回 False, robyn_app._license_gate 直接放行,
+因此「门禁拦截」用例已改为断言放行。授权码算法与激活流程本身仍然有效, 用例保留。
+
 授权码算法必须与 license_admin/generate_license.py 逐字节一致
 (盐 KRONOS_DEVICE_SALT_2024, sha256 段落 + md5 校验码), 已发授权码不可失效。
 设备指纹采集(system_profiler 子进程, 秒级)在测试中一律 monkeypatch 掉。
@@ -133,18 +137,19 @@ def test_device_change_invalidates_activation(lic_env, monkeypatch):
     assert not lic.is_activated()
 
 
-def test_license_required_env_and_frozen(lic_env, monkeypatch):
+def test_license_required_disabled_by_design(lic_env, monkeypatch):
+    """设备验证已按需求注释关闭: 无论 env 取值还是打包态(frozen), 开关恒为 False。"""
     lic = _import_service(monkeypatch, required="1")
-    assert lic.license_required() is True
+    assert lic.license_required() is False
 
     monkeypatch.setenv("KRONOS_LICENSE_REQUIRED", "0")
     assert lic.license_required() is False
 
-    # 未设 env: dev(非frozen)默认关, 打包(frozen)默认开
+    # 未设 env: 原本 dev 关、打包开; 现在两者都关
     monkeypatch.delenv("KRONOS_LICENSE_REQUIRED", raising=False)
     assert lic.license_required() is False
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    assert lic.license_required() is True
+    assert lic.license_required() is False
 
 
 # ---------------------------------------------------------------------------
@@ -158,19 +163,20 @@ def _import_app(monkeypatch, required: str | None = "1", device_id: str = DEVICE
     return module, lic
 
 
-def test_gate_blocks_pages_and_api_when_unactivated(lic_env, monkeypatch):
+def test_gate_disabled_pages_and_api_pass_through(lic_env, monkeypatch):
+    """门禁已注释: 未激活状态下页面与 API 都不再被拦截(无 302→/activate, 无 403)。"""
     from robyn.testing import TestClient
 
     module, _lic = _import_app(monkeypatch)
     with TestClient(module.app) as client:
         for path in ("/", "/desktop", "/desktop/quant-radar"):
             resp = client.get(path)
-            assert resp.status_code == 302, path
-            assert resp.headers.get("Location") == "/activate"
+            assert resp.headers.get("Location") != "/activate", path
+            assert resp.status_code != 403, path
 
         resp = client.get("/api/jobs")
-        assert resp.status_code == 403
-        assert resp.json()["error"] == "license_required"
+        assert resp.status_code == 200
+        assert resp.json().get("error") != "license_required"
 
 
 def test_gate_whitelists_activation_surface(lic_env, monkeypatch):
@@ -185,7 +191,8 @@ def test_gate_whitelists_activation_surface(lic_env, monkeypatch):
         status = client.get("/api/license/status")
         assert status.status_code == 200
         payload = status.json()
-        assert payload["required"] is True
+        # 门禁已注释: required 恒为 False; 激活面(设备ID/激活接口)仍保留可用
+        assert payload["required"] is False
         assert payload["activated"] is False
         assert payload["device_id"] == DEVICE_ID
 

@@ -1,5 +1,10 @@
 """设备验证授权服务(桌面打包版功能门禁).
 
+[已按需求注释关闭] 2026-09-11
+桌面端不再做设备验证。门禁开关 license_required() 恒返回 False,
+webui/robyn_app.py 的 _license_gate 亦已注释为直接放行。
+下方授权码算法/激活记录等实现全部保留(未删除), 恢复门禁时还原这两处即可。
+
 历史: 设备验证原先只活在老启动器 tools/launchers/lumo_modern_gui.py 里,
 Tauri + PyInstaller(lumo_webui_backend) 新打包链换了入口后从未接入,
 打包 App 因此完全无门禁。本模块把同一套授权算法移植进 webui 服务层,
@@ -44,13 +49,27 @@ _activated_cache: bool = False
 
 
 def license_required() -> bool:
-    """门禁开关: KRONOS_LICENSE_REQUIRED 显式 1/0 优先, 未设时打包态(frozen)默认开。"""
-    env = os.environ.get("KRONOS_LICENSE_REQUIRED", "").strip().lower()
-    if env in {"1", "true", "yes", "on"}:
-        return True
-    if env in {"0", "false", "no", "off"}:
-        return False
-    return bool(getattr(sys, "frozen", False))
+    """门禁开关: KRONOS_LICENSE_REQUIRED 显式 1/0 优先, 未设时打包态(frozen)默认开。
+
+    [已按需求注释关闭] 2026-09-11
+    桌面端不再做设备验证: 本开关恒返回 False, 打包态启动即放行,
+    不再 302 跳 /activate、不再对 API 返回 403 license_required。
+    门禁的消费方是 webui/robyn_app.py 的 _license_gate(同为注释状态),
+    恢复时需把两处一起还原。
+
+    原「env 优先 + frozen 默认开」逻辑整体注释保留在下方, 恢复门禁时
+    取消注释并删掉末尾的 `return False` 即可。
+    """
+    # --- 原门禁开关逻辑(注释保留, 恢复时取消注释) ---
+    # env = os.environ.get("KRONOS_LICENSE_REQUIRED", "").strip().lower()
+    # if env in {"1", "true", "yes", "on"}:
+    #     return True
+    # if env in {"0", "false", "no", "off"}:
+    #     return False
+    # return bool(getattr(sys, "frozen", False))
+
+    # 桌面端设备验证已关闭
+    return False
 
 
 def _compute_device_id() -> str:

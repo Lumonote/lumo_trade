@@ -250,6 +250,13 @@ def _env_int(name: str, default: int) -> int:
 # 设备验证门禁：打包态(或 KRONOS_LICENSE_REQUIRED=1)下，激活通过前拦截全部功能。
 # 老启动器 lumo_modern_gui 的验证从未接入 Tauri 打包链，这里在 HTTP 层补上：
 # 页面 302 → /activate，API 403，激活面(激活页/授权API/静态资源)放行。
+#
+# [已按需求注释关闭] 2026-09-11
+# 桌面端不再做设备验证，本钩子直接放行；开关侧 webui/services/license_service.py
+# 的 license_required() 也一并返回 False。恢复时需把两处一起还原
+# (取消下面 _license_gate 的注释，并还原 license_required())。
+# 注意: /activate 页面与 /api/license/* 接口保留不动，激活能力仍可用，
+# 只是不再强制拦截。
 # ---------------------------------------------------------------------------
 
 _LICENSE_ALLOWED_PREFIXES = ("/api/license/", "/static/", "/assets/")
@@ -262,24 +269,28 @@ def _license_path_allowed(path: str) -> bool:
 
 @app.before_request()
 def _license_gate(request: Request):
-    if not license_service.license_required():
-        return request
-    path, _query = _split_path_query(_raw_request_path(request))
-    method = str(getattr(request, "method", "GET") or "GET").upper()
-    if method == "OPTIONS" or _license_path_allowed(path):
-        return request
-    if license_service.is_activated():
-        return request
-    if path.startswith("/api/"):
-        return _json_response(
-            {"error": "license_required", "message": "设备未激活授权，请先完成设备验证"},
-            status_code=403,
-        )
-    return Response(
-        status_code=302,
-        headers=Headers({"Location": "/activate"}),
-        description="",
-    )
+    # --- 原门禁拦截逻辑(注释保留, 恢复时取消注释) ---
+    # if not license_service.license_required():
+    #     return request
+    # path, _query = _split_path_query(_raw_request_path(request))
+    # method = str(getattr(request, "method", "GET") or "GET").upper()
+    # if method == "OPTIONS" or _license_path_allowed(path):
+    #     return request
+    # if license_service.is_activated():
+    #     return request
+    # if path.startswith("/api/"):
+    #     return _json_response(
+    #         {"error": "license_required", "message": "设备未激活授权，请先完成设备验证"},
+    #         status_code=403,
+    #     )
+    # return Response(
+    #     status_code=302,
+    #     headers=Headers({"Location": "/activate"}),
+    #     description="",
+    # )
+
+    # 桌面端设备验证已关闭: 一律放行
+    return request
 
 
 @_native_get("/activate")
