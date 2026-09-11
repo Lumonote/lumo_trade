@@ -37,7 +37,7 @@
 
 ## 执行
 
-如遇滥用、骚扰或其他不可接受的行为，请通过 [GitHub Issues](https://github.com/Lumonote/kronos_ultra/issues)
+如遇滥用、骚扰或其他不可接受的行为，请通过 [GitHub Issues](https://github.com/Lumonote/lumo_trade/issues)
 联系项目维护者。所有投诉将被及时审查和调查，维护者会尊重投诉人的隐私与安全。
 
 ## 归属

@@ -13,7 +13,7 @@
 
 请**不要**在公开的 GitHub Issue 中披露潜在的安全漏洞。请通过**私密渠道**报告：
 
-1. 在 [GitHub 仓库](https://github.com/Lumonote/kronos_ultra) 使用 **Private Vulnerability Reporting**（私有漏洞报告）功能。
+1. 在 [GitHub 仓库](https://github.com/Lumonote/lumo_trade) 使用 **Private Vulnerability Reporting**（私有漏洞报告）功能。
 2. 或直接通过 Issue 描述问题的**最小复现步骤**，避免泄露敏感信息。
 
 提交时请包含：

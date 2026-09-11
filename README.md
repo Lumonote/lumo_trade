@@ -11,7 +11,7 @@
 <img src="https://img.shields.io/badge/Python-3.11+-blue" alt="Python 3.11+">
 <img src="https://img.shields.io/badge/PyTorch-2.x-red" alt="PyTorch">
 <img src="https://img.shields.io/badge/API-117_Routes-orange" alt="117 API 路由">
-<a href="./LICENSE"><img src="https://img.shields.io/github/license/Lumonote/kronos_ultra?color=green" alt="License"></a>
+<a href="./LICENSE"><img src="https://img.shields.io/github/license/Lumonote/lumo_trade?color=green" alt="License"></a>
 
 </div>
 
