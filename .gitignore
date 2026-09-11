@@ -97,3 +97,14 @@ src-tauri/gen/
 *.temp
 temp/
 tmp/
+
+# AI / 编辑器本地状态（每台机器不同，不入库）
+.codex/
+.cursor/
+.claude/
+.workbuddy/
+.workbuddy-ai/
+
+# 可重新获取的下载物与数据样例
+resources/get-pip.py
+examples/data/
