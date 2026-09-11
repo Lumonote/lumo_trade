@@ -1,289 +1,206 @@
-<div align="center">
-  <h1><b>Lumo Trade</b></h1>
-  <h3>本地智能投研控制台 · A 股研究桌面工作站</h3>
-  <p>行情 · 资金 · 量化 · 风控 · 复盘，装进一台本地优先的桌面工作站</p>
-</div>
+# Lumo Trade
 
 <div align="center">
+  <p><strong>本地优先的 A 股智能投研工作站</strong></p>
+  <p>行情 · 资金 · 量化 · 风控 · 模拟盘 · 复盘</p>
 
-<img src="https://img.shields.io/badge/🗔-Tauri_2-blue" alt="Tauri 2">
-<img src="https://img.shields.io/badge/🚀-本地优先-brightgreen" alt="本地优先">
-<img src="https://img.shields.io/badge/Python-3.11+-blue" alt="Python 3.11+">
-<img src="https://img.shields.io/badge/PyTorch-2.x-red" alt="PyTorch">
-<img src="https://img.shields.io/badge/API-117_Routes-orange" alt="117 API 路由">
-<a href="./LICENSE"><img src="https://img.shields.io/github/license/Lumonote/lumo_trade?color=green" alt="License"></a>
-
+  <p>
+    <a href="https://github.com/Lumonote/lumo_trade/actions/workflows/build.yml"><img src="https://github.com/Lumonote/lumo_trade/actions/workflows/build.yml/badge.svg" alt="Build status"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/github/license/Lumonote/lumo_trade" alt="License"></a>
+    <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
+    <a href="https://v2.tauri.app/"><img src="https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black" alt="Tauri 2"></a>
+    <a href="https://www.sqlite.org/"><img src="https://img.shields.io/badge/SQLite-local--first-003B57?logo=sqlite&logoColor=white" alt="SQLite"></a>
+  </p>
 </div>
 
 <p align="center">
-  <img src="./figures/logo.png" width="120">
+  <img src="docs/images/lumo-trade-luozi-wuhui.png" alt="落子无悔：Lumo Trade 的人生之路与未来之美" width="100%">
 </p>
 
-> Lumo Trade 是一套面向 A 股研究场景的**本地智能投研控制台**。它把"观察市场 → 发现机会 → 研究个股 →
-> 识别风险 → 模拟执行 → 跟踪复盘"放在同一套桌面工作流里，让所有数据、任务和报告**尽量留在本机**。
->
-> 底层以 **Kronos** 金融 K 线基础模型（AAAI 2026）作为序列预测能力，上层叠加 **30 个量化模型 + 可解释规则引擎**
-> 完成机会挖掘与多因子评分。
+> **落子无悔。** Lumo Trade 把“观察市场 → 发现机会 → 研究个股 → 识别风险 → 模拟执行 → 跟踪复盘”串成一条可追溯的本地投研链路。
 
----
+Lumo Trade 面向 A 股研究、量化实验和投资复盘场景。它不是自动荐股工具：评分、规则、回测和 AI 解读都保留数据依据与风险提示，最终判断由使用者完成。
 
-## 📊 基础数字
+## 为什么使用 Lumo Trade
 
-| 指标 | 数量 |
-|------|------|
-| 桌面页面 | 15 个 |
-| 个股分析页签 | 21 个 |
-| 后端 API 路由 | 117 个 |
-| 量化模型 | 30 个 |
-| 自动化测试 | 109 个测试文件 |
+- **研究链路完整**：从市场全景、候选池、分层评分到个股深研、风险决策和复盘沉淀，减少在多个工具之间切换。
+- **本地优先**：自选、任务、报告、模拟台账和 SQLite 数据仓库默认留在本机；外部数据源按配置调用。
+- **解释优先**：30 个量化模型、技术指标、资金与情绪因子，以及可解释规则引擎共同构成评分依据。
+- **风险同屏**：机会分与市场、板块、个股、持仓四层风险一起查看，避免只看信号不看风险。
+- **可选 Kronos 预测**：集成 Kronos 金融 K 线基础模型，支持 CPU、CUDA 和 Apple MPS；预测结果用于研究，不替代规则与风控。
 
----
+## 核心能力
 
-## 🎯 核心价值：一条投研链路，而非一次预测
+| 模块 | 能力 |
+| --- | --- |
+| 市场全景 | 指数行情、全市场热力图、板块动量、实时资讯与系统健康度 |
+| 机会挖掘 | 热榜、热门板块、资金流向、超跌反弹、低位放量等候选源；多因子评分与报告生成 |
+| 个股工作台 | 行情、资金、筹码、基本面、概率推演、操盘风控、量化矩阵、AI 解读等分析页签 |
+| 条件选股 | 行情、主力资金、盘口、吸筹、龙虎榜、机会评分、技术形态、量化模型八维组合筛选 |
+| 风险与机遇 | 机会 × 风险矩阵、市场/板块/个股/持仓风险分层和组合观察 |
+| 资金与期指 | 主力净流入、龙虎榜、量化行为、IF/IH/IC/IM 行情、基差和席位趋势 |
+| 形态搜股 | 手绘或载入形态，检索相似股票并查看曲线对比与历史后验表现 |
+| 模拟盘与复盘 | 本地账户、模拟成交、持仓跟踪、报告库、机会历史和自动复盘 |
 
-Lumo Trade 想解决的不是"预测一次"，而是串起一条完整的、本地优先的投研流水线：
+## 界面截图与功能说明
 
-```
-市场全景  →  候选池  →  分层评分  →  个股深研  →  风控决策  →  沉淀复盘
-  ①             ②           ③            ④            ⑤             ⑥
-```
+以下截图来自本地 Web UI / Tauri 桌面端，用于展示信息组织方式和典型研究流程。截图中的行情、日期、股票和新闻均为采集时的示例数据，实际内容取决于数据源、交易日和本地配置。
 
-1. **建立市场全景** — 总览、大盘云图、资金榜单、量化雷达、股指期货、实时资讯
-2. **形成候选池** — 多源机会挖掘、热门板块/热榜、主力资金 Top N、八维条件选股
-3. **分层评分** — 机会挖掘引擎（30 模型 + 20+ 技术指标 + 三维情绪 + 规则评分），每一分都可追溯
-4. **个股深研** — 21 个分析页签的股票工作台（行情/资金/筹码/基本面/概率/风控/AI 解读…）
-5. **行动与风控** — 风险·机遇大屏（机会分 × 风险分同屏）、模拟盘低成本验证
-6. **沉淀复盘** — 后台任务队列、报告库、机会历史、模拟台账、SQLite 数据仓库
+### 市场总览与实时信息
 
-### 本地优先的设计哲学
+| 界面 | 说明 |
+| --- | --- |
+| <img src="docs/images/screenshots/02-overview.png" alt="总览页面" width="640"> | **总览**：集中查看指数方向、监控股票、最新机会、板块热点和系统状态；顶部搜索可直接进入个股工作台。 |
+| <img src="docs/images/screenshots/03-market-heatmap.png" alt="大盘云图" width="640"> | **大盘云图**：用矩形面积表示成交额、颜色表示涨跌，支持按行业下钻到板块和个股，并查看指定交易日。 |
+| <img src="docs/images/screenshots/01-realtime-hotspots.png" alt="实时热点" width="640"> | **实时热点**：按热点股票、热点板块、异动和新闻源筛选信息流；不同来源用标签区分，便于快速定位事件线索。 |
 
-Lumo Trade 最核心的判断是：**AI 不该直接荐股**。LLM 只负责"把因子解释成人话"的深度分析，真正的决策逻辑
-全部落在**可回测、可追溯、可审计**的规则与因子体系上。评分、回测、形态相似度和 AI 解读都不代表未来收益。
+### 机会发现与研究
 
----
+| 界面 | 说明 |
+| --- | --- |
+| <img src="docs/images/screenshots/04-discovery-engine.png" alt="机会挖掘引擎" width="640"> | **挖掘引擎**：把候选获取、全局预载、并发评分、漏斗筛选、LLM 深度分析、报告生成和结果入库拆成可观察阶段，并显示并行任务进度。 |
+| <img src="docs/images/screenshots/06-opportunity-data.png" alt="机会数据" width="640"> | **机会数据**：按最新结果、股票池、板块池、历史分析和形态回测浏览机会；支持搜索、查看评分依据和打开个股分析。 |
+| <img src="docs/images/screenshots/07-pattern-search.png" alt="形态搜股" width="640"> | **形态搜股**：手绘或载入一段形态，在本地指纹库中检索相似股票，并查看相似度、误差和后续表现。 |
+| <img src="docs/images/screenshots/13-stock-review.png" alt="个股工作台" width="640"> | **个股工作台**：汇总资金面、技术面、筹码机构、模型预测和回测等信号；各指标保留来源和状态，便于复核。 |
+| <img src="docs/images/screenshots/15-panel-jury.png" alt="多空评审团" width="640"> | **多空评审团**：按宏观、价值、成长、技术、中国价投、游资和量化等流派分组展示规则化观点，分别给出评分、依据和多空倾向，用于交叉验证而非生成单一结论。 |
 
-## 🖥️ 15 个桌面页面
+### 资金、期指与量化行为
 
-| # | 页面 | 职责 |
-|---|------|------|
-| 1 | **总览** | 市场指标、个股快搜、实时异动、资讯入口、东方财富热榜、系统状态 |
-| 2 | **大盘云图** | 全市场热力图（矩形面积=成交额，颜色=涨跌），多指数、四态过滤、历史回溯 |
-| 3 | **风险·机遇** | 决策中枢：市场/板块/个股/持仓四层风险 + 机会×风险撮合矩阵 |
-| 4 | **资金榜单** | 主力净流入榜 + 龙虎榜 + 量化交易分析（温度计/吸筹/收割预警） |
-| 5 | **股指期货** | IF/IH/IC/IM 行情、基差、前 20 席位多空净持仓、近 10 日趋势 |
-| 6 | **条件选股** | 八维 AND 组合：行情/主力资金/盘口/吸筹/龙虎榜/机会评分/技术形态/量化模型 |
-| 7 | **分析工作台** | 机会挖掘与批量分析发起 + 投资机会画布（七种组织方式） |
-| 8 | **挖掘引擎** | 把后台黑盒变成实时直播：阶段轨道、并发单元、实时日志、自动接管 |
-| 9 | **形态搜股** | 手绘或载入个股形态 → 本地指纹库检索 → 相似股票 + 曲线对比 + 历史后验回测 |
-| 10 | **自选与提醒** | 自选管理 + 周期扫描提醒 + 桌面底部实时热点条（六类信息流） |
-| 11 | **模拟盘** | 本地账户台账，验证买入方式/持有周期/胜率，支持自动跟单（仅写模拟台账） |
-| 12 | **星轨图谱** | 产业链同心轨道研究地图（轨道 × 概念板块 × 个股），可编辑、可下钻 |
-| 13 | **报告与健康** | 报告库 + 评分算法健康度 + 回测状态 + 模块/数据源诊断 |
-| 14 | **后台配置** | AI 模型/API Key、TuShare、Kronos 运行设备、模拟跟单、数据库备份迁移 |
-| 15 | **关于与合规** | 免责声明、使用条款、数据来源（首次启动弹出风险提示） |
+| 界面 | 说明 |
+| --- | --- |
+| <img src="docs/images/screenshots/11-capital-main-force.png" alt="主力资金榜" width="640"> | **主力资金榜**：按单日或区间查看主力净流入、机构和大单拆分，支持勾选多只股票后批量发起分析。 |
+| <img src="docs/images/screenshots/14-capital-dragon.png" alt="龙虎榜" width="640"> | **龙虎榜**：查看上榜原因、机构买卖、龙虎榜净买入和成交占比，并展开股票详情。 |
+| <img src="docs/images/screenshots/12-quant-activity.png" alt="量化活跃度" width="640"> | **量化交易分析**：展示拉升、杀跌、炸板、疑似砸盘等行为统计，以及量化活跃板块和收割预警，作为风险线索使用。 |
+| <img src="docs/images/screenshots/05-index-futures.png" alt="股指期货" width="640"> | **股指期货**：覆盖 IF、IH、IC、IM 的合约行情、现货、基差和中金所前 20 席位多空持仓，支持按交易日查询。 |
 
-### 个股工作台：21 个分析页签
+### 产业图谱、模拟盘与配置
 
-任何页面中的股票、榜单行、K 线、画布节点或自选项，一键打开统一的**股票工作台**（全局弹窗）：
+| 界面 | 说明 |
+| --- | --- |
+| <img src="docs/images/screenshots/08-star-orbit.png" alt="星轨图谱" width="640"> | **星轨图谱**：以产业链为中心组织概念板块和个股，支持轨道、板块和概念视图切换，以及钉选股票继续深研。 |
+| <img src="docs/images/screenshots/10-paper-orders.png" alt="模拟盘委托" width="640"> | **模拟盘**：记录模拟委托、成交和撤单状态，验证仓位、持有周期和策略执行；不会触发真实交易。 |
+| <img src="docs/images/screenshots/09-settings.png" alt="后台配置" width="640"> | **后台配置**：管理 LLM Provider、接口地址、模型、数据源、模拟盘参数和 SQLite 备份恢复；密钥只保存在本地配置目录。 |
 
-快速信息 · 综合总览 · 市场周期 · 主力阶段 · 量价博弈 · 筹码结构 · 业绩预期 · 概率推演 · 操盘风控 ·
-涨停筛选 · 主力深度 · 资金榜单 · 量化矩阵 · 筹码·控盘雷达 · 机构持仓 · 多空评审团 · AI 解读 ·
-财务三大表 · 形态回测 · 关联热点 · 量化行为
+### 使用建议
 
-其中**多空评审团**按价值/成长/宏观/技术/中国价投/游资/量化七流派、约 60 个规则化角色组织，规则基础不依赖大模型；
-**AI 解读**使用用户自配置模型（OpenAI 兼容 / DashScope 兼容，支持通义千问/DeepSeek/MiniMax/Kimi/GLM 等）。
+建议先从“总览”确认市场与数据源状态，再进入“机会挖掘”或“资金榜单”形成候选池，随后在“个股工作台”复核因子和风险，最后用“模拟盘”和“报告库”沉淀结果。截图中的信号是研究线索，不代表买卖指令。
 
-<p align="center">
-  <img src="docs/images/lumo_research_pipeline.png" alt="投研六步链路" width="650px" />
-  <br/>
-  <em>投研六步链路：市场全景 → 候选池 → 分层评分 → 个股深研 → 风控决策 → 沉淀复盘</em>
-</p>
+## 架构
 
----
-
-## 🏗️ 技术架构
-
-Lumo Trade 的技术栈让每一层承担适合自己的职责：
-
-```
-┌──────────────────────────────────────┐
-│           Tauri 2 (Rust)             │  ← 桌面壳：窗口、托盘、通知、外部链接
-├──────────────────────────────────────┤
-│   Jinja2 模板 + 原生 JS + Plotly     │  ← 前端：服务端渲染，无重型框架
-├──────────────────────────────────────┤
-│       Robyn (Python, 8 Workers)      │  ← 本地 API：117 个路由，按业务域编排
-├──────────────────────────────────────┤
-│  规则引擎 + 30 量化模型 + Kronos AI  │  ← 分析层：规则、模型、LLM 三层并存
-├──────────────────────────────────────┤
-│          SQLite (WAL 模式)            │  ← 数据层：本地持久化中心，多域统一存储
-├──────────────────────────────────────┤
-│  TuShare / AKShare / 东财 / 新浪 …   │  ← 数据源：多源获取，明确降级路径
-└──────────────────────────────────────┘
+```text
+Tauri 2 桌面壳
+    │
+    ├── 原生 JavaScript + Jinja2 + Plotly 前端
+    ├── Robyn 本地 API（webui/）
+    ├── 规则引擎 + 量化模型 + 可选 Kronos 推理
+    └── SQLite 本地数据层（data_store/）
+             │
+             └── TuShare / AKShare / 东方财富 / 新浪等数据源
 ```
 
-**分析层**三部分各司其职：可解释的规则与评分引擎、30 个量化模型、Kronos 金融基础模型（CPU/CUDA/Apple MPS）。
-**数据源**预设主源 → 备源 → 本地缓存的回退路径，明确标注"数据不可用 / 已回退 / 仍使用历史数据"。
+桌面端通过 `src-tauri/` 启动本地 Robyn 服务；源码运行与 CI 打包均使用 `webui/run_robyn.py`。打包工作流默认使用 `lite` 后端，以缩短构建时间；需要模型推理时请按源码方式安装完整依赖。
 
-### 本地优先的数据策略
+## 快速开始
 
-- **只在本地沉淀**：自选、模拟台账、任务状态、报告文件、数据库备份和大部分应用配置
-- **外部数据请求**：行情、资金、新闻、财务和期货向相应数据源发送查询参数
-- **可选云端大模型**：仅用户启用 Provider 后发起
-- **密钥保护**：API Key 和 Token 由用户配置，不应出现在截图或发布内容中
+### 1. 环境要求
 
-<p align="center">
-  <img src="docs/images/lumo_tech_architecture.png" alt="五层技术架构" width="650px" />
-  <br/>
-  <em>Lumo Trade 五层技术架构：Tauri（桌面壳）→ Robyn（本地 API）→ 分析层 → SQLite → 多源数据</em>
-</p>
+- Python 3.11 或更高版本
+- Node.js 22（仅开发或构建桌面端需要）
+- Rust stable 与 Tauri 系统依赖（仅开发或构建桌面端需要）
+- 可选：CUDA 或 Apple MPS；可选：Playwright Chromium（爬虫与浏览器采集）
 
----
+### 2. 安装 Python 依赖
 
-## 🚀 快速开始 (Quick Start)
-
-### 系统要求
-
-- Python 3.11+
-- 可选：CUDA 或 Apple MPS（用于 Kronos 模型加速）
-
-### 一键启动
+建议使用虚拟环境：
 
 ```bash
-# Linux / macOS
-chmod +x quick_start.sh
-./quick_start.sh
-
-# Windows
-quick_start.bat        # 或 .\quick_start.ps1（管理员 PowerShell）
-```
-
-### 环境配置
-
-```bash
-# 安装依赖
+python3.11 -m venv .venv
+source .venv/bin/activate                 # Windows: .venv\Scripts\activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
+```
 
-# 安装爬虫浏览器
-pip install playwright && playwright install chromium
+如需浏览器采集：
 
-# 配置 Tushare Token（A 股数据源）
+```bash
+pip install playwright
+playwright install chromium
+```
+
+### 3. 配置数据源
+
+```bash
 python scripts/setup_tushare.py
-
-# 检查环境
 python scripts/check_environment.py
 ```
 
-### 启动桌面端 / Web UI
+Token、LLM API Key 等敏感配置只写入本地配置目录，不要提交到 Git。具体数据源和模型配置见 [桌面端完整指南](docs/Lumo_Trade_桌面端完整指南.md)。
+
+### 4. 启动 Web UI
 
 ```bash
-# Web UI（Flask / Robyn）
-cd webui && python run.py    # 或 ./start.sh
-
-# 桌面端 Lumo Trade 见 desktop/ + src-tauri/
+cd webui
+python run_robyn.py
 ```
 
----
+打开 <http://localhost:7070>。也可以使用兼容入口 `python run.py`；两者都会启动 Robyn 服务。
 
-## 🧠 底层模型：Kronos 预测
+### 5. 开发桌面端（可选）
 
-Lumo Trade 的 K 线序列预测能力由 **Kronos** 提供——第一个开源金融 K 线基础模型（AAAI 2026），基于全球 45+
-交易所数据预训练。它采用两阶段框架：专用 **Tokenizer** 用 Binary Spherical Quantization (BSQuantizer) 把连续
-OHLCV 数据量化为分层离散 token，再由自回归 **Transformer** 在 token 空间预测"下一根 K 线"。
-
-| Model | Tokenizer | Context | Params |
-|-------|-----------|---------|--------|
-| Kronos-mini | Kronos-Tokenizer-2k | 2048 | 4.1M |
-| Kronos-small | Kronos-Tokenizer-base | 512 | 24.7M |
-| Kronos-base | Kronos-Tokenizer-base | 512 | 102.3M |
-
-在 Lumo Trade 中，Kronos 只是分析层的一个组成（支持 CPU/CUDA/MPS），真正的投资判断由 30 个量化模型和可解释
-规则引擎完成。Kronos 原始模型与微调、回测流程详见：
-`[Kronos (shiyu-coder)](https://github.com/shiyu-coder/Kronos)`、[arXiv:2508.02739](https://arxiv.org/abs/2508.02739)。
-
----
-
-## 🔎 核心能力详解
-
-### 机会挖掘引擎
-
-机会挖掘把运行过程拆成可见阶段：候选收集 → 数据准备 → 多智能体并行分析 → 评分排序 → 报告生成 → 结果入库。
-从五路正交候选源（热榜 / 热门板块 / 超跌反弹 / 资金流向 / 低位放量）出发，经九维动态加权评分 + v25 共享规则
-奖惩，生成综合评分、S/A+/A/B/C 评级与可追溯的加减分项，再经软筛漏斗与 LLM 深度分析，最终输出报告并自动回测。
-
-### 条件选股：八维 AND 组合
-
-留空条件不参与筛选，填写的条件间取 AND 交集：行情快照、主力资金、盘口异动、主力吸筹、龙虎榜、机会评分、
-技术形态、量化模型。
-
-### 风险·机遇：四层风险 + 机会×风险撮合
-
-市场系统性风险 / 板块拥挤风险 / 个股自身风险 / 持仓组合风险，与机会分放到同一坐标系——避免"只看高分、
-不看风险"的认知偏差。
-
----
-
-## 📚 文档体系
-
-| 文档 | 说明 |
-|------|------|
-| [docs/00_文档导航索引.md](docs/00_文档导航索引.md) | 全项目文档导航 |
-| [docs/Lumo_Trade_桌面端完整指南.md](docs/Lumo_Trade_桌面端完整指南.md) | **Lumo Trade 桌面端完整指南** |
-| [docs/01_投资机会挖掘系统完整文档.md](docs/01_投资机会挖掘系统完整文档.md) | 机会挖掘系统功能与架构 |
-| [docs/03_系统架构技术文档.md](docs/03_系统架构技术文档.md) | 系统总体架构 |
-| [docs/04_因子打分体系与回测优化完整技术文档.md](docs/04_因子打分体系与回测优化完整技术文档.md) | 打分系统技术细节 |
-| [CLAUDE.md](CLAUDE.md) | AI 编程助手开发指南 |
-
----
-
-## 💖 支持本项目 (Sponsor)
-
-如果你觉得 Lumo Trade 对你有帮助，欢迎通过微信扫码赞助，支持项目的持续开发与维护。你的每一份支持都是项目前进的动力 🙏
-
-<div align="center">
-  <img src="assets/wechat_pay_qr.jpg" alt="微信支付收款码" width="300" />
-  <br/>
-  <em>推荐使用微信支付扫码赞助</em>
-</div>
-
----
-
-## 📜 License
-
-This project is licensed under the [MIT License](./LICENSE).
-
-Copyright (c) 2025 Lumonote. See [LICENSE](LICENSE) for full text.
-
----
-
-## 🤝 社区约定
-
-- [贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md) — 如何提交代码、Commit 规范、Pull Request 流程
-- [行为准则 (CODE_OF_CONDUCT.md)](CODE_OF_CONDUCT.md) — 社区成员行为规范
-- [安全策略 (SECURITY.md)](SECURITY.md) — 漏洞报告渠道与响应流程
-
----
-
-## 📖 Citing Kronos
-
-If you use the underlying Kronos model in your research, please cite its [paper](https://arxiv.org/abs/2508.02739):
-
-```
-@misc{shi2025kronos,
-      title={Kronos: A Foundation Model for the Language of Financial Markets},
-      author={Yu Shi and Zongliang Fu and Shuo Chen and Bohan Zhao and Wei Xu and Changshui Zhang and Jian Li},
-      year={2025},
-      eprint={2508.02739},
-      archivePrefix={arXiv},
-      primaryClass={q-fin.ST},
-      url={https://arxiv.org/abs/2508.02739},
-}
+```bash
+npm ci
+npm run desktop:dev
 ```
 
----
+构建安装包：
 
-## ⚠️ 免责声明
+```bash
+npm run desktop:build
+```
 
-Lumo Trade 是数据和**研究工具**，不是持牌证券投资咨询服务。评分、回测、形态相似度和 AI 解读不代表未来收益；
-吸筹、主力、控盘、情绪和风险等指标来自公开数据和算法代理，不是对真实交易主体意图的确定识别；模拟盘使用日 K
-近似撮合，不能复现真实分时流动性、滑点和冲击成本。所有分析仅供研究与学习参考，**不构成投资建议**，股市有风险，
-投资需谨慎。
+跨平台构建由 [.github/workflows/build.yml](.github/workflows/build.yml) 负责，推送 `v*` 标签可触发 GitHub Release 流程。
+
+## 常用目录
+
+```text
+analysis/       评分规则、量化分析与评审团
+data_store/     SQLite 仓储与多源数据适配
+docs/           功能、架构、部署和回测文档
+model/          Kronos 模型与预测接口
+scripts/        数据采集、配置、检查和研究脚本
+webui/          Robyn API、模板、静态资源与服务
+src-tauri/      Tauri 2 桌面壳
+tests/          Python 测试
+```
+
+## 测试与质量检查
+
+运行完整 Python 测试：
+
+```bash
+python -m pytest tests/ -q
+```
+
+涉及评分规则、数据源或模拟盘的改动，请同时补充对应测试，并在 Pull Request 中说明数据假设、回测区间和验证结果。
+
+## 文档
+
+- [文档导航索引](docs/00_文档导航索引.md)
+- [Lumo Trade 桌面端完整指南](docs/Lumo_Trade_桌面端完整指南.md)
+- [系统架构技术文档](docs/03_系统架构技术文档.md)
+- [投资机会挖掘系统文档](docs/01_投资机会挖掘系统完整文档.md)
+- [因子打分体系与回测优化](docs/04_因子打分体系与回测优化完整技术文档.md)
+- [Web UI 使用说明](webui/README.md)
+- [贡献指南](CONTRIBUTING.md) · [行为准则](CODE_OF_CONDUCT.md) · [安全策略](SECURITY.md)
+
+## 贡献
+
+欢迎提交 Issue、改进文档和 Pull Request。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，保持改动聚焦，并在 PR 中提供复现步骤和验证结果。
+
+## 许可
+
+本项目以 [MIT License](LICENSE) 发布。底层 Kronos 模型与论文信息请参阅 [Kronos](https://github.com/shiyu-coder/Kronos) 和 [arXiv:2508.02739](https://arxiv.org/abs/2508.02739)。
+
+## 免责声明
+
+Lumo Trade 是用于数据分析、策略研究和模拟复盘的开源软件，不是持牌证券投资咨询服务。行情、资金、评分、回测、形态相似度、主力/控盘代理指标和 AI 解读不代表未来收益，也不构成投资建议。真实交易前请独立核验数据、流动性、滑点、交易成本和适当性风险。
