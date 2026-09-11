@@ -53,16 +53,23 @@ jobs:
         include:
           - os: macos-latest
             artifact-name: macOS-arm64
+            tauri-build-cmd: npm run desktop:build
             artifact-glob: |
               src-tauri/target/release/bundle/dmg/*.dmg
               src-tauri/target/release/bundle/macos/*.app
           - os: macos-15-intel
             artifact-name: macOS-x64
+            tauri-build-cmd: npm run desktop:build
             artifact-glob: |
               src-tauri/target/release/bundle/dmg/*.dmg
               src-tauri/target/release/bundle/macos/*.app
+          # Windows 用 -vv 打开 tauri-bundler 的 debug 日志。
+          # 原因：tauri-bundler 的 CommandExt::output_ok 在子进程失败时只报
+          # "failed to run <程序>"，**丢弃 candle/light 的 stderr**。不加 -vv 就只能
+          # 看到「light.exe 退出码 1」，看不到真正的 LGHT 错误码，无法定位。
           - os: windows-latest
             artifact-name: Windows
+            tauri-build-cmd: npm run desktop:build -- -vv
             artifact-glob: |
               src-tauri/target/release/bundle/nsis/*.exe
               src-tauri/target/release/bundle/msi/*.msi
@@ -135,9 +142,47 @@ jobs:
           KRONOS_BACKEND_BUNDLE_MODE: lite
           KRONOS_WEB_SERVER: robyn
 
+      # WiX Toolset v3 的 light.exe 依赖 Windows 的 VBSCRIPT 可选功能，
+      # 缺失时的报错正是「failed to run light.exe」（Tauri 官方文档明确记载）。
+      # windows-latest 已迁移到 Windows Server 2025，VBSCRIPT 在 24H2/Server 2025 起
+      # 变成「按需功能(Feature on Demand)」，镜像可能未预装，所以显式检查并补齐。
+      # 仅 Windows 需要；VBSCRIPT 已是 Installed 时本步骤为空操作，不影响 macOS。
+      - name: Ensure VBSCRIPT for WiX light.exe
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cap = Get-WindowsCapability -Online -Name 'VBScript*' -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          $state = if ($cap) { $cap.State } else { '<not found>' }
+          Write-Host "VBScript capability state: $state"
+
+          if ($state -ne 'Installed') {
+            Write-Host 'VBScript missing -> installing optional feature ...'
+            try {
+              Add-WindowsCapability -Online -Name 'VBScript~~~~0.0.1.0' -ErrorAction Stop | Out-Null
+              Write-Host 'Add-WindowsCapability succeeded.'
+            } catch {
+              Write-Warning "Add-WindowsCapability failed: $($_.Exception.Message)"
+              Write-Host 'Retrying with DISM ...'
+              dism.exe /Online /Add-Capability /CapabilityName:VBScript~~~~0.0.1.0 /Quiet /NoRestart
+            }
+          }
+
+          # 自检：能真的跑通一段 VBScript 才算可用（light.exe 依赖的正是这个引擎）。
+          $probe = Join-Path $env:RUNNER_TEMP 'vbscript_probe.vbs'
+          Set-Content -Path $probe -Value 'WScript.Echo "vbscript-ok"' -Encoding Ascii
+          $out = & "$env:SystemRoot\System32\cscript.exe" //nologo $probe 2>&1
+          $code = $LASTEXITCODE
+          Remove-Item $probe -Force -ErrorAction SilentlyContinue
+          Write-Host "cscript probe exit=$code output=$out"
+          if ($code -ne 0 -or "$out" -notmatch 'vbscript-ok') {
+            Write-Warning 'VBScript engine still unavailable; MSI (light.exe) will likely fail.'
+          }
+
       # Tauri 桌面构建；main.rs 的 env! 读上面的 KRONOS_* 环境变量。
       - name: Build Tauri app
-        run: npm run desktop:build
+        run: ${{ matrix.tauri-build-cmd }}
         shell: bash
         env:
           KRONOS_BACKEND_BUNDLE_MODE: lite
@@ -146,6 +191,20 @@ jobs:
           # 注意：必须是 "-"（ad-hoc 签名，无需任何证书）；"" 会被当作真实 identity 名，
           # codesign 报 "no identity found" 导致 bundle 失败。
           APPLE_SIGNING_IDENTITY: "-"
+
+      # 失败时把 WiX 中间产物留档：生成的 main.wxs 能直接看出是资源/组件渲染问题，
+      # 还是环境问题（VBScript/ICE）。仅 Windows 产出 WiX 文件。
+      - name: Upload WiX diagnostics on failure
+        if: failure() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lumo-Windows-wix-diagnostics
+          path: |
+            src-tauri/target/release/wix/**/*.wxs
+            src-tauri/target/release/wix/**/*.wxl
+            src-tauri/target/release/wix/**/*.wixobj
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Collect artifacts
         if: always()
