@@ -6,7 +6,7 @@
 
   <p>
     <a href="https://github.com/Lumonote/lumo_trade/actions/workflows/build.yml"><img src="https://github.com/Lumonote/lumo_trade/actions/workflows/build.yml/badge.svg" alt="Build status"></a>
-    <a href="./LICENSE"><img src="https://img.shields.io/github/license/Lumonote/lumo_trade" alt="License"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?logo=opensourceinitiative&logoColor=white" alt="License: MIT"></a>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
     <a href="https://v2.tauri.app/"><img src="https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black" alt="Tauri 2"></a>
     <a href="https://www.sqlite.org/"><img src="https://img.shields.io/badge/SQLite-local--first-003B57?logo=sqlite&logoColor=white" alt="SQLite"></a>
