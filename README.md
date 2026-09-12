@@ -197,6 +197,18 @@ python -m pytest tests/ -q
 
 欢迎提交 Issue、改进文档和 Pull Request。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，保持改动聚焦，并在 PR 中提供复现步骤和验证结果。
 
+## 捐赠一点 token
+
+Lumo Trade 是靠 token 喂大的——每一次个股深研、每一轮多空辩论，背后都是实打实的模型推理开销。
+
+如果它帮到了你，欢迎**捐赠一点 token**：所有打赏都会用来补贴模型推理与数据源的调用成本，让它能继续跑下去。
+
+完全自愿，不构成任何服务对价，不影响功能与授权，也不构成任何投资建议。
+
+<p align="center">
+  <img src="assets/wechat_appreciation_qr.jpg" width="300" alt="微信赞赏码 · 捐赠一点 token">
+</p>
+
 ## 许可
 
 本项目以 [MIT License](LICENSE) 发布。底层 Kronos 模型与论文信息请参阅 [Kronos](https://github.com/shiyu-coder/Kronos) 和 [arXiv:2508.02739](https://arxiv.org/abs/2508.02739)。
