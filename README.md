@@ -294,6 +294,10 @@ python -m pytest tests/ -q
 
 欢迎提交 Issue、改进文档和 Pull Request。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，保持改动聚焦，并在 PR 中提供复现步骤和验证结果。
 
+## 友链
+
+本项目认可并链接 [LINUX DO](https://linux.do/) —— 新的理想型社区，项目的开源推广与交流也在这里进行。
+
 ## 捐赠一点 token
 
 Lumo Trade 是靠 token 喂大的——每一次个股深研、每一轮多空辩论，背后都是实打实的模型推理开销。
