@@ -14,7 +14,11 @@ on:
   push:
     # 所有分支都构建：main 出正式包，其余分支出测试包。
     branches: ["**"]
-    tags: ["v*"]
+    # tag 触发正式发布。glob 是否区分大小写官方没写，所以 v* / V* 都列上。
+    # 约定仍是用小写 v（v1.1.6）；V* 只是兜底，防止又出现「打了 tag 却什么
+    # 都没发生」。注意 tag 的 glob 与 release job 的 startsWith 是两处独立判断，
+    # 必须都通过才会真正发布。
+    tags: ["v*", "V*"]
   pull_request:
     branches: [V2.1.4]
   workflow_dispatch:
@@ -263,6 +267,16 @@ jobs:
 
   # 仅在 push v* tag 时运行：把三平台安装包附到 GitHub Release。
   # 测试包（非 main 分支）不会进入这里，只留在 Actions Artifacts。
+  #
+  # 关于 tag 前缀的大小写（曾误判，记下来免得再绕）：
+  #   · startsWith() 官方文档明确写着 "This function is not case sensitive"，
+  #     所以这里的 'refs/tags/v' 其实同时匹配 v1.0.0 和 V1.0.0，不必写两遍。
+  #   · 仓库里那个 V1.0.0 tag 之所以从未产出 Release，**不是**大小写问题，
+  #     而是它指向 2025-10-31 的提交，那个提交里根本还没有本 workflow 文件
+  #     （git cat-file a9e6809:.github/workflows/build.yml → Not a valid object）。
+  #   · 真正会拦人的是 on.push.tags 的 glob（"v*"）：它的匹配规则官方没写
+  #     是否区分大小写，所以在 on.push.tags 里 v* 和 V* 都列了，双保险。
+  # 约定：打 tag 用**小写 v + 版本号**，如 v1.1.6，与 package.json 版本一致。
   release:
     name: Publish release
     needs: build
