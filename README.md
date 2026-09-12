@@ -61,7 +61,7 @@ Lumo Trade 面向 A 股研究、量化实验和投资复盘场景。它不是自
 | <img src="docs/images/screenshots/04-discovery-engine.png" alt="机会挖掘引擎" width="640"> | **挖掘引擎**：把候选获取、全局预载、并发评分、漏斗筛选、LLM 深度分析、报告生成和结果入库拆成可观察阶段，并显示并行任务进度。 |
 | <img src="docs/images/screenshots/06-opportunity-data.png" alt="机会数据" width="640"> | **机会数据**：按最新结果、股票池、板块池、历史分析和形态回测浏览机会；支持搜索、查看评分依据和打开个股分析。 |
 | <img src="docs/images/screenshots/07-pattern-search.png" alt="形态搜股" width="640"> | **形态搜股**：手绘或载入一段形态，在本地指纹库中检索相似股票，并查看相似度、误差和后续表现。 |
-| <img src="docs/images/screenshots/13-stock-review.png" alt="个股工作台" width="640"> | **个股工作台**：汇总资金面、技术面、筹码机构、模型预测和回测等信号；各指标保留来源和状态，便于复核。 |
+| <img src="docs/images/screenshots/14-capital-dragon.png" alt="个股工作台" width="640"> | **个股工作台**：汇总资金面、技术面、筹码机构、模型预测和回测等信号；各指标保留来源和状态，便于复核。 |
 | <img src="docs/images/screenshots/15-panel-jury.png" alt="多空评审团" width="640"> | **多空评审团**：按宏观、价值、成长、技术、中国价投、游资和量化等流派分组展示规则化观点，分别给出评分、依据和多空倾向，用于交叉验证而非生成单一结论。 |
 
 ### 资金、期指与量化行为
@@ -69,8 +69,8 @@ Lumo Trade 面向 A 股研究、量化实验和投资复盘场景。它不是自
 | 界面 | 说明 |
 | --- | --- |
 | <img src="docs/images/screenshots/11-capital-main-force.png" alt="主力资金榜" width="640"> | **主力资金榜**：按单日或区间查看主力净流入、机构和大单拆分，支持勾选多只股票后批量发起分析。 |
-| <img src="docs/images/screenshots/14-capital-dragon.png" alt="龙虎榜" width="640"> | **龙虎榜**：查看上榜原因、机构买卖、龙虎榜净买入和成交占比，并展开股票详情。 |
-| <img src="docs/images/screenshots/12-quant-activity.png" alt="量化活跃度" width="640"> | **量化交易分析**：展示拉升、杀跌、炸板、疑似砸盘等行为统计，以及量化活跃板块和收割预警，作为风险线索使用。 |
+| <img src="docs/images/screenshots/12-quant-activity.png" alt="龙虎榜" width="640"> | **龙虎榜**：查看上榜原因、机构买卖、龙虎榜净买入和成交占比，并展开股票详情。 |
+| <img src="docs/images/screenshots/13-stock-review.png" alt="量化活跃度" width="640"> | **量化交易分析**：展示拉升、杀跌、炸板、疑似砸盘等行为统计，以及量化活跃板块和收割预警，作为风险线索使用。 |
 | <img src="docs/images/screenshots/05-index-futures.png" alt="股指期货" width="640"> | **股指期货**：覆盖 IF、IH、IC、IM 的合约行情、现货、基差和中金所前 20 席位多空持仓，支持按交易日查询。 |
 
 ### 产业图谱、模拟盘与配置
