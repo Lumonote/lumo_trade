@@ -287,6 +287,7 @@ python -m pytest tests/ -q
 - [投资机会挖掘系统文档](docs/01_投资机会挖掘系统完整文档.md)
 - [因子打分体系与回测优化](docs/04_因子打分体系与回测优化完整技术文档.md)
 - [Web UI 使用说明](webui/README.md)
+- [更新日志](CHANGELOG.md) — 版本历史与变更记录
 - [贡献指南](CONTRIBUTING.md) · [行为准则](CODE_OF_CONDUCT.md) · [安全策略](SECURITY.md)
 
 ## 贡献
