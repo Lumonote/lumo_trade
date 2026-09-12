@@ -5,13 +5,15 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-版本号约定：发布分支与 Git tag 采用 `V主.次.修订`（本版本为 `V2.1.4`）；桌面安装包
-（`package.json` / `src-tauri/tauri.conf.json`）另有独立的 bundle 版本号（当前 `1.1.6`）；
-分析引擎的内部评分里程碑（v1 → v25 → m1）在文末附录单独标注，不与发布版本混用。
+版本号约定：发布分支采用 `V主.次.修订`（如 `V2.1.4`），Git tag 采用小写 `v主.次.修订`
+（本版本为 `v2.1.4`）；桌面安装包（`package.json` / `src-tauri/tauri.conf.json`）另有独立的
+bundle 版本号（当前 `1.1.6`）；分析引擎的内部评分里程碑（v1 → v25 → m1）在文末附录单独标注，
+不与发布版本混用。
 
-## [V2.1.4] - 2026-09-12
+## [v2.1.4] - 2026-09-12
 
-首个在 `main` 分支上正式打 tag 发布的版本（tag：`V2.1.4`，桌面 bundle：`1.1.6`）。
+首个在 `main` 分支上正式打 tag 发布的版本（tag：`v2.1.4`，对应发布分支 `V2.1.4`，
+桌面 bundle：`1.1.6`）。
 
 ### 新增
 - `CHANGELOG.md`：首次纳入版本控制，回溯项目初始化与完整演进。
@@ -56,7 +58,7 @@
 - README 重心迁移到 Lumo Trade（底层基于 Kronos 模型），LICENSE 版权归 Lumonote，采用 MIT 授权。
 - 统一归集 Markdown 文档到 `docs/` 并校正引用。
 - 将 `CLAUDE.md` 纳入版本控制并移除过期文档。
-- 移除 `CHANGELOG.md`（当时按「完整代码即开源」策略发布，自 V2.1.4 起恢复维护）。
+- 移除 `CHANGELOG.md`（当时按「完整代码即开源」策略发布，自 v2.1.4 起恢复维护）。
 
 ## [V2.1.2] - 2026-07-23
 
