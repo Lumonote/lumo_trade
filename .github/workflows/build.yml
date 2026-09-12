@@ -51,18 +51,18 @@ jobs:
         # 并把「Install Linux system deps」步骤一起加回来。
         os: [macos-latest, macos-15-intel, windows-latest]
         include:
+          # ⚠️ artifact-glob 必须是**单行、空格分隔**的字符串，不能用 `|` 块标量。
+          # 它会被插值进 Collect artifacts 的 `for f in <这里>; do` —— 多行值会在
+          # 脚本文本里插入换行，bash 解析到 `for f in A` 后遇到换行就认为语句结束，
+          # 下一行的 pattern 变成 unexpected token，直接 syntax error 退出码 2。
           - os: macos-latest
             artifact-name: macOS-arm64
             tauri-build-cmd: npm run desktop:build
-            artifact-glob: |
-              src-tauri/target/release/bundle/dmg/*.dmg
-              src-tauri/target/release/bundle/macos/*.app
+            artifact-glob: "src-tauri/target/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/macos/*.app"
           - os: macos-15-intel
             artifact-name: macOS-x64
             tauri-build-cmd: npm run desktop:build
-            artifact-glob: |
-              src-tauri/target/release/bundle/dmg/*.dmg
-              src-tauri/target/release/bundle/macos/*.app
+            artifact-glob: "src-tauri/target/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/macos/*.app"
           # Windows 用 -vv 打开 tauri-bundler 的 debug 日志。
           # 原因：tauri-bundler 的 CommandExt::output_ok 在子进程失败时只报
           # "failed to run <程序>"，**丢弃 candle/light 的 stderr**。不加 -vv 就只能
@@ -70,9 +70,7 @@ jobs:
           - os: windows-latest
             artifact-name: Windows
             tauri-build-cmd: npm run desktop:build -- -vv
-            artifact-glob: |
-              src-tauri/target/release/bundle/nsis/*.exe
-              src-tauri/target/release/bundle/msi/*.msi
+            artifact-glob: "src-tauri/target/release/bundle/nsis/*.exe src-tauri/target/release/bundle/msi/*.msi"
 
     env:
       # 非 main、非 tag 的分支推送 = 测试包；main / v* tag = 正式包。
@@ -207,20 +205,34 @@ jobs:
           retention-days: 7
 
       # 把 glob 命中的产物拷到 artifacts/ 顶层。
-      # ⚠️ 必须用 for 循环展开 glob：artifact-glob 是「多行块标量」，直接写成
-      #   bash -c 'cp -v ${{ matrix.artifact-glob }} artifacts/'
-      # 插值后的换行会被当成命令分隔符，拆成两条命令：
-      #   cp -v <glob1>                      ← 缺目标文件，报错
-      #   <glob2> artifacts/ 2>/dev/null     ← 把安装包路径当命令执行，报错
-      # 再被 `|| true` 吞掉，于是步骤显示成功、artifacts/ 却是空的。
-      # 2026-09 之前 CI 一直处于这个状态：三个平台全绿，产物为 0。
+      #
+      # ⚠️ 这段踩过两次坑，改之前先读完：
+      #
+      # 坑 1（原版写法，产物永远为 0）：
+      #   bash -c 'cp -v ${{ matrix.artifact-glob }} artifacts/ 2>/dev/null || true'
+      #   artifact-glob 当时是 `|` 块标量，插值后的换行被 bash 当命令分隔符，拆成
+      #     cp -v <glob1>                     ← 缺目标文件，报错
+      #     <glob2> artifacts/ 2>/dev/null    ← 把安装包路径当命令执行，报错
+      #   再被 `|| true` 吞掉 → 步骤显示成功、artifacts/ 却是空的。
+      #
+      # 坑 2（改成 for 循环后仍炸）：
+      #   for f in ${{ matrix.artifact-glob }}; do
+      #   多行值在**脚本文本**里插入换行，bash 解析到 `for f in A` 后遇换行即认为语句
+      #   结束，下一行 pattern 变成 unexpected token → syntax error，退出码 2。
+      #   注意：变量里的换行是合法的（word splitting 会切），脚本文本里的不是。
+      #
+      # 所以现在双保险：
+      #   1) matrix.artifact-glob 写成**单行空格分隔**字符串；
+      #   2) 这里再用 tr 把任何换行折成空格，即使有人改回块标量也不会炸。
       # 另外 .app 是目录，cp 必须带 -R。
       - name: Collect artifacts
         if: always()
         run: |
           mkdir -p artifacts
           shopt -s nullglob
-          for f in ${{ matrix.artifact-glob }}; do
+          patterns=$(printf '%s\n' "${{ matrix.artifact-glob }}" | tr '\n' ' ')
+          echo "patterns: $patterns"
+          for f in $patterns; do
             if [ -d "$f" ]; then
               cp -Rv "$f" artifacts/
             elif [ -f "$f" ]; then
