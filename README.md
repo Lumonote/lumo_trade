@@ -102,14 +102,87 @@ Tauri 2 桌面壳
 
 ## 快速开始
 
-### 1. 环境要求
+### 1. 下载安装包（推荐）
 
-- Python 3.11 或更高版本
+前往 [GitHub Releases](https://github.com/Lumonote/lumo_trade/releases) 下载对应平台的安装包：
+
+| 平台 | 安装包 | 说明 |
+| --- | --- | --- |
+| macOS · Apple Silicon | `*.dmg`（arm64） | M 系列芯片 |
+| macOS · Intel | `*.dmg`（x64） | Intel 芯片；Apple Silicon 也可经 Rosetta 运行 |
+| Windows | `*.msi` / `*.exe` | x64 |
+
+安装包已内置本地后端，**不需要**单独安装 Python、Node.js 或 Rust，装完双击即用。
+
+> 只有推送 `v*` 标签（如 `v1.1.6`）才会生成 GitHub Release；平时推送到 `main` / 其他分支的产物只留在
+> Actions 的 Artifacts 中，保留期分别为 14 天 / 7 天。
+
+#### macOS：安装后第一次打不开怎么办
+
+社区构建没有购买 Apple 开发者证书，安装包使用 **ad-hoc 签名**（等同于未签名），也没有送给 Apple 做
+公证（notarization）。所以 macOS 的 Gatekeeper **必然会拦一次**，你看到的多半是下面几种提示之一：
+
+- 「"Lumo Trade" 无法打开，因为 Apple 无法检查其是否包含恶意软件。」
+- 「"Lumo Trade" 无法打开，因为无法验证开发者。」
+- 「"Lumo Trade" 已损坏，无法打开。你应该将它移到废纸篓。」
+
+这三种提示说的是同一件事：**系统无法验证开发者身份**，而不是安装包真的损坏或下载失败。按下面的顺序
+处理，第 1 步不行再往下走：
+
+1. **拖入「应用程序」**：打开 dmg，把 `Lumo Trade.app` 拖进「应用程序」。
+2. **右键打开**：在「应用程序」里 **按住 Control 点击（或右键）** App → 选「打开」→ 在弹窗里再点一次
+   「打开」。注意：直接双击只会出现「移到废纸篓 / 完成」，不会给你「打开」按钮。
+3. **在系统设置里放行**：「系统设置 → 隐私与安全性」，滚到底部「安全性」区域，会看到被拦截的提示，
+   点「仍要打开」并输入登录密码确认。（macOS 15 起弹窗不再提供「打开」，只能走这里。）
+4. **移除隔离属性**（提示「已损坏」或前几步都无效时最有效）：
+
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Lumo Trade.app"
+   open "/Applications/Lumo Trade.app"
+   ```
+
+   若直接从 dmg 挂载卷里运行，把路径换成挂载卷下的 App，例如
+   `xattr -dr com.apple.quarantine "/Volumes/Lumo Trade/Lumo Trade.app"`。
+5. **仍然打不开**：先确认安装包与芯片架构匹配（Apple Silicon 用 arm64 包，Intel 用 x64 包），或改用
+   下面的「从源码运行」。
+
+几点补充说明：
+
+- **只从本仓库 Releases 下载。** 第三方转发的包无法核对来源，也不要为了省掉一次弹窗就全局关闭 Gatekeeper。
+- 放行只需要做一次，之后系统会记住这个选择。
+- 想彻底消除弹窗，需要 Apple Developer Program 会员（99 美元/年）做 Developer ID 签名 + 公证；社区构建
+  不做这件事，属于预期行为，不是本项目可以「修好」的缺陷。
+
+#### Windows：SmartScreen 提示
+
+Windows 安装包同样未做代码签名，SmartScreen 会提示「Windows 已保护你的电脑」。点「更多信息」→「仍要运行」
+即可继续安装。
+
+#### 卸载与本地数据
+
+应用数据（SQLite 数据库、报告、日志、配置）不在 `.app` 内部，卸载应用后仍然保留：
+
+| 平台 | 数据目录 |
+| --- | --- |
+| macOS | `~/Library/Application Support/com.lumo.trade/` |
+| Windows | `%APPDATA%\com.lumo.trade\` |
+
+需要彻底清理时，先把应用拖入废纸篓，再删除上面的目录（**删除前请先备份**，整库快照可在「后台配置 → 数据与模拟盘」里导出）。
+
+### 2. 从源码运行
+
+#### 环境要求
+
+- Python 3.11 或更高版本（CI 与打包均使用 3.11）
 - Node.js 22（仅开发或构建桌面端需要）
 - Rust stable 与 Tauri 系统依赖（仅开发或构建桌面端需要）
 - 可选：CUDA 或 Apple MPS；可选：Playwright Chromium（爬虫与浏览器采集）
 
-### 2. 安装 Python 依赖
+> **Intel macOS / Python 3.13 的 torch 说明**：torch 自 2.3 起不再发布 Intel macOS wheel。`requirements.txt`
+> 已按平台分流，Intel Mac 会退回可用的 2.2.x，Intel Mac + Python 3.13 则自动跳过 torch。打包默认的 `lite`
+> 模式本就不含 torch / modelscope —— 数据、机会挖掘和 Web 界面照常可用，只有 Kronos 模型推理类功能不可用。
+
+#### 安装依赖
 
 建议使用虚拟环境：
 
@@ -127,14 +200,33 @@ pip install playwright
 playwright install chromium
 ```
 
-### 3. 配置数据源
+### 3. 配置数据源（TuShare 需要一定积分）
 
 ```bash
 python scripts/setup_tushare.py
 python scripts/check_environment.py
 ```
 
-Token、LLM API Key 等敏感配置只写入本地配置目录，不要提交到 Git。具体数据源和模型配置见 [桌面端完整指南](docs/Lumo_Trade_桌面端完整指南.md)。
+**关于 TuShare 积分**：TuShare Pro 的接口按「积分」分级开放，一个 Token 并不等于所有数据都能取。本项目
+用到的数据里，**有一部分需要 5000 积分**才能调用（例如筹码/成本分布、机构调研等），资金流向、龙虎榜、
+股东户数、财务三大表等多为 2000 积分档，基础日线行情门槛最低。积分不够时程序不会崩，对应页面会明确显示
+「数据不可用 / 已降级 / 仍使用历史数据」。
+
+还没有账号的话，可以通过邀请链接注册（通过邀请注册可累积积分，更快到达 5000 积分门槛）：
+
+> **TuShare 邀请注册**：<https://tushare.pro/weborder/#/login?reg=711997>
+
+注册后在用户中心复制 Token，填入「后台配置 → TuShare 数据源」，或直接运行 `python scripts/setup_tushare.py`
+按提示交互写入。Token 与 LLM API Key 只写本地配置目录，**不要提交到 Git**：
+
+| 运行方式 | Token 落盘位置 |
+| --- | --- |
+| 源码运行 | `config/tushare_config.json` |
+| macOS 安装包 | `~/Library/Application Support/com.lumo.trade/config/tushare_config.json` |
+| Windows 安装包 | `%APPDATA%\com.lumo.trade\config\tushare_config.json` |
+
+不配置 Token 也能跑：AKShare / 东方财富 / 新浪等公开数据源配合本地缓存兜底，但覆盖面和稳定性会下降，
+报告里会标注实际使用的来源。具体数据源与模型配置见 [桌面端完整指南](docs/Lumo_Trade_桌面端完整指南.md)。
 
 ### 4. 启动 Web UI
 
@@ -145,20 +237,24 @@ python run_robyn.py
 
 打开 <http://localhost:7070>。也可以使用兼容入口 `python run.py`；两者都会启动 Robyn 服务。
 
-### 5. 开发桌面端（可选）
+### 5. 开发与打包桌面端（可选）
 
 ```bash
 npm ci
-npm run desktop:dev
+npm run desktop:dev      # 开发模式（tauri dev）
+npm run desktop:build    # 本机构建安装包（tauri build）
 ```
 
-构建安装包：
+本地要打出可用的安装包，需要**先构建内置后端**，Tauri 再把它作为 resource 打进包里（顺序不能反）：
 
 ```bash
+python packaging/scripts/build_backend.py --clean --mode lite
 npm run desktop:build
 ```
 
-跨平台构建由 [.github/workflows/build.yml](.github/workflows/build.yml) 负责，推送 `v*` 标签可触发 GitHub Release 流程。
+跨平台构建由 [.github/workflows/build.yml](.github/workflows/build.yml) 负责：推送到任意分支产出测试包，
+推送到 `main` 产出正式包，只有推送 `v*` / `V*` 标签才会把安装包附到 GitHub Release。构建矩阵为
+macOS（arm64 + x64，`macos-latest` / `macos-15-intel`）与 Windows；Linux 因构建失败已临时下线。
 
 ## 常用目录
 

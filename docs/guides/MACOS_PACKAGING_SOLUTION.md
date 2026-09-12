@@ -1,5 +1,12 @@
 # 🎯 macOS 打包问题解决方案
 
+> ⚠️ **本文档已过时（历史记录）**：文中的 `dist/LumoTest.app`、tkinter 依赖、Flask Web GUI 方案都属于早期
+> 探索阶段，与当前交付形态（Tauri 2 桌面端 + PyInstaller 内置 Robyn 后端 + `.dmg`/`.msi` 安装包）无关。
+> 当前的安装方式、macOS「已损坏 / 无法验证开发者」安全提示处理、卸载与本地数据位置，请以
+> [README「快速开始」](../../README.md#快速开始) 为准；打包流程见
+> [.github/workflows/build.yml](../../.github/workflows/build.yml)。
+> 本文仅保留当时的排查过程，供追溯用。
+
 ## 问题诊断
 
 您遇到的"点开macOS安装软件没反应"问题已成功解决！

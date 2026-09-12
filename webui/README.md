@@ -22,14 +22,25 @@ Web user interface for Kronos financial prediction model, providing intuitive gr
 
 ## 🚀 Quick Start
 
-### Method 1: Start with Python script
+> 后端**只有 Robyn 一条链路**（`webui/robyn_app.py`）。早期文档里的 `webui/app.py`（Flask）**已不存在**，
+> `python app.py` 会直接报文件不存在。安装、macOS 安全提示处理、TuShare 积分与 Token 配置见
+> [根目录 README](../README.md#快速开始)。
+
+### Method 1: Start with Python script（推荐）
 
 ```bash
 cd webui
-python run.py
+python run_robyn.py      # 显式 Robyn 入口
 ```
 
-### Method 2: Start with Shell script
+### Method 2: Start with the compatible entry
+
+```bash
+cd webui
+python run.py            # 与 run_robyn.py 等价，会先做依赖自检
+```
+
+### Method 3: Start with Shell script
 
 ```bash
 cd webui
@@ -37,14 +48,9 @@ chmod +x start.sh
 ./start.sh
 ```
 
-### Method 3: Start Flask application directly
-
-```bash
-cd webui
-python app.py
-```
-
 After successful startup, visit http://localhost:7070
+
+默认监听 `0.0.0.0:7070`，可用环境变量覆盖：`KRONOS_HOST`、`KRONOS_PORT`（端口被占用时报错的提示里也会带到这两个变量）。
 
 ## 📍 Web Routes
 
@@ -55,10 +61,10 @@ After successful startup, visit http://localhost:7070
 
 ## 🖥️ Desktop Shell
 
-The desktop package now uses Tauri as the native shell and reuses the Flask Web UI as a local backend.
+The desktop package now uses Tauri as the native shell and reuses the Robyn Web UI as a local backend.
 
 ```bash
-npm install
+npm ci
 npm run desktop:dev
 npm run desktop:build
 ```
@@ -150,17 +156,18 @@ The system automatically provides comparison analysis between prediction results
 
 ## 🛠️ Technical Architecture
 
-- **Backend**: Flask + Python
-- **Frontend**: HTML + CSS + JavaScript
+- **Backend**: Robyn 0.84+ (Python)，入口 `webui/robyn_app.py` → `run_server()`
+- **Frontend**: Jinja2 模板 + 原生 JavaScript + `webui/static`
 - **Charts**: Plotly.js
 - **Data processing**: Pandas + NumPy
+- **Storage**: 本地 SQLite（`data_store/`）
 - **Model**: Hugging Face Transformers
 
 ## 📝 Troubleshooting
 
 ### Common Issues
 
-1. **Port occupied**: Modify port number in app.py
+1. **Port occupied**: `KRONOS_PORT=7071 python run_robyn.py`（或先杀掉占用的旧后端进程；报错信息里会提示）
 2. **Missing dependencies**: Run `pip install -r requirements.txt`
 3. **Model loading failed**: Check network connection and model ID
 4. **Data format error**: Ensure data column names and format are correct

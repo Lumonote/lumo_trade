@@ -1,5 +1,10 @@
 # macOS Intel（x86_64）打包指南
 
+> ⚠️ **本文档已过时（历史记录）**：文中「在 Apple Silicon 机器上经 Rosetta 搭 x86_64 venv 本地构建」的方案
+> 已被 CI 取代——`.github/workflows/build.yml` 的构建矩阵现在直接用 GitHub 托管的 **`macos-15-intel`**
+> 原生 Intel runner 产出 `*.dmg`（x64），不需要 Rosetta、不需要本地 x86_64 venv，§4 的五处补丁也未并入。
+> 当前安装与打包说明见 [README「快速开始」](../../README.md#快速开始)。本文仅保留当时的方案推演。
+
 > 关联 spec：[`2026-05-31-v2-ux-and-data-completion-design.md`](../superpowers/specs/2026-05-31-v2-ux-and-data-completion-design.md) 模块 F。
 > 本期产出**独立 x86_64 dmg**（非 Universal2 单包——torch 等重型 wheel 缺 universal2）。
 

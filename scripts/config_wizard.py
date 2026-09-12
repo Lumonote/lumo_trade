@@ -40,7 +40,8 @@ class ConfigWizard:
                         return
 
         print("\n📝 获取 Tushare Token 的步骤：")
-        print("1. 访问 https://tushare.pro/")
+        print("1. 访问邀请注册链接 https://tushare.pro/weborder/#/login?reg=711997")
+        print("   （通过邀请注册可累积积分；部分数据接口需要 5000 积分才有权限）")
         print("2. 注册账号并登录")
         print("3. 在用户中心找到您的 Token")
         print("4. 复制 Token 并粘贴到下方\n")

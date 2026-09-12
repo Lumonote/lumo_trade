@@ -560,7 +560,7 @@ echo   3. 选择“2”配置数据源（需要Tushare Token）
 echo   4. 选择“7”运行预测示例
 echo.
 echo DATA: 数据源配置：
-echo   - Tushare: 需要注册账号获取Token (https://tushare.pro/)
+echo   - Tushare: 邀请注册获取Token (https://tushare.pro/weborder/#/login?reg=711997) 部分接口需5000积分
 echo   - 爬虫: 自动从金融网站获取数据，无需注册
 echo.
 echo CHART: 股票代码格式：
@@ -573,7 +573,7 @@ echo   - 可调节预测长度和采样参数
 echo   - 支持批量预测多只股票
 echo.
 echo WEB: Web界面：
-echo   - 运行: cd webui ^&^& python app.py
+echo   - 运行: cd webui ^&^& python run_robyn.py
 echo   - 访问: http://localhost:7070
 echo.
 echo DIR: 重要文件：
@@ -777,12 +777,13 @@ echo WEB: 启动Web服务器...
 echo 访问地址: http://localhost:7070
 echo 按 Ctrl+C 停止服务器
 echo.
-if exist "webui\app.py" (
+REM 后端只有 Robyn 一条链路（webui\robyn_app.py）；早期 Flask 的 webui\app.py 已删除。
+if exist "webui\run_robyn.py" (
     cd webui
-    %PYTHON_CMD% app.py
+    %PYTHON_CMD% run_robyn.py
     cd..
 ) else (
-    echo ERROR: 未找到 webui\app.py 文件
+    echo ERROR: 未找到 webui\run_robyn.py 文件
 )
 pause
 goto main_menu

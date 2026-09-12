@@ -274,8 +274,8 @@ function Show-PostInstallInfo {
     Write-ColorOutput "`n5. 或使用快速启动:" "White"
     Write-ColorOutput "   .\quick_start.bat" "Cyan"
     
-    Write-ColorOutput "`n📚 获取Tushare Token:" "Yellow"
-    Write-ColorOutput "   https://tushare.pro/register" "Cyan"
+    Write-ColorOutput "`n📚 获取Tushare Token（邀请注册，部分接口需5000积分）:" "Yellow"
+    Write-ColorOutput "   https://tushare.pro/weborder/#/login?reg=711997" "Cyan"
     
     Write-ColorOutput "`n📖 项目文档:" "Yellow"
     Write-ColorOutput "   README.md" "Cyan"

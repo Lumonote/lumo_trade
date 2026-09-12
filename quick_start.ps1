@@ -1154,12 +1154,13 @@ elseif ($Choice -eq "11") {
     } else {
         Write-Host "SKIP: Packaged app detected, skipping webui dependency installation" -ForegroundColor Yellow
     }
-    if (Test-Path 'webui/app.py') {
+    # 后端只有 Robyn 一条链路（webui/robyn_app.py）；早期 Flask 的 webui/app.py 已删除。
+    if (Test-Path 'webui/run_robyn.py') {
         Push-Location 'webui'
-        Invoke-Python -Script 'app.py'
+        Invoke-Python -Script 'run_robyn.py'
         Pop-Location
     } else {
-        Write-Host "webui/app.py not found" -ForegroundColor Red
+        Write-Host "webui/run_robyn.py not found" -ForegroundColor Red
     }
 }
 elseif ($Choice -eq "12") {

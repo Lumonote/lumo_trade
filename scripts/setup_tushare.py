@@ -107,7 +107,8 @@ def setup_tushare_token():
 
     # 获取新token
     print("\n📝 请输入您的Tushare API Token:")
-    print("💡 如果还没有Token，请访问: https://tushare.pro/register")
+    print("💡 如果还没有Token，请通过邀请链接注册: https://tushare.pro/weborder/#/login?reg=711997")
+    print("💡 部分数据接口需要 5000 积分才有权限（通过邀请注册可累积积分）")
     print("💡 注册后在用户中心获取Token")
 
     while True:

@@ -108,7 +108,7 @@ echo 1. 编辑 config\tushare_config.json 文件，填入您的 Tushare Token
 echo 2. 运行 python scripts\fetch_data.py 获取数据
 echo 3. 运行 python examples\prediction_example.py 开始预测
 echo.
-echo 获取 Tushare Token: https://tushare.pro/register
-echo 完整文档: https://github.com/your-repo/kronos
+echo 获取 Tushare Token（邀请注册，部分接口需5000积分）: https://tushare.pro/weborder/#/login?reg=711997
+echo 完整文档: https://github.com/Lumonote/lumo_trade
 echo.
 pause

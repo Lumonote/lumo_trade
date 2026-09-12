@@ -1,5 +1,11 @@
 # 🎯 Lumo 打包方案完整实施指南
 
+> ⚠️ **本文档已过时（历史记录）**：文中描述的 tkinter GUI 主程序与打包脚本
+> （`kronos_gui_main.py` / `build_macos.sh` / `build_windows.bat`）在仓库中**已不存在**，桌面端的设备验证
+> 门禁也已关闭。当前交付形态是 **Tauri 2 桌面壳 + PyInstaller 内置 Robyn 后端**，安装与打包说明见
+> [README「快速开始」](../../README.md#快速开始)，CI 见 [.github/workflows/build.yml](../../.github/workflows/build.yml)。
+> 本文仅保留当时的授权/加密方案设计，供追溯用。
+
 ## 📋 方案概述
 
 Lumo项目现在支持打包成Windows/macOS可执行文件，完全隐藏源码的同时保持授权系统的完整功能。

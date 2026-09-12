@@ -247,8 +247,8 @@ echo "2. 运行 ./quick_start.sh 使用快速启动菜单"
 echo "3. 或者运行 python3 scripts/fetch_data.py 获取数据"
 echo "4. 运行 python3 examples/prediction_example.py 开始预测"
 echo
-print_info "获取 Tushare Token: https://tushare.pro/register"
-print_info "完整文档: https://github.com/your-repo/kronos"
+print_info "获取 Tushare Token（邀请注册，部分接口需 5000 积分）: https://tushare.pro/weborder/#/login?reg=711997"
+print_info "完整文档: https://github.com/Lumonote/lumo_trade"
 echo
 
 read -p "按回车键退出..."
