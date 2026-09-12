@@ -206,13 +206,29 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # 把 glob 命中的产物拷到 artifacts/ 顶层。
+      # ⚠️ 必须用 for 循环展开 glob：artifact-glob 是「多行块标量」，直接写成
+      #   bash -c 'cp -v ${{ matrix.artifact-glob }} artifacts/'
+      # 插值后的换行会被当成命令分隔符，拆成两条命令：
+      #   cp -v <glob1>                      ← 缺目标文件，报错
+      #   <glob2> artifacts/ 2>/dev/null     ← 把安装包路径当命令执行，报错
+      # 再被 `|| true` 吞掉，于是步骤显示成功、artifacts/ 却是空的。
+      # 2026-09 之前 CI 一直处于这个状态：三个平台全绿，产物为 0。
+      # 另外 .app 是目录，cp 必须带 -R。
       - name: Collect artifacts
         if: always()
         run: |
           mkdir -p artifacts
-          # 把 glob 命中的产物拷到 artifacts/ 顶层。
-          bash -c 'cp -v ${{ matrix.artifact-glob }} artifacts/ 2>/dev/null || true'
-          ls -la artifacts/ || true
+          shopt -s nullglob
+          for f in ${{ matrix.artifact-glob }}; do
+            if [ -d "$f" ]; then
+              cp -Rv "$f" artifacts/
+            elif [ -f "$f" ]; then
+              cp -v "$f" artifacts/
+            fi
+          done
+          echo '--- artifacts/ 内容 ---'
+          ls -la artifacts/
         shell: bash
 
       - name: Upload artifacts
@@ -221,7 +237,9 @@ jobs:
         with:
           name: Lumo-${{ matrix.artifact-name }}-${{ env.PACKAGE_KIND }}
           path: artifacts/*
-          if-no-files-found: warn
+          # 用 error 而不是 warn：构建成功却收不到任何产物就是「假绿」，
+          # 必须让 job 红掉，否则会像以前那样一路绿灯却打不出安装包。
+          if-no-files-found: error
           retention-days: ${{ env.ARTIFACT_RETENTION }}
 
   # 仅在 push v* tag 时运行：把三平台安装包附到 GitHub Release。
