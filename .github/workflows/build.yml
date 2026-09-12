@@ -55,14 +55,21 @@ jobs:
           # 它会被插值进 Collect artifacts 的 `for f in <这里>; do` —— 多行值会在
           # 脚本文本里插入换行，bash 解析到 `for f in A` 后遇到换行就认为语句结束，
           # 下一行的 pattern 变成 unexpected token，直接 syntax error 退出码 2。
+          # macOS 只收 .dmg，**不收 bundle/macos/*.app**：
+          #   · .app 的内容已经完整打包在 .dmg 里，再收一份等于同一份东西存两遍
+          #     （实测产物 259MB，去掉 .app 可省掉约一半）；
+          #   · Release 不接受目录，最终也只会附 .dmg；
+          #   · 两个架构的 .app 同名（都叫 "Lumo Trade.app"），上传/下载时靠
+          #     merge-multiple 合并会互相覆盖，容易混淆。
+          # 需要在本地直接双击运行 .app 调试时，从 dmg 里拖出来即可。
           - os: macos-latest
             artifact-name: macOS-arm64
             tauri-build-cmd: npm run desktop:build
-            artifact-glob: "src-tauri/target/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/macos/*.app"
+            artifact-glob: "src-tauri/target/release/bundle/dmg/*.dmg"
           - os: macos-15-intel
             artifact-name: macOS-x64
             tauri-build-cmd: npm run desktop:build
-            artifact-glob: "src-tauri/target/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/macos/*.app"
+            artifact-glob: "src-tauri/target/release/bundle/dmg/*.dmg"
           # Windows 用 -vv 打开 tauri-bundler 的 debug 日志。
           # 原因：tauri-bundler 的 CommandExt::output_ok 在子进程失败时只报
           # "failed to run <程序>"，**丢弃 candle/light 的 stderr**。不加 -vv 就只能
