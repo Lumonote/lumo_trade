@@ -213,6 +213,29 @@ def _strip_plaintext_source(bundle_dir: Path) -> int:
     return removed
 
 
+def _find_non_ascii_paths(bundle_dir: Path) -> list[Path]:
+    """列出产物中「文件名」含非 ASCII 字符的条目。
+
+    Windows 的 MSI 由 WiX 生成，而 WiX 数据库代码页固定为 1252(Latin-1)
+    （见生成出的 locale.wxl: <String Id="TauriCodepage">1252</String>）。
+    任何非 1252 可表示的文件名——典型如中文名——都会让 light.exe 以
+
+        error LGHT0311 : A string was provided with characters that are not
+        available in the specified database code page '1252'.
+
+    失败。这个报错出现在「构建 6 分钟的 Rust 产物之后」，且 tauri-bundler 会把
+    light.exe 的 stderr 吞掉、只留一句 "failed to run light.exe"，极难定位
+    （2026-09 的 Windows 打包失败即此因：webui/ 下两个中文名 HTML 被打进包）。
+
+    所以这里在 backend 产物刚生成时就拦截，把问题提前到 1 分钟级、且在
+    所有平台（含 macOS）都会失败——避免只有 Windows 那条矩阵挂掉时被忽略。
+    """
+    return sorted(
+        (path for path in bundle_dir.rglob("*") if any(ord(c) > 127 for c in path.name)),
+        key=lambda path: str(path),
+    )
+
+
 def _strip_secrets_from_config(bundle_dir: Path) -> int:
     """把打包版配置中的真实 token 清空。
 
@@ -302,6 +325,20 @@ def main() -> int:
     removed_secret = _strip_secrets_from_config(bundle_dir)
     if removed_src or removed_secret:
         print(f"安全清理: 移除明文/开发文件 {removed_src} 个, 清空敏感字段 {removed_secret} 处")
+
+    # Windows MSI 门禁：非 ASCII 文件名会让 WiX 的 light.exe 以 LGHT0311 失败。
+    # 必须在产物阶段就拦住，否则要等 Windows 上跑完 6 分钟 Rust 构建才报错。
+    non_ascii = _find_non_ascii_paths(bundle_dir)
+    if non_ascii:
+        listing = "\n".join(
+            f"  - {path.relative_to(bundle_dir)}" for path in non_ascii[:20]
+        )
+        more = "" if len(non_ascii) <= 20 else f"\n  ...(共 {len(non_ascii)} 项)"
+        raise RuntimeError(
+            "后端产物中存在非 ASCII 文件名，Windows MSI 会因 WiX 数据库代码页 "
+            "1252 报 LGHT0311 而打包失败。请把源文件改成 ASCII 名后重新打包：\n"
+            f"{listing}{more}"
+        )
 
     executable = bundle_dir / (
         "lumo_webui_backend.exe" if sys.platform == "win32" else "lumo_webui_backend"
